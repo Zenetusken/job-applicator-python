@@ -288,3 +288,25 @@ class TestTailorWorkflow:
         assert len(sections) == 3
         assert sections[0].name == "SUMMARY"
         assert "Experienced developer" in sections[0].text
+
+
+class TestCoverLetterWorkflow:
+    def test_cover_letter_session_workflow(self):
+        from job_applicator.models import CoverLetterResult, CoverLetterSession
+
+        session = CoverLetterSession(job_title="Dev", job_company="Co")
+
+        for i in range(3):
+            session.add_attempt(CoverLetterResult(
+                job_title="Dev",
+                job_company="Co",
+                cover_letter_text=f"Letter version {i + 1}",
+                attempt=i + 1,
+            ))
+
+        assert len(session.attempts) == 3
+        assert session.current.cover_letter_text == "Letter version 3"
+        assert session.attempts[0].cover_letter_text == "Letter version 1"
+
+        session.select(0)
+        assert session.current.cover_letter_text == "Letter version 1"
