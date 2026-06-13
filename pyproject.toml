@@ -1,0 +1,85 @@
+[project]
+name = "job-applicator"
+version = "0.2.0"
+description = "AI-powered job application tool with browser automation"
+authors = [{name = "Drei"}]
+requires-python = ">=3.12"
+readme = "README.md"
+license = "MIT"
+
+dependencies = [
+    # Core
+    "playwright>=1.53",
+    "pydantic>=2.12",
+    "pydantic-settings>=2.10",
+    "typer>=0.16",
+    "rich>=14.2",
+    "httpx>=0.28",
+    "beautifulsoup4>=4.13",
+    "jinja2>=3.1",
+    # LLM - Modern stack
+    "litellm>=1.88",           # Universal LLM API (OpenAI, Anthropic, vLLM, 100+ providers)
+    "instructor>=1.15",        # Structured outputs from LLMs
+    "pydantic-ai>=1.107",      # AI agents with Pydantic type safety
+    # Web scraping
+    "crawl4ai>=0.8",           # AI-powered web crawling
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.12",
+    "mypy>=1.16",
+    "pytest>=8.4",
+    "pytest-asyncio>=0.25",
+    "pytest-cov>=6.2",
+    "hypothesis>=6.142",
+]
+
+[project.scripts]
+job-applicator = "job_applicator.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/job_applicator"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "F",     # pyflakes
+    "I",     # isort
+    "B",     # bugbear
+    "UP",    # pyupgrade
+    "ASYNC", # async correctness
+    "S",     # bandit (security)
+    "RUF",   # ruff-specific
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = ["-ra", "--strict-markers", "--strict-config"]
+markers = [
+    "unit: fast, isolated unit tests",
+    "integration: tests that exercise browser automation",
+]
