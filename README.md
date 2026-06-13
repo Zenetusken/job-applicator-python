@@ -9,6 +9,8 @@ AI-powered job application tool using Playwright browser automation with modern 
 - **AI Cover Letters**: Generate personalized cover letters using LLM (litellm - supports 100+ providers)
 - **Resume Parsing**: Load and parse PDF/text resumes with intelligent skill extraction
 - **Semantic Job Matching**: Match resumes to jobs using mxbai-embed-large-v1 embeddings
+- **Resume Tailoring**: LLM-powered resume rewriting for specific jobs with hallucination guards
+- **Date Audit**: Pre-ingestion CV validation — checks ordering, staleness, timeline coherence
 - **Style Analysis**: Mimic writing style from example resumes/cover letters
 - **Structured Outputs**: Instructor for type-safe LLM responses
 
@@ -57,8 +59,15 @@ job-applicator generate-cover-letter --job-title "Python Dev" --company "Acme"
 # Match resume to jobs using embeddings
 job-applicator match --resume resume.pdf --jobs-file jobs.json --top-k 10
 
+# Tailor resume for a specific job (interactive: accept/retry/input)
+job-applicator tailor --resume resume.pdf --job-title "Tech Support" --company "CGI" \
+  --requirements "Troubleshooting,Windows,Office 365" --location "Montreal, QC"
+
 # Generate cover letter with style guide
 job-applicator generate-cover-letter --resume resume.pdf --style-guide example.txt
+
+# Detailed match report with per-skill breakdown
+python scripts/detailed_match_report.py
 ```
 
 ## Configuration

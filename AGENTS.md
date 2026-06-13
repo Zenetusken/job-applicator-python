@@ -20,7 +20,7 @@ mypy src/job_applicator/ --ignore-missing-imports
 ruff check --fix src/ tests/
 ruff format src/ tests/
 
-# Tests (47 unit tests, all fast)
+# Tests (54 unit tests, all fast)
 pytest tests/unit/ -v
 pytest tests/unit/ -v -k test_name  # single test
 
@@ -33,14 +33,14 @@ job-applicator match --resume resume.pdf
 
 ```
 src/job_applicator/
-├── cli.py              # Typer CLI (search, apply, match, generate-cover-letter)
+├── cli.py              # Typer CLI (search, apply, match, generate-cover-letter, tailor)
 ├── config.py           # AppSettings + sub-configs (BrowserConfig, LLMConfig, EmbeddingConfig)
-├── models.py           # All shared Pydantic models (JobListing, ResumeData, StyleGuide, etc.)
+├── models.py           # All shared Pydantic models (JobListing, ResumeData, StyleGuide, TailoredResume, DateAuditResult, etc.)
 ├── exceptions.py       # JobApplicatorError hierarchy
 ├── browser/            # Playwright lifecycle (manager.py) + low-level actions (actions.py)
 ├── scrapers/           # base.py (ABC) → linkedin.py, indeed.py (stub)
 ├── applicators/        # base.py (ABC) → linkedin.py, indeed.py (stub)
-├── documents/          # cover_letter.py (LLM), resume.py (parser), style_analyzer.py
+├── documents/          # cover_letter.py (LLM), resume.py (parser), resume_tailor.py (tailoring), style_analyzer.py
 ├── embeddings/         # service.py (mxbai-embed-large-v1), matching.py (job matching)
 └── utils/              # logging.py, retry.py
 ```
@@ -62,7 +62,9 @@ src/job_applicator/
 
 ## Gotchas
 
-- **LLM output has thinking process.** Qwen models prepend reasoning. `strip_thinking_process()` in `cover_letter.py` handles this.
+- **LLM output has thinking process.** Qwen models prepend reasoning. Use `extra_body={"chat_template_kwargs": {"enable_thinking": False}}` in litellm calls to suppress. Fallback: `strip_thinking_process()` in `cover_letter.py`.
+- **Resume tailoring hallucination guards.** `_validate_skills()` strips hallucinated skills. `_strip_hallucinated_tools()` replaces tools not in original resume. `_strip_hallucinated_education()` removes education if original has none.
+- **Education extraction must be explicit.** LLMs silently drop education entries. `_extract_education_entries()` injects a numbered checklist into the prompt to force inclusion.
 - **Embeddings need `openai/` prefix for vLLM.** `model = f"openai/{config.model}"` when calling litellm.
 - **Resume PDF parser is fragile.** Skills extraction breaks on bullet-per-line PDFs. The parser handles this, but verify with `ResumeLoader.load()`.
 - **`sentence-transformers` needs CUDA torch.** If you get `libcudart.so` errors, reinstall: `pip install torch --index-url https://download.pytorch.org/whl/cu124`
@@ -84,6 +86,8 @@ Default model: `cyankiwi/Qwen3.5-4B-AWQ-4bit`. Override via `JOB_APPLICATOR_LLM_
 - Tests use fixtures from `tests/conftest.py`
 - Embedding tests mock the model (CPU fallback)
 - `scripts/smoke_test_match.py` — real resume matching (needs GPU)
+- `scripts/detailed_match_report.py` — rich per-skill match breakdown
+- `scripts/tailor_cgi.py` — resume tailoring for CGI job (needs vLLM)
 - `scripts/test_e2e.py` — full pipeline (needs vLLM running)
 
 ## Files Not to Commit
