@@ -224,6 +224,8 @@ class CoverLetterGenerator:
         user: UserProfile,
         resume: ResumeData,
         style_guide: StyleGuide | None = None,
+        tone_section: str = "",
+        tailored_resume_text: str = "",
     ) -> str:
         """Generate a cover letter for a job application.
 
@@ -232,8 +234,17 @@ class CoverLetterGenerator:
             user: User profile information
             resume: Parsed resume data
             style_guide: Optional style guide to mimic writing patterns
+            tone_section: Optional tone profile section to inject into the prompt
+            tailored_resume_text: Optional tailored resume text as primary content source
         """
-        user_message = self._build_prompt(job, user, resume, style_guide)
+        user_message = self._build_prompt(
+            job,
+            user,
+            resume,
+            style_guide,
+            tone_section=tone_section,
+            tailored_resume_text=tailored_resume_text,
+        )
 
         # For local vLLM, need "openai/" prefix
         model = f"openai/{self._config.model}" if self._config.api_base else self._config.model
@@ -294,6 +305,8 @@ class CoverLetterGenerator:
         user: UserProfile,
         resume: ResumeData,
         style_guide: StyleGuide | None = None,
+        tone_section: str = "",
+        tailored_resume_text: str = "",
     ) -> str:
         """Build the prompt for cover letter generation."""
         parts = [
@@ -322,6 +335,9 @@ class CoverLetterGenerator:
         if resume.skills:
             parts.extend(["", f"Key Skills: {', '.join(resume.skills)}"])
 
+        if tone_section:
+            parts.extend(["", tone_section])
+
         # Add style guide if provided
         if style_guide:
             from job_applicator.documents.style_analyzer import StyleAnalyzer
@@ -329,6 +345,18 @@ class CoverLetterGenerator:
             analyzer = StyleAnalyzer(self._config)
             style_section = analyzer.format_style_for_prompt(style_guide)
             parts.extend(["", style_section])
+
+        if tailored_resume_text:
+            parts.extend(
+                [
+                    "",
+                    "Use tailored resume as primary source for experience and skills:",
+                    tailored_resume_text,
+                    "",
+                    "Ensure the cover letter is consistent with the tailored resume — "
+                    "do not mention skills, tools, or experience absent from it.",
+                ]
+            )
 
         parts.extend(["", "Generate a professional cover letter with key points highlighted."])
 

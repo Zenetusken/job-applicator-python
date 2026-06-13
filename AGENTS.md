@@ -74,6 +74,10 @@ src/job_applicator/
 - **Tone detection is keyword-based, not LLM-based.** `ToneDetector.detect()` in `tone_detector.py` uses keyword frequency heuristics — fast, but may misclassify edge cases (e.g. a startup posting heavy on compliance jargon).
 - **Max tailor retry limit is 10.** A warning prints at attempt 8. The limit is hardcoded in `cli.py` and `tailor_cgi.py` — search for `attempt > 10` to adjust.
 - **`TailorSession` is in-memory only.** Version history is lost when the session ends. No persistence to disk.
+- **Cover letter sub-loop has no `[S] Section` option.** Cover letters lack parseable sections, so the section-editing prompt is skipped in the cover letter flow.
+- **`CoverLetterResult` is simpler than `TailoredResume`.** No `match_score`, `matched_skills`, or `semantic_score` — cover letters don't go through embedding-based matching.
+- **Resume meta.json write is deferred until after cover letter flow.** The CLI waits until the cover letter sub-loop completes (or is skipped) before writing the resume's sidecar metadata, so `cover_letter_path` can be included.
+- **`cover_letter_path` in `TailoredResume` links resume to cover letter.** After the cover letter is saved, its path is stored in the resume model for downstream consumers.
 
 ## LLM Setup
 
