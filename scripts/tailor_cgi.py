@@ -165,8 +165,6 @@ async def main() -> bool:
 
         console.print(f"\n[bold blue]=== Attempt #{attempt} ===[/bold blue]")
 
-        result.attempt = attempt
-
         console.print("\n[bold]Tailored Resume:[/bold]\n")
         console.print(Panel(result.tailored_text, title="Preview", border_style="cyan"))
         _render_diff(console, session.original_text, result.tailored_text, max_lines=30)
@@ -234,6 +232,7 @@ async def main() -> bool:
             try:
                 with console.status("Tailoring resume with LLM..."):
                     result = await tailor_engine.refine(resume, result, "", job)
+                result.attempt = attempt
                 session.add_attempt(result)
             except Exception as exc:
                 console.print(f"[red]LLM error: {exc}[/red]")
@@ -250,6 +249,7 @@ async def main() -> bool:
             try:
                 with console.status("Tailoring resume with LLM..."):
                     result = await tailor_engine.refine(resume, result, user_instructions, job)
+                result.attempt = attempt
                 session.add_attempt(result)
             except Exception as exc:
                 console.print(f"[red]LLM error: {exc}[/red]")
@@ -348,6 +348,7 @@ async def main() -> bool:
             try:
                 with console.status("Refining section..."):
                     result = await tailor_engine.refine(resume, result, user_instructions, job)
+                result.attempt = attempt
                 session.add_attempt(result)
             except Exception as exc:
                 console.print(f"[red]LLM error: {exc}[/red]")

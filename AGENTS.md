@@ -20,7 +20,7 @@ mypy src/job_applicator/ --ignore-missing-imports
 ruff check --fix src/ tests/
 ruff format src/ tests/
 
-# Tests (54 unit tests, all fast)
+# Tests (73 unit tests, all fast)
 pytest tests/unit/ -v
 pytest tests/unit/ -v -k test_name  # single test
 
@@ -40,9 +40,9 @@ src/job_applicator/
 ├── browser/            # Playwright lifecycle (manager.py) + low-level actions (actions.py)
 ├── scrapers/           # base.py (ABC) → linkedin.py, indeed.py (stub)
 ├── applicators/        # base.py (ABC) → linkedin.py, indeed.py (stub)
-├── documents/          # cover_letter.py (LLM), resume.py (parser), resume_tailor.py (tailoring), style_analyzer.py
+├── documents/          # cover_letter.py (LLM), resume.py (parser), resume_tailor.py (tailoring), style_analyzer.py, tone_detector.py
 ├── embeddings/         # service.py (mxbai-embed-large-v1), matching.py (job matching)
-└── utils/              # logging.py, retry.py
+└── utils/              # logging.py, retry.py, diff.py
 ```
 
 ## Conventions
@@ -71,8 +71,8 @@ src/job_applicator/
 - **Embedding cache at `~/.job-applicator/embeddings/`.** Style cache at `~/.job-applicator/styles/`. Clear with `EmbeddingService.clear_cache()`.
 - **Skill matching threshold is 0.55.** Lower = more matches, higher = stricter. Tune in `matching.py:_match_skills()`.
 - **`parse_sections()` regex patterns may need tuning.** Names in ALL CAPS (e.g. "JOHN DOE") can be misclassified as section headers. Adjust the `SECTION_HEADER_RE` pattern in `resume_tailor.py` for unusual resume formats.
-- **Tone detection is keyword-based, not LLM-based.** `_detect_tone()` in `resume_tailor.py` uses keyword frequency heuristics — fast, but may misclassify edge cases (e.g. a startup posting heavy on compliance jargon).
-- **Max tailor retry limit is 10.** A warning prints at attempt 8. Increase `MAX_RETRIES` in `resume_tailor.py` if needed.
+- **Tone detection is keyword-based, not LLM-based.** `ToneDetector.detect()` in `tone_detector.py` uses keyword frequency heuristics — fast, but may misclassify edge cases (e.g. a startup posting heavy on compliance jargon).
+- **Max tailor retry limit is 10.** A warning prints at attempt 8. The limit is hardcoded in `cli.py` and `tailor_cgi.py` — search for `attempt > 10` to adjust.
 - **`TailorSession` is in-memory only.** Version history is lost when the session ends. No persistence to disk.
 
 ## LLM Setup

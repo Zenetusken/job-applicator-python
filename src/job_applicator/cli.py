@@ -557,11 +557,8 @@ def tailor(
                 break
             if attempt >= 8:
                 console.print("[yellow]Warning: approaching retry limit (10 max).[/yellow]")
-            result.attempt = attempt
 
             console.print(f"\n[bold blue]--- Attempt #{attempt} ---[/bold blue]")
-
-            result.attempt = attempt
 
             console.print("\n[bold]Tailored Resume Preview:[/bold]\n")
             console.print(
@@ -643,6 +640,7 @@ def tailor(
                 try:
                     with console.status("Tailoring resume..."):
                         result = await tailor_engine.refine(resume_data, result, "", job)
+                    result.attempt = attempt
                     session.add_attempt(result)
                 except Exception as exc:
                     console.print(f"[red]LLM error: {exc}[/red]")
@@ -669,6 +667,7 @@ def tailor(
                         result = await tailor_engine.refine(
                             resume_data, result, user_instructions, job
                         )
+                    result.attempt = attempt
                     session.add_attempt(result)
                 except Exception as exc:
                     console.print(f"[red]LLM error: {exc}[/red]")
@@ -773,6 +772,7 @@ def tailor(
                         result = await tailor_engine.refine(
                             resume_data, result, user_instructions, job
                         )
+                    result.attempt = attempt
                     session.add_attempt(result)
                 except Exception as exc:
                     console.print(f"[red]LLM error: {exc}[/red]")
