@@ -169,6 +169,49 @@ class TailorSession:
         self.current_index = index
 
 
+class CoverLetterResult(BaseModel):
+    """A generated cover letter with metadata."""
+
+    job_title: str
+    job_company: str
+    job_url: str = ""
+    cover_letter_text: str
+    user_modifications: str = ""
+    attempt: int = 1
+    created_at: datetime = Field(default_factory=datetime.now)
+    output_path: str = ""
+
+    model_config = {"extra": "forbid"}
+
+
+class CoverLetterSession:
+    """Tracks cover letter generation attempts."""
+
+    def __init__(self, job_title: str, job_company: str) -> None:
+        self.job_title = job_title
+        self.job_company = job_company
+        self.attempts: list[CoverLetterResult] = []
+        self.current_index: int = -1
+
+    def add_attempt(self, result: CoverLetterResult) -> None:
+        """Add a new attempt and set it as current."""
+        self.attempts.append(result)
+        self.current_index = len(self.attempts) - 1
+
+    @property
+    def current(self) -> CoverLetterResult:
+        """Get the currently selected attempt."""
+        if not self.attempts or self.current_index < 0:
+            raise IndexError("No attempts in session")
+        return self.attempts[self.current_index]
+
+    def select(self, index: int) -> None:
+        """Select a previous attempt by index."""
+        if index < 0 or index >= len(self.attempts):
+            raise IndexError(f"Index {index} out of range (0-{len(self.attempts) - 1})")
+        self.current_index = index
+
+
 class DateAuditResult(BaseModel):
     """Result of auditing dates in a resume for coherence and staleness."""
 
