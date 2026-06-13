@@ -1,0 +1,28 @@
+# Job Applicator Configuration
+
+# Profile
+profile_name = "default"
+resume_path = "/path/to/your/resume.pdf"
+output_dir = "output"
+log_level = "INFO"
+
+# Browser
+[browser]
+headless = true
+slow_mo = 0
+timeout_ms = 30000
+
+# LLM (for AI cover letters)
+[llm]
+api_base = "http://localhost:8000/v1"
+api_key = "not-needed-for-local"
+model = "cyankiwi/Qwen3.5-4B-AWQ-4bit"
+max_tokens = 1024
+temperature = 0.7
+
+# Targets
+[target]
+max_applications_per_day = 20
+delay_between_applications_s = 2.0
+# linkedin_email = "your-email@example.com"
+# linkedin_password = "your-password"
