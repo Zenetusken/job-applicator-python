@@ -492,6 +492,19 @@ def tailor(
             board=JobBoard.INDEED,
         )
 
+        from job_applicator.documents.tone_detector import ToneDetector
+
+        tone_detector = ToneDetector()
+        tone_profile = tone_detector.detect(
+            title=job.title,
+            description=job.description,
+            requirements=job.requirements,
+        )
+        console.print(
+            f"[dim]Detected tone: {tone_profile.primary} "
+            f"(confidence: {tone_profile.confidence:.0%})[/dim]"
+        )
+
         style = None
         if settings.style_guide_path:
             from job_applicator.documents.cover_letter import CoverLetterGenerator

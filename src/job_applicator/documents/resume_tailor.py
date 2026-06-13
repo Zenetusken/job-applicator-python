@@ -475,6 +475,7 @@ TAILOR_PROMPT_TEMPLATE = (
     "Education entries that MUST appear in the output (do not merge with "
     "Certifications — they are separate sections):\n"
     "{education_entries}\n\n"
+    "{tone_section}\n\n"
     "{user_instructions}\n\n"
     "Return the complete tailored resume text."
 )
@@ -530,6 +531,16 @@ class ResumeTailor:
 
         edu_entries = self._extract_education_entries(resume.raw_text)
 
+        from job_applicator.documents.tone_detector import ToneDetector
+
+        tone_detector = ToneDetector()
+        tone_profile = tone_detector.detect(
+            title=job.title,
+            description=job.description,
+            requirements=job.requirements,
+        )
+        tone_section = tone_detector.format_for_prompt(tone_profile)
+
         prompt = TAILOR_PROMPT_TEMPLATE.format(
             job_title=job.title,
             job_company=job.company,
@@ -539,6 +550,7 @@ class ResumeTailor:
             resume_text=resume.raw_text[:5000],
             skills=", ".join(resume.skills),
             education_entries=edu_entries,
+            tone_section=tone_section,
             user_instructions=instruction_section,
         )
 

@@ -68,6 +68,7 @@ class TestResumeTailor:
             resume_text="Resume text",
             skills="Skill1, Skill2",
             education_entries="1. Test University, 2020-2024",
+            tone_section="TONE: Corporate",
             user_instructions="No instructions.",
         )
         assert "Test Job" in prompt
@@ -173,6 +174,22 @@ class TestTailoredResumeModel:
         assert "tailored_text" in data
         assert "match_score" in data
         assert "created_at" in data
+
+
+class TestTailorWithTone:
+    @pytest.mark.asyncio
+    async def test_tailor_includes_tone_in_prompt(self, llm_config, sample_resume, sample_job):
+        tailor = ResumeTailor(llm_config)
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Tailored with tone"
+
+        with patch("litellm.acompletion", new_callable=AsyncMock, return_value=mock_response) as mock_call:  # noqa: E501
+            await tailor.tailor(sample_resume, sample_job)
+
+        first_call = mock_call.call_args_list[0]
+        assert "TONE:" in str(first_call)
 
 
 class TestParseSections:
