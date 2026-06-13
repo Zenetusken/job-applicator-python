@@ -10,6 +10,7 @@ from job_applicator.documents.resume_tailor import (
     CHANGES_PROMPT_TEMPLATE,
     TAILOR_PROMPT_TEMPLATE,
     ResumeTailor,
+    parse_sections,
 )
 from job_applicator.models import (
     JobBoard,
@@ -172,3 +173,48 @@ class TestTailoredResumeModel:
         assert "tailored_text" in data
         assert "match_score" in data
         assert "created_at" in data
+
+
+class TestParseSections:
+    def test_parse_standard_sections(self):
+        text = (
+            "JOHN DOE\njohn@example.com\n\n"
+            "SUMMARY\nExperienced developer.\n\n"
+            "EXPERIENCE\nSoftware Engineer at Corp\n2020-2024\n\n"
+            "SKILLS\nPython, JavaScript, Docker\n\n"
+            "EDUCATION\nBS Computer Science, MIT, 2016-2020\n"
+        )
+        sections = parse_sections(text)
+        names = [s.name for s in sections]
+        assert "SUMMARY" in names
+        assert "EXPERIENCE" in names
+        assert "SKILLS" in names
+        assert "EDUCATION" in names
+
+    def test_parse_mixed_case_headers(self):
+        text = "Summary\nSome text.\n\nExperience\nJob stuff.\n"
+        sections = parse_sections(text)
+        names = [s.name for s in sections]
+        assert "Summary" in names
+        assert "Experience" in names
+
+    def test_parse_no_sections_returns_single(self):
+        text = "Just a plain resume with no section headers at all."
+        sections = parse_sections(text)
+        assert len(sections) == 1
+        assert sections[0].name == "Full Document"
+        assert sections[0].text == text
+
+    def test_section_text_preserved(self):
+        text = "SKILLS\nPython, JavaScript\nDocker, Kubernetes\n\nEXPERIENCE\nJob one.\n"
+        sections = parse_sections(text)
+        skills = next(s for s in sections if s.name == "SKILLS")
+        assert "Python" in skills.text
+        assert "Docker" in skills.text
+
+    def test_header_with_colon(self):
+        text = "Technical Skills:\nPython, Java\n\nWork Experience:\nJob stuff.\n"
+        sections = parse_sections(text)
+        names = [s.name for s in sections]
+        assert "Technical Skills:" in names
+        assert "Work Experience:" in names

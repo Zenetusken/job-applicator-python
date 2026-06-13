@@ -21,6 +21,73 @@ from job_applicator.utils.retry import async_retry
 logger = get_logger("documents.resume_tailor")
 
 
+@dataclass
+class ResumeSection:
+    """A parsed section of a resume."""
+
+    name: str
+    text: str
+    start_line: int
+    end_line: int
+
+
+SECTION_HEADER_RE = re.compile(
+    r"^(?:"
+    r"(?:SUMMARY|EXPERIENCE|SKILLS|EDUCATION|CERTIFICATIONS|PROJECTS|"
+    r"OBJECTIVE|PROFILE|WORK\s+EXPERIENCE|EMPLOYMENT|QUALIFICATIONS|"
+    r"ACHIEVEMENTS|INTERESTS|LANGUAGES|REFERENCES|VOLUNTEER|AWARDS)"
+    r"|"
+    r"[A-Z][A-Z\s]{2,49}$"
+    r"|"
+    r"[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*:"
+    r")\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+
+def parse_sections(text: str) -> list[ResumeSection]:
+    """Parse resume text into sections by detecting headers."""
+    lines = text.split("\n")
+    headers: list[tuple[int, str]] = []
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if SECTION_HEADER_RE.match(stripped):
+            headers.append((i, stripped))
+
+    if not headers:
+        return [
+            ResumeSection(
+                name="Full Document",
+                text=text,
+                start_line=0,
+                end_line=len(lines) - 1,
+            )
+        ]
+
+    sections: list[ResumeSection] = []
+
+    for idx, (line_num, header_name) in enumerate(headers):
+        start = line_num + 1
+        if idx + 1 < len(headers):
+            end = headers[idx + 1][0] - 1
+        else:
+            end = len(lines) - 1
+        section_text = "\n".join(lines[start : end + 1]).strip()
+        sections.append(
+            ResumeSection(
+                name=header_name,
+                text=section_text,
+                start_line=start,
+                end_line=end,
+            )
+        )
+
+    return sections
+
+
 MONTH_MAP = {
     "january": 1,
     "february": 2,
