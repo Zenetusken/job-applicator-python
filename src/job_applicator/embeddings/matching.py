@@ -73,7 +73,7 @@ class JobMatcher:
             # Extract key sections from raw text
             lines = resume.raw_text.split("\n")
             current_section = ""
-            section_text = []
+            section_text: list[str] = []
 
             for line in lines:
                 stripped = line.strip()

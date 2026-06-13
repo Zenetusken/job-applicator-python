@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
+from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 import typer
 from rich.console import Console
@@ -14,12 +16,19 @@ from rich.table import Table
 from job_applicator import __version__
 from job_applicator.config import AppSettings
 from job_applicator.models import UserProfile
-from job_applicator.utils.diff import render_diff as _render_diff
+from job_applicator.utils.diff import render_diff
 from job_applicator.utils.logging import setup_logging
 
 if TYPE_CHECKING:
     from job_applicator.documents.tone_detector import ToneProfile
-    from job_applicator.models import JobListing, ResumeData, StyleGuide
+    from job_applicator.models import (
+        CoverLetterResult,
+        CoverLetterSession,
+        JobListing,
+        ResumeData,
+        StyleGuide,
+        TailoredResume,
+    )
 
 app = typer.Typer(
     name="job-applicator",
@@ -27,6 +36,29 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+
+T = TypeVar("T")
+
+
+async def _llm_with_retry(  # noqa: UP047 — mypy doesn't support PEP 695 yet
+    console: Console,
+    operation: Callable[[], Awaitable[T]],
+    status_message: str = "Processing...",
+    on_fail_choices: str = "[R] Retry or [Q] Quit",
+) -> T | None:
+    """Execute an async LLM operation with retry on failure.
+
+    Returns the result on success, or None if the user chooses to quit.
+    """
+    while True:
+        try:
+            with console.status(status_message):
+                return await operation()
+        except Exception as exc:
+            console.print(f"[red]LLM error: {exc}[/red]")
+            choice = console.input(f"[bold cyan]{on_fail_choices}? [/bold cyan]").strip().upper()
+            if choice == "Q":
+                return None
 
 
 def version_callback(value: bool) -> None:
@@ -409,32 +441,21 @@ def match(
     asyncio.run(_run())
 
 
-async def _cover_letter_workflow(
+async def _generate_cover_letter(
     console: Console,
     settings: AppSettings,
     job: JobListing,
     resume_data: ResumeData,
     style: StyleGuide | None,
-    tone_profile: ToneProfile | None,
+    tone_section: str,
     tailored_resume_text: str,
-) -> Path | None:
-    """Generate and save a cover letter with accept/retry workflow.
-
-    Returns the Path to the saved cover letter, or None if skipped.
-    """
-    from job_applicator.documents.cover_letter import CoverLetterGenerator, strip_thinking_process
-    from job_applicator.models import CoverLetterResult, CoverLetterSession
+    session: CoverLetterSession,
+    attempt: int = 1,
+) -> CoverLetterResult | None:
+    """Generate a cover letter via LLM. Returns None on failure."""
+    from job_applicator.documents.cover_letter import CoverLetterGenerator
 
     generator = CoverLetterGenerator(settings.llm)
-    tone_section = ""
-    if tone_profile:
-        from job_applicator.documents.tone_detector import ToneDetector
-
-        tone_section = ToneDetector().format_for_prompt(tone_profile)
-
-    session = CoverLetterSession(job_title=job.title, job_company=job.company)
-    attempt = 0
-
     try:
         with console.status("Generating cover letter..."):
             letter = await generator.generate(
@@ -450,32 +471,126 @@ async def _cover_letter_workflow(
             job_company=job.company,
             job_url=str(job.url),
             cover_letter_text=letter,
-            attempt=1,
+            attempt=attempt,
         )
         session.add_attempt(result)
+        return result
     except Exception as exc:
         console.print(f"[red]LLM error: {exc}[/red]")
+        return None
+
+
+def _save_cover_letter(
+    console: Console,
+    settings: AppSettings,
+    job: JobListing,
+    result: CoverLetterResult,
+) -> Path:
+    """Save cover letter to disk and return the path."""
+    from datetime import datetime as dt
+
+    output_dir = Path(settings.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    safe_company = job.company.replace(" ", "_").replace("/", "_")
+    safe_title = job.title.replace(" ", "_").replace("/", "_")
+    timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
+    cl_filename = f"cover_letter_{safe_company}_{safe_title}_{timestamp}.txt"
+    cl_path = output_dir / cl_filename
+    cl_path.write_text(result.cover_letter_text, encoding="utf-8")
+    result.output_path = str(cl_path)
+    cl_meta_path = cl_path.with_suffix(".meta.json")
+    cl_meta_path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+    console.print(f"\n[green]Cover letter saved: {cl_path}[/green]")
+    return cl_path
+
+
+async def _refine_cover_letter(
+    console: Console,
+    settings: AppSettings,
+    job: JobListing,
+    result: CoverLetterResult,
+    user_instructions: str,
+    session: CoverLetterSession,
+    attempt: int,
+) -> None:
+    """Refine a cover letter with user instructions via LLM."""
+    from litellm import acompletion
+
+    from job_applicator.documents.cover_letter import strip_thinking_process
+
+    try:
+        with console.status("Refining cover letter..."):
+            refine_prompt = (
+                f"User wants changes to this cover letter.\n\n"
+                f"Job: {job.title} at {job.company}\n\n"
+                f"Current cover letter:\n{result.cover_letter_text}\n\n"
+                f"User feedback: {user_instructions}\n\n"
+                f"Return the complete updated cover letter."
+            )
+            model = f"openai/{settings.llm.model}" if settings.llm.api_base else settings.llm.model
+            response = await acompletion(
+                model=model,
+                api_base=settings.llm.api_base,
+                api_key=settings.llm.api_key,
+                messages=[{"role": "user", "content": refine_prompt}],
+                max_tokens=settings.llm.max_tokens,
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            )
+            refined = strip_thinking_process(response.choices[0].message.content)
+        new_result = CoverLetterResult(
+            job_title=job.title,
+            job_company=job.company,
+            job_url=str(job.url),
+            cover_letter_text=refined,
+            user_modifications=user_instructions,
+            attempt=attempt + 1,
+        )
+        session.add_attempt(new_result)
+    except Exception as exc:
+        console.print(f"[red]LLM error: {exc}[/red]")
+
+
+async def _cover_letter_workflow(
+    console: Console,
+    settings: AppSettings,
+    job: JobListing,
+    resume_data: ResumeData,
+    style: StyleGuide | None,
+    tone_profile: ToneProfile | None,
+    tailored_resume_text: str,
+) -> Path | None:
+    """Generate and save a cover letter with accept/retry workflow.
+
+    Returns the Path to the saved cover letter, or None if skipped.
+    """
+    from job_applicator.models import CoverLetterSession
+
+    tone_section = ""
+    if tone_profile:
+        from job_applicator.documents.tone_detector import ToneDetector
+
+        tone_section = ToneDetector().format_for_prompt(tone_profile)
+
+    session = CoverLetterSession(job_title=job.title, job_company=job.company)
+    attempt = 0
+
+    result = await _generate_cover_letter(
+        console, settings, job, resume_data, style, tone_section, tailored_resume_text, session
+    )
+    if result is None:
         retry = console.input("[bold cyan][R] Retry or [Q] Skip? [/bold cyan]").strip().upper()
         if retry == "R":
-            try:
-                with console.status("Generating cover letter..."):
-                    letter = await generator.generate(
-                        job,
-                        _load_user_profile(settings),
-                        resume_data,
-                        style_guide=style,
-                        tone_section=tone_section,
-                        tailored_resume_text=tailored_resume_text,
-                    )
-                result = CoverLetterResult(
-                    job_title=job.title,
-                    job_company=job.company,
-                    job_url=str(job.url),
-                    cover_letter_text=letter,
-                    attempt=1,
-                )
-                session.add_attempt(result)
-            except Exception:
+            result = await _generate_cover_letter(
+                console,
+                settings,
+                job,
+                resume_data,
+                style,
+                tone_section,
+                tailored_resume_text,
+                session,
+            )
+            if result is None:
                 console.print("[red]Cover letter generation failed. Skipping.[/red]")
                 return None
         else:
@@ -496,8 +611,6 @@ async def _cover_letter_workflow(
         console.print(Panel(result.cover_letter_text, title="Cover Letter", border_style="green"))
 
         if len(session.attempts) > 1:
-            from job_applicator.utils.diff import render_diff
-
             render_diff(
                 console,
                 session.attempts[0].cover_letter_text,
@@ -522,44 +635,21 @@ async def _cover_letter_workflow(
         )
 
         if choice == "A":
-            from datetime import datetime as dt
-
-            output_dir = Path(settings.output_dir)
-            output_dir.mkdir(parents=True, exist_ok=True)
-            safe_company = job.company.replace(" ", "_").replace("/", "_")
-            safe_title = job.title.replace(" ", "_").replace("/", "_")
-            timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
-            cl_filename = f"cover_letter_{safe_company}_{safe_title}_{timestamp}.txt"
-            cl_path = output_dir / cl_filename
-            cl_path.write_text(result.cover_letter_text, encoding="utf-8")
-            result.output_path = str(cl_path)
-            cl_meta_path = cl_path.with_suffix(".meta.json")
-            cl_meta_path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
-            console.print(f"\n[green]Cover letter saved: {cl_path}[/green]")
-            return cl_path
+            return _save_cover_letter(console, settings, job, result)
 
         elif choice == "R":
             console.print("[yellow]Regenerating...[/yellow]")
-            try:
-                with console.status("Generating cover letter..."):
-                    letter = await generator.generate(
-                        job,
-                        _load_user_profile(settings),
-                        resume_data,
-                        style_guide=style,
-                        tone_section=tone_section,
-                        tailored_resume_text=tailored_resume_text,
-                    )
-                new_result = CoverLetterResult(
-                    job_title=job.title,
-                    job_company=job.company,
-                    job_url=str(job.url),
-                    cover_letter_text=letter,
-                    attempt=attempt + 1,
-                )
-                session.add_attempt(new_result)
-            except Exception as exc:
-                console.print(f"[red]LLM error: {exc}[/red]")
+            await _generate_cover_letter(
+                console,
+                settings,
+                job,
+                resume_data,
+                style,
+                tone_section,
+                tailored_resume_text,
+                session,
+                attempt=attempt + 1,
+            )
             continue
 
         elif choice == "I":
@@ -568,47 +658,12 @@ async def _cover_letter_workflow(
             ).strip()
             if not user_instructions:
                 console.print("[yellow]No instructions provided.[/yellow]")
-            try:
-                with console.status("Refining cover letter..."):
-                    refine_prompt = (
-                        f"User wants changes to this cover letter.\n\n"
-                        f"Job: {job.title} at {job.company}\n\n"
-                        f"Current cover letter:\n{result.cover_letter_text}\n\n"
-                        f"User feedback: {user_instructions}\n\n"
-                        f"Return the complete updated cover letter."
-                    )
-                    from litellm import acompletion
-
-                    model = (
-                        f"openai/{settings.llm.model}"
-                        if settings.llm.api_base
-                        else settings.llm.model
-                    )
-                    response = await acompletion(
-                        model=model,
-                        api_base=settings.llm.api_base,
-                        api_key=settings.llm.api_key,
-                        messages=[{"role": "user", "content": refine_prompt}],
-                        max_tokens=settings.llm.max_tokens,
-                        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-                    )
-                    refined = strip_thinking_process(response.choices[0].message.content)
-                new_result = CoverLetterResult(
-                    job_title=job.title,
-                    job_company=job.company,
-                    job_url=str(job.url),
-                    cover_letter_text=refined,
-                    user_modifications=user_instructions,
-                    attempt=attempt + 1,
-                )
-                session.add_attempt(new_result)
-            except Exception as exc:
-                console.print(f"[red]LLM error: {exc}[/red]")
+            await _refine_cover_letter(
+                console, settings, job, result, user_instructions, session, attempt
+            )
             continue
 
         elif choice == "D":
-            from job_applicator.utils.diff import render_diff
-
             if len(session.attempts) > 1:
                 render_diff(
                     console,
@@ -819,7 +874,7 @@ def tailor(
                     border_style="cyan",
                 )
             )
-            _render_diff(console, session.original_text, result.tailored_text, max_lines=30)
+            render_diff(console, session.original_text, result.tailored_text, max_lines=30)
 
             console.print("\n[bold]Metadata:[/bold]")
             meta_table = Table(show_header=False, box=None)
@@ -914,21 +969,16 @@ def tailor(
             elif choice == "R":
                 console.print("[yellow]Regenerating...[/yellow]")
                 user_instructions = ""
-                try:
-                    with console.status("Tailoring resume..."):
-                        result = await tailor_engine.refine(resume_data, result, "", job)
-                    result.attempt = attempt
-                    session.add_attempt(result)
-                except Exception as exc:
-                    console.print(f"[red]LLM error: {exc}[/red]")
-                    retry_choice = (
-                        console.input("[bold cyan][R] Retry or [Q] Quit? [/bold cyan]")
-                        .strip()
-                        .upper()
-                    )
-                    if retry_choice == "Q":
-                        break
-                    continue
+                refined: TailoredResume | None = await _llm_with_retry(
+                    console,
+                    partial(tailor_engine.refine, resume_data, result, "", job),
+                    "Tailoring resume...",
+                )
+                if refined is None:
+                    break
+                result = refined
+                result.attempt = attempt
+                session.add_attempt(result)
                 continue
 
             elif choice == "I":
@@ -939,27 +989,26 @@ def tailor(
                 ).strip()
                 if not user_instructions:
                     console.print("[yellow]No instructions provided, retrying.[/yellow]")
-                try:
-                    with console.status("Tailoring resume..."):
-                        result = await tailor_engine.refine(
-                            resume_data, result, user_instructions, job
-                        )
-                    result.attempt = attempt
-                    session.add_attempt(result)
-                except Exception as exc:
-                    console.print(f"[red]LLM error: {exc}[/red]")
-                    retry_choice = (
-                        console.input("[bold cyan][R] Retry or [Q] Quit? [/bold cyan]")
-                        .strip()
-                        .upper()
-                    )
-                    if retry_choice == "Q":
-                        break
-                    continue
+                refined = await _llm_with_retry(
+                    console,
+                    partial(
+                        tailor_engine.refine,
+                        resume_data,
+                        result,
+                        user_instructions,
+                        job,
+                    ),
+                    "Tailoring resume...",
+                )
+                if refined is None:
+                    break
+                result = refined
+                result.attempt = attempt
+                session.add_attempt(result)
                 continue
 
             elif choice == "D":
-                _render_diff(console, session.original_text, result.tailored_text, max_lines=0)
+                render_diff(console, session.original_text, result.tailored_text, max_lines=0)
                 continue
 
             elif choice == "V":
@@ -1044,23 +1093,22 @@ def tailor(
                     f"Current {target_section.name} content:\n{target_section.text}\n\n"
                     f"User instructions for this section: {sec_instructions}"
                 )
-                try:
-                    with console.status("Refining section..."):
-                        result = await tailor_engine.refine(
-                            resume_data, result, user_instructions, job
-                        )
-                    result.attempt = attempt
-                    session.add_attempt(result)
-                except Exception as exc:
-                    console.print(f"[red]LLM error: {exc}[/red]")
-                    retry_choice = (
-                        console.input("[bold cyan][R] Retry or [Q] Quit? [/bold cyan]")
-                        .strip()
-                        .upper()
-                    )
-                    if retry_choice == "Q":
-                        break
-                    continue
+                refined = await _llm_with_retry(
+                    console,
+                    partial(
+                        tailor_engine.refine,
+                        resume_data,
+                        result,
+                        user_instructions,
+                        job,
+                    ),
+                    "Refining section...",
+                )
+                if refined is None:
+                    break
+                result = refined
+                result.attempt = attempt
+                session.add_attempt(result)
                 continue
 
             elif choice == "Q":

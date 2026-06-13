@@ -8,12 +8,16 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 from numpy.typing import NDArray
 
 from job_applicator.config import EmbeddingConfig
 from job_applicator.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer
 
 logger = get_logger("embeddings.service")
 
@@ -30,11 +34,11 @@ class EmbeddingService:
 
     def __init__(self, config: EmbeddingConfig) -> None:
         self._config = config
-        self._model = None
+        self._model: SentenceTransformer | None = None
         self._cache_dir = Path.home() / ".job-applicator" / "embeddings"
         self._cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def _load_model(self) -> object:
+    def _load_model(self) -> SentenceTransformer:
         """Lazy-load the embedding model with VRAM limits."""
         if self._model is None:
             try:
@@ -56,7 +60,7 @@ class EmbeddingService:
                 )
 
                 # Set max sequence length
-                if hasattr(self._model, "max_seq_length"):
+                if self._model is not None and hasattr(self._model, "max_seq_length"):
                     self._model.max_seq_length = self._config.max_seq_length
 
                 logger.info("Embedding model loaded successfully")
@@ -92,13 +96,13 @@ class EmbeddingService:
             cache_path = self._get_cache_path(text)
             if cache_path.exists():
                 try:
-                    return np.load(str(cache_path))
+                    return np.load(str(cache_path))  # type: ignore[no-any-return]
                 except Exception as e:
                     logger.debug("Cache miss: %s", e)
 
         # Generate embedding
         model = self._load_model()
-        embedding: EmbeddingVector = model.encode(  # type: ignore[union-attr,no-any-return]
+        embedding: EmbeddingVector = model.encode(  # type: ignore[assignment]
             text,
             normalize_embeddings=self._config.normalize_embeddings,
             show_progress_bar=False,
@@ -142,7 +146,7 @@ class EmbeddingService:
         # Generate embeddings for uncached texts
         if uncached_texts:
             model = self._load_model()
-            embeddings: list[EmbeddingVector] = model.encode(  # type: ignore[union-attr,no-any-return]
+            embeddings: list[EmbeddingVector] = model.encode(  # type: ignore[assignment]
                 uncached_texts,
                 batch_size=self._config.batch_size,
                 normalize_embeddings=self._config.normalize_embeddings,
