@@ -525,7 +525,7 @@ async def _cover_letter_workflow(
             from datetime import datetime as dt
 
             output_dir = Path(settings.output_dir)
-            output_dir.mkdir(parents=True, exist_ok=True)  # noqa: ASYNC240
+            output_dir.mkdir(parents=True, exist_ok=True)
             safe_company = job.company.replace(" ", "_").replace("/", "_")
             safe_title = job.title.replace(" ", "_").replace("/", "_")
             timestamp = dt.now().strftime("%Y%m%d_%H%M%S")

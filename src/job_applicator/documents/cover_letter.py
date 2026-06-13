@@ -350,7 +350,7 @@ class CoverLetterGenerator:
             parts.extend(
                 [
                     "",
-                    "Use the following tailored resume as the primary source of experience and skills:",
+                    "Use tailored resume as primary source for experience and skills:",
                     tailored_resume_text,
                     "",
                     "Ensure the cover letter is consistent with the tailored resume — "

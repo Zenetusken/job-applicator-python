@@ -297,12 +297,14 @@ class TestCoverLetterWorkflow:
         session = CoverLetterSession(job_title="Dev", job_company="Co")
 
         for i in range(3):
-            session.add_attempt(CoverLetterResult(
-                job_title="Dev",
-                job_company="Co",
-                cover_letter_text=f"Letter version {i + 1}",
-                attempt=i + 1,
-            ))
+            session.add_attempt(
+                CoverLetterResult(
+                    job_title="Dev",
+                    job_company="Co",
+                    cover_letter_text=f"Letter version {i + 1}",
+                    attempt=i + 1,
+                )
+            )
 
         assert len(session.attempts) == 3
         assert session.current.cover_letter_text == "Letter version 3"
