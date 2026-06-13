@@ -131,6 +131,7 @@ class TailoredResume(BaseModel):
     attempt: int = Field(default=1, description="Which attempt this is (1 = first)")
     created_at: datetime = Field(default_factory=datetime.now)
     output_path: str = Field(default="", description="Path where tailored resume was saved")
+    cover_letter_path: str = Field(default="", description="Path to generated cover letter, if any")
 
     model_config = {"extra": "forbid"}
 
