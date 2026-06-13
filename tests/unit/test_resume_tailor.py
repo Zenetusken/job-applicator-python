@@ -312,3 +312,91 @@ class TestCoverLetterWorkflow:
 
         session.select(0)
         assert session.current.cover_letter_text == "Letter version 1"
+
+
+class TestAuditFixes:
+    """Tests for the 5 audit fixes: date, power words, job titles, education order, first person."""
+
+    def test_tailor_prompt_forbids_first_person(self):
+        """Fix 5: System prompt should forbid 'I', 'my', 'me' in summary."""
+        from job_applicator.documents.resume_tailor import TAILOR_SYSTEM_PROMPT
+
+        has_third = (
+            "THIRD PERSON" in TAILOR_SYSTEM_PROMPT
+            or "third person" in TAILOR_SYSTEM_PROMPT.lower()
+        )
+        assert has_third
+        assert "'I'" in TAILOR_SYSTEM_PROMPT or "'my'" in TAILOR_SYSTEM_PROMPT
+
+    def test_tailor_prompt_limits_power_words(self):
+        """Fix 2: System prompt should limit ornate power verbs."""
+        from job_applicator.documents.resume_tailor import TAILOR_SYSTEM_PROMPT
+
+        assert "sparingly" in TAILOR_SYSTEM_PROMPT.lower() or "2-3 per job" in TAILOR_SYSTEM_PROMPT
+
+    def test_tailor_prompt_preserves_job_titles(self):
+        """Fix 3: System prompt should preserve complete job titles."""
+        from job_applicator.documents.resume_tailor import TAILOR_SYSTEM_PROMPT
+
+        assert "NEVER remove or shorten job titles" in TAILOR_SYSTEM_PROMPT
+        assert "Dental & Medical" in TAILOR_SYSTEM_PROMPT
+
+    def test_tailor_prompt_enforces_reverse_chronological_education(self):
+        """Fix 4: System prompt should enforce reverse-chronological education."""
+        from job_applicator.documents.resume_tailor import TAILOR_SYSTEM_PROMPT
+
+        has_order = (
+            "REVERSE-CHRONOLOGICAL" in TAILOR_SYSTEM_PROMPT
+            or "most recent first" in TAILOR_SYSTEM_PROMPT.lower()
+        )
+        assert has_order
+
+    def test_cover_letter_prompt_includes_date(self):
+        """Fix 1: Cover letter prompt should include today's date."""
+        from datetime import datetime as dt
+
+        from job_applicator.documents.cover_letter import CoverLetterGenerator
+
+        generator = CoverLetterGenerator.__new__(CoverLetterGenerator)
+        generator._config = MagicMock()
+
+        job = JobListing(
+            title="Dev", company="Co", url="https://example.com",
+            board=JobBoard.INDEED,
+        )
+        user = MagicMock()
+        user.first_name = "John"
+        user.last_name = "Doe"
+        user.email = "j@e.com"
+        resume = ResumeData(raw_text="Resume", skills=["Python"])
+
+        prompt = generator._build_prompt(
+            job, user, resume,
+            tailored_resume_text="Tailored resume text",
+        )
+
+        today = dt.now().strftime("%B %d, %Y")
+        assert today in prompt
+        assert "Today's date:" in prompt
+        assert "Do NOT write" in prompt  # instruction to not use [Date] placeholder
+
+    def test_cover_letter_prompt_no_date_without_tailored_text(self):
+        """Cover letter prompt without tailored_resume_text should not inject date."""
+        from job_applicator.documents.cover_letter import CoverLetterGenerator
+
+        generator = CoverLetterGenerator.__new__(CoverLetterGenerator)
+        generator._config = MagicMock()
+
+        job = JobListing(
+            title="Dev", company="Co", url="https://example.com",
+            board=JobBoard.INDEED,
+        )
+        user = MagicMock()
+        user.first_name = "John"
+        user.last_name = "Doe"
+        user.email = "j@e.com"
+        resume = ResumeData(raw_text="Resume", skills=["Python"])
+
+        prompt = generator._build_prompt(job, user, resume)
+
+        assert "Today's date:" not in prompt

@@ -347,14 +347,22 @@ class CoverLetterGenerator:
             parts.extend(["", style_section])
 
         if tailored_resume_text:
+            from datetime import datetime as dt
+
+            today = dt.now().strftime("%B %d, %Y")
             parts.extend(
                 [
+                    "",
+                    f"Today's date: {today}",
                     "",
                     "Use tailored resume as primary source for experience and skills:",
                     tailored_resume_text,
                     "",
                     "Ensure the cover letter is consistent with the tailored resume — "
                     "do not mention skills, tools, or experience absent from it.",
+                    "",
+                    "IMPORTANT: Use the actual date provided above. "
+                    "Do NOT write '[Date]' or any placeholder — use the real date.",
                 ]
             )
 
