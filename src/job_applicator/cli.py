@@ -656,8 +656,16 @@ async def _cover_letter_workflow(
             if not user_instructions:
                 console.print("[yellow]No instructions provided.[/yellow]")
             new_result = await _refine_cover_letter(
-                console, settings, job, result, user_instructions, session, attempt,
-                resume_data, style, tone_section,
+                console,
+                settings,
+                job,
+                result,
+                user_instructions,
+                session,
+                attempt,
+                resume_data,
+                style,
+                tone_section,
             )
             if new_result is None:
                 console.print("[red]Refinement failed. Please try again.[/red]")

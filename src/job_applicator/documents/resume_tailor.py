@@ -31,31 +31,33 @@ class ResumeSection:
     end_line: int
 
 
-KNOWN_HEADERS: frozenset[str] = frozenset({
-    "summary",
-    "experience",
-    "skills",
-    "education",
-    "certifications",
-    "projects",
-    "objective",
-    "profile",
-    "work experience",
-    "employment",
-    "qualifications",
-    "achievements",
-    "interests",
-    "languages",
-    "references",
-    "volunteer",
-    "awards",
-    "professional summary",
-    "professional experience",
-    "work history",
-    "technical skills",
-    "core competencies",
-    "additional information",
-})
+KNOWN_HEADERS: frozenset[str] = frozenset(
+    {
+        "summary",
+        "experience",
+        "skills",
+        "education",
+        "certifications",
+        "projects",
+        "objective",
+        "profile",
+        "work experience",
+        "employment",
+        "qualifications",
+        "achievements",
+        "interests",
+        "languages",
+        "references",
+        "volunteer",
+        "awards",
+        "professional summary",
+        "professional experience",
+        "work history",
+        "technical skills",
+        "core competencies",
+        "additional information",
+    }
+)
 
 _COLON_HEADER_RE = re.compile(r"^[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*:\s*$")
 
@@ -948,9 +950,7 @@ class ResumeTailor:
                 result_lower = result.lower()
                 tool_pos = result_lower.find(tool_key)
                 if tool_pos >= 0:
-                    context = result_lower[
-                        max(0, tool_pos - 50) : tool_pos + len(tool_key) + 50
-                    ]
+                    context = result_lower[max(0, tool_pos - 50) : tool_pos + len(tool_key) + 50]
                     if replacement.lower() in context:
                         result = tool_pattern.sub("", result)
                     else:

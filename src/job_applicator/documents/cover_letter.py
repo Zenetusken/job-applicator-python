@@ -343,11 +343,7 @@ class CoverLetterGenerator:
         )
         user_message = "\n".join(parts)
 
-        model = (
-            f"openai/{self._config.model}"
-            if self._config.api_base
-            else self._config.model
-        )
+        model = f"openai/{self._config.model}" if self._config.api_base else self._config.model
 
         try:
             client = self._get_client()
@@ -361,15 +357,11 @@ class CoverLetterGenerator:
                 ],
                 response_model=CoverLetterOutput,
                 max_retries=1,
-                extra_body={
-                    "chat_template_kwargs": {"enable_thinking": False}
-                },
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
             )
             return strip_thinking_process(response.cover_letter)
         except Exception:
-            logger.info(
-                "Instructor failed for refine, falling back to direct litellm"
-            )
+            logger.info("Instructor failed for refine, falling back to direct litellm")
             from litellm import acompletion
 
             response = await acompletion(
@@ -382,9 +374,7 @@ class CoverLetterGenerator:
                 ],
                 max_tokens=self._config.max_tokens,
                 temperature=self._config.temperature,
-                extra_body={
-                    "chat_template_kwargs": {"enable_thinking": False}
-                },
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
             )
             return strip_thinking_process(response.choices[0].message.content)
 
