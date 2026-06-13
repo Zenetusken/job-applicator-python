@@ -181,6 +181,9 @@ class StyleAnalyzer:
                 ],
                 max_tokens=1024,
                 temperature=0.2,  # Low temp for consistent JSON
+                extra_body={
+                    "chat_template_kwargs": {"enable_thinking": False},
+                },
             )
 
             content = response.choices[0].message.content
