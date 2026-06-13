@@ -59,7 +59,7 @@ job-applicator generate-cover-letter --job-title "Python Dev" --company "Acme"
 # Match resume to jobs using embeddings
 job-applicator match --resume resume.pdf --jobs-file jobs.json --top-k 10
 
-# Tailor resume for a specific job (interactive: accept/retry/input)
+# Tailor resume for a specific job (interactive session)
 job-applicator tailor --resume resume.pdf --job-title "Tech Support" --company "CGI" \
   --requirements "Troubleshooting,Windows,Office 365" --location "Montreal, QC"
 
@@ -69,6 +69,16 @@ job-applicator generate-cover-letter --resume resume.pdf --style-guide example.t
 # Detailed match report with per-skill breakdown
 python scripts/detailed_match_report.py
 ```
+
+### Enhanced Tailor Workflow
+
+The `tailor` command runs an interactive session that lets you iteratively refine your resume:
+
+- **Diff View**: After each attempt, a unified diff is shown so you can see exactly what changed. Press `[D]` at the prompt to see the full diff of any attempt.
+- **Version History**: Press `[V]` to browse all previous attempts and select one to revert to or compare against.
+- **Section Editing**: Press `[S]` to target a specific resume section (e.g. Experience, Skills, Summary) for focused rewriting instead of regenerating the entire resume.
+- **Auto Tone Detection**: The tailor automatically detects the job posting's tone (corporate, startup, technical, or creative) and adjusts vocabulary and phrasing accordingly.
+- **Error Handling**: Up to 10 retry attempts on LLM failures, with a warning at attempt 8. The session gracefully recovers from transient LLM errors.
 
 ## Configuration
 
