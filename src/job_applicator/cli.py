@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import difflib
 from pathlib import Path
 
 import typer
@@ -14,6 +13,7 @@ from rich.table import Table
 from job_applicator import __version__
 from job_applicator.config import AppSettings
 from job_applicator.models import UserProfile
+from job_applicator.utils.diff import render_diff as _render_diff
 from job_applicator.utils.logging import setup_logging
 
 app = typer.Typer(
@@ -22,44 +22,6 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
-
-
-def _render_diff(console: Console, original: str, tailored: str, max_lines: int = 30) -> None:
-    """Render a color-coded diff between original and tailored resume."""
-    original_lines = original.splitlines(keepends=True)
-    tailored_lines = tailored.splitlines(keepends=True)
-
-    diff = list(
-        difflib.unified_diff(
-            original_lines,
-            tailored_lines,
-            fromfile="original",
-            tofile="tailored",
-            lineterm="",
-        )
-    )
-
-    if not diff:
-        console.print("[dim]No differences found.[/dim]")
-        return
-
-    shown = 0
-    for line in diff:
-        if max_lines and shown >= max_lines:
-            remaining = len(diff) - shown
-            console.print(f"[dim]... {remaining} more lines (use [D] to see full diff)[/dim]")
-            break
-        if line.startswith("+++") or line.startswith("---"):
-            console.print(f"[bold]{line}[/bold]")
-        elif line.startswith("@@"):
-            console.print(f"[cyan]{line}[/cyan]")
-        elif line.startswith("+"):
-            console.print(f"[green]{line}[/green]")
-        elif line.startswith("-"):
-            console.print(f"[red]{line}[/red]")
-        else:
-            console.print(f"[dim]{line}[/dim]")
-        shown += 1
 
 
 def version_callback(value: bool) -> None:

@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import asyncio
-import difflib
 import sys
 from pathlib import Path
 
@@ -13,6 +12,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+
+from job_applicator.utils.diff import render_diff as _render_diff
 
 RESUME_PATH = "/media/drei/KINGSTON/Andrei School/Other/Jobhunt/Andrei_Petrov_Resume.pdf"
 
@@ -34,44 +35,6 @@ CGI_JOB = {
     ],
     "location": "Montreal, QC",
 }
-
-
-def _render_diff(console: Console, original: str, tailored: str, max_lines: int = 30) -> None:
-    """Render a color-coded diff between original and tailored resume."""
-    original_lines = original.splitlines(keepends=True)
-    tailored_lines = tailored.splitlines(keepends=True)
-
-    diff = list(
-        difflib.unified_diff(
-            original_lines,
-            tailored_lines,
-            fromfile="original",
-            tofile="tailored",
-            lineterm="",
-        )
-    )
-
-    if not diff:
-        console.print("[dim]No differences found.[/dim]")
-        return
-
-    shown = 0
-    for line in diff:
-        if max_lines and shown >= max_lines:
-            remaining = len(diff) - shown
-            console.print(f"[dim]... {remaining} more lines (use [D] to see full diff)[/dim]")
-            break
-        if line.startswith("+++") or line.startswith("---"):
-            console.print(f"[bold]{line}[/bold]")
-        elif line.startswith("@@"):
-            console.print(f"[cyan]{line}[/cyan]")
-        elif line.startswith("+"):
-            console.print(f"[green]{line}[/green]")
-        elif line.startswith("-"):
-            console.print(f"[red]{line}[/red]")
-        else:
-            console.print(f"[dim]{line}[/dim]")
-        shown += 1
 
 
 async def main() -> bool:
