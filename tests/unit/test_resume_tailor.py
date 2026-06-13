@@ -10,6 +10,7 @@ from job_applicator.documents.resume_tailor import (
     CHANGES_PROMPT_TEMPLATE,
     TAILOR_PROMPT_TEMPLATE,
     ResumeTailor,
+    parse_sections,
 )
 from job_applicator.models import (
     JobBoard,
@@ -67,6 +68,7 @@ class TestResumeTailor:
             resume_text="Resume text",
             skills="Skill1, Skill2",
             education_entries="1. Test University, 2020-2024",
+            tone_section="TONE: Corporate",
             user_instructions="No instructions.",
         )
         assert "Test Job" in prompt
@@ -172,3 +174,117 @@ class TestTailoredResumeModel:
         assert "tailored_text" in data
         assert "match_score" in data
         assert "created_at" in data
+
+
+class TestTailorWithTone:
+    @pytest.mark.asyncio
+    async def test_tailor_includes_tone_in_prompt(self, llm_config, sample_resume, sample_job):
+        tailor = ResumeTailor(llm_config)
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Tailored with tone"
+
+        with patch(
+            "litellm.acompletion", new_callable=AsyncMock, return_value=mock_response
+        ) as mock_call:
+            await tailor.tailor(sample_resume, sample_job)
+
+        first_call = mock_call.call_args_list[0]
+        assert "TONE:" in str(first_call)
+
+
+class TestParseSections:
+    def test_parse_standard_sections(self):
+        text = (
+            "JOHN DOE\njohn@example.com\n\n"
+            "SUMMARY\nExperienced developer.\n\n"
+            "EXPERIENCE\nSoftware Engineer at Corp\n2020-2024\n\n"
+            "SKILLS\nPython, JavaScript, Docker\n\n"
+            "EDUCATION\nBS Computer Science, MIT, 2016-2020\n"
+        )
+        sections = parse_sections(text)
+        names = [s.name for s in sections]
+        assert "SUMMARY" in names
+        assert "EXPERIENCE" in names
+        assert "SKILLS" in names
+        assert "EDUCATION" in names
+
+    def test_parse_mixed_case_headers(self):
+        text = "Summary\nSome text.\n\nExperience\nJob stuff.\n"
+        sections = parse_sections(text)
+        names = [s.name for s in sections]
+        assert "Summary" in names
+        assert "Experience" in names
+
+    def test_parse_no_sections_returns_single(self):
+        text = "Just a plain resume with no section headers at all."
+        sections = parse_sections(text)
+        assert len(sections) == 1
+        assert sections[0].name == "Full Document"
+        assert sections[0].text == text
+
+    def test_section_text_preserved(self):
+        text = "SKILLS\nPython, JavaScript\nDocker, Kubernetes\n\nEXPERIENCE\nJob one.\n"
+        sections = parse_sections(text)
+        skills = next(s for s in sections if s.name == "SKILLS")
+        assert "Python" in skills.text
+        assert "Docker" in skills.text
+
+    def test_header_with_colon(self):
+        text = "Technical Skills:\nPython, Java\n\nWork Experience:\nJob stuff.\n"
+        sections = parse_sections(text)
+        names = [s.name for s in sections]
+        assert "Technical Skills:" in names
+        assert "Work Experience:" in names
+
+
+class TestTailorWorkflow:
+    def test_tailor_session_workflow(self):
+        """Test the full accept/retry/input workflow with mock data."""
+        from job_applicator.models import TailorSession
+
+        session = TailorSession(
+            original_text="Original resume",
+            job_title="Dev",
+            job_company="Co",
+        )
+
+        for i in range(3):
+            result = TailoredResume(
+                original_path="",
+                tailored_text=f"Tailored version {i + 1}",
+                job_title="Dev",
+                job_company="Co",
+                match_score=0.5 + i * 0.1,
+                semantic_score=0.5,
+                skill_score=0.5,
+                changes_summary=f"Changes for attempt {i + 1}",
+                attempt=i + 1,
+                user_modifications="" if i == 0 else "more detail",
+            )
+            session.add_attempt(result)
+
+        assert len(session.attempts) == 3
+        assert session.current.tailored_text == "Tailored version 3"
+
+        session.select(0)
+        assert session.current.tailored_text == "Tailored version 1"
+
+        with pytest.raises(IndexError):
+            session.select(99)
+
+    def test_parse_sections_and_select(self):
+        """Test section parsing for editing workflow."""
+        from job_applicator.documents.resume_tailor import parse_sections
+
+        text = (
+            "John Doe - Developer\n\n"
+            "SUMMARY\nExperienced developer.\n\n"
+            "SKILLS\nPython, JavaScript\n\n"
+            "EXPERIENCE\nSoftware engineer at Corp (2020-2024)\n"
+        )
+        sections = parse_sections(text)
+        assert len(sections) == 3
+        assert sections[0].name == "SUMMARY"
+        assert "Experienced developer" in sections[0].text

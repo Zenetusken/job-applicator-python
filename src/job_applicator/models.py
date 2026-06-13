@@ -135,6 +135,40 @@ class TailoredResume(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class TailorSession:
+    """Tracks all tailoring attempts for a resume/job pair."""
+
+    def __init__(
+        self,
+        original_text: str,
+        job_title: str,
+        job_company: str,
+    ) -> None:
+        self.original_text = original_text
+        self.job_title = job_title
+        self.job_company = job_company
+        self.attempts: list[TailoredResume] = []
+        self.current_index: int = -1
+
+    def add_attempt(self, result: TailoredResume) -> None:
+        """Add a new attempt and set it as current."""
+        self.attempts.append(result)
+        self.current_index = len(self.attempts) - 1
+
+    @property
+    def current(self) -> TailoredResume:
+        """Get the currently selected attempt."""
+        if not self.attempts or self.current_index < 0:
+            raise IndexError("No attempts in session")
+        return self.attempts[self.current_index]
+
+    def select(self, index: int) -> None:
+        """Select a previous attempt by index."""
+        if index < 0 or index >= len(self.attempts):
+            raise IndexError(f"Attempt index {index} out of range (0-{len(self.attempts) - 1})")
+        self.current_index = index
+
+
 class DateAuditResult(BaseModel):
     """Result of auditing dates in a resume for coherence and staleness."""
 

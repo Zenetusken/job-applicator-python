@@ -13,6 +13,7 @@ from rich.table import Table
 from job_applicator import __version__
 from job_applicator.config import AppSettings
 from job_applicator.models import UserProfile
+from job_applicator.utils.diff import render_diff as _render_diff
 from job_applicator.utils.logging import setup_logging
 
 app = typer.Typer(
@@ -453,6 +454,19 @@ def tailor(
             board=JobBoard.INDEED,
         )
 
+        from job_applicator.documents.tone_detector import ToneDetector
+
+        tone_detector = ToneDetector()
+        tone_profile = tone_detector.detect(
+            title=job.title,
+            description=job.description,
+            requirements=job.requirements,
+        )
+        console.print(
+            f"[dim]Detected tone: {tone_profile.primary} "
+            f"(confidence: {tone_profile.confidence:.0%})[/dim]"
+        )
+
         style = None
         if settings.style_guide_path:
             from job_applicator.documents.cover_letter import CoverLetterGenerator
@@ -465,6 +479,14 @@ def tailor(
         tailor_engine = ResumeTailor(settings.llm)
         attempt = 0
         user_instructions = ""
+
+        from job_applicator.models import TailorSession
+
+        session = TailorSession(
+            original_text=resume_data.raw_text,
+            job_title=job.title,
+            job_company=job.company,
+        )
 
         # Pre-ingestion date audit
         from job_applicator.documents.resume_tailor import ResumeDateValidator
@@ -519,16 +541,24 @@ def tailor(
         else:
             console.print("[green]✓ Dates look coherent and current.[/green]")
 
-        with console.status("Tailoring resume..."):
-            result = await tailor_engine.tailor(resume_data, job, user_instructions, style)
+        try:
+            with console.status("Tailoring resume..."):
+                result = await tailor_engine.tailor(resume_data, job, user_instructions, style)
+            session.add_attempt(result)
+        except Exception as exc:
+            console.print(f"[red]LLM error: {exc}[/red]")
+            console.print("[yellow]Could not generate tailored resume.[/yellow]")
+            raise typer.Exit(1) from exc
 
         while True:
             attempt += 1
-            result.attempt = attempt
+            if attempt > 10:
+                console.print("[red]Maximum retry limit (10) reached.[/red]")
+                break
+            if attempt >= 8:
+                console.print("[yellow]Warning: approaching retry limit (10 max).[/yellow]")
 
             console.print(f"\n[bold blue]--- Attempt #{attempt} ---[/bold blue]")
-
-            result.attempt = attempt
 
             console.print("\n[bold]Tailored Resume Preview:[/bold]\n")
             console.print(
@@ -538,6 +568,7 @@ def tailor(
                     border_style="cyan",
                 )
             )
+            _render_diff(console, session.original_text, result.tailored_text, max_lines=30)
 
             console.print("\n[bold]Metadata:[/bold]")
             meta_table = Table(show_header=False, box=None)
@@ -568,11 +599,16 @@ def tailor(
             action_table.add_row("[A] Accept", "Save this version as final")
             action_table.add_row("[R] Retry", "Regenerate with same instructions")
             action_table.add_row("[I] Input", "Give custom instructions to refine")
+            action_table.add_row("[D] Diff", "Show changes from original resume")
+            action_table.add_row("[V] History", "Browse previous attempts")
+            action_table.add_row("[S] Section", "Edit a specific section")
             action_table.add_row("[Q] Quit", "Discard and exit")
             console.print(action_table)
 
             choice = (
-                console.input("\n[bold cyan]Your choice (A/R/I/Q): [/bold cyan]").strip().upper()
+                console.input("\n[bold cyan]Your choice (A/R/I/D/V/S/Q): [/bold cyan]")
+                .strip()
+                .upper()
             )
 
             if choice == "A":
@@ -601,8 +637,21 @@ def tailor(
             elif choice == "R":
                 console.print("[yellow]Regenerating...[/yellow]")
                 user_instructions = ""
-                with console.status("Tailoring resume..."):
-                    result = await tailor_engine.refine(resume_data, result, "", job)
+                try:
+                    with console.status("Tailoring resume..."):
+                        result = await tailor_engine.refine(resume_data, result, "", job)
+                    result.attempt = attempt
+                    session.add_attempt(result)
+                except Exception as exc:
+                    console.print(f"[red]LLM error: {exc}[/red]")
+                    retry_choice = (
+                        console.input("[bold cyan][R] Retry or [Q] Quit? [/bold cyan]")
+                        .strip()
+                        .upper()
+                    )
+                    if retry_choice == "Q":
+                        break
+                    continue
                 continue
 
             elif choice == "I":
@@ -613,8 +662,128 @@ def tailor(
                 ).strip()
                 if not user_instructions:
                     console.print("[yellow]No instructions provided, retrying.[/yellow]")
-                with console.status("Tailoring resume..."):
-                    result = await tailor_engine.refine(resume_data, result, user_instructions, job)
+                try:
+                    with console.status("Tailoring resume..."):
+                        result = await tailor_engine.refine(
+                            resume_data, result, user_instructions, job
+                        )
+                    result.attempt = attempt
+                    session.add_attempt(result)
+                except Exception as exc:
+                    console.print(f"[red]LLM error: {exc}[/red]")
+                    retry_choice = (
+                        console.input("[bold cyan][R] Retry or [Q] Quit? [/bold cyan]")
+                        .strip()
+                        .upper()
+                    )
+                    if retry_choice == "Q":
+                        break
+                    continue
+                continue
+
+            elif choice == "D":
+                _render_diff(console, session.original_text, result.tailored_text, max_lines=0)
+                continue
+
+            elif choice == "V":
+                if len(session.attempts) < 2:
+                    console.print("[yellow]No previous attempts yet.[/yellow]")
+                    continue
+                hist_table = Table(title="Version History")
+                hist_table.add_column("#", style="dim")
+                hist_table.add_column("Attempt")
+                hist_table.add_column("Score", style="cyan")
+                hist_table.add_column("Instructions")
+                hist_table.add_column("Preview", style="dim")
+                for i, att in enumerate(session.attempts):
+                    preview = att.tailored_text[:60].replace("\n", " ")
+                    marker = "\u2192" if i == session.current_index else " "
+                    hist_table.add_row(
+                        marker,
+                        str(att.attempt),
+                        f"{att.match_score:.0%}",
+                        att.user_modifications or "\u2014",
+                        preview + "...",
+                    )
+                console.print(hist_table)
+                sel = console.input(
+                    "\n[bold cyan]Select attempt # to view (or Enter to go back): [/bold cyan]"
+                ).strip()
+                if sel.isdigit():
+                    idx = int(sel) - 1
+                    if 0 <= idx < len(session.attempts):
+                        session.select(idx)
+                        result = session.current
+                        console.print(f"[green]Switched to attempt #{result.attempt}[/green]")
+                    else:
+                        console.print("[red]Invalid attempt number.[/red]")
+                continue
+
+            elif choice == "S":
+                from job_applicator.documents.resume_tailor import parse_sections
+
+                sections = parse_sections(result.tailored_text)
+                if len(sections) <= 1 and sections[0].name == "Full Document":
+                    console.print(
+                        "[yellow]Could not detect sections. "
+                        "Use [I] for full-resume instructions.[/yellow]"
+                    )
+                    continue
+
+                console.print("\n[bold]Sections:[/bold]")
+                sec_table = Table(show_header=False, box=None)
+                sec_table.add_column("#", style="cyan")
+                sec_table.add_column("Section", style="bold")
+                sec_table.add_column("Lines", style="dim")
+                for i, sec in enumerate(sections, 1):
+                    line_count = sec.text.count("\n") + 1
+                    sec_table.add_row(str(i), sec.name, f"{line_count} lines")
+                console.print(sec_table)
+
+                sec_choice = console.input(
+                    "\n[bold cyan]Section # to edit (or Enter to go back): [/bold cyan]"
+                ).strip()
+                if not sec_choice.isdigit():
+                    continue
+                sec_idx = int(sec_choice) - 1
+                if sec_idx < 0 or sec_idx >= len(sections):
+                    console.print("[red]Invalid section number.[/red]")
+                    continue
+
+                target_section = sections[sec_idx]
+                console.print(f"\n[dim]Editing: {target_section.name}[/dim]")
+                console.print(f"[dim]{target_section.text[:200]}...[/dim]\n")
+
+                sec_instructions = console.input(
+                    "[bold]Instructions for this section: [/bold]"
+                ).strip()
+                if not sec_instructions:
+                    console.print("[yellow]No instructions provided.[/yellow]")
+                    continue
+
+                user_instructions = (
+                    f"ONLY modify the {target_section.name} section. "
+                    f"Keep all other sections unchanged.\n\n"
+                    f"Current {target_section.name} content:\n{target_section.text}\n\n"
+                    f"User instructions for this section: {sec_instructions}"
+                )
+                try:
+                    with console.status("Refining section..."):
+                        result = await tailor_engine.refine(
+                            resume_data, result, user_instructions, job
+                        )
+                    result.attempt = attempt
+                    session.add_attempt(result)
+                except Exception as exc:
+                    console.print(f"[red]LLM error: {exc}[/red]")
+                    retry_choice = (
+                        console.input("[bold cyan][R] Retry or [Q] Quit? [/bold cyan]")
+                        .strip()
+                        .upper()
+                    )
+                    if retry_choice == "Q":
+                        break
+                    continue
                 continue
 
             elif choice == "Q":
@@ -622,7 +791,7 @@ def tailor(
                 break
 
             else:
-                console.print("[red]Invalid choice. Please enter A, R, I, or Q.[/red]")
+                console.print("[red]Invalid choice. Please enter A, R, I, D, V, S, or Q.[/red]")
 
     asyncio.run(_run())
 
