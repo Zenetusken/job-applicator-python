@@ -111,3 +111,58 @@ class ApplicationResult(BaseModel):
     notes: str = ""
 
     model_config = {"extra": "forbid"}
+
+
+class TailoredResume(BaseModel):
+    """A resume tailored for a specific job, with full metadata."""
+
+    original_path: str = Field(description="Path to original resume")
+    tailored_text: str = Field(description="Full tailored resume text")
+    job_title: str
+    job_company: str
+    job_url: str = ""
+    match_score: float = Field(description="Combined match score at tailoring time")
+    semantic_score: float = Field(description="Semantic similarity score")
+    skill_score: float = Field(description="Skill coverage score")
+    matched_skills: list[str] = Field(default_factory=list)
+    missing_skills: list[str] = Field(default_factory=list)
+    changes_summary: str = Field(description="LLM-generated summary of changes made")
+    user_modifications: str = Field(default="", description="User's custom input that was applied")
+    attempt: int = Field(default=1, description="Which attempt this is (1 = first)")
+    created_at: datetime = Field(default_factory=datetime.now)
+    output_path: str = Field(default="", description="Path where tailored resume was saved")
+
+    model_config = {"extra": "forbid"}
+
+
+class DateAuditResult(BaseModel):
+    """Result of auditing dates in a resume for coherence and staleness."""
+
+    entries: list[dict[str, object]] = Field(
+        default_factory=list,
+        description="Parsed date entries with start, end, label, section",
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Human-readable warnings about dates",
+    )
+    ordering_issues: list[str] = Field(
+        default_factory=list,
+        description="Entries that are out of chronological order",
+    )
+    staleness_issues: list[str] = Field(
+        default_factory=list,
+        description="Entries that suggest the CV may be outdated",
+    )
+    is_stale: bool = Field(
+        default=False,
+        description="True if the CV appears to be significantly outdated",
+    )
+    is_ordered: bool = Field(
+        default=True,
+        description="True if entries are in correct chronological order",
+    )
+    latest_date: str = Field(default="", description="Most recent date found in the resume")
+    earliest_date: str = Field(default="", description="Earliest date found in the resume")
+
+    model_config = {"extra": "forbid"}

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
 
 from job_applicator import __version__
@@ -398,6 +399,230 @@ def match(
             )
 
         console.print(table)
+
+    asyncio.run(_run())
+
+
+@app.command()
+def tailor(
+    resume_path: str = typer.Option("", "--resume", help="Path to resume file."),
+    job_title: str = typer.Option(..., "--job-title", "-t", help="Job title."),
+    company: str = typer.Option(..., "--company", "-c", help="Company name."),
+    job_description: str = typer.Option("", "--description", "-d", help="Job description."),
+    job_url: str = typer.Option("", "--url", help="Job posting URL."),
+    requirements: str = typer.Option(
+        "", "--requirements", "-r", help="Comma-separated requirements."
+    ),
+    location: str = typer.Option("", "--location", "-l", help="Job location."),
+    style_guide: str = typer.Option("", "--style-guide", help="Style examples."),
+    headed: bool = typer.Option(False, "--headed", help="Run browser in headed mode."),
+) -> None:
+    """Tailor a resume for a specific job with interactive preview."""
+    settings = _get_settings(headed)
+    if resume_path:
+        settings.resume_path = resume_path
+    if style_guide:
+        settings.style_guide_path = style_guide
+    setup_logging(settings.log_level)
+
+    async def _run() -> None:
+        from pydantic import HttpUrl
+
+        from job_applicator.documents.resume import ResumeLoader
+        from job_applicator.documents.resume_tailor import ResumeTailor
+        from job_applicator.models import JobBoard, JobListing
+
+        if not settings.resume_path:
+            console.print("[red]Resume path required. Use --resume.[/red]")
+            raise typer.Exit(1)
+
+        loader = ResumeLoader()
+        resume_data = loader.load(settings.resume_path)
+        console.print(f"[green]Loaded resume: {resume_data.name}[/green]")
+
+        req_list = [r.strip() for r in requirements.split(",") if r.strip()] if requirements else []
+        url = HttpUrl(job_url) if job_url else HttpUrl("https://example.com/placeholder")
+
+        job = JobListing(
+            title=job_title,
+            company=company,
+            description=job_description,
+            url=url,
+            requirements=req_list,
+            location=location,
+            board=JobBoard.INDEED,
+        )
+
+        style = None
+        if settings.style_guide_path:
+            from job_applicator.documents.cover_letter import CoverLetterGenerator
+
+            generator = CoverLetterGenerator(settings.llm)
+            with console.status("Analyzing writing style..."):
+                style = await generator.load_style_guide(settings.style_guide_path)
+            console.print(f"[green]Style loaded: {style.tone}[/green]")
+
+        tailor_engine = ResumeTailor(settings.llm)
+        attempt = 0
+        user_instructions = ""
+
+        # Pre-ingestion date audit
+        from job_applicator.documents.resume_tailor import ResumeDateValidator
+
+        validator = ResumeDateValidator()
+        audit = validator.audit(resume_data)
+
+        console.print("\n[bold]📋 CV Date Audit[/bold]")
+        audit_table = Table(title="Date Analysis", show_lines=True)
+        audit_table.add_column("Section", style="dim")
+        audit_table.add_column("Entry", style="bold")
+        audit_table.add_column("Start")
+        audit_table.add_column("End")
+        for entry in audit.entries:
+            audit_table.add_row(
+                str(entry.get("section", "")),
+                str(entry.get("label", "")),
+                str(entry.get("start", "")),
+                str(entry.get("end", "")),
+            )
+        console.print(audit_table)
+
+        console.print(f"\n[dim]Date range: {audit.earliest_date} → {audit.latest_date}[/dim]")
+
+        if audit.warnings:
+            console.print("\n[bold yellow]⚠ Warnings:[/bold yellow]")
+            for w in audit.warnings:
+                console.print(f"  [yellow]• {w}[/yellow]")
+
+        if audit.staleness_issues:
+            console.print("\n[bold red]⚠ Staleness Warnings:[/bold red]")
+            for s in audit.staleness_issues:
+                console.print(f"  [red]• {s}[/red]")
+
+        if audit.ordering_issues:
+            console.print("\n[bold red]⚠ Ordering Issues:[/bold red]")
+            for o in audit.ordering_issues:
+                console.print(f"  [red]• {o}[/red]")
+
+        if audit.is_stale or audit.ordering_issues:
+            console.print(
+                "\n[bold yellow]This CV may be outdated or have ordering "
+                "issues. Please verify your CV is up to date before "
+                "proceeding.[/bold yellow]"
+            )
+            confirm = (
+                console.input("\n[bold cyan]Proceed anyway? (y/n): [/bold cyan]").strip().lower()
+            )
+            if confirm != "y":
+                console.print("[yellow]Aborted. Please update your CV.[/yellow]")
+                raise typer.Exit(0)
+        else:
+            console.print("[green]✓ Dates look coherent and current.[/green]")
+
+        with console.status("Tailoring resume..."):
+            result = await tailor_engine.tailor(resume_data, job, user_instructions, style)
+
+        while True:
+            attempt += 1
+            result.attempt = attempt
+
+            console.print(f"\n[bold blue]--- Attempt #{attempt} ---[/bold blue]")
+
+            result.attempt = attempt
+
+            console.print("\n[bold]Tailored Resume Preview:[/bold]\n")
+            console.print(
+                Panel(
+                    result.tailored_text,
+                    title="Tailored Resume",
+                    border_style="cyan",
+                )
+            )
+
+            console.print("\n[bold]Metadata:[/bold]")
+            meta_table = Table(show_header=False, box=None)
+            meta_table.add_column("Key", style="dim")
+            meta_table.add_column("Value")
+            meta_table.add_row("Job", f"{job.title} at {job.company}")
+            meta_table.add_row("Match Score", f"{result.match_score:.0%}")
+            meta_table.add_row(
+                "Matched Skills",
+                ", ".join(result.matched_skills[:5]) or "—",
+            )
+            meta_table.add_row(
+                "Missing Skills",
+                ", ".join(result.missing_skills[:5]) or "—",
+            )
+            meta_table.add_row("Attempt", str(attempt))
+            if result.user_modifications:
+                meta_table.add_row("User Input", result.user_modifications)
+            console.print(meta_table)
+
+            console.print("\n[bold]Changes Made:[/bold]")
+            console.print(result.changes_summary)
+
+            console.print("\n[bold]What would you like to do?[/bold]")
+            action_table = Table(show_header=False, box=None)
+            action_table.add_column("Option", style="cyan bold")
+            action_table.add_column("Description")
+            action_table.add_row("[A] Accept", "Save this version as final")
+            action_table.add_row("[R] Retry", "Regenerate with same instructions")
+            action_table.add_row("[I] Input", "Give custom instructions to refine")
+            action_table.add_row("[Q] Quit", "Discard and exit")
+            console.print(action_table)
+
+            choice = (
+                console.input("\n[bold cyan]Your choice (A/R/I/Q): [/bold cyan]").strip().upper()
+            )
+
+            if choice == "A":
+                from datetime import datetime as dt
+
+                output_dir = Path(settings.output_dir)
+                output_dir.mkdir(parents=True, exist_ok=True)  # noqa: ASYNC240
+
+                safe_company = job.company.replace(" ", "_").replace("/", "_")
+                safe_title = job.title.replace(" ", "_").replace("/", "_")
+                timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"tailored_{safe_company}_{safe_title}_{timestamp}.txt"
+                output_path = output_dir / filename
+
+                output_path.write_text(result.tailored_text, encoding="utf-8")
+                result.output_path = str(output_path)
+
+                meta_path = output_path.with_suffix(".meta.json")
+                meta_path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+
+                console.print(f"\n[green]Tailored resume saved: {output_path}[/green]")
+                console.print(f"[green]Metadata saved: {meta_path}[/green]")
+                console.print(f"[dim]Attempt #{attempt} | Score: {result.match_score:.0%}[/dim]")
+                break
+
+            elif choice == "R":
+                console.print("[yellow]Regenerating...[/yellow]")
+                user_instructions = ""
+                with console.status("Tailoring resume..."):
+                    result = await tailor_engine.refine(resume_data, result, "", job)
+                continue
+
+            elif choice == "I":
+                user_instructions = console.input(
+                    "\n[bold]Enter your instructions (e.g., 'emphasize "
+                    "customer service', 'add troubleshooting detail'): "
+                    "[/bold]"
+                ).strip()
+                if not user_instructions:
+                    console.print("[yellow]No instructions provided, retrying.[/yellow]")
+                with console.status("Tailoring resume..."):
+                    result = await tailor_engine.refine(resume_data, result, user_instructions, job)
+                continue
+
+            elif choice == "Q":
+                console.print("[yellow]Discarded. No changes saved.[/yellow]")
+                break
+
+            else:
+                console.print("[red]Invalid choice. Please enter A, R, I, or Q.[/red]")
 
     asyncio.run(_run())
 
