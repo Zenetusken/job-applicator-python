@@ -1,0 +1,113 @@
+"""Shared Pydantic models — typed data contracts between layers."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from enum import StrEnum
+
+from pydantic import BaseModel, Field, HttpUrl
+
+
+class JobBoard(StrEnum):
+    """Supported job boards."""
+
+    LINKEDIN = "linkedin"
+    INDEED = "indeed"
+
+
+class ApplicationStatus(StrEnum):
+    """Outcome of an application attempt."""
+
+    PENDING = "pending"
+    SUBMITTED = "submitted"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+    ALREADY_APPLIED = "already_applied"
+
+
+class JobListing(BaseModel):
+    """Scraped job data from a job board."""
+
+    title: str
+    company: str
+    url: HttpUrl
+    description: str = ""
+    location: str = ""
+    salary: str | None = None
+    requirements: list[str] = Field(default_factory=list)
+    board: JobBoard
+    posted_at: datetime | None = None
+    scraped_at: datetime = Field(default_factory=datetime.now)
+
+    model_config = {"extra": "forbid"}
+
+
+class UserProfile(BaseModel):
+    """User data for form filling."""
+
+    first_name: str
+    last_name: str
+    email: str
+    phone: str
+    location: str = ""
+    linkedin_url: HttpUrl | None = None
+    portfolio_url: HttpUrl | None = None
+    resume_path: str = ""
+    cover_letter_template: str = ""
+
+    model_config = {"extra": "forbid"}
+
+
+class ResumeData(BaseModel):
+    """Parsed resume content."""
+
+    raw_text: str
+    name: str = ""
+    email: str = ""
+    phone: str = ""
+    summary: str = ""
+    skills: list[str] = Field(default_factory=list)
+    experience: list[dict[str, object]] = Field(default_factory=list)
+    education: list[dict[str, object]] = Field(default_factory=list)
+    embedding: list[float] = Field(default_factory=list, description="Cached embedding vector")
+
+
+class StyleGuide(BaseModel):
+    """Writing style patterns extracted from example resumes/cover letters."""
+
+    # Core style dimensions
+    tone: str = Field(description="Overall tone")
+    sentence_structure: str = Field(description="Typical sentence patterns")
+    vocabulary_level: str = Field(description="Vocabulary complexity")
+    paragraph_style: str = Field(description="How paragraphs are structured")
+
+    # Phrase patterns
+    key_phrases: list[str] = Field(description="Frequently used phrases", default_factory=list)
+    avoid_phrases: list[str] = Field(description="Phrases to avoid", default_factory=list)
+    power_words: list[str] = Field(description="Strong action verbs used", default_factory=list)
+    industry_jargon: list[str] = Field(description="Domain-specific terms", default_factory=list)
+
+    # Structural patterns
+    greeting_style: str = Field(default="", description="How greetings/openings are handled")
+    closing_style: str = Field(default="", description="How closings/sign-offs are handled")
+    use_of_metrics: str = Field(default="", description="How numbers/achievements are presented")
+    storytelling_approach: str = Field(default="", description="Narrative vs bullet-point style")
+    sentence_variety: str = Field(default="", description="Mix of sentence lengths and structures")
+    personal_touch: str = Field(default="", description="How personality comes through")
+
+    # Formatting
+    formatting_notes: str = Field(description="Any specific formatting patterns observed")
+    sample_paragraph: str = Field(description="A sample paragraph showing the style")
+
+
+class ApplicationResult(BaseModel):
+    """Outcome of an application attempt."""
+
+    job: JobListing
+    status: ApplicationStatus
+    timestamp: datetime = Field(default_factory=datetime.now)
+    cover_letter: str | None = None
+    error_message: str | None = None
+    notes: str = ""
+
+    model_config = {"extra": "forbid"}
