@@ -58,6 +58,45 @@ class UserProfile(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class ExperienceEntry(BaseModel):
+    """A single work experience entry from a resume."""
+
+    title: str = Field(default="", description="Job title")
+    company: str = Field(default="", description="Company name")
+    location: str = Field(default="", description="Job location")
+    start_date: str = Field(default="", description="Start date (e.g. '2020' or 'January 2020')")
+    end_date: str = Field(default="", description="End date (e.g. '2024' or 'Present')")
+    bullets: list[str] = Field(
+        default_factory=list, description="Achievement/responsibility bullets"
+    )
+
+    model_config = {"extra": "forbid"}
+
+
+class EducationEntry(BaseModel):
+    """A single education entry from a resume."""
+
+    institution: str = Field(default="", description="School/university name")
+    degree: str = Field(default="", description="Degree or program name")
+    location: str = Field(default="", description="Institution location")
+    start_date: str = Field(default="", description="Start date")
+    end_date: str = Field(default="", description="End date")
+
+    model_config = {"extra": "forbid"}
+
+
+class DateEntry(BaseModel):
+    """A parsed date entry from a resume audit."""
+
+    label: str = Field(description="Entry label (e.g. job title or degree)")
+    section: str = Field(description="Resume section (e.g. Experience, Education)")
+    start: str = Field(description="Formatted start date")
+    end: str = Field(description="Formatted end date or 'Present'")
+    is_current: bool = Field(default=False, description="True if entry is ongoing")
+
+    model_config = {"extra": "forbid"}
+
+
 class ResumeData(BaseModel):
     """Parsed resume content."""
 
@@ -67,8 +106,8 @@ class ResumeData(BaseModel):
     phone: str = ""
     summary: str = ""
     skills: list[str] = Field(default_factory=list)
-    experience: list[dict[str, object]] = Field(default_factory=list)
-    education: list[dict[str, object]] = Field(default_factory=list)
+    experience: list[ExperienceEntry] = Field(default_factory=list)
+    education: list[EducationEntry] = Field(default_factory=list)
     embedding: list[float] = Field(default_factory=list, description="Cached embedding vector")
 
     model_config = {"extra": "forbid"}
@@ -218,7 +257,7 @@ class CoverLetterSession:
 class DateAuditResult(BaseModel):
     """Result of auditing dates in a resume for coherence and staleness."""
 
-    entries: list[dict[str, object]] = Field(
+    entries: list[DateEntry] = Field(
         default_factory=list,
         description="Parsed date entries with start, end, label, section",
     )

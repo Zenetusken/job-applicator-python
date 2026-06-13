@@ -62,11 +62,8 @@ class JobMatcher:
 
         # Add experience
         for exp in resume.experience[:5]:
-            if isinstance(exp, dict):
-                title = exp.get("title", "")
-                company = exp.get("company", "")
-                if title:
-                    parts.append(f"{title} at {company}")
+            if exp.title:
+                parts.append(f"{exp.title} at {exp.company}")
 
         # Fall back to raw text sections if structured data is sparse
         if len(parts) < 2:

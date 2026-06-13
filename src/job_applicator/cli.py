@@ -808,10 +808,10 @@ def tailor(
         audit_table.add_column("End")
         for entry in audit.entries:
             audit_table.add_row(
-                str(entry.get("section", "")),
-                str(entry.get("label", "")),
-                str(entry.get("start", "")),
-                str(entry.get("end", "")),
+                entry.section,
+                entry.label,
+                entry.start,
+                entry.end,
             )
         console.print(audit_table)
 

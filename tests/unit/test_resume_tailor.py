@@ -427,10 +427,10 @@ class TestResumeDateValidator:
         validator = ResumeDateValidator()
         result = validator.audit(resume)
         assert len(result.entries) > 0
-        assert any(e.get("is_current") for e in result.entries)
-        present_entry = next(e for e in result.entries if e.get("is_current"))
-        assert present_entry["end"] == "Present"
-        assert present_entry["start"] == "2020"
+        assert any(e.is_current for e in result.entries)
+        present_entry = next(e for e in result.entries if e.is_current)
+        assert present_entry.end == "Present"
+        assert present_entry.start == "2020"
 
     def test_audit_detects_staleness(self):
         from datetime import datetime
@@ -464,9 +464,9 @@ class TestResumeDateValidator:
         result = validator.audit(resume)
         assert len(result.entries) > 0
         entry = result.entries[0]
-        assert entry["start"] == "2018"
-        assert entry["end"] == "2020"
-        assert entry.get("is_current") is False
+        assert entry.start == "2018"
+        assert entry.end == "2020"
+        assert entry.is_current is False
 
     def test_audit_month_year_format(self):
         from job_applicator.documents.resume_tailor import ResumeDateValidator
@@ -476,8 +476,8 @@ class TestResumeDateValidator:
         result = validator.audit(resume)
         assert len(result.entries) > 0
         entry = result.entries[0]
-        assert entry["start"] == "January 2020"
-        assert entry["end"] == "June 2022"
+        assert entry.start == "January 2020"
+        assert entry.end == "June 2022"
 
     def test_audit_empty_text(self):
         from job_applicator.documents.resume_tailor import ResumeDateValidator
@@ -556,7 +556,7 @@ class TestResumeDateValidator:
         )
         validator = ResumeDateValidator()
         result = validator.audit(resume)
-        sections = {e.get("section") for e in result.entries}
+        sections = {e.section for e in result.entries}
         assert "Experience" in sections
         assert "Education" in sections
 
@@ -567,4 +567,4 @@ class TestResumeDateValidator:
         validator = ResumeDateValidator()
         result = validator.audit(resume)
         assert len(result.entries) == 1
-        assert result.entries[0].get("section") == "Experience"
+        assert result.entries[0].section == "Experience"

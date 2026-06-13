@@ -223,18 +223,18 @@ class ResumeDateValidator:
             warnings.append("CV may be outdated — review staleness warnings below.")
 
         # Build result
+        from job_applicator.models import DateEntry
+
         result_entries = []
         for e in entries:
             result_entries.append(
-                {
-                    "label": e.label,
-                    "section": e.section,
-                    "start": self._fmt_date_part(e.start_year, e.start_month),
-                    "end": "Present"
-                    if e.is_current
-                    else self._fmt_date_part(e.end_year, e.end_month),
-                    "is_current": e.is_current,
-                }
+                DateEntry(
+                    label=e.label,
+                    section=e.section,
+                    start=self._fmt_date_part(e.start_year, e.start_month),
+                    end="Present" if e.is_current else self._fmt_date_part(e.end_year, e.end_month),
+                    is_current=e.is_current,
+                )
             )
 
         # Find earliest/latest
