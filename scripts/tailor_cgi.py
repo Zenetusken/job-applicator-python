@@ -13,6 +13,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from job_applicator.models import UserProfile
 from job_applicator.utils.diff import render_diff as _render_diff
 
 RESUME_PATH = "/media/drei/KINGSTON/Andrei School/Other/Jobhunt/Andrei_Petrov_Resume.pdf"
@@ -35,6 +36,245 @@ CGI_JOB = {
     ],
     "location": "Montreal, QC",
 }
+
+
+async def _cover_letter_workflow(
+    console: Console,
+    config: object,
+    job: object,
+    resume: object,
+    tone_profile: object,
+    tailored_resume_text: str,
+) -> Path | None:
+    from job_applicator.documents.cover_letter import CoverLetterGenerator, strip_thinking_process
+    from job_applicator.models import CoverLetterResult, CoverLetterSession
+
+    generator = CoverLetterGenerator(config)
+    tone_section = ""
+    if tone_profile:
+        from job_applicator.documents.tone_detector import ToneDetector
+
+        tone_section = ToneDetector().format_for_prompt(tone_profile)
+
+    name_parts = (resume.name or "User").split()
+    user = UserProfile(
+        first_name=name_parts[0],
+        last_name=name_parts[-1] if len(name_parts) > 1 else "",
+        email=resume.email or "",
+        phone=resume.phone or "",
+        resume_path=RESUME_PATH,
+    )
+
+    session = CoverLetterSession(job_title=job.title, job_company=job.company)
+    attempt = 0
+
+    try:
+        with console.status("Generating cover letter..."):
+            letter = await generator.generate(
+                job,
+                user,
+                resume,
+                tone_section=tone_section,
+                tailored_resume_text=tailored_resume_text,
+            )
+        result = CoverLetterResult(
+            job_title=job.title,
+            job_company=job.company,
+            job_url=str(job.url),
+            cover_letter_text=letter,
+            attempt=1,
+        )
+        session.add_attempt(result)
+    except Exception as exc:
+        console.print(f"[red]LLM error: {exc}[/red]")
+        retry = console.input("[bold cyan][R] Retry or [Q] Skip? [/bold cyan]").strip().upper()
+        if retry == "R":
+            try:
+                with console.status("Generating cover letter..."):
+                    letter = await generator.generate(
+                        job,
+                        user,
+                        resume,
+                        tone_section=tone_section,
+                        tailored_resume_text=tailored_resume_text,
+                    )
+                result = CoverLetterResult(
+                    job_title=job.title,
+                    job_company=job.company,
+                    job_url=str(job.url),
+                    cover_letter_text=letter,
+                    attempt=1,
+                )
+                session.add_attempt(result)
+            except Exception:
+                console.print("[red]Cover letter generation failed. Skipping.[/red]")
+                return None
+        else:
+            return None
+
+    while True:
+        attempt += 1
+        if attempt > 10:
+            console.print("[red]Maximum retry limit (10) reached.[/red]")
+            break
+        if attempt >= 8:
+            console.print("[yellow]Warning: approaching retry limit (10 max).[/yellow]")
+
+        result = session.current
+        console.print(f"\n[bold blue]--- Cover Letter Attempt #{attempt} ---[/bold blue]")
+
+        console.print("\n[bold]Cover Letter Preview:[/bold]\n")
+        console.print(Panel(result.cover_letter_text, title="Cover Letter", border_style="green"))
+
+        if len(session.attempts) > 1:
+            _render_diff(
+                console,
+                session.attempts[0].cover_letter_text,
+                result.cover_letter_text,
+                max_lines=30,
+            )
+
+        console.print("\n[bold]What would you like to do?[/bold]")
+        action_table = Table(show_header=False, box=None)
+        action_table.add_column("Option", style="cyan bold")
+        action_table.add_column("Description")
+        action_table.add_row("[A] Accept", "Save this cover letter")
+        action_table.add_row("[R] Retry", "Regenerate")
+        action_table.add_row("[I] Input", "Give custom instructions")
+        action_table.add_row("[D] Diff", "Show full diff from first attempt")
+        action_table.add_row("[V] History", "Browse previous attempts")
+        action_table.add_row("[Q] Skip", "Discard (resume already saved)")
+        console.print(action_table)
+
+        choice = (
+            console.input("\n[bold cyan]Your choice (A/R/I/D/V/Q): [/bold cyan]").strip().upper()
+        )
+
+        if choice == "A":
+            from datetime import datetime as dt
+
+            output_dir = Path("output")
+            output_dir.mkdir(exist_ok=True)
+            safe_company = job.company.replace(" ", "_").replace("/", "_")
+            safe_title = job.title.replace(" ", "_").replace("/", "_")
+            timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
+            cl_filename = f"cover_letter_{safe_company}_{safe_title}_{timestamp}.txt"
+            cl_path = output_dir / cl_filename
+            cl_path.write_text(result.cover_letter_text, encoding="utf-8")
+            result.output_path = str(cl_path)
+            cl_meta_path = cl_path.with_suffix(".meta.json")
+            cl_meta_path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+            console.print(f"\n[green]Cover letter saved: {cl_path}[/green]")
+            return cl_path
+
+        elif choice == "R":
+            console.print("[yellow]Regenerating...[/yellow]")
+            try:
+                with console.status("Generating cover letter..."):
+                    letter = await generator.generate(
+                        job,
+                        user,
+                        resume,
+                        tone_section=tone_section,
+                        tailored_resume_text=tailored_resume_text,
+                    )
+                new_result = CoverLetterResult(
+                    job_title=job.title,
+                    job_company=job.company,
+                    job_url=str(job.url),
+                    cover_letter_text=letter,
+                    attempt=attempt + 1,
+                )
+                session.add_attempt(new_result)
+            except Exception as exc:
+                console.print(f"[red]LLM error: {exc}[/red]")
+            continue
+
+        elif choice == "I":
+            user_instructions = console.input(
+                "\n[bold]Instructions (e.g., 'emphasize customer service'): [/bold]"
+            ).strip()
+            if not user_instructions:
+                console.print("[yellow]No instructions provided.[/yellow]")
+            try:
+                with console.status("Refining cover letter..."):
+                    refine_prompt = (
+                        f"User wants changes to this cover letter.\n\n"
+                        f"Job: {job.title} at {job.company}\n\n"
+                        f"Current cover letter:\n{result.cover_letter_text}\n\n"
+                        f"User feedback: {user_instructions}\n\n"
+                        f"Return the complete updated cover letter."
+                    )
+                    from litellm import acompletion
+
+                    model = f"openai/{config.model}" if config.api_base else config.model
+                    response = await acompletion(
+                        model=model,
+                        api_base=config.api_base,
+                        api_key=config.api_key,
+                        messages=[{"role": "user", "content": refine_prompt}],
+                        max_tokens=config.max_tokens,
+                        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                    )
+                    refined = strip_thinking_process(response.choices[0].message.content)
+                new_result = CoverLetterResult(
+                    job_title=job.title,
+                    job_company=job.company,
+                    job_url=str(job.url),
+                    cover_letter_text=refined,
+                    user_modifications=user_instructions,
+                    attempt=attempt + 1,
+                )
+                session.add_attempt(new_result)
+            except Exception as exc:
+                console.print(f"[red]LLM error: {exc}[/red]")
+            continue
+
+        elif choice == "D":
+            if len(session.attempts) > 1:
+                _render_diff(
+                    console,
+                    session.attempts[0].cover_letter_text,
+                    result.cover_letter_text,
+                    max_lines=0,
+                )
+            else:
+                console.print("[yellow]Only one attempt so far.[/yellow]")
+            continue
+
+        elif choice == "V":
+            if len(session.attempts) < 2:
+                console.print("[yellow]No previous attempts yet.[/yellow]")
+                continue
+            hist_table = Table(title="Cover Letter History")
+            hist_table.add_column("#", style="dim")
+            hist_table.add_column("Attempt")
+            hist_table.add_column("Preview", style="dim")
+            for i, att in enumerate(session.attempts):
+                preview = att.cover_letter_text[:60].replace("\n", " ")
+                marker = "\u2192" if i == session.current_index else " "
+                hist_table.add_row(marker, str(att.attempt), preview + "...")
+            console.print(hist_table)
+            sel = console.input(
+                "\n[bold cyan]Select attempt # (or Enter back): [/bold cyan]"
+            ).strip()
+            if sel.isdigit():
+                idx = int(sel) - 1
+                if 0 <= idx < len(session.attempts):
+                    session.select(idx)
+                    console.print(f"[green]Switched to attempt #{session.current.attempt}[/green]")
+                else:
+                    console.print("[red]Invalid attempt number.[/red]")
+            continue
+
+        elif choice == "Q":
+            console.print("[yellow]Cover letter skipped. Resume already saved.[/yellow]")
+            return None
+
+        else:
+            console.print("[red]Invalid choice. Please enter A, R, I, D, V, or Q.[/red]")
+
+    return None
 
 
 async def main() -> bool:
@@ -222,8 +462,32 @@ async def main() -> bool:
             meta_path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
 
             console.print(f"\n[green]Saved: {out}[/green]")
-            console.print(f"[green]Meta:  {meta_path}[/green]")
             console.print(f"[dim]Attempt #{attempt} | Score: {result.match_score:.0%}[/dim]")
+
+            cover_letter_path = None
+            cl_choice = (
+                console.input(
+                    f"\n[bold cyan]Generate a matching cover letter "
+                    f"for {job.title} at {job.company}? (Y/N): [/bold cyan]"
+                )
+                .strip()
+                .upper()
+            )
+
+            if cl_choice == "Y":
+                cover_letter_path = await _cover_letter_workflow(
+                    console,
+                    config,
+                    job,
+                    resume,
+                    tone_profile,
+                    result.tailored_text,
+                )
+
+            if cover_letter_path:
+                result.cover_letter_path = str(cover_letter_path)
+            meta_path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+            console.print(f"[green]Meta:  {meta_path}[/green]")
             break
 
         elif choice == "R":
