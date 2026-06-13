@@ -325,12 +325,12 @@ def generate_cover_letter(
                         from pathlib import Path
 
                         p = Path(path)
-                        if p.exists():
+                        if await asyncio.to_thread(p.exists):
                             if p.suffix.lower() == ".pdf":
                                 resume = loader.load(p)
                                 texts.append(resume.raw_text)
                             else:
-                                texts.append(p.read_text(encoding="utf-8"))
+                                texts.append(await asyncio.to_thread(p.read_text, encoding="utf-8"))
 
                     if texts:
                         style = await analyzer.analyze_multiple(texts)
@@ -923,7 +923,7 @@ def tailor(
                 from datetime import datetime as dt
 
                 output_dir = Path(settings.output_dir)
-                output_dir.mkdir(parents=True, exist_ok=True)
+                await asyncio.to_thread(output_dir.mkdir, parents=True, exist_ok=True)
 
                 safe_company = job.company.replace(" ", "_").replace("/", "_")
                 safe_title = job.title.replace(" ", "_").replace("/", "_")

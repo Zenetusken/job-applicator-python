@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 
 from pydantic import BaseModel, Field
@@ -194,7 +195,7 @@ class CoverLetterGenerator:
         from pathlib import Path
 
         path = Path(style_guide_path)
-        if not path.exists():
+        if not await asyncio.to_thread(path.exists):
             raise LLMError(f"Style guide not found: {path}")
 
         # Load the text content
@@ -205,7 +206,7 @@ class CoverLetterGenerator:
             resume_data = loader.load(path)
             text = resume_data.raw_text
         else:
-            text = path.read_text(encoding="utf-8")
+            text = await asyncio.to_thread(path.read_text, encoding="utf-8")
 
         # Analyze the style
         from job_applicator.documents.style_analyzer import StyleAnalyzer
