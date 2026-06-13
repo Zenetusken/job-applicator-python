@@ -1,5 +1,7 @@
 """Typed exception hierarchy for job applicator."""
 
+from __future__ import annotations
+
 
 class JobApplicatorError(Exception):
     """Base exception for all job applicator errors."""

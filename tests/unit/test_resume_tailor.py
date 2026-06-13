@@ -322,8 +322,7 @@ class TestAuditFixes:
         from job_applicator.documents.resume_tailor import TAILOR_SYSTEM_PROMPT
 
         has_third = (
-            "THIRD PERSON" in TAILOR_SYSTEM_PROMPT
-            or "third person" in TAILOR_SYSTEM_PROMPT.lower()
+            "THIRD PERSON" in TAILOR_SYSTEM_PROMPT or "third person" in TAILOR_SYSTEM_PROMPT.lower()
         )
         assert has_third
         assert "'I'" in TAILOR_SYSTEM_PROMPT or "'my'" in TAILOR_SYSTEM_PROMPT
@@ -361,7 +360,9 @@ class TestAuditFixes:
         generator._config = MagicMock()
 
         job = JobListing(
-            title="Dev", company="Co", url="https://example.com",
+            title="Dev",
+            company="Co",
+            url="https://example.com",
             board=JobBoard.INDEED,
         )
         user = MagicMock()
@@ -371,7 +372,9 @@ class TestAuditFixes:
         resume = ResumeData(raw_text="Resume", skills=["Python"])
 
         prompt = generator._build_prompt(
-            job, user, resume,
+            job,
+            user,
+            resume,
             tailored_resume_text="Tailored resume text",
         )
 
@@ -388,7 +391,9 @@ class TestAuditFixes:
         generator._config = MagicMock()
 
         job = JobListing(
-            title="Dev", company="Co", url="https://example.com",
+            title="Dev",
+            company="Co",
+            url="https://example.com",
             board=JobBoard.INDEED,
         )
         user = MagicMock()

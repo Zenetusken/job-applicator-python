@@ -194,7 +194,7 @@ class CoverLetterGenerator:
         from pathlib import Path
 
         path = Path(style_guide_path)
-        if not path.exists():  # noqa: ASYNC240
+        if not path.exists():
             raise LLMError(f"Style guide not found: {path}")
 
         # Load the text content
@@ -205,7 +205,7 @@ class CoverLetterGenerator:
             resume_data = loader.load(path)
             text = resume_data.raw_text
         else:
-            text = path.read_text(encoding="utf-8")  # noqa: ASYNC240
+            text = path.read_text(encoding="utf-8")
 
         # Analyze the style
         from job_applicator.documents.style_analyzer import StyleAnalyzer

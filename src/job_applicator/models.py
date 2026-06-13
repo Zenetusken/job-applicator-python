@@ -71,6 +71,8 @@ class ResumeData(BaseModel):
     education: list[dict[str, object]] = Field(default_factory=list)
     embedding: list[float] = Field(default_factory=list, description="Cached embedding vector")
 
+    model_config = {"extra": "forbid"}
+
 
 class StyleGuide(BaseModel):
     """Writing style patterns extracted from example resumes/cover letters."""

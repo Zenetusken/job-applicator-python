@@ -20,7 +20,7 @@ mypy src/job_applicator/ --ignore-missing-imports
 ruff check --fix src/ tests/
 ruff format src/ tests/
 
-# Tests (73 unit tests, all fast)
+# Tests (89 unit tests, all fast)
 pytest tests/unit/ -v
 pytest tests/unit/ -v -k test_name  # single test
 
@@ -33,8 +33,8 @@ job-applicator match --resume resume.pdf
 
 ```
 src/job_applicator/
-├── cli.py              # Typer CLI (search, apply, match, generate-cover-letter, tailor)
-├── config.py           # AppSettings + sub-configs (BrowserConfig, LLMConfig, EmbeddingConfig)
+├── cli.py              # Typer CLI (search, apply, match, generate-cover-letter, tailor, config-init)
+├── config.py           # AppSettings + sub-configs (BrowserConfig, LLMConfig, EmbeddingConfig, TargetConfig)
 ├── models.py           # All shared Pydantic models (JobListing, ResumeData, StyleGuide, TailoredResume, DateAuditResult, etc.)
 ├── exceptions.py       # JobApplicatorError hierarchy
 ├── browser/            # Playwright lifecycle (manager.py) + low-level actions (actions.py)

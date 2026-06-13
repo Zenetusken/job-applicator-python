@@ -61,7 +61,9 @@ class EmbeddingService:
 
                 logger.info("Embedding model loaded successfully")
             except ImportError as exc:
-                raise RuntimeError(
+                from job_applicator.exceptions import ConfigError
+
+                raise ConfigError(
                     "sentence-transformers not installed. Run: pip install sentence-transformers"
                 ) from exc
         return self._model
