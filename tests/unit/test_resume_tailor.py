@@ -405,3 +405,166 @@ class TestAuditFixes:
         prompt = generator._build_prompt(job, user, resume)
 
         assert "Today's date:" not in prompt
+
+
+class TestResumeDateValidator:
+    def test_audit_with_no_dates(self):
+        from job_applicator.documents.resume_tailor import ResumeDateValidator
+
+        resume = ResumeData(raw_text="No dates here at all.")
+        validator = ResumeDateValidator()
+        result = validator.audit(resume)
+        assert len(result.entries) == 0
+        assert not result.is_stale
+        assert result.is_ordered
+        assert result.latest_date == ""
+        assert result.earliest_date == ""
+
+    def test_audit_with_present_date(self):
+        from job_applicator.documents.resume_tailor import ResumeDateValidator
+
+        resume = ResumeData(raw_text="EXPERIENCE\nSoftware Engineer\nCorp, City\n2020 - Present")
+        validator = ResumeDateValidator()
+        result = validator.audit(resume)
+        assert len(result.entries) > 0
+        assert any(e.get("is_current") for e in result.entries)
+        present_entry = next(e for e in result.entries if e.get("is_current"))
+        assert present_entry["end"] == "Present"
+        assert present_entry["start"] == "2020"
+
+    def test_audit_detects_staleness(self):
+        from datetime import datetime
+
+        from job_applicator.documents.resume_tailor import ResumeDateValidator
+
+        resume = ResumeData(raw_text="EXPERIENCE\nOld Job\nCorp, City\n2000 - 2005")
+        validator = ResumeDateValidator(reference_date=datetime(2030, 1, 1))
+        result = validator.audit(resume)
+        assert result.is_stale
+        assert len(result.staleness_issues) > 0
+        assert "2005" in result.staleness_issues[0]
+
+    def test_audit_ordering_issues(self):
+        from job_applicator.documents.resume_tailor import ResumeDateValidator
+
+        resume = ResumeData(
+            raw_text=("EXPERIENCE\nOld Job\nCorp\n2010 - 2015\nNew Job\nCorp\n2018 - 2024")
+        )
+        validator = ResumeDateValidator()
+        result = validator.audit(resume)
+        assert len(result.ordering_issues) > 0
+        assert not result.is_ordered
+        assert any("should come after" in issue for issue in result.ordering_issues)
+
+    def test_audit_year_only_dates(self):
+        from job_applicator.documents.resume_tailor import ResumeDateValidator
+
+        resume = ResumeData(raw_text="EXPERIENCE\nJob\nCorp\n2018 - 2020")
+        validator = ResumeDateValidator()
+        result = validator.audit(resume)
+        assert len(result.entries) > 0
+        entry = result.entries[0]
+        assert entry["start"] == "2018"
+        assert entry["end"] == "2020"
+        assert entry.get("is_current") is False
+
+    def test_audit_month_year_format(self):
+        from job_applicator.documents.resume_tailor import ResumeDateValidator
+
+        resume = ResumeData(raw_text="EXPERIENCE\nJob\nCorp\nJan 2020 - Jun 2022")
+        validator = ResumeDateValidator()
+        result = validator.audit(resume)
+        assert len(result.entries) > 0
+        entry = result.entries[0]
+        assert entry["start"] == "January 2020"
+        assert entry["end"] == "June 2022"
+
+    def test_audit_empty_text(self):
+        from job_applicator.documents.resume_tailor import ResumeDateValidator
+
+        resume = ResumeData(raw_text="")
+        validator = ResumeDateValidator()
+        result = validator.audit(resume)
+        assert len(result.entries) == 0
+        assert not result.is_stale
+        assert result.is_ordered
+
+    def test_audit_multiple_entries_chronological(self):
+        from job_applicator.documents.resume_tailor import ResumeDateValidator
+
+        resume = ResumeData(
+            raw_text=("EXPERIENCE\nNew Job\nCorp\n2020 - Present\nOld Job\nCorp\n2015 - 2019")
+        )
+        validator = ResumeDateValidator()
+        result = validator.audit(resume)
+        assert len(result.entries) == 2
+        assert result.is_ordered
+        assert result.latest_date != ""
+        assert result.earliest_date != ""
+
+    def test_audit_latest_and_earliest_dates(self):
+        from job_applicator.documents.resume_tailor import ResumeDateValidator
+
+        resume = ResumeData(
+            raw_text=("EXPERIENCE\nNewest Job\nCorp\n2022 - Present\nOldest Job\nCorp\n2010 - 2014")
+        )
+        validator = ResumeDateValidator()
+        result = validator.audit(resume)
+        # "Present" resolves to current date (June 2026), earliest is 2010
+        assert result.latest_date != ""
+        assert result.earliest_date != ""
+        assert "2010" in result.earliest_date
+
+    def test_audit_education_staleness(self):
+        from datetime import datetime
+
+        from job_applicator.documents.resume_tailor import ResumeDateValidator
+
+        resume = ResumeData(raw_text="EDUCATION\nBS Computer Science\nMIT\n1998 - 2002")
+        validator = ResumeDateValidator(reference_date=datetime(2030, 1, 1))
+        result = validator.audit(resume)
+        assert len(result.staleness_issues) > 0
+        assert result.is_stale
+
+    def test_audit_education_old_but_current_work_not_stale(self):
+        from datetime import datetime
+
+        from job_applicator.documents.resume_tailor import ResumeDateValidator
+
+        resume = ResumeData(
+            raw_text=(
+                "EXPERIENCE\nCurrent Job\nCorp\n2020 - Present\n\n"
+                "EDUCATION\nBS CS\nMIT\n2000 - 2004"
+            )
+        )
+        validator = ResumeDateValidator(reference_date=datetime(2030, 1, 1))
+        result = validator.audit(resume)
+        # General staleness check passes (Present entry is current),
+        # but education-specific staleness is still flagged
+        general_staleness = [s for s in result.staleness_issues if "Most recent entry" in s]
+        edu_staleness = [s for s in result.staleness_issues if "Education" in s]
+        assert len(general_staleness) == 0
+        assert len(edu_staleness) > 0
+
+    def test_audit_entries_from_different_sections(self):
+        from job_applicator.documents.resume_tailor import ResumeDateValidator
+
+        resume = ResumeData(
+            raw_text=(
+                "EXPERIENCE\nEngineer\nCorp\n2018 - 2022\n\nEDUCATION\nBS CS\nMIT\n2014 - 2018"
+            )
+        )
+        validator = ResumeDateValidator()
+        result = validator.audit(resume)
+        sections = {e.get("section") for e in result.entries}
+        assert "Experience" in sections
+        assert "Education" in sections
+
+    def test_audit_section_detection_case_insensitive(self):
+        from job_applicator.documents.resume_tailor import ResumeDateValidator
+
+        resume = ResumeData(raw_text="experience\nEngineer\nCorp\n2020 - 2023")
+        validator = ResumeDateValidator()
+        result = validator.audit(resume)
+        assert len(result.entries) == 1
+        assert result.entries[0].get("section") == "Experience"
