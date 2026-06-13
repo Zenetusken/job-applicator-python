@@ -579,12 +579,22 @@ def tailor(
         else:
             console.print("[green]✓ Dates look coherent and current.[/green]")
 
-        with console.status("Tailoring resume..."):
-            result = await tailor_engine.tailor(resume_data, job, user_instructions, style)
-        session.add_attempt(result)
+        try:
+            with console.status("Tailoring resume..."):
+                result = await tailor_engine.tailor(resume_data, job, user_instructions, style)
+            session.add_attempt(result)
+        except Exception as exc:
+            console.print(f"[red]LLM error: {exc}[/red]")
+            console.print("[yellow]Could not generate tailored resume.[/yellow]")
+            raise typer.Exit(1) from exc
 
         while True:
             attempt += 1
+            if attempt > 10:
+                console.print("[red]Maximum retry limit (10) reached.[/red]")
+                break
+            if attempt >= 8:
+                console.print("[yellow]Warning: approaching retry limit (10 max).[/yellow]")
             result.attempt = attempt
 
             console.print(f"\n[bold blue]--- Attempt #{attempt} ---[/bold blue]")
@@ -668,9 +678,20 @@ def tailor(
             elif choice == "R":
                 console.print("[yellow]Regenerating...[/yellow]")
                 user_instructions = ""
-                with console.status("Tailoring resume..."):
-                    result = await tailor_engine.refine(resume_data, result, "", job)
-                session.add_attempt(result)
+                try:
+                    with console.status("Tailoring resume..."):
+                        result = await tailor_engine.refine(resume_data, result, "", job)
+                    session.add_attempt(result)
+                except Exception as exc:
+                    console.print(f"[red]LLM error: {exc}[/red]")
+                    retry_choice = (
+                        console.input("[bold cyan][R] Retry or [Q] Quit? [/bold cyan]")
+                        .strip()
+                        .upper()
+                    )
+                    if retry_choice == "Q":
+                        break
+                    continue
                 continue
 
             elif choice == "I":
@@ -681,9 +702,22 @@ def tailor(
                 ).strip()
                 if not user_instructions:
                     console.print("[yellow]No instructions provided, retrying.[/yellow]")
-                with console.status("Tailoring resume..."):
-                    result = await tailor_engine.refine(resume_data, result, user_instructions, job)
-                session.add_attempt(result)
+                try:
+                    with console.status("Tailoring resume..."):
+                        result = await tailor_engine.refine(
+                            resume_data, result, user_instructions, job
+                        )
+                    session.add_attempt(result)
+                except Exception as exc:
+                    console.print(f"[red]LLM error: {exc}[/red]")
+                    retry_choice = (
+                        console.input("[bold cyan][R] Retry or [Q] Quit? [/bold cyan]")
+                        .strip()
+                        .upper()
+                    )
+                    if retry_choice == "Q":
+                        break
+                    continue
                 continue
 
             elif choice == "D":
@@ -772,9 +806,22 @@ def tailor(
                     f"Current {target_section.name} content:\n{target_section.text}\n\n"
                     f"User instructions for this section: {sec_instructions}"
                 )
-                with console.status("Refining section..."):
-                    result = await tailor_engine.refine(resume_data, result, user_instructions, job)
-                session.add_attempt(result)
+                try:
+                    with console.status("Refining section..."):
+                        result = await tailor_engine.refine(
+                            resume_data, result, user_instructions, job
+                        )
+                    session.add_attempt(result)
+                except Exception as exc:
+                    console.print(f"[red]LLM error: {exc}[/red]")
+                    retry_choice = (
+                        console.input("[bold cyan][R] Retry or [Q] Quit? [/bold cyan]")
+                        .strip()
+                        .upper()
+                    )
+                    if retry_choice == "Q":
+                        break
+                    continue
                 continue
 
             elif choice == "Q":

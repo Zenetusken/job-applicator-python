@@ -185,7 +185,9 @@ class TestTailorWithTone:
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "Tailored with tone"
 
-        with patch("litellm.acompletion", new_callable=AsyncMock, return_value=mock_response) as mock_call:  # noqa: E501
+        with patch(
+            "litellm.acompletion", new_callable=AsyncMock, return_value=mock_response
+        ) as mock_call:
             await tailor.tailor(sample_resume, sample_job)
 
         first_call = mock_call.call_args_list[0]
@@ -235,3 +237,54 @@ class TestParseSections:
         names = [s.name for s in sections]
         assert "Technical Skills:" in names
         assert "Work Experience:" in names
+
+
+class TestTailorWorkflow:
+    def test_tailor_session_workflow(self):
+        """Test the full accept/retry/input workflow with mock data."""
+        from job_applicator.models import TailorSession
+
+        session = TailorSession(
+            original_text="Original resume",
+            job_title="Dev",
+            job_company="Co",
+        )
+
+        for i in range(3):
+            result = TailoredResume(
+                original_path="",
+                tailored_text=f"Tailored version {i + 1}",
+                job_title="Dev",
+                job_company="Co",
+                match_score=0.5 + i * 0.1,
+                semantic_score=0.5,
+                skill_score=0.5,
+                changes_summary=f"Changes for attempt {i + 1}",
+                attempt=i + 1,
+                user_modifications="" if i == 0 else "more detail",
+            )
+            session.add_attempt(result)
+
+        assert len(session.attempts) == 3
+        assert session.current.tailored_text == "Tailored version 3"
+
+        session.select(0)
+        assert session.current.tailored_text == "Tailored version 1"
+
+        with pytest.raises(IndexError):
+            session.select(99)
+
+    def test_parse_sections_and_select(self):
+        """Test section parsing for editing workflow."""
+        from job_applicator.documents.resume_tailor import parse_sections
+
+        text = (
+            "John Doe - Developer\n\n"
+            "SUMMARY\nExperienced developer.\n\n"
+            "SKILLS\nPython, JavaScript\n\n"
+            "EXPERIENCE\nSoftware engineer at Corp (2020-2024)\n"
+        )
+        sections = parse_sections(text)
+        assert len(sections) == 3
+        assert sections[0].name == "SUMMARY"
+        assert "Experienced developer" in sections[0].text
