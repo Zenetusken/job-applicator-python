@@ -512,32 +512,27 @@ async def _refine_cover_letter(
     user_instructions: str,
     session: CoverLetterSession,
     attempt: int,
+    resume_data: ResumeData | None = None,
+    style: StyleGuide | None = None,
+    tone_section: str = "",
 ) -> None:
     """Refine a cover letter with user instructions via LLM."""
-    from litellm import acompletion
-
-    from job_applicator.documents.cover_letter import strip_thinking_process
+    from job_applicator.documents.cover_letter import CoverLetterGenerator
+    from job_applicator.models import CoverLetterResult as CLResult
+    from job_applicator.models import ResumeData
 
     try:
+        generator = CoverLetterGenerator(settings.llm)
         with console.status("Refining cover letter..."):
-            refine_prompt = (
-                f"User wants changes to this cover letter.\n\n"
-                f"Job: {job.title} at {job.company}\n\n"
-                f"Current cover letter:\n{result.cover_letter_text}\n\n"
-                f"User feedback: {user_instructions}\n\n"
-                f"Return the complete updated cover letter."
+            refined = await generator.refine(
+                job=job,
+                resume=resume_data or ResumeData(raw_text=""),
+                current_text=result.cover_letter_text,
+                user_feedback=user_instructions,
+                style_guide=style,
+                tone_section=tone_section,
             )
-            model = f"openai/{settings.llm.model}" if settings.llm.api_base else settings.llm.model
-            response = await acompletion(
-                model=model,
-                api_base=settings.llm.api_base,
-                api_key=settings.llm.api_key,
-                messages=[{"role": "user", "content": refine_prompt}],
-                max_tokens=settings.llm.max_tokens,
-                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-            )
-            refined = strip_thinking_process(response.choices[0].message.content)
-        new_result = CoverLetterResult(
+        new_result = CLResult(
             job_title=job.title,
             job_company=job.company,
             job_url=str(job.url),
@@ -639,7 +634,7 @@ async def _cover_letter_workflow(
 
         elif choice == "R":
             console.print("[yellow]Regenerating...[/yellow]")
-            await _generate_cover_letter(
+            new_result = await _generate_cover_letter(
                 console,
                 settings,
                 job,
@@ -650,6 +645,8 @@ async def _cover_letter_workflow(
                 session,
                 attempt=attempt + 1,
             )
+            if new_result is None:
+                console.print("[red]Generation failed. Please try again.[/red]")
             continue
 
         elif choice == "I":
@@ -658,9 +655,12 @@ async def _cover_letter_workflow(
             ).strip()
             if not user_instructions:
                 console.print("[yellow]No instructions provided.[/yellow]")
-            await _refine_cover_letter(
-                console, settings, job, result, user_instructions, session, attempt
+            new_result = await _refine_cover_letter(
+                console, settings, job, result, user_instructions, session, attempt,
+                resume_data, style, tone_section,
             )
+            if new_result is None:
+                console.print("[red]Refinement failed. Please try again.[/red]")
             continue
 
         elif choice == "D":
@@ -849,7 +849,9 @@ def tailor(
 
         try:
             with console.status("Tailoring resume..."):
-                result = await tailor_engine.tailor(resume_data, job, user_instructions, style)
+                result = await tailor_engine.tailor(
+                    resume_data, job, user_instructions, style, tone_profile
+                )
             session.add_attempt(result)
         except Exception as exc:
             console.print(f"[red]LLM error: {exc}[/red]")

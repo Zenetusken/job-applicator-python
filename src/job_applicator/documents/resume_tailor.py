@@ -31,18 +31,43 @@ class ResumeSection:
     end_line: int
 
 
-SECTION_HEADER_RE = re.compile(
-    r"^(?:"
-    r"(?:SUMMARY|EXPERIENCE|SKILLS|EDUCATION|CERTIFICATIONS|PROJECTS|"
-    r"OBJECTIVE|PROFILE|WORK\s+EXPERIENCE|EMPLOYMENT|QUALIFICATIONS|"
-    r"ACHIEVEMENTS|INTERESTS|LANGUAGES|REFERENCES|VOLUNTEER|AWARDS)"
-    r"|"
-    r"[A-Z][A-Z\s]{2,49}$"
-    r"|"
-    r"[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*:"
-    r")\s*$",
-    re.MULTILINE | re.IGNORECASE,
-)
+KNOWN_HEADERS: frozenset[str] = frozenset({
+    "summary",
+    "experience",
+    "skills",
+    "education",
+    "certifications",
+    "projects",
+    "objective",
+    "profile",
+    "work experience",
+    "employment",
+    "qualifications",
+    "achievements",
+    "interests",
+    "languages",
+    "references",
+    "volunteer",
+    "awards",
+    "professional summary",
+    "professional experience",
+    "work history",
+    "technical skills",
+    "core competencies",
+    "additional information",
+})
+
+_COLON_HEADER_RE = re.compile(r"^[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*:\s*$")
+
+
+def _is_section_header(stripped: str) -> bool:
+    """Return True if *stripped* line looks like a resume section header."""
+    normalized = re.sub(r"\s+", " ", stripped.strip())
+    if normalized.lower() in KNOWN_HEADERS:
+        return True
+    if _COLON_HEADER_RE.match(stripped):
+        return True
+    return False
 
 
 def parse_sections(text: str) -> list[ResumeSection]:
@@ -54,7 +79,7 @@ def parse_sections(text: str) -> list[ResumeSection]:
         stripped = line.strip()
         if not stripped:
             continue
-        if SECTION_HEADER_RE.match(stripped):
+        if _is_section_header(stripped):
             headers.append((i, stripped))
 
     if not headers:
@@ -501,6 +526,28 @@ CHANGES_PROMPT_TEMPLATE = (
 )
 
 
+def _skills_match(skill_lower: str, orig: str) -> bool:
+    """Check if a tailored skill matches an original skill.
+
+    Uses exact match, token containment, and fuzzy matching.
+    """
+    from difflib import SequenceMatcher
+
+    if skill_lower == orig:
+        return True
+    skill_tokens = set(skill_lower.split())
+    orig_tokens = set(orig.split())
+    shorter, longer = (
+        (skill_tokens, orig_tokens)
+        if len(skill_tokens) <= len(orig_tokens)
+        else (orig_tokens, skill_tokens)
+    )
+    if shorter and shorter.issubset(longer):
+        return True
+    ratio = SequenceMatcher(None, skill_lower, orig).ratio()
+    return ratio >= 0.85
+
+
 class ResumeTailor:
     """Tailor resumes for specific job listings using LLM."""
 
@@ -514,6 +561,7 @@ class ResumeTailor:
         job: JobListing,
         user_instructions: str = "",
         style_guide: StyleGuide | None = None,
+        tone_profile: object | None = None,
     ) -> TailoredResume:
         """Tailor a resume for a specific job.
 
@@ -522,6 +570,7 @@ class ResumeTailor:
             job: Target job listing
             user_instructions: Optional user guidance for tailoring
             style_guide: Optional style guide to apply
+            tone_profile: Optional pre-detected ToneProfile to avoid re-detection
 
         Returns:
             TailoredResume with full metadata
@@ -544,13 +593,14 @@ class ResumeTailor:
 
         from job_applicator.documents.tone_detector import ToneDetector
 
-        tone_detector = ToneDetector()
-        tone_profile = tone_detector.detect(
-            title=job.title,
-            description=job.description,
-            requirements=job.requirements,
-        )
-        tone_section = tone_detector.format_for_prompt(tone_profile)
+        if tone_profile is None:
+            tone_detector = ToneDetector()
+            tone_profile = tone_detector.detect(
+                title=job.title,
+                description=job.description,
+                requirements=job.requirements,
+            )
+        tone_section = ToneDetector().format_for_prompt(tone_profile)
 
         prompt = TAILOR_PROMPT_TEMPLATE.format(
             job_title=job.title,
@@ -637,17 +687,34 @@ class ResumeTailor:
         refined_text = self._strip_hallucinated_education(refined_text, original_resume.raw_text)
         changes = await self._summarize_changes(current_tailored.tailored_text, refined_text)
 
+        # Recompute match scores against the refined text
+        from job_applicator.config import EmbeddingConfig
+        from job_applicator.embeddings.matching import JobMatcher
+
+        synthetic_resume = ResumeData(
+            raw_text=refined_text,
+            name=original_resume.name,
+            email=original_resume.email,
+            phone=original_resume.phone,
+            summary=original_resume.summary,
+            skills=original_resume.skills,
+            experience=original_resume.experience,
+            education=original_resume.education,
+        )
+        matcher = JobMatcher(EmbeddingConfig(device="cpu", memory_limit_gb=0.5))
+        new_match = matcher.match_resume_to_job(synthetic_resume, job)
+
         return TailoredResume(
             original_path=current_tailored.original_path,
             tailored_text=refined_text,
             job_title=job.title,
             job_company=job.company,
             job_url=str(job.url),
-            match_score=current_tailored.match_score,
-            semantic_score=current_tailored.semantic_score,
-            skill_score=current_tailored.skill_score,
-            matched_skills=current_tailored.matched_skills,
-            missing_skills=current_tailored.missing_skills,
+            match_score=new_match.score,
+            semantic_score=0.0,
+            skill_score=0.0,
+            matched_skills=new_match.matched_skills,
+            missing_skills=new_match.missing_skills,
             changes_summary=changes,
             user_modifications=user_feedback,
             attempt=current_tailored.attempt + 1,
@@ -768,8 +835,7 @@ class ResumeTailor:
                 skill_lower = skill_text.lower()
                 is_original = False
                 for orig in norm_skills:
-                    # Exact match or contained in original
-                    if skill_lower == orig or skill_lower in orig or orig in skill_lower:
+                    if _skills_match(skill_lower, orig):
                         is_original = True
                         break
 
@@ -869,6 +935,27 @@ class ResumeTailor:
                     # No generic replacement — just remove it
                     result = pattern.sub("", result)
                     logger.info("Removed hallucinated tool '%s'", req)
+
+        # Pass 2: check tool_replacements keys against tailored vs original
+        req_lower_set = {r.lower().strip() for r in job_requirements}
+        for tool_key, replacement in tool_replacements.items():
+            if tool_key in original_lower:
+                continue
+            if tool_key in req_lower_set:
+                continue
+            tool_pattern = re.compile(r"\b" + re.escape(tool_key) + r"\b", re.IGNORECASE)
+            if tool_pattern.search(result):
+                result_lower = result.lower()
+                tool_pos = result_lower.find(tool_key)
+                if tool_pos >= 0:
+                    context = result_lower[
+                        max(0, tool_pos - 50) : tool_pos + len(tool_key) + 50
+                    ]
+                    if replacement.lower() in context:
+                        result = tool_pattern.sub("", result)
+                    else:
+                        result = tool_pattern.sub(replacement, result)
+                    logger.info("Pass2: replaced hallucinated tool '%s'", tool_key)
 
         # Clean up double spaces and broken phrases from removals
         result = re.sub(r"  +", " ", result)

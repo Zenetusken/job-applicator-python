@@ -299,6 +299,94 @@ class CoverLetterGenerator:
         )
         return letter
 
+    @async_retry(max_attempts=2, base_delay=1.0, exceptions=(LLMError,))
+    async def refine(
+        self,
+        job: JobListing,
+        resume: ResumeData,
+        current_text: str,
+        user_feedback: str,
+        style_guide: StyleGuide | None = None,
+        tone_section: str = "",
+    ) -> str:
+        """Refine a cover letter based on user feedback.
+
+        Uses the same structured generation pipeline as generate() —
+        system prompt, style guide, tone section, instructor fallback.
+        """
+        parts = [
+            f"Job: {job.title} at {job.company}",
+            f"Location: {job.location}",
+        ]
+        if job.description:
+            parts.extend(["", "Job Description:", job.description[:800]])
+        if resume.skills:
+            parts.extend(["", f"Candidate Skills: {', '.join(resume.skills)}"])
+        if tone_section:
+            parts.extend(["", tone_section])
+        if style_guide:
+            from job_applicator.documents.style_analyzer import StyleAnalyzer
+
+            analyzer = StyleAnalyzer(self._config)
+            parts.extend(["", analyzer.format_style_for_prompt(style_guide)])
+        parts.extend(
+            [
+                "",
+                "Current cover letter:",
+                current_text,
+                "",
+                f"User feedback: {user_feedback}",
+                "",
+                "Apply the user's feedback and return the complete updated cover letter.",
+            ]
+        )
+        user_message = "\n".join(parts)
+
+        model = (
+            f"openai/{self._config.model}"
+            if self._config.api_base
+            else self._config.model
+        )
+
+        try:
+            client = self._get_client()
+            response = await client.create(
+                model=model,
+                api_base=self._config.api_base,
+                api_key=self._config.api_key,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_message},
+                ],
+                response_model=CoverLetterOutput,
+                max_retries=1,
+                extra_body={
+                    "chat_template_kwargs": {"enable_thinking": False}
+                },
+            )
+            return strip_thinking_process(response.cover_letter)
+        except Exception:
+            logger.info(
+                "Instructor failed for refine, falling back to direct litellm"
+            )
+            from litellm import acompletion
+
+            response = await acompletion(
+                model=model,
+                api_base=self._config.api_base,
+                api_key=self._config.api_key,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_message},
+                ],
+                max_tokens=self._config.max_tokens,
+                temperature=self._config.temperature,
+                extra_body={
+                    "chat_template_kwargs": {"enable_thinking": False}
+                },
+            )
+            return strip_thinking_process(response.choices[0].message.content)
+
     def _build_prompt(
         self,
         job: JobListing,
