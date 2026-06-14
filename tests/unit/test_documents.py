@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -124,6 +125,24 @@ def test_cover_letter_system_prompt_has_hallucination_guard() -> None:
     from job_applicator.documents.cover_letter import SYSTEM_PROMPT
 
     assert "not in the resume" in SYSTEM_PROMPT.lower() or "invent" in SYSTEM_PROMPT.lower()
+
+
+def test_ocr_service_extracts_text_from_image(tmp_path: Path) -> None:
+    from job_applicator.documents.ocr import OCRService
+
+    service = OCRService()
+    # PaddleOCR is lazy-loaded; mock it to avoid heavy model init in unit tests.
+    service._ocr = MagicMock()
+    service._ocr.ocr.return_value = [[([[0, 0], [10, 0], [10, 10], [0, 10]], ("Hello", 0.99))]]
+
+    img_path = tmp_path / "resume.png"
+    # Create a tiny blank PNG using PIL
+    from PIL import Image
+
+    Image.new("RGB", (50, 50), color="white").save(img_path)
+
+    text = service.extract_text_from_image(img_path)
+    assert "Hello" in text
 
 
 @pytest.fixture
