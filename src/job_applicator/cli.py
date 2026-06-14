@@ -1325,6 +1325,7 @@ def tailor(
                     resume_data, job, user_instructions, style, tone_profile
                 )
             session.add_attempt(result)
+            _run_ats_post_tailor(resume_data.raw_text, result.tailored_text)
         except Exception as exc:
             console.print(f"[red]LLM error: {exc}[/red]")
             console.print("[yellow]Could not generate tailored resume.[/yellow]")
