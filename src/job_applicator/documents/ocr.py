@@ -47,6 +47,7 @@ class OCRService:
 
     def extract_text_from_pdf(self, path: str | Path) -> str:
         """Extract text from a PDF using OCR."""
+        logger.info("Running OCR on PDF: %s", path)
         ocr = self._get_ocr()
         path = Path(path)
         try:

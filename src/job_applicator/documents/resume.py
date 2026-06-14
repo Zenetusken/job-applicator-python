@@ -57,6 +57,9 @@ class ResumeLoader:
         return self._parse_text(text)
 
     def _load_pdf(self, path: Path, ocr_mode: str = "auto") -> ResumeData:
+        if ocr_mode not in {"auto", "on", "off"}:
+            raise DocumentError(f"Invalid ocr_mode '{ocr_mode}'. Valid modes: auto, on, off")
+
         if ocr_mode == "on":
             text = self.ocr_service.extract_text_from_pdf(path)
             return self._parse_text(text)
