@@ -179,6 +179,7 @@ def main(
 
 @app.command()
 def search(
+    ctx: typer.Context,
     site: str = typer.Option("linkedin", "--site", "-s", help="Job board to search."),
     query: str = typer.Option(..., "--query", "-q", help="Search query."),
     location: str = typer.Option("", "--location", "-l", help="Location filter."),
@@ -190,6 +191,13 @@ def search(
     """Search for jobs on a job board."""
     settings = _get_settings(headed)
     setup_logging(settings.log_level)
+
+    reporter = _get_reporter(
+        ctx=ctx,
+        command="search",
+        args={"query": query, "board": site, "location": location, "limit": max_results},
+        config=_sanitize_config(settings),
+    )
 
     async def _run() -> None:
         from job_applicator.browser.manager import BrowserManager
@@ -256,11 +264,24 @@ def search(
 
         console.print(table)
 
-    asyncio.run(_run())
+    try:
+        asyncio.run(_run())
+    except Exception as exc:
+        if reporter:
+            reporter.record_error(str(exc))
+        raise
+    finally:
+        if reporter:
+            log_file = None
+            vctx = ctx.obj
+            if isinstance(vctx, VerboseContext):
+                log_file = vctx.log_file
+            reporter.render(console, log_file=log_file)
 
 
 @app.command()
 def apply(
+    ctx: typer.Context,
     site: str = typer.Option("linkedin", "--site", "-s", help="Job board."),
     query: str = typer.Option("", "--query", "-q", help="Search query (empty = use saved list)."),
     limit: int = typer.Option(5, "--limit", "-n", help="Max applications."),
@@ -288,6 +309,13 @@ def apply(
         settings.style_guide_path = style_guide
     setup_logging(settings.log_level)
     effective_ocr_mode = _resolve_ocr_mode(ocr_mode, force_ocr)
+
+    reporter = _get_reporter(
+        ctx=ctx,
+        command="apply",
+        args={"resume": settings.resume_path, "jobs_file": "", "limit": limit},
+        config=_sanitize_config(settings),
+    )
 
     async def _run() -> None:
         from job_applicator.browser.manager import BrowserManager
@@ -371,6 +399,9 @@ def apply(
                     ar: ApplicationResult = await applicator.apply(job, job_letter)
                     app_results.append(ar)
 
+            if reporter and app_results:
+                reporter.record_io(files_written=[])
+
             # Display results
             if as_json:
                 import json
@@ -417,7 +448,19 @@ def apply(
                     f"[yellow]{skipped}[/yellow] skipped"
                 )
 
-    asyncio.run(_run())
+    try:
+        asyncio.run(_run())
+    except Exception as exc:
+        if reporter:
+            reporter.record_error(str(exc))
+        raise
+    finally:
+        if reporter:
+            log_file = None
+            vctx = ctx.obj
+            if isinstance(vctx, VerboseContext):
+                log_file = vctx.log_file
+            reporter.render(console, log_file=log_file)
 
 
 @app.command()
@@ -1962,7 +2005,10 @@ def ats_check(
 
 
 @app.command()
-def config_init() -> None:
+def config_init(
+    ctx: typer.Context,
+    output_path: str = typer.Option("config.toml", "--output", "-o", help="Output file path."),
+) -> None:
     """Create a sample config.toml file."""
     config_content = """# Job Applicator Configuration
 
@@ -1993,14 +2039,36 @@ delay_between_applications_s = 2.0
 # linkedin_email = "your-email@example.com"
 # linkedin_password = "your-password"
 """
-    config_path = Path("config.toml")
+    config_path = Path(output_path)
     if config_path.exists():
         console.print("[yellow]config.toml already exists. Skipping.[/yellow]")
         return
 
-    config_path.write_text(config_content)
-    console.print("[green]Created config.toml[/green]")
-    console.print("Edit it with your credentials, or set environment variables.")
+    reporter = _get_reporter(
+        ctx=ctx,
+        command="config-init",
+        args={"output": output_path},
+        config={},
+    )
+
+    try:
+        config_path.write_text(config_content)
+        console.print("[green]Created config.toml[/green]")
+        console.print("Edit it with your credentials, or set environment variables.")
+
+        if reporter:
+            reporter.record_io(files_written=[str(output_path)])
+    except Exception as exc:
+        if reporter:
+            reporter.record_error(str(exc))
+        raise
+    finally:
+        if reporter:
+            log_file = None
+            vctx = ctx.obj
+            if isinstance(vctx, VerboseContext):
+                log_file = vctx.log_file
+            reporter.render(console, log_file=log_file)
 
 
 def _get_settings(headed: bool = False) -> AppSettings:
