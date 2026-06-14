@@ -88,6 +88,39 @@ def _run_ats_preflight(resume: ResumeData) -> None:
     console.print()
 
 
+def _run_ats_post_tailor(original_text: str, tailored_text: str) -> None:
+    """Compare ATS compatibility before and after tailoring."""
+    from job_applicator.documents.ats_checker import ATSChecker
+    from job_applicator.models import ResumeData
+
+    checker = ATSChecker()
+
+    original = ResumeData(raw_text=original_text)
+    tailored = ResumeData(raw_text=tailored_text)
+
+    original_result = checker.check(original)
+    tailored_result = checker.check(tailored)
+
+    before = original_result.score
+    after = tailored_result.score
+
+    if after >= before:
+        console.print(
+            f"\n[green]ATS Compatibility (before → after): {before:.0%} → {after:.0%} ✓[/green]"
+        )
+        if after >= 0.6:
+            console.print("  [green]✓ All checks passing after tailoring[/green]")
+    else:
+        console.print(
+            f"\n[yellow]⚠ ATS Compatibility (before → after): {before:.0%} → {after:.0%}[/yellow]"
+        )
+        original_checks = {c["name"]: c["passed"] for c in original_result.checks}
+        for check in tailored_result.checks:
+            if not check["passed"] and original_checks.get(check["name"], False):
+                console.print(f"  [yellow]![/yellow] New issue: {check['details']}")
+    console.print()
+
+
 def version_callback(value: bool) -> None:
     if value:
         console.print(f"job-applicator v{__version__}")

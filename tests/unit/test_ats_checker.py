@@ -168,6 +168,33 @@ class TestScoring:
         assert len(result.suggestions) > 0
 
 
+class TestATSPostTailor:
+    def test_post_tailor_shows_improvement(self) -> None:
+        from job_applicator.cli import _run_ats_post_tailor
+
+        original_text = "Bob\nbob@email.com\nstuff"
+        tailored_text = (
+            "Bob\nbob@email.com\n555-123-4567\n"
+            "Summary\nExperienced developer.\n"
+            "Experience\nSenior Dev at Corp (2020-Present)\n"
+            "Education\nBS CS (2016-2020)\n"
+            "Skills\nPython, Java"
+        )
+        _run_ats_post_tailor(original_text, tailored_text)
+
+    def test_post_tailor_detects_regression(self) -> None:
+        from job_applicator.cli import _run_ats_post_tailor
+
+        original_text = (
+            "John\njohn@example.com\n555-123-4567\n"
+            "Experience\nSenior Dev (2020-Present)\n"
+            "Education\nBS CS (2016-2020)\n"
+            "Skills\nPython"
+        )
+        tailored_text = "John\njohn@example.com\nTailored summary without sections."
+        _run_ats_post_tailor(original_text, tailored_text)
+
+
 class TestATSPreflight:
     def test_preflight_warns_when_incompatible(self) -> None:
         from job_applicator.cli import _run_ats_preflight
