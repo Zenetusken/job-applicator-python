@@ -13,6 +13,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
+from typing import cast
 
 from job_applicator.config import LLMConfig
 from job_applicator.exceptions import LLMError
@@ -174,7 +175,7 @@ class StyleAnalyzer:
             # Try instructor first (structured output with automatic retry)
             try:
                 client = instructor.from_litellm(acompletion)
-                response = await client.create(  # type: ignore[attr-defined]
+                response = await client.create(
                     model=model,
                     api_base=self._config.api_base,
                     api_key=self._config.api_key,
@@ -191,7 +192,7 @@ class StyleAnalyzer:
                     },
                 )
                 logger.info("Analyzed writing style via instructor: tone=%s", response.tone)
-                return response
+                return cast(StyleGuide, response)
             except Exception:
                 logger.debug("Instructor failed, falling back to direct litellm call")
 

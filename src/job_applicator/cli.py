@@ -246,9 +246,9 @@ def apply(
 
                 with console.status("Generating cover letters (parallel)..."):
                     results_cl = await asyncio.gather(*(_gen_one(j) for j in jobs[:limit]))
-                    for r in results_cl:
-                        if r is not None:
-                            url, letter = r
+                    for entry in results_cl:
+                        if entry is not None:
+                            url, letter = entry
                             cover_letters[url] = letter
 
             # Apply to jobs
@@ -270,13 +270,13 @@ def apply(
 
                 output = [
                     {
-                        "job": r.job.title,  # type: ignore[union-attr]
-                        "company": r.job.company,  # type: ignore[union-attr]
-                        "status": r.status.value,  # type: ignore[union-attr]
-                        "error": r.error_message,  # type: ignore[union-attr]
-                        "notes": r.notes,  # type: ignore[union-attr]
+                        "job": r.job.title,
+                        "company": r.job.company,
+                        "status": r.status.value,
+                        "error": r.error_message,
+                        "notes": r.notes,
                     }
-                    for r in app_results  # type: ignore[union-attr]
+                    for r in app_results
                 ]
                 console.print(json.dumps(output, indent=2))
             else:
@@ -286,36 +286,24 @@ def apply(
                 table.add_column("Status")
                 table.add_column("Notes")
 
-                for r in app_results:  # type: ignore[union-attr]
+                for r in app_results:
                     status_style = {
                         "submitted": "green",
                         "failed": "red",
                         "skipped": "yellow",
                         "pending": "blue",
-                    }.get(r.status.value, "white")  # type: ignore[union-attr]
+                    }.get(r.status.value, "white")
                     table.add_row(
-                        r.job.title,  # type: ignore[union-attr]
-                        r.job.company,  # type: ignore[union-attr]
-                        f"[{status_style}]{r.status.value}[/{status_style}]",  # type: ignore[union-attr]
-                        r.error_message or r.notes or "",  # type: ignore[union-attr]
+                        r.job.title,
+                        r.job.company,
+                        f"[{status_style}]{r.status.value}[/{status_style}]",
+                        r.error_message or r.notes or "",
                     )
 
                 console.print(table)
-                submitted = sum(
-                    1
-                    for r in app_results
-                    if r.status.value == "submitted"  # type: ignore[union-attr]
-                )
-                failed = sum(
-                    1
-                    for r in app_results
-                    if r.status.value == "failed"  # type: ignore[union-attr]
-                )
-                skipped = sum(
-                    1
-                    for r in app_results
-                    if r.status.value == "skipped"  # type: ignore[union-attr]
-                )
+                submitted = sum(1 for r in app_results if r.status.value == "submitted")
+                failed = sum(1 for r in app_results if r.status.value == "failed")
+                skipped = sum(1 for r in app_results if r.status.value == "skipped")
                 console.print(
                     f"\n[green]{submitted}[/green] submitted, "
                     f"[red]{failed}[/red] failed, "
@@ -991,7 +979,8 @@ async def _cover_letter_workflow(
             ).strip()
             if not user_instructions:
                 console.print("[yellow]No instructions provided.[/yellow]")
-            new_result = await _refine_cover_letter(
+                continue
+            refined_ok = await _refine_cover_letter(
                 console,
                 settings,
                 job,
@@ -1003,8 +992,10 @@ async def _cover_letter_workflow(
                 style,
                 tone_section,
             )
-            if not new_result:
+            if not refined_ok:
                 console.print("[red]Refinement failed. Please try again.[/red]")
+                continue
+            result = session.current
             continue
 
         elif choice == "D":

@@ -79,6 +79,132 @@ def test_resume_loader_docx_missing_dependency(tmp_path: object) -> None:
             loader.load(p)
 
 
+def test_ocr_fallback_triggers_on_short_text(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "scanned.pdf"
+    pdf_path.write_bytes(b"fake pdf bytes")
+
+    loader = ResumeLoader()
+    with (
+        patch.object(loader, "_run_pdftotext", return_value=" "),
+        patch.object(loader, "_run_pymupdf", return_value="  "),
+        patch.object(loader, "_ocr_service", MagicMock()) as mock_ocr,
+    ):
+        mock_ocr.extract_text_from_pdf.return_value = "John Doe\nSkills: Python"
+        result = loader._load_pdf(pdf_path, ocr_mode="auto")
+
+    mock_ocr.extract_text_from_pdf.assert_called_once_with(pdf_path)
+    assert "John Doe" in result.raw_text
+
+
+def test_force_ocr_skips_text_extraction(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "scanned.pdf"
+    pdf_path.write_bytes(b"fake pdf bytes")
+
+    loader = ResumeLoader()
+    with (
+        patch.object(loader, "_run_pdftotext") as mock_pdftotext,
+        patch.object(loader, "_run_pymupdf") as mock_pymupdf,
+        patch.object(loader, "_ocr_service", MagicMock()) as mock_ocr,
+    ):
+        mock_ocr.extract_text_from_pdf.return_value = "OCR text"
+        result = loader._load_pdf(pdf_path, ocr_mode="on")
+
+    mock_pdftotext.assert_not_called()
+    mock_pymupdf.assert_not_called()
+    mock_ocr.extract_text_from_pdf.assert_called_once_with(pdf_path)
+    assert result.raw_text == "OCR text"
+
+
+def test_ocr_mode_off_disables_ocr(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "scanned.pdf"
+    pdf_path.write_bytes(b"fake pdf bytes")
+
+    long_text = "A" * 150
+    loader = ResumeLoader()
+    with (
+        patch.object(loader, "_run_pdftotext", return_value=long_text),
+        patch.object(loader, "_run_pymupdf", return_value=""),
+        patch.object(loader, "_ocr_service", MagicMock()) as mock_ocr,
+    ):
+        result = loader._load_pdf(pdf_path, ocr_mode="off")
+
+    mock_ocr.extract_text_from_pdf.assert_not_called()
+    assert long_text in result.raw_text
+
+
+def test_ocr_mode_off_insufficient_text_raises(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "scanned.pdf"
+    pdf_path.write_bytes(b"fake pdf bytes")
+
+    loader = ResumeLoader()
+    with (
+        patch.object(loader, "_run_pdftotext", return_value="X"),
+        patch.object(loader, "_run_pymupdf", return_value="X"),
+        patch.object(loader, "_ocr_service", MagicMock()) as mock_ocr,
+    ):
+        with pytest.raises(DocumentError, match="insufficient extractable text"):
+            loader._load_pdf(pdf_path, ocr_mode="off")
+
+    mock_ocr.extract_text_from_pdf.assert_not_called()
+
+
+def test_ocr_failure_falls_back_to_extracted_text(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "scanned.pdf"
+    pdf_path.write_bytes(b"fake pdf bytes")
+
+    loader = ResumeLoader()
+    with (
+        patch.object(loader, "_run_pdftotext", return_value="short"),
+        patch.object(loader, "_run_pymupdf", return_value="Some extracted text"),
+        patch.object(loader, "_ocr_service", MagicMock()) as mock_ocr,
+    ):
+        mock_ocr.extract_text_from_pdf.side_effect = DocumentError("OCR failed")
+        result = loader._load_pdf(pdf_path, ocr_mode="auto")
+
+    assert "Some extracted text" in result.raw_text
+
+
+def test_ocr_failure_with_no_text_raises(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "scanned.pdf"
+    pdf_path.write_bytes(b"fake pdf bytes")
+
+    loader = ResumeLoader()
+    with (
+        patch.object(loader, "_run_pdftotext", return_value=""),
+        patch.object(loader, "_run_pymupdf", return_value=""),
+        patch.object(loader, "_ocr_service", MagicMock()) as mock_ocr,
+    ):
+        mock_ocr.extract_text_from_pdf.side_effect = DocumentError("OCR failed")
+        with pytest.raises(DocumentError):
+            loader._load_pdf(pdf_path, ocr_mode="auto")
+
+
+def test_image_resume_uses_ocr(tmp_path: Path) -> None:
+    img_path = tmp_path / "resume.png"
+    from PIL import Image
+
+    Image.new("RGB", (50, 50), color="white").save(img_path)
+
+    loader = ResumeLoader()
+    with patch.object(loader, "_ocr_service", MagicMock()) as mock_ocr:
+        mock_ocr.extract_text_from_image.return_value = "OCR text"
+        result = loader.load(img_path, ocr_mode="on")
+
+    mock_ocr.extract_text_from_image.assert_called_once_with(img_path)
+    assert result.raw_text == "OCR text"
+
+
+def test_force_ocr_failure_raises(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "scanned.pdf"
+    pdf_path.write_bytes(b"fake pdf bytes")
+
+    loader = ResumeLoader()
+    with patch.object(loader, "_ocr_service", MagicMock()) as mock_ocr:
+        mock_ocr.extract_text_from_pdf.side_effect = DocumentError("OCR failed")
+        with pytest.raises(DocumentError):
+            loader._load_pdf(pdf_path, ocr_mode="on")
+
+
 def test_cover_letter_generator_template() -> None:
     config = LLMConfig()
     generator = CoverLetterGenerator(config)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -187,7 +188,7 @@ class CoverLetterGenerator:
         self._client = None
         self._style_cache: StyleGuide | None = None
 
-    def _get_client(self) -> object:
+    def _get_client(self) -> Any:
         """Lazy-load instructor client."""
         if self._client is None:
             try:
@@ -269,7 +270,7 @@ class CoverLetterGenerator:
         # Try instructor first (structured output)
         try:
             client = self._get_client()
-            response = await client.create(  # type: ignore[attr-defined]
+            response = await client.create(
                 model=model,
                 api_base=self._config.api_base,
                 api_key=self._config.api_key,

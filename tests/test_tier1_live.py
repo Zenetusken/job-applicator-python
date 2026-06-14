@@ -11,7 +11,6 @@ Tests each Tier 1 change against the real environment:
 from __future__ import annotations
 
 import asyncio
-import json
 import subprocess
 import sys
 import tempfile
@@ -48,6 +47,7 @@ def skip(item: str, test: str, reason: str):
 
 # ── TIER 1 ITEM A1: Style Analyzer → instructor ─────────────────────────────
 
+
 async def test_a1_style_analyzer_instructor():
     """Test that style_analyzer uses instructor for structured output."""
     console.print(Panel("[bold]A1: Style Analyzer → instructor response_model[/]", style="cyan"))
@@ -77,10 +77,22 @@ async def test_a1_style_analyzer_instructor():
     try:
         guide = await analyzer.analyze(job_text)
         report("A1", "instructor returns StyleGuide", hasattr(guide, "tone"))
-        report("A1", "guide has key_phrases", hasattr(guide, "key_phrases") and len(guide.key_phrases) > 0)
-        report("A1", "guide has power_words", hasattr(guide, "power_words") and len(guide.power_words) > 0)
+        report(
+            "A1",
+            "guide has key_phrases",
+            hasattr(guide, "key_phrases") and len(guide.key_phrases) > 0,
+        )
+        report(
+            "A1",
+            "guide has power_words",
+            hasattr(guide, "power_words") and len(guide.power_words) > 0,
+        )
         report("A1", "guide has tone", isinstance(guide.tone, str) and len(guide.tone) > 0)
-        report("A1", "guide has sentence_structure", hasattr(guide, "sentence_structure") and len(guide.sentence_structure) > 0)
+        report(
+            "A1",
+            "guide has sentence_structure",
+            hasattr(guide, "sentence_structure") and len(guide.sentence_structure) > 0,
+        )
         console.print(f"    tone={guide.tone}")
         console.print(f"    key_phrases={guide.key_phrases[:3]}")
         console.print(f"    power_words={guide.power_words[:3]}")
@@ -90,11 +102,12 @@ async def test_a1_style_analyzer_instructor():
 
 # ── TIER 1 ITEM A7: Prompt Version Field ─────────────────────────────────────
 
+
 def test_a7_prompt_version():
     """Test that prompt_version field exists and defaults to '1.0'."""
     console.print(Panel("[bold]A7: Prompt Version Field[/]", style="cyan"))
 
-    from job_applicator.models import TailoredResume, CoverLetterResult
+    from job_applicator.models import CoverLetterResult, TailoredResume
 
     # TailoredResume
     tr = TailoredResume(
@@ -134,6 +147,7 @@ def test_a7_prompt_version():
 
 # ── TIER 1 ITEM B1: Embedding Cache Key ──────────────────────────────────────
 
+
 def test_b1_cache_key():
     """Test that cache key includes model name and normalize flag, is 32-char MD5."""
     console.print(Panel("[bold]B1: Embedding Cache Key[/]", style="cyan"))
@@ -164,6 +178,7 @@ def test_b1_cache_key():
 
 # ── TIER 1 ITEM B2: mxbai Query Prefix ──────────────────────────────────────
 
+
 async def test_b2_query_prefix():
     """Test that mxbai query prefix is applied to resume embeddings."""
     console.print(Panel("[bold]B2: mxbai Query Prefix[/]", style="cyan"))
@@ -188,7 +203,9 @@ async def test_b2_query_prefix():
         report("B2", "embedding has correct dimension", len(emb) == 1024, f"dim={len(emb)}")
 
         # Verify embed_text with prefix works
-        emb_prefix = matcher.embed_text("test text", prefix="Represent this sentence for searching relevant passages: ")
+        emb_prefix = matcher.embed_text(
+            "test text", prefix="Represent this sentence for searching relevant passages: "
+        )
         emb_no_prefix = matcher.embed_text("test text")
         report("B2", "prefix changes embedding", not all(emb_prefix == emb_no_prefix))
         console.print(f"    embedding sample: [{emb[0]:.4f}, {emb[1]:.4f}, {emb[2]:.4f}, ...]")
@@ -197,6 +214,7 @@ async def test_b2_query_prefix():
 
 
 # ── TIER 1 ITEM D3: pdftotext -layout flag ──────────────────────────────────
+
 
 def test_d3_pdftotext_layout():
     """Check if pdftotext -layout flag is being used."""
@@ -207,11 +225,16 @@ def test_d3_pdftotext_layout():
     source = resume_py.read_text()
 
     uses_layout = "-layout" in source
-    report("D3", "pdftotext uses -layout flag", uses_layout,
-           "FOUND in source" if uses_layout else "NOT FOUND — still missing!")
+    report(
+        "D3",
+        "pdftotext uses -layout flag",
+        uses_layout,
+        "FOUND in source" if uses_layout else "NOT FOUND — still missing!",
+    )
 
 
 # ── TIER 1 ITEM D7: Semantic/Skill Score Population ──────────────────────────
+
 
 def test_d7_score_fields():
     """Test that semantic_score and skill_score fields exist and can be populated."""
@@ -249,6 +272,7 @@ def test_d7_score_fields():
 
 
 # ── TIER 1 ITEM D1: Python-docx Support ─────────────────────────────────────
+
 
 def test_d1_docx_support():
     """Test loading a .docx resume file."""
@@ -290,7 +314,12 @@ def test_d1_docx_support():
         report("D1", "name extracted", resume.name == "Jane Smith", f"name={resume.name}")
         report("D1", "email extracted", resume.email == "jane@example.com", f"email={resume.email}")
         report("D1", "skills extracted", len(resume.skills) > 0, f"skills={resume.skills[:3]}")
-        report("D1", "summary extracted", "data scientist" in resume.summary.lower(), f"summary={resume.summary[:50]}")
+        report(
+            "D1",
+            "summary extracted",
+            "data scientist" in resume.summary.lower(),
+            f"summary={resume.summary[:50]}",
+        )
     except Exception as e:
         report("D1", "docx loading", False, str(e)[:100])
     finally:
@@ -299,6 +328,7 @@ def test_d1_docx_support():
 
 # ── TIER 1 ITEM E1: --json Flag ─────────────────────────────────────────────
 
+
 def test_e1_json_flag():
     """Test that --json flag is available on CLI commands."""
     console.print(Panel("[bold]E1: --json Flag[/]", style="cyan"))
@@ -306,22 +336,43 @@ def test_e1_json_flag():
     # Use the installed entry point directly
     result = subprocess.run(
         ["job-applicator", "match", "--help"],
-        capture_output=True, text=True, timeout=10,
-        env={**subprocess.os.environ, "PATH": str(Path(__file__).parent.parent / ".venv" / "bin") + ":" + subprocess.os.environ.get("PATH", "")},
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env={
+            **subprocess.os.environ,
+            "PATH": str(Path(__file__).parent.parent / ".venv" / "bin")
+            + ":"
+            + subprocess.os.environ.get("PATH", ""),
+        },
     )
     match_help = result.stdout
 
     result2 = subprocess.run(
         ["job-applicator", "search", "--help"],
-        capture_output=True, text=True, timeout=10,
-        env={**subprocess.os.environ, "PATH": str(Path(__file__).parent.parent / ".venv" / "bin") + ":" + subprocess.os.environ.get("PATH", "")},
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env={
+            **subprocess.os.environ,
+            "PATH": str(Path(__file__).parent.parent / ".venv" / "bin")
+            + ":"
+            + subprocess.os.environ.get("PATH", ""),
+        },
     )
     search_help = result2.stdout
 
     result3 = subprocess.run(
         ["job-applicator", "apply", "--help"],
-        capture_output=True, text=True, timeout=10,
-        env={**subprocess.os.environ, "PATH": str(Path(__file__).parent.parent / ".venv" / "bin") + ":" + subprocess.os.environ.get("PATH", "")},
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env={
+            **subprocess.os.environ,
+            "PATH": str(Path(__file__).parent.parent / ".venv" / "bin")
+            + ":"
+            + subprocess.os.environ.get("PATH", ""),
+        },
     )
     apply_help = result3.stdout
 
@@ -332,11 +383,12 @@ def test_e1_json_flag():
 
 # ── TIER 1 ITEM F4: Seniority Detection ─────────────────────────────────────
 
+
 def test_f4_seniority_detection():
     """Test seniority detection with various job titles."""
     console.print(Panel("[bold]F4: Seniority Detection[/]", style="cyan"))
 
-    from job_applicator.models import JobListing, detect_seniority, JobBoard
+    from job_applicator.models import JobBoard, JobListing, detect_seniority
 
     cases = [
         ("Senior Python Developer", "senior"),
@@ -379,6 +431,7 @@ def test_f4_seniority_detection():
 
 # ── TIER 1 ITEM F1/F2: Dependency Cleanup ────────────────────────────────────
 
+
 def test_f1_f2_dependencies():
     """Test that unused deps are removed and missing deps are added."""
     console.print(Panel("[bold]F1/F2: Dependency Cleanup[/]", style="cyan"))
@@ -395,7 +448,11 @@ def test_f1_f2_dependencies():
             in_deps = True
             continue
         if in_deps:
-            if line.strip().startswith("[") or (line.strip() and not line.strip().startswith('"') and not line.strip().startswith("'")):
+            if line.strip().startswith("[") or (
+                line.strip()
+                and not line.strip().startswith('"')
+                and not line.strip().startswith("'")
+            ):
                 if line.strip().startswith("["):
                     break
             deps_section += line + "\n"
@@ -403,8 +460,12 @@ def test_f1_f2_dependencies():
     removed = ["httpx", "beautifulsoup4", "pydantic-ai", "crawl4ai"]
     for dep in removed:
         in_deps = dep in deps_section
-        report("F1", f"{dep} removed from deps", not in_deps,
-               "still in deps" if in_deps else "confirmed removed")
+        report(
+            "F1",
+            f"{dep} removed from deps",
+            not in_deps,
+            "still in deps" if in_deps else "confirmed removed",
+        )
 
     # Check that core deps are importable
     core_deps = ["numpy", "docx", "litellm", "instructor", "typer", "rich", "pydantic"]
@@ -421,6 +482,7 @@ def test_f1_f2_dependencies():
 
 
 # ── SUMMARY ──────────────────────────────────────────────────────────────────
+
 
 def print_summary():
     """Print a summary table of all test results."""
@@ -442,6 +504,7 @@ def print_summary():
 
 
 # ── MAIN ─────────────────────────────────────────────────────────────────────
+
 
 async def main():
     console.print(Panel("[bold white]TIER 1 LIVE UI WORKFLOW TESTS[/]", style="blue", expand=False))

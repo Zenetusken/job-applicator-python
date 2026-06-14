@@ -19,8 +19,7 @@ async def test_live_tailor():
     """Run a real tailor operation and verify output metadata."""
     console.print("[bold cyan]LIVE TAILOR WORKFLOW TEST[/]\n")
 
-    from job_applicator.config import AppSettings, LLMConfig, EmbeddingConfig
-    from job_applicator.documents.resume import ResumeLoader
+    from job_applicator.config import EmbeddingConfig, LLMConfig
     from job_applicator.documents.resume_tailor import ResumeTailor
     from job_applicator.embeddings.matching import JobMatcher
     from job_applicator.models import JobBoard, JobListing, ResumeData
@@ -53,7 +52,18 @@ Python Developer | CodeBase Corp | 2019-2021
         email="john@example.com",
         phone="555-0123",
         summary="Senior Python developer with 6 years of experience",
-        skills=["Python", "FastAPI", "Django", "PostgreSQL", "Docker", "AWS", "Redis", "asyncio", "pytest", "Kubernetes"],
+        skills=[
+            "Python",
+            "FastAPI",
+            "Django",
+            "PostgreSQL",
+            "Docker",
+            "AWS",
+            "Redis",
+            "asyncio",
+            "pytest",
+            "Kubernetes",
+        ],
     )
 
     # 2. Create test job
@@ -124,6 +134,7 @@ Python Developer | CodeBase Corp | 2019-2021
 
     # F4: seniority detection
     from job_applicator.models import detect_seniority
+
     seniority = detect_seniority(job.title)
     checks.append(("seniority detected for job", seniority is not None))
 
@@ -146,7 +157,7 @@ Python Developer | CodeBase Corp | 2019-2021
         elif "match_score" in name:
             detail = f" (got={total:.3f})"
         elif "sum" in name:
-            detail = f" (sem={sem:.3f} + sk={sk:.3f} = {sem+sk:.3f} vs total={total:.3f})"
+            detail = f" (sem={sem:.3f} + sk={sk:.3f} = {sem + sk:.3f} vs total={total:.3f})"
         elif "seniority" in name:
             detail = f" (got={seniority})"
         console.print(f"  {icon} {name}{detail}")
@@ -154,7 +165,7 @@ Python Developer | CodeBase Corp | 2019-2021
             all_pass = False
 
     # Print sample of tailored text
-    console.print(f"\n[bold]Tailored text sample (first 300 chars):[/]")
+    console.print("\n[bold]Tailored text sample (first 300 chars):[/]")
     console.print(tailored[:300] + "...")
 
     # Save output

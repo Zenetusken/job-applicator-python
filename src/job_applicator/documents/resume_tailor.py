@@ -20,6 +20,7 @@ from job_applicator.utils.logging import get_logger
 from job_applicator.utils.retry import async_retry
 
 if TYPE_CHECKING:
+    from job_applicator.documents.tone_detector import ToneProfile
     from job_applicator.embeddings.matching import JobMatcher
 
 logger = get_logger("documents.resume_tailor")
@@ -580,7 +581,7 @@ class ResumeTailor:
         job: JobListing,
         user_instructions: str = "",
         style_guide: StyleGuide | None = None,
-        tone_profile: object | None = None,
+        tone_profile: ToneProfile | None = None,
         matcher: JobMatcher | None = None,
     ) -> TailoredResume:
         """Tailor a resume for a specific job.
