@@ -155,18 +155,14 @@ class VerboseReporter:
         self.report.errors.append(message)
 
     def _finalize(self) -> None:
-        self.report.duration_ms = int(
-            (datetime.now() - self._started_at).total_seconds() * 1000
-        )
+        self.report.duration_ms = int((datetime.now() - self._started_at).total_seconds() * 1000)
 
     def render(self, console: Console | None, log_file: str | None = None) -> None:
         self._finalize()
         if console is not None:
             self._render_terminal(console)
         if log_file:
-            Path(log_file).write_text(
-                self.report.model_dump_json(indent=2), encoding="utf-8"
-            )
+            Path(log_file).write_text(self.report.model_dump_json(indent=2), encoding="utf-8")
 
     def _render_terminal(self, console: Console) -> None:
         table = Table(title="Observability Report")
