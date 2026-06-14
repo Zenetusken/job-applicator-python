@@ -1638,8 +1638,29 @@ def tailor(
     asyncio.run(_run())
 
 
+def _sanitize_config(settings: AppSettings) -> dict[str, Any]:
+    data = settings.model_dump()
+    _redact_secrets(data)
+    return data
+
+
+def _redact_secrets(obj: Any) -> None:
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if isinstance(key, str) and any(
+                s in key.lower() for s in ("password", "secret", "key", "token")
+            ):
+                obj[key] = "[REDACTED]"
+            else:
+                _redact_secrets(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            _redact_secrets(item)
+
+
 @app.command()
 def ats_check(
+    ctx: typer.Context,
     resume_path: str = typer.Option("", "--resume", help="Path to resume file."),
     as_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
     ocr_mode: str = typer.Option(
@@ -1667,57 +1688,93 @@ def ats_check(
         console.print("[red]Resume path required. Use --resume.[/red]")
         raise typer.Exit(1)
 
-    loader = ResumeLoader()
-    resume_data = loader.load(settings.resume_path, ocr_mode=effective_ocr_mode)
+    reporter = _get_reporter(
+        ctx=ctx,
+        command="ats-check",
+        args={"resume": settings.resume_path, "ocr_mode": effective_ocr_mode},
+        config=_sanitize_config(settings),
+    )
 
-    if not as_json:
-        console.print(f"[green]Loaded resume: {resume_data.name}[/green]")
+    try:
+        loader = ResumeLoader()
+        resume_data = loader.load(settings.resume_path, ocr_mode=effective_ocr_mode)
 
-    checker = ATSChecker()
-    result = checker.check(resume_data)
+        if reporter:
+            reporter.record_resume(
+                source=str(settings.resume_path),
+                ocr_mode=effective_ocr_mode,
+                text_length=len(resume_data.raw_text),
+                parsed_name=resume_data.name,
+                parsed_email=resume_data.email,
+                parsed_phone=resume_data.phone,
+                parsed_skills=resume_data.skills,
+                parsed_summary_preview=resume_data.summary[:100],
+            )
 
-    if as_json:
-        import json
+        if not as_json:
+            console.print(f"[green]Loaded resume: {resume_data.name}[/green]")
 
-        output = {
-            "score": result.score,
-            "is_compatible": result.is_compatible,
-            "checks": result.checks,
-            "warnings": result.warnings,
-            "suggestions": result.suggestions,
-        }
-        console.print(json.dumps(output, indent=2))
-        return
+        checker = ATSChecker()
+        result = checker.check(resume_data)
 
-    # Display results
-    color = "green" if result.is_compatible else "red"
-    console.print(f"\n[bold {color}]ATS Score: {result.score:.0%}[/bold {color}]")
-    status = "Compatible" if result.is_compatible else "Not Compatible"
-    console.print(f"[{color}]Status: {status}[/{color}]\n")
+        if reporter:
+            reporter.record_ats(
+                score=result.score,
+                is_compatible=result.is_compatible,
+                checks=result.checks,
+                warnings=result.warnings,
+                suggestions=result.suggestions,
+            )
 
-    # Check results table
-    table = Table(title="ATS Checks")
-    table.add_column("Check", style="cyan")
-    table.add_column("Status")
-    table.add_column("Details")
+        if as_json:
+            import json
 
-    for check in result.checks:
-        status = "[green]PASS[/green]" if check["passed"] else "[red]FAIL[/red]"
-        table.add_row(str(check["name"]), status, str(check["details"]))
+            output = {
+                "score": result.score,
+                "is_compatible": result.is_compatible,
+                "checks": result.checks,
+                "warnings": result.warnings,
+                "suggestions": result.suggestions,
+            }
+            console.print(json.dumps(output, indent=2))
+            return
 
-    console.print(table)
+        # Display results
+        color = "green" if result.is_compatible else "red"
+        console.print(f"\n[bold {color}]ATS Score: {result.score:.0%}[/bold {color}]")
+        status = "Compatible" if result.is_compatible else "Not Compatible"
+        console.print(f"[{color}]Status: {status}[/{color}]\n")
 
-    # Warnings
-    if result.warnings:
-        console.print("\n[bold yellow]Warnings:[/bold yellow]")
-        for warning in result.warnings:
-            console.print(f"  [yellow]![/yellow] {warning}")
+        # Check results table
+        table = Table(title="ATS Checks")
+        table.add_column("Check", style="cyan")
+        table.add_column("Status")
+        table.add_column("Details")
 
-    # Suggestions
-    if result.suggestions:
-        console.print("\n[bold cyan]Suggestions:[/bold cyan]")
-        for suggestion in result.suggestions:
-            console.print(f"  [cyan]*[/cyan] {suggestion}")
+        for check in result.checks:
+            status = "[green]PASS[/green]" if check["passed"] else "[red]FAIL[/red]"
+            table.add_row(str(check["name"]), status, str(check["details"]))
+
+        console.print(table)
+
+        # Warnings
+        if result.warnings:
+            console.print("\n[bold yellow]Warnings:[/bold yellow]")
+            for warning in result.warnings:
+                console.print(f"  [yellow]![/yellow] {warning}")
+
+        # Suggestions
+        if result.suggestions:
+            console.print("\n[bold cyan]Suggestions:[/bold cyan]")
+            for suggestion in result.suggestions:
+                console.print(f"  [cyan]*[/cyan] {suggestion}")
+    finally:
+        if reporter:
+            log_file = None
+            vctx = ctx.obj
+            if isinstance(vctx, VerboseContext):
+                log_file = vctx.log_file
+            reporter.render(console, log_file=log_file)
 
 
 @app.command()
