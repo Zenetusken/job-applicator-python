@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any
 
 from job_applicator.exceptions import DocumentError
@@ -44,37 +45,30 @@ class OCRService:
             raise DocumentError(f"OCR failed for image {path}: {exc}") from exc
         return self._parse_result(result).strip()
 
-    def extract_text_from_pdf(self, path: Path) -> str:
-        """Run OCR on every page of a PDF."""
-        logger.info("Running OCR on PDF: %s", path)
+    def extract_text_from_pdf(self, path: str | Path) -> str:
+        """Extract text from a PDF using OCR."""
+        ocr = self._get_ocr()
+        path = Path(path)
         try:
             import fitz
         except ImportError as exc:
             raise DocumentError(
-                "PyMuPDF is required for OCR on PDFs. Install: pip install pymupdf"
+                "PyMuPDF (fitz) is required for OCR on PDFs. Run: pip install pymupdf"
             ) from exc
-
-        try:
-            page_texts: list[str] = []
-            with fitz.open(str(path)) as doc:
-                for _page_num, page in enumerate(doc, start=1):
-                    pix = page.get_pixmap(dpi=200)
-                    import tempfile
-
-                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-                        tmp_path = Path(tmp.name)
-                        pix.save(str(tmp_path))
+        with fitz.open(str(path)) as doc:
+            page_texts = []
+            for page in doc:
+                pix = page.get_pixmap(dpi=300)
+                with NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                    tmp.write(pix.tobytes())
+                    tmp.flush()
                     try:
-                        text = self.extract_text_from_image(tmp_path)
-                        page_texts.append(text)
+                        result = ocr.ocr(tmp.name, cls=True)
+                        page_text = self._parse_result(result).strip()
+                        page_texts.append(page_text)
                     finally:
-                        tmp_path.unlink(missing_ok=True)
-        except Exception as exc:
-            raise DocumentError(f"OCR failed for PDF {path}: {exc}") from exc
-
-        full_text = "\n\n".join(page_texts).strip()
-        logger.info("OCR extracted %d characters from PDF", len(full_text))
-        return full_text.strip()
+                        Path(tmp.name).unlink(missing_ok=True)
+            return "\n\n".join(page_texts).strip()
 
     def _parse_result(self, result: Any) -> str:
         """Flatten PaddleOCR result into plain text."""
