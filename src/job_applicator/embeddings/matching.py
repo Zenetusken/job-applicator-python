@@ -18,6 +18,8 @@ class MatchResult:
 
     job: JobListing
     score: float
+    semantic_score: float
+    skill_score: float
     matched_skills: list[str]
     missing_skills: list[str]
     summary: str
@@ -178,6 +180,8 @@ class JobMatcher:
         return MatchResult(
             job=job,
             score=score,
+            semantic_score=semantic_score,
+            skill_score=skill_score,
             matched_skills=matched_skills,
             missing_skills=missing_skills,
             summary=summary,

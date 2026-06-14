@@ -50,16 +50,18 @@ class ResumeLoader:
 
             # Try pdftotext first (poppler-utils)
             with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as tmp:
-                result = subprocess.run(  # noqa: S603
-                    ["pdftotext", "-layout", str(path), tmp.name],  # noqa: S607
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-                if result.returncode == 0:
-                    text = Path(tmp.name).read_text(encoding="utf-8")
-                    Path(tmp.name).unlink()
-                    return self._parse_text(text)
+                try:
+                    result = subprocess.run(  # noqa: S603
+                        ["pdftotext", "-layout", str(path), tmp.name],  # noqa: S607
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    if result.returncode == 0:
+                        text = Path(tmp.name).read_text(encoding="utf-8")
+                        return self._parse_text(text)
+                finally:
+                    Path(tmp.name).unlink(missing_ok=True)
 
             # Fallback: try PyMuPDF
             try:

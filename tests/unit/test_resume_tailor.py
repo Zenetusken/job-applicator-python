@@ -171,6 +171,8 @@ class TestResumeTailor:
         mock_match = MatchResult(
             job=sample_job,
             score=0.72,
+            semantic_score=0.5,
+            skill_score=0.3,
             matched_skills=["Windows"],
             missing_skills=["ServiceNow"],
             summary="Good match",
@@ -203,6 +205,8 @@ class TestResumeTailor:
         mock_match = MatchResult(
             job=sample_job,
             score=0.8,
+            semantic_score=0.6,
+            skill_score=0.4,
             matched_skills=["Windows"],
             missing_skills=[],
             summary="Strong match",
@@ -245,6 +249,8 @@ class TestResumeTailor:
         mock_match = MatchResult(
             job=sample_job,
             score=0.85,
+            semantic_score=0.65,
+            skill_score=0.5,
             matched_skills=["Windows", "Office 365"],
             missing_skills=[],
             summary="Strong match",

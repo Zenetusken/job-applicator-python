@@ -137,6 +137,8 @@ class TestJobMatcher:
         result = MatchResult(
             job=job,
             score=0.85,
+            semantic_score=0.6,
+            skill_score=0.4,
             matched_skills=["Python"],
             missing_skills=["Java"],
             summary="Strong match",

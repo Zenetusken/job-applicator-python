@@ -636,13 +636,16 @@ def batch(
 
         style = None
         cl_generator = None
-        if cover_letter:
+        if settings.style_guide_path:
             from job_applicator.documents.cover_letter import CoverLetterGenerator
 
             cl_generator = CoverLetterGenerator(settings.llm)
-            if settings.style_guide_path:
-                with console.status("Loading style guide..."):
-                    style = await cl_generator.load_style_guide(settings.style_guide_path)
+            with console.status("Loading style guide..."):
+                style = await cl_generator.load_style_guide(settings.style_guide_path)
+        elif cover_letter:
+            from job_applicator.documents.cover_letter import CoverLetterGenerator
+
+            cl_generator = CoverLetterGenerator(settings.llm)
 
         tailor_engine = ResumeTailor(settings.llm)
         user_profile = _load_user_profile(settings)
@@ -846,7 +849,7 @@ async def _refine_cover_letter(
     resume_data: ResumeData | None = None,
     style: StyleGuide | None = None,
     tone_section: str = "",
-) -> None:
+) -> bool:
     """Refine a cover letter with user instructions via LLM."""
     from job_applicator.documents.cover_letter import CoverLetterGenerator
     from job_applicator.models import CoverLetterResult as CLResult
@@ -872,8 +875,10 @@ async def _refine_cover_letter(
             attempt=attempt + 1,
         )
         session.add_attempt(new_result)
+        return True
     except Exception as exc:
         console.print(f"[red]LLM error: {exc}[/red]")
+        return False
 
 
 async def _cover_letter_workflow(
@@ -998,7 +1003,7 @@ async def _cover_letter_workflow(
                 style,
                 tone_section,
             )
-            if new_result is None:
+            if not new_result:
                 console.print("[red]Refinement failed. Please try again.[/red]")
             continue
 
