@@ -113,7 +113,7 @@ Default model: `cyankiwi/Qwen3.5-4B-AWQ-4bit`. Override via `JOB_APPLICATOR_LLM_
 CLI usage: `job-applicator ats-check --resume resume.pdf [--json]`
 Score >= 60% = compatible. Returns warnings and actionable suggestions.
 
-**Integrated checks:** ATS compatibility is automatically checked before `tailor`, `match`, and `apply` commands. Warnings shown if score < 60%. Post-tailor verification shows before/after comparison.
+**Integrated checks:** ATS compatibility is automatically checked before `tailor`, `match`, `apply`, and `batch` commands. Warnings shown if score < 60%. Post-tailor verification shows before/after comparison.
 
 ## Testing
 
