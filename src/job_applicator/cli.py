@@ -422,6 +422,7 @@ def apply(
 
 @app.command()
 def generate_cover_letter(
+    ctx: typer.Context,
     job_title: str = typer.Option(..., "--job-title", "-t", help="Job title."),
     company: str = typer.Option(..., "--company", "-c", help="Company name."),
     job_description: str = typer.Option("", "--description", "-d", help="Job description."),
@@ -448,6 +449,18 @@ def generate_cover_letter(
     setup_logging(settings.log_level)
     effective_ocr_mode = _resolve_ocr_mode(ocr_mode, force_ocr)
 
+    reporter = _get_reporter(
+        ctx=ctx,
+        command="generate-cover-letter",
+        args={
+            "resume": settings.resume_path,
+            "job_title": job_title,
+            "company": company,
+            "style_guide": settings.style_guide_path,
+        },
+        config=_sanitize_config(settings),
+    )
+
     async def _run() -> None:
         from pydantic import HttpUrl
 
@@ -461,6 +474,17 @@ def generate_cover_letter(
 
         loader = ResumeLoader()
         resume_data = loader.load(settings.resume_path, ocr_mode=effective_ocr_mode)
+        if reporter:
+            reporter.record_resume(
+                source=settings.resume_path,
+                ocr_mode=effective_ocr_mode,
+                text_length=len(resume_data.raw_text),
+                parsed_name=resume_data.name or "",
+                parsed_email=resume_data.email or "",
+                parsed_phone=resume_data.phone or "",
+                parsed_skills=resume_data.skills,
+                parsed_summary_preview=resume_data.summary[:200] if resume_data.summary else "",
+            )
         user_profile = _load_user_profile(settings)
 
         job = JobListing(
@@ -505,13 +529,30 @@ def generate_cover_letter(
                         msg = f"Combined style from {len(texts)} examples"
                         console.print(f"[green]{msg}: {style.tone}[/green]")
 
+        if reporter:
+            reporter.record_llm_call(
+                model=settings.llm.model,
+                endpoint=settings.llm.api_base,
+                temperature=settings.llm.temperature,
+                details={"style_guide": settings.style_guide_path or "default"},
+            )
+
         with console.status("Generating cover letter..."):
             letter = await generator.generate(job, user_profile, resume_data, style)
 
         console.print("\n[bold]Generated Cover Letter:[/bold]\n")
         console.print(letter)
 
-    asyncio.run(_run())
+    try:
+        asyncio.run(_run())
+    except Exception as exc:
+        if reporter:
+            reporter.record_error(str(exc))
+        raise
+    finally:
+        if reporter:
+            log_file = ctx.obj.log_file if isinstance(ctx.obj, VerboseContext) else None
+            reporter.render(console, log_file)
 
 
 @app.command()
@@ -1283,6 +1324,7 @@ async def _cover_letter_workflow(
 
 @app.command()
 def tailor(
+    ctx: typer.Context,
     resume_path: str = typer.Option("", "--resume", help="Path to resume file."),
     job_title: str = typer.Option(..., "--job-title", "-t", help="Job title."),
     company: str = typer.Option(..., "--company", "-c", help="Company name."),
@@ -1317,6 +1359,18 @@ def tailor(
     setup_logging(settings.log_level)
     effective_ocr_mode = _resolve_ocr_mode(ocr_mode, force_ocr)
 
+    reporter = _get_reporter(
+        ctx=ctx,
+        command="tailor",
+        args={
+            "resume": settings.resume_path,
+            "job": job_description,
+            "min_score": min_score,
+            "interactive": True,
+        },
+        config=_sanitize_config(settings),
+    )
+
     async def _run() -> None:
         from pydantic import HttpUrl
 
@@ -1330,6 +1384,17 @@ def tailor(
 
         loader = ResumeLoader()
         resume_data = loader.load(settings.resume_path, ocr_mode=effective_ocr_mode)
+        if reporter:
+            reporter.record_resume(
+                source=settings.resume_path,
+                ocr_mode=effective_ocr_mode,
+                text_length=len(resume_data.raw_text),
+                parsed_name=resume_data.name or "",
+                parsed_email=resume_data.email or "",
+                parsed_phone=resume_data.phone or "",
+                parsed_skills=resume_data.skills,
+                parsed_summary_preview=resume_data.summary[:200] if resume_data.summary else "",
+            )
         console.print(f"[green]Loaded resume: {resume_data.name}[/green]")
         _run_ats_preflight(resume_data)
 
@@ -1434,12 +1499,14 @@ def tailor(
             console.print("[green]✓ Dates look coherent and current.[/green]")
 
         # Pre-tailor match score check
+        pre_match_score = None
         if min_score > 0:
             from job_applicator.embeddings.matching import JobMatcher
 
             with console.status("Computing match score..."):
                 matcher = JobMatcher(settings.embedding)
                 pre_match = matcher.match_resume_to_job(resume_data, job)
+            pre_match_score = pre_match.score
             console.print(
                 f"[cyan]Match score: {pre_match.score:.0%} (threshold: {min_score:.0%})[/cyan]"
             )
@@ -1457,9 +1524,30 @@ def tailor(
                 )
             session.add_attempt(result)
             _run_ats_post_tailor(resume_data.raw_text, result.tailored_text)
+
+            if reporter:
+                reporter.record_llm_call(
+                    model=settings.llm.model,
+                    endpoint=settings.llm.api_base,
+                    temperature=settings.llm.temperature,
+                    details={"job_title": job.title, "interactive": True},
+                )
+            if reporter and result:
+                reporter.record_tailoring(
+                    tone="",
+                    tone_confidence=0.0,
+                    pre_match_score=pre_match_score,
+                    attempts=1,
+                    ats_before=0.0,
+                    ats_after=0.0,
+                    hallucination_actions=[],
+                    changes_summary=result.changes_summary or "",
+                )
         except Exception as exc:
             console.print(f"[red]LLM error: {exc}[/red]")
             console.print("[yellow]Could not generate tailored resume.[/yellow]")
+            if reporter:
+                reporter.record_error(str(exc))
             raise typer.Exit(1) from exc
 
         while True:
@@ -1539,6 +1627,9 @@ def tailor(
                     output_path.write_text, result.tailored_text, encoding="utf-8"
                 )
                 result.output_path = str(output_path)
+
+                if reporter:
+                    reporter.record_io(files_written=[str(output_path)])
 
                 console.print(f"\n[green]Tailored resume saved: {output_path}[/green]")
                 console.print(f"[dim]Attempt #{attempt} | Score: {result.match_score:.0%}[/dim]")
