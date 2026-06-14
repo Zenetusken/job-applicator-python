@@ -20,7 +20,7 @@ mypy src/job_applicator/ --ignore-missing-imports
 ruff check --fix src/ tests/
 ruff format src/ tests/
 
-# Tests (236 unit tests, all fast)
+# Tests (301 unit tests, all fast)
 pytest tests/unit/ -v
 pytest tests/unit/ -v -k test_name  # single test
 
@@ -33,7 +33,7 @@ job-applicator match --resume resume.pdf
 
 ```
 src/job_applicator/
-├── cli.py              # Typer CLI (search, apply, match, generate-cover-letter, tailor, config-init)
+├── cli.py              # Typer CLI (search, apply, match, batch, generate-cover-letter, tailor, config-init)
 ├── config.py           # AppSettings + sub-configs (BrowserConfig, LLMConfig, EmbeddingConfig, TargetConfig)
 ├── models.py           # All shared Pydantic models (JobListing, ResumeData, StyleGuide, TailoredResume, DateAuditResult, etc.)
 ├── exceptions.py       # JobApplicatorError hierarchy
@@ -83,6 +83,12 @@ src/job_applicator/
 - **`CoverLetterResult` is simpler than `TailoredResume`.** No `match_score`, `matched_skills`, or `semantic_score` — cover letters don't go through embedding-based matching.
 - **Resume meta.json write is deferred until after cover letter flow.** The CLI waits until the cover letter sub-loop completes (or is skipped) before writing the resume's sidecar metadata, so `cover_letter_path` can be included.
 - **`cover_letter_path` in `TailoredResume` links resume to cover letter.** After the cover letter is saved, its path is stored in the resume model for downstream consumers.
+- **`MatchResult` has `semantic_score` and `skill_score` fields.** Raw component scores stored alongside the combined `score`. `resume_tailor.py` uses these directly — never recompute from combined score.
+- **`_refine_cover_letter()` returns `bool`.** `True` on success, `False` on failure. Caller checks `if not result:` — not `if result is None:`.
+- **Batch command loads style guide independently of `--cover-letter`.** Providing `--style-guide --no-cover-letter` still applies the style guide to resume tailoring.
+- **`detect_seniority()` is a standalone utility.** Not auto-called on `JobListing` creation. Consumers call it explicitly or populate `seniority` field manually.
+- **`pdftotext` uses `-layout` flag.** Preserves multi-column resume formatting. Temp files cleaned up via `try/finally`.
+- **DOCX support via `python-docx`.** `ResumeLoader.load()` dispatches `.docx` to `_load_docx()` using `Document(path).paragraphs`.
 
 ## LLM Setup
 

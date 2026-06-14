@@ -59,6 +59,10 @@ job-applicator generate-cover-letter --job-title "Python Dev" --company "Acme"
 # Match resume to jobs using embeddings
 job-applicator match --resume resume.pdf --jobs-file jobs.json --top-k 10
 
+# Batch tailor resumes for multiple jobs (non-interactive)
+job-applicator batch --resume resume.pdf --jobs-file jobs.json --top-k 10 --min-score 0.5
+job-applicator batch --resume resume.pdf --query "python developer" --top-k 5 --no-cover-letter
+
 # Tailor resume for a specific job (interactive session)
 job-applicator tailor --resume resume.pdf --job-title "Tech Support" --company "CGI" \
   --requirements "Troubleshooting,Windows,Office 365" --location "Montreal, QC"
@@ -80,6 +84,26 @@ The `tailor` command runs an interactive session that lets you iteratively refin
 - **Auto Tone Detection**: The tailor automatically detects the job posting's tone (corporate, startup, technical, or creative) and adjusts vocabulary and phrasing accordingly.
 - **Error Handling**: Up to 10 retry attempts on LLM failures, with a warning at attempt 8. The session gracefully recovers from transient LLM errors.
 - **Post-Tailor Cover Letter**: After accepting a tailored resume, the CLI offers to generate a matching cover letter. The same tone, style guide, and job data are shared between both documents. The cover letter follows the same accept/retry/input/diff/history workflow as the resume, and is saved alongside it with linked metadata.
+
+### Batch Mode
+
+The `batch` command runs the full match→tailor→cover-letter pipeline non-interactively across multiple jobs:
+
+```bash
+# From a JSON file
+job-applicator batch --resume resume.pdf --jobs-file jobs.json --top-k 10 --min-score 0.5
+
+# From a live search
+job-applicator batch --resume resume.pdf --query "python developer" --top-k 5
+
+# Without cover letters
+job-applicator batch --resume resume.pdf --jobs-file jobs.json --no-cover-letter
+```
+
+- **Smart matching**: Jobs are ranked by semantic similarity + skill coverage, filtered by `--min-score`, then only the top `--top-k` are processed.
+- **Parallel execution**: Tailoring and cover letter generation run concurrently (up to 3 simultaneous LLM calls).
+- **Per-job output**: Each job produces `tailored_*.txt` + `.meta.json` and optionally `cover_letter_*.txt` + `.meta.json`.
+- **Batch summary**: A `batch_summary_{timestamp}.json` file contains all results with scores, paths, and errors.
 
 ## Configuration
 
