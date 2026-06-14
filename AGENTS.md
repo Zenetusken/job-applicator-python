@@ -20,7 +20,7 @@ mypy src/job_applicator/ --ignore-missing-imports
 ruff check --fix src/ tests/
 ruff format src/ tests/
 
-# Tests (289 unit tests, all fast)
+# Tests (307 unit tests, all fast)
 pytest tests/unit/ -v
 pytest tests/unit/ -v -k test_name  # single test
 
@@ -33,14 +33,14 @@ job-applicator match --resume resume.pdf
 
 ```
 src/job_applicator/
-├── cli.py              # Typer CLI (search, apply, match, batch, generate-cover-letter, tailor, config-init)
+├── cli.py              # Typer CLI (search, apply, match, batch, generate-cover-letter, tailor, ats-check, config-init)
 ├── config.py           # AppSettings + sub-configs (BrowserConfig, LLMConfig, EmbeddingConfig, TargetConfig)
 ├── models.py           # All shared Pydantic models (JobListing, ResumeData, StyleGuide, TailoredResume, DateAuditResult, etc.)
 ├── exceptions.py       # JobApplicatorError hierarchy
 ├── browser/            # Playwright lifecycle (manager.py) + low-level actions (actions.py)
 ├── scrapers/           # base.py (ABC) → linkedin.py, indeed.py (stub)
 ├── applicators/        # base.py (ABC) → linkedin.py, indeed.py (stub)
-├── documents/          # cover_letter.py (LLM), resume.py (parser), resume_tailor.py (tailoring), style_analyzer.py, tone_detector.py
+├── documents/          # cover_letter.py (LLM), resume.py (parser), resume_tailor.py (tailoring), style_analyzer.py, tone_detector.py, ats_checker.py, ocr.py
 ├── embeddings/         # service.py (mxbai-embed-large-v1), matching.py (job matching)
 └── utils/              # logging.py, retry.py, diff.py
 ```
@@ -101,6 +101,17 @@ curl -s http://localhost:8000/v1/models
 ```
 
 Default model: `cyankiwi/Qwen3.5-4B-AWQ-4bit`. Override via `JOB_APPLICATOR_LLM_MODEL` env var or `config.toml`.
+
+## ATS Compatibility Checking
+
+`ATSChecker` in `documents/ats_checker.py` analyzes resumes for ATS compatibility:
+- Email/phone presence
+- Standard section headers (Experience, Education, Skills)
+- Text length (minimum 200 chars)
+- ASCII table detection (ATS can't parse these)
+
+CLI usage: `job-applicator ats-check --resume resume.pdf [--json]`
+Score >= 60% = compatible. Returns warnings and actionable suggestions.
 
 ## Testing
 

@@ -318,3 +318,27 @@ class DateAuditResult(BaseModel):
     earliest_date: str = Field(default="", description="Earliest date found in the resume")
 
     model_config = {"extra": "forbid"}
+
+
+class ATSCompatibilityResult(BaseModel):
+    """Result of checking a resume for ATS (Applicant Tracking System) compatibility."""
+
+    score: float = Field(description="Overall ATS compatibility score 0.0-1.0")
+    checks: list[dict[str, object]] = Field(
+        default_factory=list,
+        description="List of individual check results with name, passed, details",
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Human-readable warnings about ATS compatibility issues",
+    )
+    suggestions: list[str] = Field(
+        default_factory=list,
+        description="Actionable suggestions to improve ATS compatibility",
+    )
+    is_compatible: bool = Field(
+        default=True,
+        description="True if resume passes minimum ATS compatibility threshold",
+    )
+
+    model_config = {"extra": "forbid"}

@@ -1545,6 +1545,88 @@ def tailor(
 
 
 @app.command()
+def ats_check(
+    resume_path: str = typer.Option("", "--resume", help="Path to resume file."),
+    as_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
+    ocr_mode: str = typer.Option(
+        "auto",
+        "--ocr-mode",
+        help="OCR mode: auto (fallback), on (always), off (never).",
+    ),
+    force_ocr: bool = typer.Option(
+        False,
+        "--force-ocr",
+        help="Force OCR; equivalent to --ocr-mode on.",
+    ),
+) -> None:
+    """Check resume ATS (Applicant Tracking System) compatibility."""
+    settings = _get_settings()
+    if resume_path:
+        settings.resume_path = resume_path
+    setup_logging(settings.log_level)
+    effective_ocr_mode = _resolve_ocr_mode(ocr_mode, force_ocr)
+
+    from job_applicator.documents.ats_checker import ATSChecker
+    from job_applicator.documents.resume import ResumeLoader
+
+    if not settings.resume_path:
+        console.print("[red]Resume path required. Use --resume.[/red]")
+        raise typer.Exit(1)
+
+    loader = ResumeLoader()
+    resume_data = loader.load(settings.resume_path, ocr_mode=effective_ocr_mode)
+
+    if not as_json:
+        console.print(f"[green]Loaded resume: {resume_data.name}[/green]")
+
+    checker = ATSChecker()
+    result = checker.check(resume_data)
+
+    if as_json:
+        import json
+
+        output = {
+            "score": result.score,
+            "is_compatible": result.is_compatible,
+            "checks": result.checks,
+            "warnings": result.warnings,
+            "suggestions": result.suggestions,
+        }
+        console.print(json.dumps(output, indent=2))
+        return
+
+    # Display results
+    color = "green" if result.is_compatible else "red"
+    console.print(f"\n[bold {color}]ATS Score: {result.score:.0%}[/bold {color}]")
+    status = "Compatible" if result.is_compatible else "Not Compatible"
+    console.print(f"[{color}]Status: {status}[/{color}]\n")
+
+    # Check results table
+    table = Table(title="ATS Checks")
+    table.add_column("Check", style="cyan")
+    table.add_column("Status")
+    table.add_column("Details")
+
+    for check in result.checks:
+        status = "[green]PASS[/green]" if check["passed"] else "[red]FAIL[/red]"
+        table.add_row(str(check["name"]), status, str(check["details"]))
+
+    console.print(table)
+
+    # Warnings
+    if result.warnings:
+        console.print("\n[bold yellow]Warnings:[/bold yellow]")
+        for warning in result.warnings:
+            console.print(f"  [yellow]![/yellow] {warning}")
+
+    # Suggestions
+    if result.suggestions:
+        console.print("\n[bold cyan]Suggestions:[/bold cyan]")
+        for suggestion in result.suggestions:
+            console.print(f"  [cyan]*[/cyan] {suggestion}")
+
+
+@app.command()
 def config_init() -> None:
     """Create a sample config.toml file."""
     config_content = """# Job Applicator Configuration
