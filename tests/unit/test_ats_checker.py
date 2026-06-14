@@ -88,6 +88,17 @@ class TestContactInfoChecks:
         phone_check = next(c for c in result.checks if c["name"] == "phone_present")
         assert phone_check["passed"] is True
 
+    def test_phone_requires_digits(self, checker: ATSChecker) -> None:
+        resume = ResumeData(
+            raw_text="John\njohn@example.com\n          ",
+            name="John",
+            email="john@example.com",
+            phone="          ",
+        )
+        result = checker.check(resume)
+        phone_check = next(c for c in result.checks if c["name"] == "phone_present")
+        assert phone_check["passed"] is False
+
     def test_phone_missing(self, checker: ATSChecker, bad_resume: ResumeData) -> None:
         result = checker.check(bad_resume)
         phone_check = next(c for c in result.checks if c["name"] == "phone_present")
@@ -193,6 +204,28 @@ class TestATSPostTailor:
         )
         tailored_text = "John\njohn@example.com\nTailored summary without sections."
         _run_ats_post_tailor(original_text, tailored_text)
+
+    def test_post_tailor_parses_contact_info_from_text(self) -> None:
+        """Post-tailor check must re-parse email/phone from raw text, not rely on empty fields."""
+        import io
+        import sys
+
+        from job_applicator.cli import _run_ats_post_tailor
+
+        original_text = (
+            "John\njohn@example.com\n555-123-4567\nExperience\nDev\nEducation\nBS\nSkills\nPython"
+        )
+        captured = io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = captured
+        try:
+            _run_ats_post_tailor(original_text, original_text)
+        finally:
+            sys.stdout = old_stdout
+        output = captured.getvalue()
+        # Identical parsed text should maintain compatibility and show a checkmark
+        assert "before → after" in output
+        assert "✓" in output
 
 
 class TestATSPreflight:

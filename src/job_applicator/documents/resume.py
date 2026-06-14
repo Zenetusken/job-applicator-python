@@ -54,7 +54,7 @@ class ResumeLoader:
         doc = Document(str(path))
         paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
         text = "\n".join(paragraphs)
-        return self._parse_text(text)
+        return self.parse_text(text)
 
     def _load_pdf(self, path: Path, ocr_mode: str = "auto") -> ResumeData:
         if ocr_mode not in {"auto", "on", "off"}:
@@ -62,15 +62,15 @@ class ResumeLoader:
 
         if ocr_mode == "on":
             text = self.ocr_service.extract_text_from_pdf(path)
-            return self._parse_text(text)
+            return self.parse_text(text)
 
         if ocr_mode == "off":
             text = self._run_pdftotext(path)
             if len(text.strip()) >= OCR_THRESHOLD:
-                return self._parse_text(text)
+                return self.parse_text(text)
             text = self._run_pymupdf(path)
             if len(text.strip()) >= OCR_THRESHOLD:
-                return self._parse_text(text)
+                return self.parse_text(text)
             raise DocumentError(
                 f"PDF {path} contains insufficient extractable text; "
                 "enable OCR with --ocr-mode auto or --force-ocr"
@@ -79,21 +79,21 @@ class ResumeLoader:
         # ocr_mode == "auto"
         text = self._run_pdftotext(path)
         if len(text.strip()) >= OCR_THRESHOLD:
-            return self._parse_text(text)
+            return self.parse_text(text)
 
         text = self._run_pymupdf(path)
         if len(text.strip()) >= OCR_THRESHOLD:
-            return self._parse_text(text)
+            return self.parse_text(text)
 
         logger.info("OCR fallback triggered for %s (extracted %d chars)", path, len(text))
         try:
             ocr_text = self.ocr_service.extract_text_from_pdf(path)
             logger.info("OCR fallback completed for %s (%d chars)", path, len(ocr_text))
-            return self._parse_text(ocr_text)
+            return self.parse_text(ocr_text)
         except DocumentError:
             if text:
                 logger.warning("OCR failed; using extracted text (%d chars)", len(text))
-                return self._parse_text(text)
+                return self.parse_text(text)
             raise
 
     def _run_pdftotext(self, path: Path) -> str:
@@ -137,14 +137,14 @@ class ResumeLoader:
         if ocr_mode == "off":
             raise DocumentError(f"Image resume {path} requires OCR, but ocr_mode is 'off'")
         text = self.ocr_service.extract_text_from_image(path)
-        return self._parse_text(text)
+        return self.parse_text(text)
 
     def _load_text(self, path: Path) -> ResumeData:
         """Load plain text resume."""
         text = path.read_text(encoding="utf-8")
-        return self._parse_text(text)
+        return self.parse_text(text)
 
-    def _parse_text(self, text: str) -> ResumeData:
+    def parse_text(self, text: str) -> ResumeData:
         """Parse raw text into structured ResumeData."""
         lines = text.strip().split("\n")
         name = lines[0].strip() if lines else ""

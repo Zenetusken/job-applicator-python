@@ -17,6 +17,16 @@ _EMAIL_PATTERN = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 _PHONE_PATTERN = re.compile(r"[\+]?[\d\s\-\(\)]{10,}")
 
 
+def _phone_has_digits(phone: str) -> bool:
+    """Return True if phone string contains at least 10 actual digits."""
+    if not phone:
+        return False
+    for match in _PHONE_PATTERN.finditer(phone):
+        if sum(c.isdigit() for c in match.group(0)) >= 10:
+            return True
+    return False
+
+
 class ATSChecker:
     """Check resume compatibility with Applicant Tracking Systems."""
 
@@ -64,7 +74,7 @@ class ATSChecker:
         checks: list[dict[str, object]],
         warnings: list[str],
     ) -> None:
-        has_phone = bool(resume.phone and _PHONE_PATTERN.search(resume.phone))
+        has_phone = _phone_has_digits(resume.phone)
         checks.append({"name": "phone_present", "passed": has_phone, "details": "Phone number"})
         if not has_phone:
             warnings.append("No phone number found. ATS requires contact information.")

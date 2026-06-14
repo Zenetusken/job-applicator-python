@@ -91,12 +91,13 @@ def _run_ats_preflight(resume: ResumeData) -> None:
 def _run_ats_post_tailor(original_text: str, tailored_text: str) -> None:
     """Compare ATS compatibility before and after tailoring."""
     from job_applicator.documents.ats_checker import ATSChecker
-    from job_applicator.models import ResumeData
+    from job_applicator.documents.resume import ResumeLoader
 
     checker = ATSChecker()
+    loader = ResumeLoader()
 
-    original = ResumeData(raw_text=original_text)
-    tailored = ResumeData(raw_text=tailored_text)
+    original = loader.parse_text(original_text)
+    tailored = loader.parse_text(tailored_text)
 
     original_result = checker.check(original)
     tailored_result = checker.check(tailored)
