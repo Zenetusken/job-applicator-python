@@ -1,5 +1,10 @@
 # Resume Tailor Implementation Plan
 
+> [!NOTE]
+> This document may not reflect the current implementation.
+> See the final report for up-to-date state:
+> [Final Report](../reports/tier1-tier2-gap-fixes-and-batch-mode.md)
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use compose:subagent (recommended) or compose:execute to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build an LLM-powered resume tailoring engine that rewrites a resume for a specific job, with an interactive preview/accept/retry/input loop and full metadata storage.

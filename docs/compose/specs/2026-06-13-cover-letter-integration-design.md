@@ -1,5 +1,10 @@
 # Post-Tailor Cover Letter Integration Design
 
+> [!NOTE]
+> This document may not reflect the current implementation.
+> See the final report for up-to-date state:
+> [Final Report](../reports/tier1-tier2-gap-fixes-and-batch-mode.md)
+
 ## [S1] Problem
 
 Cover letter generation is completely separate from resume tailoring. The `generate-cover-letter` command is standalone, and the `tailor` command doesn't produce cover letters. Users must run two separate commands with the same job info, with no shared tone or style consistency.
