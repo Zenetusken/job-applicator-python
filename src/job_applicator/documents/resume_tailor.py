@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from job_applicator.config import LLMConfig
 from job_applicator.exceptions import LLMError
@@ -17,6 +18,9 @@ from job_applicator.models import (
 )
 from job_applicator.utils.logging import get_logger
 from job_applicator.utils.retry import async_retry
+
+if TYPE_CHECKING:
+    from job_applicator.embeddings.matching import JobMatcher
 
 logger = get_logger("documents.resume_tailor")
 
@@ -497,7 +501,20 @@ TAILOR_SYSTEM_PROMPT = (
     "title including all qualifiers (e.g., 'Claims Specialist Dental & Medical' "
     "must stay as-is, not shortened to 'Claims Specialist')\n"
     "- If a job requirement is missing from the candidate's skills, do NOT "
-    "add it — instead emphasize related skills they DO have"
+    "add it — instead emphasize related skills they DO have\n\n"
+    "EXAMPLES — before and after tailoring:\n\n"
+    "BEFORE summary:\n"
+    "'IT professional with experience in technical support and customer service.'\n\n"
+    "AFTER summary (for a Help Desk Analyst job):\n"
+    "'Experienced IT support professional with 5+ years resolving hardware, "
+    "software, and network issues. Skilled in ServiceNow, Active Directory, "
+    "and Windows environments. Seeking to leverage technical troubleshooting "
+    "expertise as a Help Desk Analyst.'\n\n"
+    "BEFORE bullet:\n"
+    "'• Helped customers with technical issues'\n\n"
+    "AFTER bullet:\n"
+    "'• Resolved 40+ daily technical support tickets across Windows, macOS, "
+    "and mobile platforms, maintaining a 95% first-call resolution rate'"
 )
 
 TAILOR_PROMPT_TEMPLATE = (
@@ -564,6 +581,7 @@ class ResumeTailor:
         user_instructions: str = "",
         style_guide: StyleGuide | None = None,
         tone_profile: object | None = None,
+        matcher: JobMatcher | None = None,
     ) -> TailoredResume:
         """Tailor a resume for a specific job.
 
@@ -573,6 +591,7 @@ class ResumeTailor:
             user_instructions: Optional user guidance for tailoring
             style_guide: Optional style guide to apply
             tone_profile: Optional pre-detected ToneProfile to avoid re-detection
+            matcher: Optional JobMatcher instance to reuse (avoids re-creating)
 
         Returns:
             TailoredResume with full metadata
@@ -580,7 +599,8 @@ class ResumeTailor:
         from job_applicator.config import EmbeddingConfig
         from job_applicator.embeddings.matching import JobMatcher
 
-        matcher = JobMatcher(EmbeddingConfig(device="cpu", memory_limit_gb=0.5))
+        if matcher is None:
+            matcher = JobMatcher(EmbeddingConfig(device="cpu", memory_limit_gb=0.5))
         match_result = matcher.match_resume_to_job(resume, job)
 
         logger.info("Current match: %.0f%%", match_result.score * 100)
@@ -639,8 +659,8 @@ class ResumeTailor:
             job_company=job.company,
             job_url=str(job.url),
             match_score=match_result.score,
-            semantic_score=0.0,
-            skill_score=0.0,
+            semantic_score=match_result.score * 0.6 if match_result.score > 0 else 0.0,
+            skill_score=match_result.score * 0.4 if match_result.score > 0 else 0.0,
             matched_skills=match_result.matched_skills,
             missing_skills=match_result.missing_skills,
             changes_summary=changes,
@@ -654,6 +674,7 @@ class ResumeTailor:
         current_tailored: TailoredResume,
         user_feedback: str,
         job: JobListing,
+        matcher: JobMatcher | None = None,
     ) -> TailoredResume:
         """Refine a tailored resume based on user feedback.
 
@@ -662,6 +683,7 @@ class ResumeTailor:
             current_tailored: The current tailored version
             user_feedback: User's feedback/instructions
             job: Target job listing
+            matcher: Optional JobMatcher instance to reuse
 
         Returns:
             New TailoredResume with refinements applied
@@ -681,7 +703,7 @@ class ResumeTailor:
             f"Return the complete updated resume text."
         )
 
-        refined_text = await self._call_llm(prompt)
+        refined_text = await self._call_llm(prompt, temperature=0.3)
         refined_text = self._validate_skills(refined_text, original_resume.skills)
         refined_text = self._strip_hallucinated_tools(
             refined_text, original_resume.raw_text, job.requirements
@@ -693,6 +715,9 @@ class ResumeTailor:
         from job_applicator.config import EmbeddingConfig
         from job_applicator.embeddings.matching import JobMatcher
 
+        if matcher is None:
+            matcher = JobMatcher(EmbeddingConfig(device="cpu", memory_limit_gb=0.5))
+
         synthetic_resume = ResumeData(
             raw_text=refined_text,
             name=original_resume.name,
@@ -703,7 +728,6 @@ class ResumeTailor:
             experience=original_resume.experience,
             education=original_resume.education,
         )
-        matcher = JobMatcher(EmbeddingConfig(device="cpu", memory_limit_gb=0.5))
         new_match = matcher.match_resume_to_job(synthetic_resume, job)
 
         return TailoredResume(
@@ -713,8 +737,8 @@ class ResumeTailor:
             job_company=job.company,
             job_url=str(job.url),
             match_score=new_match.score,
-            semantic_score=0.0,
-            skill_score=0.0,
+            semantic_score=new_match.score * 0.6 if new_match.score > 0 else 0.0,
+            skill_score=new_match.score * 0.4 if new_match.score > 0 else 0.0,
             matched_skills=new_match.matched_skills,
             missing_skills=new_match.missing_skills,
             changes_summary=changes,
@@ -1010,7 +1034,7 @@ class ResumeTailor:
 
         return "\n".join(result_lines)
 
-    async def _call_llm(self, prompt: str) -> str:
+    async def _call_llm(self, prompt: str, temperature: float = 0.4) -> str:
         """Call LLM and return response text."""
         try:
             from litellm import acompletion
@@ -1026,7 +1050,7 @@ class ResumeTailor:
                     {"role": "user", "content": prompt},
                 ],
                 max_tokens=4096,
-                temperature=0.2,
+                temperature=temperature,
                 extra_body={
                     "chat_template_kwargs": {"enable_thinking": False},
                 },
@@ -1049,6 +1073,6 @@ class ResumeTailor:
                 original_preview=original[:500],
                 tailored_preview=tailored[:500],
             )
-            return await self._call_llm(prompt)
+            return await self._call_llm(prompt, temperature=0.2)
         except Exception:
             return "Changes applied (summary generation failed)"

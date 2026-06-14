@@ -41,6 +41,43 @@ def test_resume_loader_text_file(tmp_path: object) -> None:
     assert "Python" in resume.skills
 
 
+def test_resume_loader_docx(tmp_path: object) -> None:
+    """Test loading a DOCX resume."""
+    import pathlib
+
+    try:
+        from docx import Document
+    except ImportError:
+        pytest.skip("python-docx not installed")
+
+    doc = Document()
+    doc.add_paragraph("Jane Smith")
+    doc.add_paragraph("jane@example.com")
+    doc.add_paragraph("Skills: Python, Docker, AWS")
+    doc.add_paragraph("Experience: Senior Dev at TechCo")
+    p = pathlib.Path(str(tmp_path)) / "resume.docx"
+    doc.save(str(p))
+
+    loader = ResumeLoader()
+    resume = loader.load(p)
+    assert resume.name == "Jane Smith"
+    assert resume.email == "jane@example.com"
+    assert "Python" in resume.skills
+
+
+def test_resume_loader_docx_missing_dependency(tmp_path: object) -> None:
+    """Test DOCX loading when python-docx is not installed."""
+    import pathlib
+
+    p = pathlib.Path(str(tmp_path)) / "resume.docx"
+    p.write_bytes(b"fake docx content")
+
+    loader = ResumeLoader()
+    with patch.dict("sys.modules", {"docx": None}):
+        with pytest.raises(DocumentError, match="python-docx not installed"):
+            loader.load(p)
+
+
 def test_cover_letter_generator_template() -> None:
     config = LLMConfig()
     generator = CoverLetterGenerator(config)
@@ -72,6 +109,21 @@ def test_cover_letter_output_model() -> None:
     )
     assert output.cover_letter.startswith("Dear")
     assert len(output.key_points) == 2
+
+
+def test_cover_letter_system_prompt_has_examples() -> None:
+    """System prompt should contain example paragraphs."""
+    from job_applicator.documents.cover_letter import SYSTEM_PROMPT
+
+    assert "EXAMPLE" in SYSTEM_PROMPT
+    assert "opening paragraph" in SYSTEM_PROMPT.lower() or "I am writing" in SYSTEM_PROMPT
+
+
+def test_cover_letter_system_prompt_has_hallucination_guard() -> None:
+    """System prompt should warn against inventing experience."""
+    from job_applicator.documents.cover_letter import SYSTEM_PROMPT
+
+    assert "not in the resume" in SYSTEM_PROMPT.lower() or "invent" in SYSTEM_PROMPT.lower()
 
 
 @pytest.fixture

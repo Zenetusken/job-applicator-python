@@ -15,7 +15,7 @@ class ResumeLoader:
     """Load and parse resume files."""
 
     def load(self, path: str | Path) -> ResumeData:
-        """Load a resume from file. Supports PDF and plain text."""
+        """Load a resume from file. Supports PDF, DOCX, and plain text."""
         file_path = Path(path)
         if not file_path.exists():
             raise ResumeNotFoundError(f"Resume not found: {file_path}")
@@ -23,10 +23,24 @@ class ResumeLoader:
         suffix = file_path.suffix.lower()
         if suffix == ".pdf":
             return self._load_pdf(file_path)
+        elif suffix == ".docx":
+            return self._load_docx(file_path)
         elif suffix in (".txt", ".md"):
             return self._load_text(file_path)
         else:
             raise DocumentError(f"Unsupported resume format: {suffix}")
+
+    def _load_docx(self, path: Path) -> ResumeData:
+        """Load a DOCX resume."""
+        try:
+            from docx import Document
+        except ImportError as exc:
+            raise DocumentError("python-docx not installed. Run: pip install python-docx") from exc
+
+        doc = Document(str(path))
+        paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+        text = "\n".join(paragraphs)
+        return self._parse_text(text)
 
     def _load_pdf(self, path: Path) -> ResumeData:
         """Extract text from PDF resume."""
@@ -37,7 +51,7 @@ class ResumeLoader:
             # Try pdftotext first (poppler-utils)
             with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as tmp:
                 result = subprocess.run(  # noqa: S603
-                    ["pdftotext", str(path), tmp.name],  # noqa: S607
+                    ["pdftotext", "-layout", str(path), tmp.name],  # noqa: S607
                     capture_output=True,
                     text=True,
                     timeout=30,

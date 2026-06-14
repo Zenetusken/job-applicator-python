@@ -352,7 +352,7 @@ class TestGenerateCoverLetter:
 
 
 class TestSaveCoverLetter:
-    def test_correct_file_path(self, tmp_path: Path) -> None:
+    async def test_correct_file_path(self, tmp_path: Path) -> None:
         from job_applicator.cli import _save_cover_letter
 
         console = MagicMock(spec=Console)
@@ -363,7 +363,7 @@ class TestSaveCoverLetter:
         job.title = "Senior Dev"
         result = _make_cover_letter_result("My cover letter")
 
-        path = _save_cover_letter(console, settings, job, result)
+        path = await _save_cover_letter(console, settings, job, result)
 
         assert path.exists()
         assert path.parent == tmp_path
@@ -371,7 +371,7 @@ class TestSaveCoverLetter:
         assert path.suffix == ".txt"
         assert path.read_text(encoding="utf-8") == "My cover letter"
 
-    def test_meta_json_alongside(self, tmp_path: Path) -> None:
+    async def test_meta_json_alongside(self, tmp_path: Path) -> None:
         from job_applicator.cli import _save_cover_letter
 
         console = MagicMock(spec=Console)
@@ -382,12 +382,12 @@ class TestSaveCoverLetter:
         job.title = "Senior Dev"
         result = _make_cover_letter_result("letter text")
 
-        path = _save_cover_letter(console, settings, job, result)
+        path = await _save_cover_letter(console, settings, job, result)
         meta_path = path.with_suffix(".meta.json")
 
         assert meta_path.exists()
 
-    def test_meta_json_fields(self, tmp_path: Path) -> None:
+    async def test_meta_json_fields(self, tmp_path: Path) -> None:
         from job_applicator.cli import _save_cover_letter
 
         console = MagicMock(spec=Console)
@@ -398,7 +398,7 @@ class TestSaveCoverLetter:
         job.title = "Senior Dev"
         result = _make_cover_letter_result("letter text")
 
-        path = _save_cover_letter(console, settings, job, result)
+        path = await _save_cover_letter(console, settings, job, result)
         meta_path = path.with_suffix(".meta.json")
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
 
@@ -408,7 +408,7 @@ class TestSaveCoverLetter:
         assert meta["attempt"] == 1
         assert "created_at" in meta
 
-    def test_output_path_set_on_result(self, tmp_path: Path) -> None:
+    async def test_output_path_set_on_result(self, tmp_path: Path) -> None:
         from job_applicator.cli import _save_cover_letter
 
         console = MagicMock(spec=Console)
@@ -419,7 +419,7 @@ class TestSaveCoverLetter:
         job.title = "Senior Dev"
         result = _make_cover_letter_result("letter")
 
-        path = _save_cover_letter(console, settings, job, result)
+        path = await _save_cover_letter(console, settings, job, result)
         assert result.output_path == str(path)
 
 

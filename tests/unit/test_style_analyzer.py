@@ -193,3 +193,40 @@ class TestStyleAnalyzer:
         assert "architected" in prompt
         assert "formal" in prompt
         assert "Test sample" in prompt
+
+
+class TestStyleAnalyzerInstructor:
+    """Tests for instructor-based structured output in style analyzer."""
+
+    @pytest.mark.asyncio
+    async def test_instructor_path_called_first(self) -> None:
+        """Analyzer should try instructor before falling back to raw litellm."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        config = LLMConfig(api_base="http://test", model="test-model")
+        analyzer = StyleAnalyzer(config)
+
+        mock_style = StyleGuide(
+            tone="professional",
+            sentence_structure="varied",
+            vocabulary_level="professional",
+            paragraph_style="clear",
+            formatting_notes="standard",
+            sample_paragraph="sample",
+        )
+
+        mock_client = MagicMock()
+        mock_client.create = AsyncMock(return_value=mock_style)
+
+        with patch(
+            "job_applicator.documents.style_analyzer.instructor",
+            create=True,
+        ) as mock_instructor_mod:
+            mock_instructor_mod.from_litellm.return_value = mock_client
+            with patch.object(analyzer, "_cache_dir", MagicMock()):
+                with patch.object(analyzer, "_get_cache_path") as mock_path:
+                    mock_path.return_value = MagicMock(exists=MagicMock(return_value=False))
+                    with patch("litellm.acompletion", new_callable=AsyncMock):
+                        result = await analyzer.analyze("test text", use_cache=False)
+
+        assert result.tone == "professional"

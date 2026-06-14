@@ -15,6 +15,7 @@ from job_applicator.models import (
     TailoredResume,
     TailorSession,
     UserProfile,
+    detect_seniority,
 )
 
 
@@ -222,3 +223,131 @@ class TestCoverLetterSession:
         session = CoverLetterSession(job_title="Dev", job_company="Co")
         with pytest.raises(IndexError):
             session.select(99)
+
+
+class TestDetectSeniority:
+    """Tests for seniority detection from job titles."""
+
+    def test_senior(self) -> None:
+        assert detect_seniority("Senior Python Developer") == "senior"
+
+    def test_junior(self) -> None:
+        assert detect_seniority("Junior Software Engineer") == "junior"
+
+    def test_lead(self) -> None:
+        assert detect_seniority("Lead Backend Engineer") == "lead"
+
+    def test_principal(self) -> None:
+        assert detect_seniority("Principal Architect") == "principal"
+
+    def test_staff(self) -> None:
+        assert detect_seniority("Staff Engineer") == "staff"
+
+    def test_intern(self) -> None:
+        assert detect_seniority("Software Engineering Intern") == "intern"
+
+    def test_director(self) -> None:
+        assert detect_seniority("Director of Engineering") == "director"
+
+    def test_no_seniority(self) -> None:
+        assert detect_seniority("Software Engineer") is None
+
+    def test_entry_level(self) -> None:
+        assert detect_seniority("Entry Level Developer") == "junior"
+
+    def test_sr_abbreviation(self) -> None:
+        assert detect_seniority("Sr. DevOps Engineer") == "senior"
+
+    def test_word_boundary(self) -> None:
+        """Ensure 'senior' doesn't match 'seniority'."""
+        assert detect_seniority("Questions about seniority") is None
+
+
+class TestPromptVersion:
+    """Tests for prompt_version field on models."""
+
+    def test_tailored_resume_default_version(self) -> None:
+        result = TailoredResume(
+            original_path="",
+            tailored_text="text",
+            job_title="Dev",
+            job_company="Co",
+            match_score=0.8,
+            semantic_score=0.5,
+            skill_score=0.3,
+            changes_summary="changes",
+        )
+        assert result.prompt_version == "1.0"
+
+    def test_tailored_resume_custom_version(self) -> None:
+        result = TailoredResume(
+            original_path="",
+            tailored_text="text",
+            job_title="Dev",
+            job_company="Co",
+            match_score=0.8,
+            semantic_score=0.5,
+            skill_score=0.3,
+            changes_summary="changes",
+            prompt_version="2.1",
+        )
+        assert result.prompt_version == "2.1"
+
+    def test_cover_letter_default_version(self) -> None:
+        result = CoverLetterResult(
+            job_title="Dev",
+            job_company="Co",
+            cover_letter_text="letter",
+        )
+        assert result.prompt_version == "1.0"
+
+    def test_cover_letter_custom_version(self) -> None:
+        result = CoverLetterResult(
+            job_title="Dev",
+            job_company="Co",
+            cover_letter_text="letter",
+            prompt_version="2.0",
+        )
+        assert result.prompt_version == "2.0"
+
+
+class TestJobListingSeniorityField:
+    """Tests for seniority field on JobListing."""
+
+    def test_default_none(self) -> None:
+        job = JobListing(
+            title="Dev",
+            company="Co",
+            url="https://example.com/1",
+            board=JobBoard.LINKEDIN,
+        )
+        assert job.seniority is None
+
+    def test_set_seniority(self) -> None:
+        job = JobListing(
+            title="Senior Dev",
+            company="Co",
+            url="https://example.com/1",
+            board=JobBoard.LINKEDIN,
+            seniority="senior",
+        )
+        assert job.seniority == "senior"
+
+
+class TestScoreFields:
+    """Tests for semantic_score and skill_score on TailoredResume."""
+
+    def test_scores_can_be_nonzero(self) -> None:
+        result = TailoredResume(
+            original_path="",
+            tailored_text="text",
+            job_title="Dev",
+            job_company="Co",
+            match_score=0.8,
+            semantic_score=0.6,
+            skill_score=0.4,
+            changes_summary="changes",
+        )
+        assert result.semantic_score == 0.6
+        assert result.skill_score == 0.4
+        assert result.match_score == pytest.approx(0.8)

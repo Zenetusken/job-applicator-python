@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import numpy as np
 import pytest
 
@@ -47,7 +49,33 @@ class TestEmbeddingService:
         key1 = service._get_cache_key(text)
         key2 = service._get_cache_key(text)
         assert key1 == key2
-        assert len(key1) == 16
+        assert len(key1) == 32  # Full MD5 hex digest
+
+    def test_cache_key_includes_model_name(self) -> None:
+        """Cache key must differ when model name changes."""
+        config1 = EmbeddingConfig(device="cpu", memory_limit_gb=0.5, model_name="model-a")
+        config2 = EmbeddingConfig(device="cpu", memory_limit_gb=0.5, model_name="model-b")
+        svc1 = EmbeddingService(config1)
+        svc2 = EmbeddingService(config2)
+        assert svc1._get_cache_key("hello") != svc2._get_cache_key("hello")
+
+    def test_cache_key_includes_normalize_flag(self) -> None:
+        """Cache key must differ when normalize_embeddings changes."""
+        config1 = EmbeddingConfig(device="cpu", memory_limit_gb=0.5, normalize_embeddings=True)
+        config2 = EmbeddingConfig(device="cpu", memory_limit_gb=0.5, normalize_embeddings=False)
+        svc1 = EmbeddingService(config1)
+        svc2 = EmbeddingService(config2)
+        assert svc1._get_cache_key("hello") != svc2._get_cache_key("hello")
+
+    def test_similarity_fast_path_normalized(self) -> None:
+        """When normalize_embeddings=True, similarity uses dot product."""
+        config = EmbeddingConfig(device="cpu", memory_limit_gb=0.5, normalize_embeddings=True)
+        svc = EmbeddingService(config)
+        # Pre-normalized vectors: dot product = cosine similarity
+        vec1 = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        vec2 = np.array([0.707, 0.707, 0.0], dtype=np.float32)
+        result = svc.similarity(vec1, vec2)
+        assert result == pytest.approx(0.707, abs=0.01)
 
     def test_cache_key_different_text(self, service: EmbeddingService) -> None:
         """Test different texts get different keys."""
@@ -134,3 +162,38 @@ class TestJobMatcher:
         matched, missing = matcher._match_skills(["Python", "FastAPI"], [])
         assert matched == []
         assert missing == []
+
+    def test_embed_text_with_prefix(self) -> None:
+        """embed_text should prepend the prefix when provided."""
+        from job_applicator.embeddings.matching import JobMatcher
+
+        config = EmbeddingConfig(device="cpu", memory_limit_gb=0.5)
+        matcher = JobMatcher(config)
+
+        # Verify the method exists and accepts a prefix parameter
+        import inspect
+
+        sig = inspect.signature(matcher.embed_text)
+        assert "prefix" in sig.parameters
+
+    def test_compute_resume_embedding_uses_prefix(self) -> None:
+        """Resume embedding should use the search prefix for asymmetric retrieval."""
+        from job_applicator.embeddings.matching import JobMatcher
+        from job_applicator.models import ResumeData
+
+        config = EmbeddingConfig(device="cpu", memory_limit_gb=0.5)
+        matcher = JobMatcher(config)
+
+        resume = ResumeData(
+            raw_text="John Doe\nSkills: Python",
+            name="John Doe",
+            skills=["Python"],
+        )
+
+        # Patch embed to capture the text passed to it
+        with patch.object(
+            matcher._service, "embed", return_value=np.zeros(1024, dtype=np.float32)
+        ) as mock_embed:
+            matcher.compute_resume_embedding(resume)
+            call_text = mock_embed.call_args[0][0]
+            assert "Represent this sentence for searching relevant passages" in call_text

@@ -20,7 +20,7 @@ mypy src/job_applicator/ --ignore-missing-imports
 ruff check --fix src/ tests/
 ruff format src/ tests/
 
-# Tests (89 unit tests, all fast)
+# Tests (236 unit tests, all fast)
 pytest tests/unit/ -v
 pytest tests/unit/ -v -k test_name  # single test
 
@@ -70,7 +70,12 @@ src/job_applicator/
 - **`sentence-transformers` needs CUDA torch.** If you get `libcudart.so` errors, reinstall: `pip install torch --index-url https://download.pytorch.org/whl/cu124`
 - **Embedding cache at `~/.job-applicator/embeddings/`.** Style cache at `~/.job-applicator/styles/`. Clear with `EmbeddingService.clear_cache()`.
 - **Skill matching threshold is 0.55.** Lower = more matches, higher = stricter. Tune in `matching.py:_match_skills()`.
-- **`parse_sections()` regex patterns may need tuning.** Names in ALL CAPS (e.g. "JOHN DOE") can be misclassified as section headers. Adjust the `SECTION_HEADER_RE` pattern in `resume_tailor.py` for unusual resume formats.
+- **`parse_sections()` uses known headers.** Matches against `KNOWN_HEADERS` frozenset (case-insensitive) and Title Case with colon suffix. ALL CAPS names (e.g. "JOHN DOE") are NOT matched as headers. Add new headers to the frozenset in `resume_tailor.py` if needed.
+- **Skill validation uses fuzzy matching.** `_skills_match()` in `resume_tailor.py` checks exact match, token containment (subset), and `SequenceMatcher` ratio >= 0.85. Prevents "ai" matching "training" while catching typos.
+- **Tool hallucination has two passes.** Pass 1: checks job requirements not in original. Pass 2: checks `tool_replacements` keys in tailored text not in original AND not in requirements. Catches LLM-invented tools.
+- **`tailor()` accepts optional `tone_profile`.** When provided, skips internal `ToneDetector.detect()`. Eliminates double detection when CLI already computed the profile.
+- **`refine()` recomputes match scores.** Creates synthetic `ResumeData` from refined text and runs `JobMatcher.match_resume_to_job()`. No more stale scores.
+- **`CoverLetterGenerator.refine()` exists.** Uses same structured generation pipeline as `generate()` — system prompt, style guide, tone section, instructor fallback. `_refine_cover_letter()` in cli.py delegates to it.
 - **Tone detection is keyword-based, not LLM-based.** `ToneDetector.detect()` in `tone_detector.py` uses keyword frequency heuristics — fast, but may misclassify edge cases (e.g. a startup posting heavy on compliance jargon).
 - **Max tailor retry limit is 10.** A warning prints at attempt 8. The limit is hardcoded in `cli.py` and `tailor_cgi.py` — search for `attempt > 10` to adjust.
 - **`TailorSession` is in-memory only.** Version history is lost when the session ends. No persistence to disk.
