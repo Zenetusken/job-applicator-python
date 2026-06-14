@@ -54,7 +54,6 @@ class ATSChecker:
             checks=checks,
             warnings=warnings,
             suggestions=suggestions,
-            is_compatible=is_compatible,
         )
 
     def _check_email(

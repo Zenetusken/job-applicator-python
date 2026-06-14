@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, Field, HttpUrl
 
@@ -336,9 +337,92 @@ class ATSCompatibilityResult(BaseModel):
         default_factory=list,
         description="Actionable suggestions to improve ATS compatibility",
     )
-    is_compatible: bool = Field(
-        default=True,
-        description="True if resume passes minimum ATS compatibility threshold",
-    )
+
+    @property
+    def is_compatible(self) -> bool:
+        return self.score >= 0.6
+
+    model_config = {"extra": "forbid"}
+
+
+class ResumeParsingReport(BaseModel):
+    source: str
+    ocr_mode: str = "auto"
+    text_length: int = 0
+    parsed_name: str = ""
+    parsed_email: str = ""
+    parsed_phone: str = ""
+    parsed_skills: list[str] = Field(default_factory=list)
+    parsed_summary_preview: str = ""
+    warnings: list[str] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
+class ATSReport(BaseModel):
+    score: float = 0.0
+    is_compatible: bool = False
+    checks: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    suggestions: list[str] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
+class MatchReport(BaseModel):
+    embedding_model: str = ""
+    device: str = ""
+    load_time_ms: int = 0
+    job_count: int = 0
+    results: list[dict[str, Any]] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
+class LLMReport(BaseModel):
+    model: str = ""
+    endpoint: str = ""
+    prompt_tokens: int | None = None
+    response_tokens: int | None = None
+    temperature: float | None = None
+    calls: list[dict[str, Any]] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
+class TailoringReport(BaseModel):
+    tone: str = ""
+    tone_confidence: float = 0.0
+    pre_match_score: float | None = None
+    attempts: int = 0
+    ats_before: float = 0.0
+    ats_after: float = 0.0
+    hallucination_actions: list[str] = Field(default_factory=list)
+    changes_summary: str = ""
+
+    model_config = {"extra": "forbid"}
+
+
+class IOReport(BaseModel):
+    files_written: list[str] = Field(default_factory=list)
+    files_read: list[str] = Field(default_factory=list)
+    batch_summary_path: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+class VerboseReport(BaseModel):
+    command: str
+    args: dict[str, Any] = Field(default_factory=dict)
+    started_at: datetime = Field(default_factory=datetime.now)
+    duration_ms: int = 0
+    config: dict[str, Any] = Field(default_factory=dict)
+    resume: ResumeParsingReport | None = None
+    ats: ATSReport | None = None
+    match: MatchReport | None = None
+    llm: LLMReport | None = None
+    tailoring: TailoringReport | None = None
+    io: IOReport | None = None
+    errors: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
