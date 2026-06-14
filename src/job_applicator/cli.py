@@ -1586,6 +1586,15 @@ delay_between_applications_s = 2.0
     console.print("Edit it with your credentials, or set environment variables.")
 
 
+@app.command()
+def test_ocr() -> None:
+    """Run live end-to-end OCR fallback meta-tests through the CLI."""
+    from job_applicator.documents.ocr_meta_test import main as _ocr_meta_test_main
+
+    exit_code = _ocr_meta_test_main()
+    raise typer.Exit(code=exit_code)
+
+
 def _get_settings(headed: bool = False) -> AppSettings:
     """Build AppSettings, overriding headless if --headed."""
     settings = AppSettings()
