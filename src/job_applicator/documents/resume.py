@@ -168,19 +168,9 @@ class ResumeLoader:
         # Extract skills section
         skills: list[str] = []
         summary = ""
-        if "Skills" in text or "skills" in text:
-            key = "Skills" if "Skills" in text else "skills"
-            skills_section = text.split(key, 1)[-1]
+        skills_section = self._extract_skills_section(text)
 
-            # Strip leading colon and whitespace (from "Skills: ...")
-            skills_section = skills_section.lstrip(": \t")
-
-            # Find end of skills section (Experience, Education, or similar header)
-            end_markers = ["Experience", "Education", "Certifications", "Languages", "Interests"]
-            for marker in end_markers:
-                if marker in skills_section:
-                    skills_section = skills_section.split(marker, 1)[0]
-
+        if skills_section is not None:
             # Parse skills - handle various formats:
             # - Comma separated: "Python, Java, C++"
             # - Bullet list: "•\n\nSkill Name"
@@ -217,8 +207,17 @@ class ResumeLoader:
 
         # Extract summary/objective
         if "Summary" in text:
-            summary = text.split("Summary", 1)[-1].split("\n\n")[0].strip()
-            summary = re.sub(r"^[:\s]+", "", summary)
+            # Prefer **Professional Summary** or **Summary** header
+            summary_match = re.search(
+                r"\*?\*?(?:Professional\s+)?Summary\*?\*?\s*[:\n](.*?)(?:\n\n|\n\*\*)",
+                text,
+                re.IGNORECASE | re.DOTALL,
+            )
+            if summary_match:
+                summary = summary_match.group(1).strip()
+            else:
+                summary = text.split("Summary", 1)[-1].split("\n\n")[0].strip()
+                summary = re.sub(r"^[:\s]+", "", summary)
         elif "Objective" in text:
             summary = text.split("Objective", 1)[-1].split("\n\n")[0].strip()
             summary = re.sub(r"^[:\s]+", "", summary)
@@ -265,3 +264,40 @@ class ResumeLoader:
             summary=summary,
             skills=skills,
         )
+
+    def _extract_skills_section(self, text: str) -> str | None:
+        """Extract the text between the Skills header and the next section header.
+
+        Returns None if no standalone Skills section header is found.
+        Handles markdown bold headers ("**Skills**") and optional colon.
+        """
+        import re
+
+        # Match standalone Skills header (optional markdown bold, optional
+        # colon, optional leading whitespace). Also allow inline skills after
+        # colon on the same line, e.g. "Skills: Python, Java".
+        pattern = re.compile(
+            r"^\s*\*{0,2}\s*Skills\s*\*{0,2}\s*:?\s*(.*)$",
+            re.IGNORECASE | re.MULTILINE,
+        )
+        match = pattern.search(text)
+        if not match:
+            return None
+
+        inline_skills = match.group(1).strip()
+        start = match.end()
+        remaining = text[start:]
+
+        # If there were inline skills after the colon, prepend them to the section
+        if inline_skills:
+            remaining = inline_skills + "\n" + remaining
+
+        # Find the next known section header (allow inline content after colon too)
+        next_header = re.compile(
+            r"^\s*\*{0,2}\s*(?:Experience|Education|Certifications|Languages|Interests|Projects|Volunteer|References|Awards)\s*\*{0,2}\s*:?",
+            re.IGNORECASE | re.MULTILINE,
+        )
+        next_match = next_header.search(remaining)
+        if next_match:
+            return remaining[: next_match.start()]
+        return remaining
