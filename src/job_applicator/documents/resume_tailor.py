@@ -777,12 +777,7 @@ class ResumeTailor:
                 continue
 
             # Detect next section (end of education)
-            if in_edu and re.match(
-                r"^\*{0,2}\s*(?:CERTIFICATIONS|LANGUAGES|REFERENCES"
-                r"|EXPERIENCE|VOLUNTEER|SKILLS)\s*\*{0,2}$",
-                stripped,
-                re.IGNORECASE,
-            ):
+            if in_edu and _looks_like_section_header(stripped):
                 if current_entry:
                     entries.append(" ".join(current_entry).strip())
                     current_entry = []
