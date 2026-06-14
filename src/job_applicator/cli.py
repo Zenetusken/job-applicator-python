@@ -62,6 +62,13 @@ async def _llm_with_retry(  # noqa: UP047 — mypy doesn't support PEP 695 yet
                 return None
 
 
+def _resolve_ocr_mode(ocr_mode: str, force_ocr: bool) -> str:
+    """Return effective OCR mode from CLI flags."""
+    if force_ocr:
+        return "on"
+    return ocr_mode
+
+
 def version_callback(value: bool) -> None:
     if value:
         console.print(f"job-applicator v{__version__}")
@@ -174,6 +181,16 @@ def apply(
     resume_path: str = typer.Option("", "--resume", help="Path to resume file."),
     style_guide: str = typer.Option("", "--style-guide", help="Example to mimic style."),
     as_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
+    ocr_mode: str = typer.Option(
+        "auto",
+        "--ocr-mode",
+        help="OCR mode: auto (fallback), on (always), off (never).",
+    ),
+    force_ocr: bool = typer.Option(
+        False,
+        "--force-ocr",
+        help="Force OCR; equivalent to --ocr-mode on.",
+    ),
 ) -> None:
     """Auto-apply to jobs with optional AI cover letters."""
     settings = _get_settings(headed)
@@ -182,6 +199,7 @@ def apply(
     if style_guide:
         settings.style_guide_path = style_guide
     setup_logging(settings.log_level)
+    effective_ocr_mode = _resolve_ocr_mode(ocr_mode, force_ocr)
 
     async def _run() -> None:
         from job_applicator.browser.manager import BrowserManager
@@ -225,7 +243,7 @@ def apply(
                 from job_applicator.documents.resume import ResumeLoader
 
                 loader = ResumeLoader()
-                resume_data = loader.load(settings.resume_path)
+                resume_data = loader.load(settings.resume_path, ocr_mode=effective_ocr_mode)
 
                 user_profile = _load_user_profile(settings)
                 generator = CoverLetterGenerator(settings.llm)
@@ -321,6 +339,16 @@ def generate_cover_letter(
     resume_path: str = typer.Option("", "--resume", help="Path to resume file."),
     style_guide: str = typer.Option("", "--style-guide", help="Style examples."),
     headed: bool = typer.Option(False, "--headed", help="Run browser in headed mode."),
+    ocr_mode: str = typer.Option(
+        "auto",
+        "--ocr-mode",
+        help="OCR mode: auto (fallback), on (always), off (never).",
+    ),
+    force_ocr: bool = typer.Option(
+        False,
+        "--force-ocr",
+        help="Force OCR; equivalent to --ocr-mode on.",
+    ),
 ) -> None:
     """Generate an AI cover letter for a specific job."""
     settings = _get_settings(headed)
@@ -329,6 +357,7 @@ def generate_cover_letter(
     if style_guide:
         settings.style_guide_path = style_guide
     setup_logging(settings.log_level)
+    effective_ocr_mode = _resolve_ocr_mode(ocr_mode, force_ocr)
 
     async def _run() -> None:
         from pydantic import HttpUrl
@@ -342,7 +371,7 @@ def generate_cover_letter(
             raise typer.Exit(1)
 
         loader = ResumeLoader()
-        resume_data = loader.load(settings.resume_path)
+        resume_data = loader.load(settings.resume_path, ocr_mode=effective_ocr_mode)
         user_profile = _load_user_profile(settings)
 
         job = JobListing(
@@ -377,7 +406,7 @@ def generate_cover_letter(
                         p = Path(path)
                         if await asyncio.to_thread(p.exists):
                             if p.suffix.lower() == ".pdf":
-                                resume = loader.load(p)
+                                resume = loader.load(p, ocr_mode=effective_ocr_mode)
                                 texts.append(resume.raw_text)
                             else:
                                 texts.append(await asyncio.to_thread(p.read_text, encoding="utf-8"))
@@ -403,12 +432,23 @@ def match(
     top_k: int = typer.Option(5, "--top-k", "-k", help="Number of top matches."),
     min_score: float = typer.Option(0.0, "--min-score", help="Minimum match score (0.0-1.0)."),
     as_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
+    ocr_mode: str = typer.Option(
+        "auto",
+        "--ocr-mode",
+        help="OCR mode: auto (fallback), on (always), off (never).",
+    ),
+    force_ocr: bool = typer.Option(
+        False,
+        "--force-ocr",
+        help="Force OCR; equivalent to --ocr-mode on.",
+    ),
 ) -> None:
     """Match resume to job listings using semantic embeddings."""
     settings = _get_settings()
     if resume_path:
         settings.resume_path = resume_path
     setup_logging(settings.log_level)
+    effective_ocr_mode = _resolve_ocr_mode(ocr_mode, force_ocr)
 
     async def _run() -> None:
         from job_applicator.documents.resume import ResumeLoader
@@ -421,7 +461,7 @@ def match(
 
         # Load resume
         loader = ResumeLoader()
-        resume_data = loader.load(settings.resume_path)
+        resume_data = loader.load(settings.resume_path, ocr_mode=effective_ocr_mode)
         if not as_json:
             console.print(f"[green]Loaded resume: {resume_data.name}[/green]")
 
@@ -535,6 +575,16 @@ def batch(
     style_guide: str = typer.Option("", "--style-guide", help="Style example file."),
     headed: bool = typer.Option(False, "--headed", help="Run browser in headed mode."),
     as_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
+    ocr_mode: str = typer.Option(
+        "auto",
+        "--ocr-mode",
+        help="OCR mode: auto (fallback), on (always), off (never).",
+    ),
+    force_ocr: bool = typer.Option(
+        False,
+        "--force-ocr",
+        help="Force OCR; equivalent to --ocr-mode on.",
+    ),
 ) -> None:
     """Batch tailor resumes (and optionally cover letters) for multiple jobs."""
     settings = _get_settings(headed)
@@ -543,6 +593,7 @@ def batch(
     if style_guide:
         settings.style_guide_path = style_guide
     setup_logging(settings.log_level)
+    effective_ocr_mode = _resolve_ocr_mode(ocr_mode, force_ocr)
 
     async def _run() -> None:
         import json
@@ -559,7 +610,7 @@ def batch(
             raise typer.Exit(1)
 
         loader = ResumeLoader()
-        resume_data = loader.load(settings.resume_path)
+        resume_data = loader.load(settings.resume_path, ocr_mode=effective_ocr_mode)
         if not as_json:
             console.print(f"[green]Loaded resume: {resume_data.name}[/green]")
 
@@ -1061,6 +1112,16 @@ def tailor(
     min_score: float = typer.Option(
         0.0, "--min-score", help="Abort if match score is below this threshold (0.0-1.0)."
     ),
+    ocr_mode: str = typer.Option(
+        "auto",
+        "--ocr-mode",
+        help="OCR mode: auto (fallback), on (always), off (never).",
+    ),
+    force_ocr: bool = typer.Option(
+        False,
+        "--force-ocr",
+        help="Force OCR; equivalent to --ocr-mode on.",
+    ),
 ) -> None:
     """Tailor a resume for a specific job with interactive preview."""
     settings = _get_settings(headed)
@@ -1069,6 +1130,7 @@ def tailor(
     if style_guide:
         settings.style_guide_path = style_guide
     setup_logging(settings.log_level)
+    effective_ocr_mode = _resolve_ocr_mode(ocr_mode, force_ocr)
 
     async def _run() -> None:
         from pydantic import HttpUrl
@@ -1082,7 +1144,7 @@ def tailor(
             raise typer.Exit(1)
 
         loader = ResumeLoader()
-        resume_data = loader.load(settings.resume_path)
+        resume_data = loader.load(settings.resume_path, ocr_mode=effective_ocr_mode)
         console.print(f"[green]Loaded resume: {resume_data.name}[/green]")
 
         req_list = [r.strip() for r in requirements.split(",") if r.strip()] if requirements else []
