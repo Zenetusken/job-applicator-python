@@ -166,3 +166,41 @@ class TestScoring:
     ) -> None:
         result = checker.check(bad_resume)
         assert len(result.suggestions) > 0
+
+
+class TestATSPreflight:
+    def test_preflight_warns_when_incompatible(self) -> None:
+        from job_applicator.cli import _run_ats_preflight
+
+        resume = ResumeData(
+            raw_text="Bob\nbob@email.com\nstuff",
+            name="Bob",
+            email="bob@email.com",
+            phone="",
+        )
+        _run_ats_preflight(resume)
+
+    def test_preflight_silent_when_compatible(self) -> None:
+        from job_applicator.cli import _run_ats_preflight
+
+        resume = ResumeData(
+            raw_text=(
+                "John Doe\n"
+                "john@example.com\n"
+                "555-123-4567\n"
+                "Summary\n"
+                "Experienced developer.\n"
+                "Experience\n"
+                "Senior Dev at Corp (2020-Present)\n"
+                "- Built stuff\n"
+                "Education\n"
+                "BS CS (2016-2020)\n"
+                "Skills\n"
+                "Python, Java"
+            ),
+            name="John Doe",
+            email="john@example.com",
+            phone="555-123-4567",
+            skills=["Python", "Java"],
+        )
+        _run_ats_preflight(resume)

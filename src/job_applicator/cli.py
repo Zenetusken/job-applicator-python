@@ -69,6 +69,25 @@ def _resolve_ocr_mode(ocr_mode: str, force_ocr: bool) -> str:
     return ocr_mode
 
 
+def _run_ats_preflight(resume: ResumeData) -> None:
+    """Run ATS compatibility check and warn if issues found."""
+    from job_applicator.documents.ats_checker import ATSChecker
+
+    checker = ATSChecker()
+    result = checker.check(resume)
+
+    if result.is_compatible:
+        return
+
+    console.print(f"\n[yellow]⚠ ATS Compatibility: {result.score:.0%} (Not Compatible)[/yellow]")
+    for warning in result.warnings[:3]:
+        console.print(f"  [yellow]![/yellow] {warning}")
+    console.print(
+        "  [dim]Tip: Run 'job-applicator ats-check --resume <path>' for full report[/dim]"
+    )
+    console.print()
+
+
 def version_callback(value: bool) -> None:
     if value:
         console.print(f"job-applicator v{__version__}")
