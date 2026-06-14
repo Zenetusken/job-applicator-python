@@ -516,6 +516,7 @@ def generate_cover_letter(
 
 @app.command()
 def match(
+    ctx: typer.Context,
     resume_path: str = typer.Option("", "--resume", help="Path to resume file."),
     jobs_file: str = typer.Option("", "--jobs-file", help="JSON file with job listings."),
     top_k: int = typer.Option(5, "--top-k", "-k", help="Number of top matches."),
@@ -539,6 +540,13 @@ def match(
     setup_logging(settings.log_level)
     effective_ocr_mode = _resolve_ocr_mode(ocr_mode, force_ocr)
 
+    reporter = _get_reporter(
+        ctx=ctx,
+        command="match",
+        args={"resume": settings.resume_path, "jobs_file": jobs_file, "top_k": top_k},
+        config=_sanitize_config(settings),
+    )
+
     async def _run() -> None:
         from job_applicator.documents.resume import ResumeLoader
         from job_applicator.embeddings.matching import JobMatcher
@@ -551,6 +559,17 @@ def match(
         # Load resume
         loader = ResumeLoader()
         resume_data = loader.load(settings.resume_path, ocr_mode=effective_ocr_mode)
+        if reporter:
+            reporter.record_resume(
+                source=settings.resume_path,
+                ocr_mode=effective_ocr_mode,
+                text_length=len(resume_data.raw_text),
+                parsed_name=resume_data.name or "",
+                parsed_email=resume_data.email or "",
+                parsed_phone=resume_data.phone or "",
+                parsed_skills=resume_data.skills,
+                parsed_summary_preview=resume_data.summary[:200] if resume_data.summary else "",
+            )
         if not as_json:
             console.print(f"[green]Loaded resume: {resume_data.name}[/green]")
             _run_ats_preflight(resume_data)
@@ -599,6 +618,26 @@ def match(
         if min_score > 0:
             matches = [m for m in matches if m.score >= min_score]
 
+        if reporter and matches:
+            reporter.record_match(
+                embedding_model=settings.embedding.model_name,
+                device=settings.embedding.device,
+                load_time_ms=0,
+                results=[
+                    {
+                        "rank": i + 1,
+                        "title": m.job.title,
+                        "company": m.job.company,
+                        "score": round(m.score, 4),
+                        "semantic_score": round(m.semantic_score, 4),
+                        "skill_score": round(m.skill_score, 4),
+                        "matched_skills": m.matched_skills,
+                        "missing_skills": m.missing_skills,
+                    }
+                    for i, m in enumerate(matches)
+                ],
+            )
+
         # JSON output
         if as_json:
             import json
@@ -646,11 +685,21 @@ def match(
 
         console.print(table)
 
-    asyncio.run(_run())
+    try:
+        asyncio.run(_run())
+    except Exception as exc:
+        if reporter:
+            reporter.record_error(str(exc))
+        raise
+    finally:
+        if reporter:
+            log_file = ctx.obj.log_file if isinstance(ctx.obj, VerboseContext) else None
+            reporter.render(console, log_file)
 
 
 @app.command()
 def batch(
+    ctx: typer.Context,
     resume_path: str = typer.Option("", "--resume", help="Path to resume file."),
     jobs_file: str = typer.Option("", "--jobs-file", help="JSON file with job listings."),
     query: str = typer.Option(
@@ -685,6 +734,20 @@ def batch(
     setup_logging(settings.log_level)
     effective_ocr_mode = _resolve_ocr_mode(ocr_mode, force_ocr)
 
+    reporter = _get_reporter(
+        ctx=ctx,
+        command="batch",
+        args={
+            "resume": settings.resume_path,
+            "jobs_file": jobs_file,
+            "query": query,
+            "top_k": top_k,
+            "cover_letter": cover_letter,
+        },
+        config=_sanitize_config(settings),
+    )
+    written_paths: list[str] = []
+
     async def _run() -> None:
         import json
         from datetime import datetime as dt
@@ -701,6 +764,17 @@ def batch(
 
         loader = ResumeLoader()
         resume_data = loader.load(settings.resume_path, ocr_mode=effective_ocr_mode)
+        if reporter:
+            reporter.record_resume(
+                source=settings.resume_path,
+                ocr_mode=effective_ocr_mode,
+                text_length=len(resume_data.raw_text),
+                parsed_name=resume_data.name or "",
+                parsed_email=resume_data.email or "",
+                parsed_phone=resume_data.phone or "",
+                parsed_skills=resume_data.skills,
+                parsed_summary_preview=resume_data.summary[:200] if resume_data.summary else "",
+            )
         if not as_json:
             console.print(f"[green]Loaded resume: {resume_data.name}[/green]")
         _run_ats_preflight(resume_data)
@@ -814,6 +888,7 @@ def batch(
                     await asyncio.to_thread(
                         Path(resume_path_out).write_text, tailored.tailored_text
                     )
+                    written_paths.append(resume_path_out)
 
                     meta_filename = f"{resume_filename.rsplit('.', 1)[0]}.meta.json"
                     meta_path = str(Path(output_dir) / meta_filename)
@@ -821,6 +896,7 @@ def batch(
                     await asyncio.to_thread(
                         Path(meta_path).write_text, tailored.model_dump_json(indent=2)
                     )
+                    written_paths.append(meta_path)
                     result["resume_path"] = resume_path_out
                     result["tailored"] = True
                 except Exception as exc:
@@ -840,6 +916,7 @@ def batch(
                         cl_filename = f"cover_letter_{safe_company}_{safe_title}_{timestamp}.txt"
                         cl_path = str(Path(output_dir) / cl_filename)
                         await asyncio.to_thread(Path(cl_path).write_text, letter)
+                        written_paths.append(cl_path)
                         result["cover_letter_path"] = cl_path
                         result["cover_letter"] = True
                     except Exception as exc:
@@ -860,6 +937,13 @@ def batch(
         }
         summary_path = str(Path(output_dir) / f"batch_summary_{timestamp}.json")
         await asyncio.to_thread(Path(summary_path).write_text, json.dumps(summary, indent=2))
+        written_paths.append(summary_path)
+
+        if reporter:
+            reporter.record_io(
+                files_written=written_paths,
+                batch_summary_path=str(Path(output_dir) / "batch_summary.json"),
+            )
 
         if as_json:
             console.print(json.dumps(summary, indent=2))
@@ -900,7 +984,16 @@ def batch(
             )
             console.print(f"Summary: {summary_path}")
 
-    asyncio.run(_run())
+    try:
+        asyncio.run(_run())
+    except Exception as exc:
+        if reporter:
+            reporter.record_error(str(exc))
+        raise
+    finally:
+        if reporter:
+            log_file = ctx.obj.log_file if isinstance(ctx.obj, VerboseContext) else None
+            reporter.render(console, log_file)
 
 
 async def _generate_cover_letter(
