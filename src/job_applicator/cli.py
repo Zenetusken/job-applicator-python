@@ -296,6 +296,7 @@ def apply(
 
                 loader = ResumeLoader()
                 resume_data = loader.load(settings.resume_path, ocr_mode=effective_ocr_mode)
+                _run_ats_preflight(resume_data)
 
                 user_profile = _load_user_profile(settings)
                 generator = CoverLetterGenerator(settings.llm)
@@ -516,6 +517,7 @@ def match(
         resume_data = loader.load(settings.resume_path, ocr_mode=effective_ocr_mode)
         if not as_json:
             console.print(f"[green]Loaded resume: {resume_data.name}[/green]")
+            _run_ats_preflight(resume_data)
 
         # Load jobs
         jobs: list[JobListing] = []
@@ -1198,6 +1200,7 @@ def tailor(
         loader = ResumeLoader()
         resume_data = loader.load(settings.resume_path, ocr_mode=effective_ocr_mode)
         console.print(f"[green]Loaded resume: {resume_data.name}[/green]")
+        _run_ats_preflight(resume_data)
 
         req_list = [r.strip() for r in requirements.split(",") if r.strip()] if requirements else []
         url = HttpUrl(job_url) if job_url else HttpUrl("https://example.com/placeholder")
