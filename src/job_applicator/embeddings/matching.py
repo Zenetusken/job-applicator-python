@@ -238,6 +238,8 @@ class JobMatcher:
                 MatchResult(
                     job=job,
                     score=score,
+                    semantic_score=semantic_score,
+                    skill_score=skill_score,
                     matched_skills=matched,
                     missing_skills=missing,
                     summary=summary,
