@@ -77,6 +77,16 @@ def _is_section_header(stripped: str) -> bool:
     return False
 
 
+def _looks_like_section_header(stripped: str) -> bool:
+    """Return True if stripped line is a known section header.
+
+    Strips markdown bold so headers like '**Languages**' are recognized.
+    """
+    cleaned = re.sub(r"^\*+", "", stripped)
+    cleaned = re.sub(r"\*+$", "", cleaned).strip()
+    return _is_section_header(cleaned)
+
+
 def parse_sections(text: str) -> list[ResumeSection]:
     """Parse resume text into sections by detecting headers."""
     lines = text.split("\n")
@@ -767,12 +777,7 @@ class ResumeTailor:
                 continue
 
             # Detect next section (end of education)
-            if in_edu and re.match(
-                r"^\*{0,2}\s*(?:CERTIFICATIONS|LANGUAGES|REFERENCES"
-                r"|EXPERIENCE|VOLUNTEER|SKILLS)\s*\*{0,2}$",
-                stripped,
-                re.IGNORECASE,
-            ):
+            if in_edu and _looks_like_section_header(stripped):
                 if current_entry:
                     entries.append(" ".join(current_entry).strip())
                     current_entry = []
@@ -838,12 +843,7 @@ class ResumeTailor:
                 continue
 
             # Detect end of skills section (next section header)
-            if in_skills_section and re.match(
-                r"^\*{0,2}\s*(?:EXPERIENCE|EDUCATION|PROFESSIONAL|EMPLOYMENT"
-                r"|CERTIFICATIONS|SUMMARY|OBJECTIVE)\s*\*{0,2}$",
-                stripped,
-                re.IGNORECASE,
-            ):
+            if in_skills_section and _looks_like_section_header(stripped):
                 in_skills_section = False
                 result_lines.append(line)
                 continue
@@ -998,31 +998,25 @@ class ResumeTailor:
         """Remove Education section if it wasn't in the original resume."""
         import re
 
-        # Check if original has an education section
-        if re.search(r"\b(?:EDUCATION|Education)\b", original):
+        # Check if original has an education section (case-insensitive word boundary)
+        if re.search(r"\bEDUCATION\b", original, re.IGNORECASE):
             return tailored  # Original has education, keep it
 
         # Find and remove education section from tailored text
         lines = tailored.split("\n")
-        result_lines = []
+        result_lines: list[str] = []
         in_education = False
 
         for line in lines:
             stripped = line.strip()
 
-            # Detect education section header
+            # Detect education section header (with optional markdown bold)
             if re.match(r"^\*{0,2}\s*EDUCATION\s*\*{0,2}$", stripped, re.IGNORECASE):
                 in_education = True
                 continue
 
             # Detect next section header (end of education)
-            if in_education and re.match(
-                r"^\*{0,2}\s*(?:EXPERIENCE|SKILLS|PROFESSIONAL|EMPLOYMENT"
-                r"|CERTIFICATIONS|SUMMARY|OBJECTIVE|Core Competencies"
-                r"|Technical Skills)\s*\*{0,2}$",
-                stripped,
-                re.IGNORECASE,
-            ):
+            if in_education and _looks_like_section_header(stripped):
                 in_education = False
                 result_lines.append(line)
                 continue

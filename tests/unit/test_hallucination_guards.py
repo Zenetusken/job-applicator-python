@@ -349,6 +349,34 @@ class TestStripHallucinatedEducation:
         assert "EDUCATION" not in result
         assert "PhD" not in result
 
+    def test_lowercase_original_education_is_detected(self, tailor: ResumeTailor):
+        """Original 'education' in lowercase must be recognized as present."""
+        original = "skills\nPython\neducation\nBS CS, MIT, 2016-2020"
+        tailored = "SKILLS\nPython\nEDUCATION\nBS CS, MIT, 2016-2020"
+        result = tailor._strip_hallucinated_education(tailored, original)
+        assert "EDUCATION" in result
+        assert "MIT" in result
+
+    def test_education_stripping_stops_at_all_known_headers(self, tailor: ResumeTailor):
+        """Removing a hallucinated Education section must not swallow following sections."""
+        original = "SKILLS\nPython\nEXPERIENCE\nDeveloper at Corp"
+        tailored = (
+            "SKILLS\nPython\n"
+            "EDUCATION\nBS Computer Science, MIT, 2016-2020\n"
+            "LANGUAGES\nEnglish, French\n"
+            "PROJECTS\nOpen-source tool\n"
+            "EXPERIENCE\nDeveloper at Corp"
+        )
+        result = tailor._strip_hallucinated_education(tailored, original)
+        assert "EDUCATION" not in result
+        assert "MIT" not in result
+        assert "LANGUAGES" in result
+        assert "English, French" in result
+        assert "PROJECTS" in result
+        assert "Open-source tool" in result
+        assert "EXPERIENCE" in result
+        assert "Developer at Corp" in result
+
 
 # ---------------------------------------------------------------------------
 # _extract_education_entries

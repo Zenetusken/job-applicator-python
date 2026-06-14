@@ -69,6 +69,59 @@ def _resolve_ocr_mode(ocr_mode: str, force_ocr: bool) -> str:
     return ocr_mode
 
 
+def _run_ats_preflight(resume: ResumeData) -> None:
+    """Run ATS compatibility check and warn if issues found."""
+    from job_applicator.documents.ats_checker import ATSChecker
+
+    checker = ATSChecker()
+    result = checker.check(resume)
+
+    if result.is_compatible:
+        return
+
+    console.print(f"\n[yellow]⚠ ATS Compatibility: {result.score:.0%} (Not Compatible)[/yellow]")
+    for warning in result.warnings[:3]:
+        console.print(f"  [yellow]![/yellow] {warning}")
+    console.print(
+        "  [dim]Tip: Run 'job-applicator ats-check --resume <path>' for full report[/dim]"
+    )
+    console.print()
+
+
+def _run_ats_post_tailor(original_text: str, tailored_text: str) -> None:
+    """Compare ATS compatibility before and after tailoring."""
+    from job_applicator.documents.ats_checker import ATSChecker
+    from job_applicator.documents.resume import ResumeLoader
+
+    checker = ATSChecker()
+    loader = ResumeLoader()
+
+    original = loader.parse_text(original_text)
+    tailored = loader.parse_text(tailored_text)
+
+    original_result = checker.check(original)
+    tailored_result = checker.check(tailored)
+
+    before = original_result.score
+    after = tailored_result.score
+
+    if after >= before:
+        console.print(
+            f"\n[green]ATS Compatibility (before → after): {before:.0%} → {after:.0%} ✓[/green]"
+        )
+        if after >= 0.6:
+            console.print("  [green]✓ All checks passing after tailoring[/green]")
+    else:
+        console.print(
+            f"\n[yellow]⚠ ATS Compatibility (before → after): {before:.0%} → {after:.0%}[/yellow]"
+        )
+        original_checks = {c["name"]: c["passed"] for c in original_result.checks}
+        for check in tailored_result.checks:
+            if not check["passed"] and original_checks.get(check["name"], False):
+                console.print(f"  [yellow]![/yellow] New issue: {check['details']}")
+    console.print()
+
+
 def version_callback(value: bool) -> None:
     if value:
         console.print(f"job-applicator v{__version__}")
@@ -244,6 +297,7 @@ def apply(
 
                 loader = ResumeLoader()
                 resume_data = loader.load(settings.resume_path, ocr_mode=effective_ocr_mode)
+                _run_ats_preflight(resume_data)
 
                 user_profile = _load_user_profile(settings)
                 generator = CoverLetterGenerator(settings.llm)
@@ -464,6 +518,7 @@ def match(
         resume_data = loader.load(settings.resume_path, ocr_mode=effective_ocr_mode)
         if not as_json:
             console.print(f"[green]Loaded resume: {resume_data.name}[/green]")
+            _run_ats_preflight(resume_data)
 
         # Load jobs
         jobs: list[JobListing] = []
@@ -613,6 +668,7 @@ def batch(
         resume_data = loader.load(settings.resume_path, ocr_mode=effective_ocr_mode)
         if not as_json:
             console.print(f"[green]Loaded resume: {resume_data.name}[/green]")
+        _run_ats_preflight(resume_data)
 
         jobs: list[JobListing] = []
         if jobs_file:
@@ -713,6 +769,7 @@ def batch(
                         style_guide=style,
                         matcher=matcher,
                     )
+                    _run_ats_post_tailor(resume_data.raw_text, tailored.tailored_text)
                     result["match_score"] = round(tailored.match_score, 4)
                     result["semantic_score"] = round(tailored.semantic_score, 4)
                     result["skill_score"] = round(tailored.skill_score, 4)
@@ -1146,6 +1203,7 @@ def tailor(
         loader = ResumeLoader()
         resume_data = loader.load(settings.resume_path, ocr_mode=effective_ocr_mode)
         console.print(f"[green]Loaded resume: {resume_data.name}[/green]")
+        _run_ats_preflight(resume_data)
 
         req_list = [r.strip() for r in requirements.split(",") if r.strip()] if requirements else []
         url = HttpUrl(job_url) if job_url else HttpUrl("https://example.com/placeholder")
@@ -1270,6 +1328,7 @@ def tailor(
                     resume_data, job, user_instructions, style, tone_profile
                 )
             session.add_attempt(result)
+            _run_ats_post_tailor(resume_data.raw_text, result.tailored_text)
         except Exception as exc:
             console.print(f"[red]LLM error: {exc}[/red]")
             console.print("[yellow]Could not generate tailored resume.[/yellow]")
@@ -1542,6 +1601,88 @@ def tailor(
                 console.print("[red]Invalid choice. Please enter A, R, I, D, V, S, or Q.[/red]")
 
     asyncio.run(_run())
+
+
+@app.command()
+def ats_check(
+    resume_path: str = typer.Option("", "--resume", help="Path to resume file."),
+    as_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
+    ocr_mode: str = typer.Option(
+        "auto",
+        "--ocr-mode",
+        help="OCR mode: auto (fallback), on (always), off (never).",
+    ),
+    force_ocr: bool = typer.Option(
+        False,
+        "--force-ocr",
+        help="Force OCR; equivalent to --ocr-mode on.",
+    ),
+) -> None:
+    """Check resume ATS (Applicant Tracking System) compatibility."""
+    settings = _get_settings()
+    if resume_path:
+        settings.resume_path = resume_path
+    setup_logging(settings.log_level)
+    effective_ocr_mode = _resolve_ocr_mode(ocr_mode, force_ocr)
+
+    from job_applicator.documents.ats_checker import ATSChecker
+    from job_applicator.documents.resume import ResumeLoader
+
+    if not settings.resume_path:
+        console.print("[red]Resume path required. Use --resume.[/red]")
+        raise typer.Exit(1)
+
+    loader = ResumeLoader()
+    resume_data = loader.load(settings.resume_path, ocr_mode=effective_ocr_mode)
+
+    if not as_json:
+        console.print(f"[green]Loaded resume: {resume_data.name}[/green]")
+
+    checker = ATSChecker()
+    result = checker.check(resume_data)
+
+    if as_json:
+        import json
+
+        output = {
+            "score": result.score,
+            "is_compatible": result.is_compatible,
+            "checks": result.checks,
+            "warnings": result.warnings,
+            "suggestions": result.suggestions,
+        }
+        console.print(json.dumps(output, indent=2))
+        return
+
+    # Display results
+    color = "green" if result.is_compatible else "red"
+    console.print(f"\n[bold {color}]ATS Score: {result.score:.0%}[/bold {color}]")
+    status = "Compatible" if result.is_compatible else "Not Compatible"
+    console.print(f"[{color}]Status: {status}[/{color}]\n")
+
+    # Check results table
+    table = Table(title="ATS Checks")
+    table.add_column("Check", style="cyan")
+    table.add_column("Status")
+    table.add_column("Details")
+
+    for check in result.checks:
+        status = "[green]PASS[/green]" if check["passed"] else "[red]FAIL[/red]"
+        table.add_row(str(check["name"]), status, str(check["details"]))
+
+    console.print(table)
+
+    # Warnings
+    if result.warnings:
+        console.print("\n[bold yellow]Warnings:[/bold yellow]")
+        for warning in result.warnings:
+            console.print(f"  [yellow]![/yellow] {warning}")
+
+    # Suggestions
+    if result.suggestions:
+        console.print("\n[bold cyan]Suggestions:[/bold cyan]")
+        for suggestion in result.suggestions:
+            console.print(f"  [cyan]*[/cyan] {suggestion}")
 
 
 @app.command()

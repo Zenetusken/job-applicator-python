@@ -54,7 +54,7 @@ class ResumeLoader:
         doc = Document(str(path))
         paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
         text = "\n".join(paragraphs)
-        return self._parse_text(text)
+        return self.parse_text(text)
 
     def _load_pdf(self, path: Path, ocr_mode: str = "auto") -> ResumeData:
         if ocr_mode not in {"auto", "on", "off"}:
@@ -62,15 +62,15 @@ class ResumeLoader:
 
         if ocr_mode == "on":
             text = self.ocr_service.extract_text_from_pdf(path)
-            return self._parse_text(text)
+            return self.parse_text(text)
 
         if ocr_mode == "off":
             text = self._run_pdftotext(path)
             if len(text.strip()) >= OCR_THRESHOLD:
-                return self._parse_text(text)
+                return self.parse_text(text)
             text = self._run_pymupdf(path)
             if len(text.strip()) >= OCR_THRESHOLD:
-                return self._parse_text(text)
+                return self.parse_text(text)
             raise DocumentError(
                 f"PDF {path} contains insufficient extractable text; "
                 "enable OCR with --ocr-mode auto or --force-ocr"
@@ -79,21 +79,21 @@ class ResumeLoader:
         # ocr_mode == "auto"
         text = self._run_pdftotext(path)
         if len(text.strip()) >= OCR_THRESHOLD:
-            return self._parse_text(text)
+            return self.parse_text(text)
 
         text = self._run_pymupdf(path)
         if len(text.strip()) >= OCR_THRESHOLD:
-            return self._parse_text(text)
+            return self.parse_text(text)
 
         logger.info("OCR fallback triggered for %s (extracted %d chars)", path, len(text))
         try:
             ocr_text = self.ocr_service.extract_text_from_pdf(path)
             logger.info("OCR fallback completed for %s (%d chars)", path, len(ocr_text))
-            return self._parse_text(ocr_text)
+            return self.parse_text(ocr_text)
         except DocumentError:
             if text:
                 logger.warning("OCR failed; using extracted text (%d chars)", len(text))
-                return self._parse_text(text)
+                return self.parse_text(text)
             raise
 
     def _run_pdftotext(self, path: Path) -> str:
@@ -137,14 +137,14 @@ class ResumeLoader:
         if ocr_mode == "off":
             raise DocumentError(f"Image resume {path} requires OCR, but ocr_mode is 'off'")
         text = self.ocr_service.extract_text_from_image(path)
-        return self._parse_text(text)
+        return self.parse_text(text)
 
     def _load_text(self, path: Path) -> ResumeData:
         """Load plain text resume."""
         text = path.read_text(encoding="utf-8")
-        return self._parse_text(text)
+        return self.parse_text(text)
 
-    def _parse_text(self, text: str) -> ResumeData:
+    def parse_text(self, text: str) -> ResumeData:
         """Parse raw text into structured ResumeData."""
         lines = text.strip().split("\n")
         name = lines[0].strip() if lines else ""
@@ -155,9 +155,15 @@ class ResumeLoader:
         email_match = re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", text)
         email = email_match.group(0) if email_match else ""
 
-        # Extract phone
-        phone_match = re.search(r"[\+]?[\d\s\-\(\)]{10,}", text)
-        phone = phone_match.group(0).strip() if phone_match else ""
+        # Extract phone — find sequences with at least 10 actual digits
+        phone_pattern = r"[\+]?[\d\s\-\(\)]{10,}"
+        phone = ""
+        for match in re.finditer(phone_pattern, text):
+            candidate = match.group(0)
+            digit_count = sum(c.isdigit() for c in candidate)
+            if digit_count >= 10:
+                phone = candidate.strip()
+                break
 
         # Extract skills section
         skills: list[str] = []
@@ -179,6 +185,7 @@ class ResumeLoader:
             # - Comma separated: "Python, Java, C++"
             # - Bullet list: "•\n\nSkill Name"
             # - Line list: "Skill1\nSkill2\nSkill3"
+            # - Two-column bullets: "Skill1 • Skill2"
             import re
 
             # Remove bullet characters and empty lines
@@ -188,10 +195,13 @@ class ResumeLoader:
                 stripped = line.strip()
                 # Skip empty lines, bullets, and separators
                 if stripped and stripped not in ("•", "·", "-", "|", "/"):
-                    # Remove leading bullets
-                    stripped = re.sub(r"^[•·\-\|/]\s*", "", stripped)
-                    if stripped:
-                        clean_lines.append(stripped)
+                    # Split on middle bullets (two-column format)
+                    parts = re.split(r"\s+[•·]\s+", stripped)
+                    for part in parts:
+                        # Remove leading bullets
+                        part = re.sub(r"^[•·\-\|/]\s*", "", part).strip()
+                        if part and len(part) > 2:
+                            clean_lines.append(part)
 
             # Determine if skills are comma-separated on one line or one-per-line
             if len(clean_lines) == 1 and "," in clean_lines[0]:
@@ -216,6 +226,35 @@ class ResumeLoader:
             idx = text.lower().index("objective")
             summary = text[idx:].split("\n\n")[0].strip()
             summary = re.sub(r"^objective[:\s]*", "", summary, flags=re.IGNORECASE)
+        else:
+            # Fallback: detect first paragraph after contact info
+            # Skip name line and contact line (email/phone)
+            lines = text.strip().split("\n")
+            contact_end = 0
+            for i, line in enumerate(lines[:5]):
+                has_email = re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", line)
+                has_phone = re.search(r"[\+]?[\d\s\-\(\)]{10,}", line)
+                if has_email or has_phone:
+                    contact_end = i + 1
+            # Find first non-empty paragraph after contact
+            paragraph_lines: list[str] = []
+            for line in lines[contact_end:]:
+                stripped = line.strip()
+                if not stripped:
+                    if paragraph_lines:
+                        break
+                    continue
+                # Stop at section headers
+                if stripped in ("Skills", "Experience", "Education", "Certifications", "Languages"):
+                    break
+                paragraph_lines.append(stripped)
+            if paragraph_lines:
+                summary = " ".join(paragraph_lines)
+                # Only use if it looks like a summary (not a section header)
+                if len(summary) > 50 and not summary.isupper():
+                    summary = summary
+                else:
+                    summary = ""
 
         logger.info("Parsed resume: name=%s, skills=%d", name, len(skills))
         return ResumeData(
