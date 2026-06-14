@@ -667,6 +667,7 @@ def batch(
         resume_data = loader.load(settings.resume_path, ocr_mode=effective_ocr_mode)
         if not as_json:
             console.print(f"[green]Loaded resume: {resume_data.name}[/green]")
+        _run_ats_preflight(resume_data)
 
         jobs: list[JobListing] = []
         if jobs_file:
@@ -767,6 +768,7 @@ def batch(
                         style_guide=style,
                         matcher=matcher,
                     )
+                    _run_ats_post_tailor(resume_data.raw_text, tailored.tailored_text)
                     result["match_score"] = round(tailored.match_score, 4)
                     result["semantic_score"] = round(tailored.semantic_score, 4)
                     result["skill_score"] = round(tailored.skill_score, 4)
