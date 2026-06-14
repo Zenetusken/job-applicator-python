@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import typer
 from rich.console import Console
@@ -18,6 +19,7 @@ from job_applicator.config import AppSettings
 from job_applicator.models import UserProfile
 from job_applicator.utils.diff import render_diff
 from job_applicator.utils.logging import setup_logging
+from job_applicator.utils.verbose import VerboseReporter
 
 if TYPE_CHECKING:
     from job_applicator.documents.tone_detector import ToneProfile
@@ -39,6 +41,24 @@ app = typer.Typer(
 console = Console()
 
 T = TypeVar("T")
+
+
+@dataclass
+class VerboseContext:
+    verbose: bool
+    log_file: str | None = None
+
+
+def _get_reporter(
+    ctx: typer.Context,
+    command: str,
+    args: dict[str, Any],
+    config: dict[str, Any],
+) -> VerboseReporter | None:
+    vctx = ctx.obj
+    if not isinstance(vctx, VerboseContext) or not vctx.verbose:
+        return None
+    return VerboseReporter(command=command, args=args, config=config)
 
 
 async def _llm_with_retry(  # noqa: UP047 — mypy doesn't support PEP 695 yet
@@ -130,16 +150,31 @@ def version_callback(value: bool) -> None:
 
 @app.callback()
 def main(
+    ctx: typer.Context,
     version: bool = typer.Option(
         False,
         "--version",
         "-v",
+        help="Show version and exit.",
         callback=version_callback,
         is_eager=True,
-        help="Show version and exit.",
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-V",
+        help="Emit structured observability report.",
+    ),
+    log_file: str | None = typer.Option(
+        None,
+        "--log-file",
+        help="Write verbose report to file (requires --verbose).",
     ),
 ) -> None:
-    """Job Applicator — automated job applications with AI cover letters."""
+    """Automated job application tool with AI-powered cover letters."""
+    if log_file and not verbose:
+        raise typer.BadParameter("--log-file requires --verbose")
+    ctx.obj = VerboseContext(verbose=verbose, log_file=log_file)
 
 
 @app.command()
