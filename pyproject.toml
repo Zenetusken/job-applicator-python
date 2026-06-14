@@ -14,18 +14,22 @@ dependencies = [
     "pydantic-settings>=2.10",
     "typer>=0.16",
     "rich>=14.2",
-    "httpx>=0.28",
-    "beautifulsoup4>=4.13",
     "jinja2>=3.1",
+    "numpy>=1.26",
     # LLM - Modern stack
     "litellm>=1.88",           # Universal LLM API (OpenAI, Anthropic, vLLM, 100+ providers)
     "instructor>=1.15",        # Structured outputs from LLMs
-    "pydantic-ai>=1.107",      # AI agents with Pydantic type safety
-    # Web scraping
-    "crawl4ai>=0.8",           # AI-powered web crawling
+    # Document processing
+    "python-docx>=1.1",
 ]
 
 [project.optional-dependencies]
+embeddings = [
+    "sentence-transformers>=3.0",
+]
+pdf = [
+    "pymupdf>=1.24",
+]
 dev = [
     "ruff>=0.12",
     "mypy>=1.16",

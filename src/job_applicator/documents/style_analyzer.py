@@ -1,7 +1,7 @@
 """Style analyzer - extracts writing patterns from example resumes/cover letters.
 
 Refinements:
-- Better JSON extraction with multiple fallback strategies
+- Uses instructor for structured output (no manual JSON parsing)
 - Persistent cache to avoid re-analysis
 - Multi-document analysis for combined patterns
 - Richer style dimensions
@@ -164,13 +164,38 @@ class StyleAnalyzer:
         return style
 
     async def _analyze_with_llm(self, text: str) -> StyleGuide:
-        """Perform the actual LLM analysis."""
+        """Perform the actual LLM analysis using instructor for structured output."""
         try:
+            import instructor
             from litellm import acompletion
 
-            # For local vLLM, need "openai/" prefix
             model = f"openai/{self._config.model}" if self._config.api_base else self._config.model
 
+            # Try instructor first (structured output with automatic retry)
+            try:
+                client = instructor.from_litellm(acompletion)
+                response = await client.create(  # type: ignore[attr-defined]
+                    model=model,
+                    api_base=self._config.api_base,
+                    api_key=self._config.api_key,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": ANALYSIS_PROMPT.format(text=text[:3000])},
+                    ],
+                    response_model=StyleGuide,
+                    max_retries=2,
+                    max_tokens=1024,
+                    temperature=0.1,
+                    extra_body={
+                        "chat_template_kwargs": {"enable_thinking": False},
+                    },
+                )
+                logger.info("Analyzed writing style via instructor: tone=%s", response.tone)
+                return response
+            except Exception:
+                logger.debug("Instructor failed, falling back to direct litellm call")
+
+            # Fallback: direct litellm call with manual JSON parsing
             response = await acompletion(
                 model=model,
                 api_base=self._config.api_base,
@@ -180,7 +205,7 @@ class StyleAnalyzer:
                     {"role": "user", "content": ANALYSIS_PROMPT.format(text=text[:3000])},
                 ],
                 max_tokens=1024,
-                temperature=0.2,  # Low temp for consistent JSON
+                temperature=0.1,
                 extra_body={
                     "chat_template_kwargs": {"enable_thinking": False},
                 },
@@ -188,16 +213,13 @@ class StyleAnalyzer:
 
             content = response.choices[0].message.content
 
-            # Strip thinking process if present
             from job_applicator.documents.cover_letter import strip_thinking_process
 
             content = strip_thinking_process(content)
 
-            # Extract JSON using robust parser
             data = extract_json_from_response(content)
 
             if data:
-                # Ensure all required fields exist with defaults
                 defaults = {
                     "tone": "professional",
                     "sentence_structure": "varied",

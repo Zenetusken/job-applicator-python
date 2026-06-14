@@ -73,8 +73,9 @@ class EmbeddingService:
         return self._model
 
     def _get_cache_key(self, text: str) -> str:
-        """Generate cache key for text."""
-        return hashlib.md5(text.encode()).hexdigest()[:16]  # noqa: S324
+        """Generate cache key for text, including model and config."""
+        content = f"{self._config.model_name}:{self._config.normalize_embeddings}:{text}"
+        return hashlib.md5(content.encode()).hexdigest()  # noqa: S324
 
     def _get_cache_path(self, text: str) -> Path:
         """Get cache file path for text embedding."""
@@ -165,9 +166,12 @@ class EmbeddingService:
     def similarity(self, vec1: EmbeddingVector, vec2: EmbeddingVector) -> float:
         """Compute cosine similarity between two vectors.
 
+        Uses fast dot product when vectors are already normalized.
         Returns:
             Similarity score between -1 and 1
         """
+        if self._config.normalize_embeddings:
+            return float(np.dot(vec1, vec2))
         return float(np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2)))
 
     def find_most_similar(

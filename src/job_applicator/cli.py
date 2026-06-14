@@ -22,6 +22,7 @@ from job_applicator.utils.logging import setup_logging
 if TYPE_CHECKING:
     from job_applicator.documents.tone_detector import ToneProfile
     from job_applicator.models import (
+        ApplicationResult,
         CoverLetterResult,
         CoverLetterSession,
         JobListing,
@@ -89,6 +90,7 @@ def search(
     remote: bool = typer.Option(False, "--remote", "-r", help="Remote jobs only."),
     max_results: int = typer.Option(25, "--max", "-n", help="Max results."),
     headed: bool = typer.Option(False, "--headed", help="Run browser in headed mode."),
+    as_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
 ) -> None:
     """Search for jobs on a job board."""
     settings = _get_settings(headed)
@@ -125,7 +127,27 @@ def search(
                 jobs = await scraper.scrape(params)
 
         if not jobs:
-            console.print("[yellow]No jobs found.[/yellow]")
+            if as_json:
+                console.print("[]")
+            else:
+                console.print("[yellow]No jobs found.[/yellow]")
+            return
+
+        if as_json:
+            import json
+
+            output = [
+                {
+                    "title": j.title,
+                    "company": j.company,
+                    "location": j.location,
+                    "url": str(j.url),
+                    "description": j.description[:200],
+                    "requirements": j.requirements,
+                }
+                for j in jobs
+            ]
+            console.print(json.dumps(output, indent=2))
             return
 
         table = Table(title=f"Found {len(jobs)} jobs")
@@ -151,6 +173,7 @@ def apply(
     headed: bool = typer.Option(False, "--headed", help="Run browser in headed mode."),
     resume_path: str = typer.Option("", "--resume", help="Path to resume file."),
     style_guide: str = typer.Option("", "--style-guide", help="Example to mimic style."),
+    as_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
 ) -> None:
     """Auto-apply to jobs with optional AI cover letters."""
     settings = _get_settings(headed)
@@ -207,14 +230,26 @@ def apply(
                 user_profile = _load_user_profile(settings)
                 generator = CoverLetterGenerator(settings.llm)
 
-                with console.status("Generating cover letters..."):
-                    for job in jobs[:limit]:
+                sem = asyncio.Semaphore(3)
+
+                async def _gen_one(
+                    job: JobListing,
+                ) -> tuple[str, str] | None:
+                    async with sem:
                         try:
                             letter = await generator.generate(job, user_profile, resume_data)
-                            cover_letters[str(job.url)] = letter
+                            return str(job.url), letter
                         except Exception as exc:
                             msg = f"Cover letter failed for {job.title}: {exc}"
                             console.print(f"[yellow]{msg}[/yellow]")
+                            return None
+
+                with console.status("Generating cover letters (parallel)..."):
+                    results_cl = await asyncio.gather(*(_gen_one(j) for j in jobs[:limit]))
+                    for r in results_cl:
+                        if r is not None:
+                            url, letter = r
+                            cover_letters[url] = letter
 
             # Apply to jobs
             applicator = LinkedInApplicator(browser, settings) if site == "linkedin" else None
@@ -222,43 +257,70 @@ def apply(
                 console.print(f"[yellow]{site} applicator not yet implemented[/yellow]")
                 raise typer.Exit(1)
 
-            results = []
+            app_results: list[ApplicationResult] = []
             for job in jobs[:limit]:
                 with console.status(f"Applying to {job.title} at {job.company}..."):
                     job_letter = cover_letters.get(str(job.url))
-                    result = await applicator.apply(job, job_letter)
-                    results.append(result)
+                    ar: ApplicationResult = await applicator.apply(job, job_letter)
+                    app_results.append(ar)
 
             # Display results
-            table = Table(title="Application Results")
-            table.add_column("Job", style="cyan")
-            table.add_column("Company", style="green")
-            table.add_column("Status")
-            table.add_column("Notes")
+            if as_json:
+                import json
 
-            for r in results:
-                status_style = {
-                    "submitted": "green",
-                    "failed": "red",
-                    "skipped": "yellow",
-                    "pending": "blue",
-                }.get(r.status.value, "white")
-                table.add_row(
-                    r.job.title,
-                    r.job.company,
-                    f"[{status_style}]{r.status.value}[/{status_style}]",
-                    r.error_message or r.notes or "",
+                output = [
+                    {
+                        "job": r.job.title,  # type: ignore[union-attr]
+                        "company": r.job.company,  # type: ignore[union-attr]
+                        "status": r.status.value,  # type: ignore[union-attr]
+                        "error": r.error_message,  # type: ignore[union-attr]
+                        "notes": r.notes,  # type: ignore[union-attr]
+                    }
+                    for r in app_results  # type: ignore[union-attr]
+                ]
+                console.print(json.dumps(output, indent=2))
+            else:
+                table = Table(title="Application Results")
+                table.add_column("Job", style="cyan")
+                table.add_column("Company", style="green")
+                table.add_column("Status")
+                table.add_column("Notes")
+
+                for r in app_results:  # type: ignore[union-attr]
+                    status_style = {
+                        "submitted": "green",
+                        "failed": "red",
+                        "skipped": "yellow",
+                        "pending": "blue",
+                    }.get(r.status.value, "white")  # type: ignore[union-attr]
+                    table.add_row(
+                        r.job.title,  # type: ignore[union-attr]
+                        r.job.company,  # type: ignore[union-attr]
+                        f"[{status_style}]{r.status.value}[/{status_style}]",  # type: ignore[union-attr]
+                        r.error_message or r.notes or "",  # type: ignore[union-attr]
+                    )
+
+                console.print(table)
+                submitted = sum(
+                    1
+                    for r in app_results
+                    if r.status.value == "submitted"  # type: ignore[union-attr]
                 )
-
-            console.print(table)
-            submitted = sum(1 for r in results if r.status.value == "submitted")
-            failed = sum(1 for r in results if r.status.value == "failed")
-            skipped = sum(1 for r in results if r.status.value == "skipped")
-            console.print(
-                f"\n[green]{submitted}[/green] submitted, "
-                f"[red]{failed}[/red] failed, "
-                f"[yellow]{skipped}[/yellow] skipped"
-            )
+                failed = sum(
+                    1
+                    for r in app_results
+                    if r.status.value == "failed"  # type: ignore[union-attr]
+                )
+                skipped = sum(
+                    1
+                    for r in app_results
+                    if r.status.value == "skipped"  # type: ignore[union-attr]
+                )
+                console.print(
+                    f"\n[green]{submitted}[/green] submitted, "
+                    f"[red]{failed}[/red] failed, "
+                    f"[yellow]{skipped}[/yellow] skipped"
+                )
 
     asyncio.run(_run())
 
@@ -351,6 +413,8 @@ def match(
     resume_path: str = typer.Option("", "--resume", help="Path to resume file."),
     jobs_file: str = typer.Option("", "--jobs-file", help="JSON file with job listings."),
     top_k: int = typer.Option(5, "--top-k", "-k", help="Number of top matches."),
+    min_score: float = typer.Option(0.0, "--min-score", help="Minimum match score (0.0-1.0)."),
+    as_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
 ) -> None:
     """Match resume to job listings using semantic embeddings."""
     settings = _get_settings()
@@ -370,7 +434,8 @@ def match(
         # Load resume
         loader = ResumeLoader()
         resume_data = loader.load(settings.resume_path)
-        console.print(f"[green]Loaded resume: {resume_data.name}[/green]")
+        if not as_json:
+            console.print(f"[green]Loaded resume: {resume_data.name}[/green]")
 
         # Load jobs
         jobs: list[JobListing] = []
@@ -404,12 +469,37 @@ def match(
                 ),
             ]
 
-        console.print(f"[green]Loaded {len(jobs)} jobs[/green]")
+        if not as_json:
+            console.print(f"[green]Loaded {len(jobs)} jobs[/green]")
 
         # Match
         with console.status("Computing embeddings and matching..."):
             matcher = JobMatcher(settings.embedding)
             matches = matcher.rank_jobs(resume_data, jobs, top_k=top_k)
+
+        # Filter by min score
+        if min_score > 0:
+            matches = [m for m in matches if m.score >= min_score]
+
+        # JSON output
+        if as_json:
+            import json
+
+            output = [
+                {
+                    "rank": i + 1,
+                    "score": round(m.score, 4),
+                    "title": m.job.title,
+                    "company": m.job.company,
+                    "url": str(m.job.url),
+                    "matched_skills": m.matched_skills,
+                    "missing_skills": m.missing_skills,
+                    "summary": m.summary,
+                }
+                for i, m in enumerate(matches)
+            ]
+            console.print(json.dumps(output, indent=2))
+            return
 
         # Display results
         table = Table(title=f"Top {len(matches)} Job Matches")
@@ -437,6 +527,247 @@ def match(
             )
 
         console.print(table)
+
+    asyncio.run(_run())
+
+
+@app.command()
+def batch(
+    resume_path: str = typer.Option("", "--resume", help="Path to resume file."),
+    jobs_file: str = typer.Option("", "--jobs-file", help="JSON file with job listings."),
+    query: str = typer.Option(
+        "", "--query", "-q", help="Search query (alternative to --jobs-file)."
+    ),
+    site: str = typer.Option("linkedin", "--site", "-s", help="Job board for --query."),
+    top_k: int = typer.Option(5, "--top-k", "-k", help="Max jobs to tailor."),
+    min_score: float = typer.Option(0.0, "--min-score", help="Skip jobs below this score."),
+    cover_letter: bool = typer.Option(
+        True, "--cover-letter/--no-cover-letter", help="Generate cover letters."
+    ),
+    style_guide: str = typer.Option("", "--style-guide", help="Style example file."),
+    headed: bool = typer.Option(False, "--headed", help="Run browser in headed mode."),
+    as_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
+) -> None:
+    """Batch tailor resumes (and optionally cover letters) for multiple jobs."""
+    settings = _get_settings(headed)
+    if resume_path:
+        settings.resume_path = resume_path
+    if style_guide:
+        settings.style_guide_path = style_guide
+    setup_logging(settings.log_level)
+
+    async def _run() -> None:
+        import json
+        from datetime import datetime as dt
+        from pathlib import Path
+
+        from job_applicator.documents.resume import ResumeLoader
+        from job_applicator.documents.resume_tailor import ResumeTailor
+        from job_applicator.embeddings.matching import JobMatcher, MatchResult
+        from job_applicator.models import JobBoard, JobListing
+
+        if not settings.resume_path:
+            console.print("[red]Resume path required. Use --resume.[/red]")
+            raise typer.Exit(1)
+
+        loader = ResumeLoader()
+        resume_data = loader.load(settings.resume_path)
+        if not as_json:
+            console.print(f"[green]Loaded resume: {resume_data.name}[/green]")
+
+        jobs: list[JobListing] = []
+        if jobs_file:
+            try:
+                with open(jobs_file) as f:  # noqa: ASYNC230
+                    data = json.load(f)
+                    for item in data:
+                        jobs.append(JobListing(**item))
+            except FileNotFoundError:
+                console.print(f"[red]Jobs file not found: {jobs_file}[/red]")
+                raise typer.Exit(1) from None
+            except Exception as exc:
+                console.print(f"[red]Error reading jobs file: {exc}[/red]")
+                raise typer.Exit(1) from exc
+        elif query:
+            from job_applicator.browser.manager import BrowserManager
+            from job_applicator.scrapers.base import SearchParams
+
+            if site == "linkedin":
+                from job_applicator.scrapers.linkedin import LinkedInScraper
+            else:
+                console.print(f"[yellow]{site} not yet implemented[/yellow]")
+                raise typer.Exit(1)
+
+            async with BrowserManager(settings.browser) as browser:
+                scraper = LinkedInScraper(browser, settings)
+                params = SearchParams(query=query, max_results=top_k * 2, board=JobBoard.LINKEDIN)
+                with console.status(f"Searching {site}..."):
+                    jobs = await scraper.scrape(params)
+        else:
+            console.print("[red]Provide --jobs-file or --query.[/red]")
+            raise typer.Exit(1)
+
+        if not jobs:
+            console.print("[yellow]No jobs found.[/yellow]")
+            return
+
+        if not as_json:
+            console.print(f"[green]Loaded {len(jobs)} jobs[/green]")
+
+        matcher = JobMatcher(settings.embedding)
+        with console.status("Computing match scores..."):
+            matches = matcher.rank_jobs(resume_data, jobs, top_k=top_k)
+
+        if min_score > 0:
+            before = len(matches)
+            matches = [m for m in matches if m.score >= min_score]
+            skipped = before - len(matches)
+            if skipped and not as_json:
+                console.print(
+                    f"[yellow]Skipped {skipped} jobs below {min_score:.0%} threshold[/yellow]"
+                )
+
+        if not matches:
+            console.print("[yellow]No jobs above minimum score threshold.[/yellow]")
+            return
+
+        if not as_json:
+            console.print(f"[cyan]Tailoring {len(matches)} jobs...[/cyan]")
+
+        style = None
+        cl_generator = None
+        if settings.style_guide_path:
+            from job_applicator.documents.cover_letter import CoverLetterGenerator
+
+            cl_generator = CoverLetterGenerator(settings.llm)
+            with console.status("Loading style guide..."):
+                style = await cl_generator.load_style_guide(settings.style_guide_path)
+        elif cover_letter:
+            from job_applicator.documents.cover_letter import CoverLetterGenerator
+
+            cl_generator = CoverLetterGenerator(settings.llm)
+
+        tailor_engine = ResumeTailor(settings.llm)
+        user_profile = _load_user_profile(settings)
+        sem = asyncio.Semaphore(3)
+        timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = settings.output_dir
+        await asyncio.to_thread(Path(output_dir).mkdir, parents=True, exist_ok=True)
+
+        async def _process_one(match_result: MatchResult) -> dict[str, object]:
+            job = match_result.job
+            safe_company = "".join(c if c.isalnum() or c in "-_" else "_" for c in job.company)[:30]
+            safe_title = "".join(c if c.isalnum() or c in "-_" else "_" for c in job.title)[:30]
+
+            async with sem:
+                result: dict[str, object] = {
+                    "title": job.title,
+                    "company": job.company,
+                    "url": str(job.url),
+                }
+
+                try:
+                    tailored = await tailor_engine.tailor(
+                        resume=resume_data,
+                        job=job,
+                        user_instructions="",
+                        style_guide=style,
+                        matcher=matcher,
+                    )
+                    result["match_score"] = round(tailored.match_score, 4)
+                    result["semantic_score"] = round(tailored.semantic_score, 4)
+                    result["skill_score"] = round(tailored.skill_score, 4)
+
+                    resume_filename = f"tailored_{safe_company}_{safe_title}_{timestamp}.txt"
+                    resume_path_out = str(Path(output_dir) / resume_filename)
+                    await asyncio.to_thread(
+                        Path(resume_path_out).write_text, tailored.tailored_text
+                    )
+
+                    meta_filename = f"{resume_filename.rsplit('.', 1)[0]}.meta.json"
+                    meta_path = str(Path(output_dir) / meta_filename)
+                    tailored.output_path = resume_path_out
+                    await asyncio.to_thread(
+                        Path(meta_path).write_text, tailored.model_dump_json(indent=2)
+                    )
+                    result["resume_path"] = resume_path_out
+                    result["tailored"] = True
+                except Exception as exc:
+                    result["tailored"] = False
+                    result["error"] = str(exc)
+                    return result
+
+                if cl_generator is not None:
+                    try:
+                        letter = await cl_generator.generate(
+                            job,
+                            user_profile,
+                            resume_data,
+                            style_guide=style,
+                            tailored_resume_text=tailored.tailored_text,
+                        )
+                        cl_filename = f"cover_letter_{safe_company}_{safe_title}_{timestamp}.txt"
+                        cl_path = str(Path(output_dir) / cl_filename)
+                        await asyncio.to_thread(Path(cl_path).write_text, letter)
+                        result["cover_letter_path"] = cl_path
+                        result["cover_letter"] = True
+                    except Exception as exc:
+                        result["cover_letter"] = False
+                        result["cl_error"] = str(exc)
+
+                return result
+
+        with console.status("Processing jobs in parallel..."):
+            batch_results = await asyncio.gather(*(_process_one(m) for m in matches))
+
+        summary = {
+            "timestamp": timestamp,
+            "resume": settings.resume_path,
+            "total_jobs": len(jobs),
+            "matched": len(matches),
+            "results": list(batch_results),
+        }
+        summary_path = str(Path(output_dir) / f"batch_summary_{timestamp}.json")
+        await asyncio.to_thread(Path(summary_path).write_text, json.dumps(summary, indent=2))
+
+        if as_json:
+            console.print(json.dumps(summary, indent=2))
+        else:
+            table = Table(title="Batch Results")
+            table.add_column("Job", style="cyan")
+            table.add_column("Company", style="green")
+            table.add_column("Score")
+            table.add_column("Tailored")
+            table.add_column("Cover Letter")
+            table.add_column("Notes")
+
+            for r in batch_results:
+                score_raw = r.get("match_score", 0)
+                score_val = float(score_raw) if score_raw else 0.0  # type: ignore[arg-type]
+                score_style = (
+                    "green" if score_val >= 0.7 else "yellow" if score_val >= 0.5 else "red"
+                )
+                score_str = (
+                    f"[{score_style}]{score_val:.0%}[/{score_style}]"
+                    if r.get("tailored")
+                    else "[dim]N/A[/dim]"
+                )
+                table.add_row(
+                    str(r.get("title", "")),
+                    str(r.get("company", "")),
+                    score_str,
+                    "✓" if r.get("tailored") else "✗",
+                    "✓" if r.get("cover_letter") else ("✗" if cover_letter else "-"),
+                    str(r.get("error", r.get("cl_error", ""))),
+                )
+
+            console.print(table)
+            tailored_ok = sum(1 for r in batch_results if r.get("tailored"))
+            cl_ok = sum(1 for r in batch_results if r.get("cover_letter"))
+            console.print(
+                f"\n[green]{tailored_ok}[/green] tailored, [green]{cl_ok}[/green] cover letters"
+            )
+            console.print(f"Summary: {summary_path}")
 
     asyncio.run(_run())
 
@@ -472,6 +803,7 @@ async def _generate_cover_letter(
             job_url=str(job.url),
             cover_letter_text=letter,
             attempt=attempt,
+            prompt_version="1.0",
         )
         session.add_attempt(result)
         return result
@@ -480,7 +812,7 @@ async def _generate_cover_letter(
         return None
 
 
-def _save_cover_letter(
+async def _save_cover_letter(
     console: Console,
     settings: AppSettings,
     job: JobListing,
@@ -490,16 +822,18 @@ def _save_cover_letter(
     from datetime import datetime as dt
 
     output_dir = Path(settings.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(output_dir.mkdir, parents=True, exist_ok=True)
     safe_company = job.company.replace(" ", "_").replace("/", "_")
     safe_title = job.title.replace(" ", "_").replace("/", "_")
     timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
     cl_filename = f"cover_letter_{safe_company}_{safe_title}_{timestamp}.txt"
     cl_path = output_dir / cl_filename
-    cl_path.write_text(result.cover_letter_text, encoding="utf-8")
+    await asyncio.to_thread(cl_path.write_text, result.cover_letter_text, encoding="utf-8")
     result.output_path = str(cl_path)
     cl_meta_path = cl_path.with_suffix(".meta.json")
-    cl_meta_path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+    await asyncio.to_thread(
+        cl_meta_path.write_text, result.model_dump_json(indent=2), encoding="utf-8"
+    )
     console.print(f"\n[green]Cover letter saved: {cl_path}[/green]")
     return cl_path
 
@@ -515,7 +849,7 @@ async def _refine_cover_letter(
     resume_data: ResumeData | None = None,
     style: StyleGuide | None = None,
     tone_section: str = "",
-) -> None:
+) -> bool:
     """Refine a cover letter with user instructions via LLM."""
     from job_applicator.documents.cover_letter import CoverLetterGenerator
     from job_applicator.models import CoverLetterResult as CLResult
@@ -541,8 +875,10 @@ async def _refine_cover_letter(
             attempt=attempt + 1,
         )
         session.add_attempt(new_result)
+        return True
     except Exception as exc:
         console.print(f"[red]LLM error: {exc}[/red]")
+        return False
 
 
 async def _cover_letter_workflow(
@@ -630,7 +966,7 @@ async def _cover_letter_workflow(
         )
 
         if choice == "A":
-            return _save_cover_letter(console, settings, job, result)
+            return await _save_cover_letter(console, settings, job, result)
 
         elif choice == "R":
             console.print("[yellow]Regenerating...[/yellow]")
@@ -667,7 +1003,7 @@ async def _cover_letter_workflow(
                 style,
                 tone_section,
             )
-            if new_result is None:
+            if not new_result:
                 console.print("[red]Refinement failed. Please try again.[/red]")
             continue
 
@@ -731,6 +1067,9 @@ def tailor(
     location: str = typer.Option("", "--location", "-l", help="Job location."),
     style_guide: str = typer.Option("", "--style-guide", help="Style examples."),
     headed: bool = typer.Option(False, "--headed", help="Run browser in headed mode."),
+    min_score: float = typer.Option(
+        0.0, "--min-score", help="Abort if match score is below this threshold (0.0-1.0)."
+    ),
 ) -> None:
     """Tailor a resume for a specific job with interactive preview."""
     settings = _get_settings(headed)
@@ -855,6 +1194,23 @@ def tailor(
         else:
             console.print("[green]✓ Dates look coherent and current.[/green]")
 
+        # Pre-tailor match score check
+        if min_score > 0:
+            from job_applicator.embeddings.matching import JobMatcher
+
+            with console.status("Computing match score..."):
+                matcher = JobMatcher(settings.embedding)
+                pre_match = matcher.match_resume_to_job(resume_data, job)
+            console.print(
+                f"[cyan]Match score: {pre_match.score:.0%} (threshold: {min_score:.0%})[/cyan]"
+            )
+            if pre_match.score < min_score:
+                console.print(
+                    f"[red]Match score {pre_match.score:.0%} is below threshold "
+                    f"{min_score:.0%}. Aborting.[/red]"
+                )
+                raise typer.Exit(0)
+
         try:
             with console.status("Tailoring resume..."):
                 result = await tailor_engine.tailor(
@@ -939,7 +1295,9 @@ def tailor(
                 filename = f"tailored_{safe_company}_{safe_title}_{timestamp}.txt"
                 output_path = output_dir / filename
 
-                output_path.write_text(result.tailored_text, encoding="utf-8")
+                await asyncio.to_thread(
+                    output_path.write_text, result.tailored_text, encoding="utf-8"
+                )
                 result.output_path = str(output_path)
 
                 console.print(f"\n[green]Tailored resume saved: {output_path}[/green]")
@@ -971,7 +1329,9 @@ def tailor(
                 if cover_letter_path:
                     result.cover_letter_path = str(cover_letter_path)
                 meta_path = output_path.with_suffix(".meta.json")
-                meta_path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+                await asyncio.to_thread(
+                    meta_path.write_text, result.model_dump_json(indent=2), encoding="utf-8"
+                )
                 console.print(f"[green]Metadata saved: {meta_path}[/green]")
 
                 break

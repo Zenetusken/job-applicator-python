@@ -36,10 +36,41 @@ class JobListing(BaseModel):
     salary: str | None = None
     requirements: list[str] = Field(default_factory=list)
     board: JobBoard
+    seniority: str | None = Field(
+        default=None,
+        description="Detected seniority level: junior, mid, senior, lead, principal, staff",
+    )
     posted_at: datetime | None = None
     scraped_at: datetime = Field(default_factory=datetime.now)
 
     model_config = {"extra": "forbid"}
+
+
+_SENIORITY_KEYWORDS: dict[str, list[str]] = {
+    "intern": ["intern", "internship", "co-op"],
+    "junior": ["junior", "jr", "entry level", "entry-level", "associate"],
+    "mid": ["mid-level", "mid level", "intermediate"],
+    "senior": ["senior", "sr", "sr."],
+    "lead": ["lead", "team lead"],
+    "principal": ["principal"],
+    "staff": ["staff"],
+    "director": ["director", "vp", "vice president"],
+}
+
+
+def detect_seniority(title: str, description: str = "") -> str | None:
+    """Detect seniority level from job title and description.
+
+    Returns one of: intern, junior, mid, senior, lead, principal, staff, director, None.
+    """
+    import re
+
+    title_lower = title.lower()
+    for level, keywords in _SENIORITY_KEYWORDS.items():
+        for kw in keywords:
+            if re.search(rf"\b{re.escape(kw)}\b", title_lower):
+                return level
+    return None
 
 
 class UserProfile(BaseModel):
@@ -170,6 +201,7 @@ class TailoredResume(BaseModel):
     changes_summary: str = Field(description="LLM-generated summary of changes made")
     user_modifications: str = Field(default="", description="User's custom input that was applied")
     attempt: int = Field(default=1, description="Which attempt this is (1 = first)")
+    prompt_version: str = Field(default="1.0", description="Prompt version used for this attempt")
     created_at: datetime = Field(default_factory=datetime.now)
     output_path: str = Field(default="", description="Path where tailored resume was saved")
     cover_letter_path: str = Field(default="", description="Path to generated cover letter, if any")
@@ -220,6 +252,7 @@ class CoverLetterResult(BaseModel):
     cover_letter_text: str
     user_modifications: str = ""
     attempt: int = 1
+    prompt_version: str = "1.0"
     created_at: datetime = Field(default_factory=datetime.now)
     output_path: str = ""
 

@@ -18,6 +18,8 @@ class MatchResult:
 
     job: JobListing
     score: float
+    semantic_score: float
+    skill_score: float
     matched_skills: list[str]
     missing_skills: list[str]
     summary: str
@@ -44,10 +46,23 @@ class JobMatcher:
         self._config = config
         self._service = EmbeddingService(config)
 
+    def embed_text(self, text: str, prefix: str = "") -> EmbeddingVector:
+        """Generate embedding for text with optional query prefix.
+
+        Args:
+            text: Text to embed
+            prefix: Optional prefix for asymmetric retrieval
+
+        Returns:
+            Embedding vector
+        """
+        return self._service.embed(prefix + text if prefix else text)
+
     def compute_resume_embedding(self, resume: ResumeData) -> EmbeddingVector:
         """Compute embedding for a resume.
 
-        Combines summary, skills, experience, and raw text for rich representation.
+        Uses the search query prefix for asymmetric retrieval since the resume
+        is the "query" side of the job matching search.
         """
         # Build rich text representation from multiple sources
         parts = []
@@ -100,7 +115,9 @@ class JobMatcher:
 
         # Combine all parts, respecting token limits
         text = " | ".join(parts)[:1500]
-        return self._service.embed(text)
+        # Use search prefix for asymmetric retrieval (resume = query)
+        prefix = "Represent this sentence for searching relevant passages: "
+        return self._service.embed(prefix + text)
 
     def compute_job_embedding(self, job: JobListing) -> EmbeddingVector:
         """Compute embedding for a job listing.
@@ -163,6 +180,8 @@ class JobMatcher:
         return MatchResult(
             job=job,
             score=score,
+            semantic_score=semantic_score,
+            skill_score=skill_score,
             matched_skills=matched_skills,
             missing_skills=missing_skills,
             summary=summary,
@@ -219,6 +238,8 @@ class JobMatcher:
                 MatchResult(
                     job=job,
                     score=score,
+                    semantic_score=semantic_score,
+                    skill_score=skill_score,
                     matched_skills=matched,
                     missing_skills=missing,
                     summary=summary,

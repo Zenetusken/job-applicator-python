@@ -9,6 +9,7 @@ import pytest
 from job_applicator.documents.resume_tailor import (
     CHANGES_PROMPT_TEMPLATE,
     TAILOR_PROMPT_TEMPLATE,
+    TAILOR_SYSTEM_PROMPT,
     ResumeTailor,
     parse_sections,
 )
@@ -83,6 +84,22 @@ class TestResumeTailor:
         assert "Original text" in prompt
         assert "Tailored text" in prompt
 
+    def test_system_prompt_has_few_shot_examples(self):
+        """System prompt should contain before/after examples."""
+        assert "BEFORE summary" in TAILOR_SYSTEM_PROMPT
+        assert "AFTER summary" in TAILOR_SYSTEM_PROMPT
+        assert "BEFORE bullet" in TAILOR_SYSTEM_PROMPT
+        assert "AFTER bullet" in TAILOR_SYSTEM_PROMPT
+
+    def test_system_prompt_has_third_person_rule(self):
+        """System prompt should enforce third person in summaries."""
+        assert "THIRD PERSON" in TAILOR_SYSTEM_PROMPT
+        assert "'I'" in TAILOR_SYSTEM_PROMPT or "never use" in TAILOR_SYSTEM_PROMPT.lower()
+
+    def test_system_prompt_has_power_word_limits(self):
+        """System prompt should limit power word usage."""
+        assert "sparingly" in TAILOR_SYSTEM_PROMPT.lower()
+
     @pytest.mark.asyncio
     async def test_tailor_returns_result(self, llm_config, sample_resume, sample_job):
         tailor = ResumeTailor(llm_config)
@@ -139,6 +156,132 @@ class TestResumeTailor:
 
         assert result.attempt == 2
         assert result.user_modifications == "Add more detail"
+
+    @pytest.mark.asyncio
+    async def test_tailor_populates_scores(self, llm_config, sample_resume, sample_job):
+        """TailoredResume should have non-zero semantic_score and skill_score."""
+        from job_applicator.embeddings.matching import MatchResult
+
+        tailor = ResumeTailor(llm_config)
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Tailored text"
+
+        mock_match = MatchResult(
+            job=sample_job,
+            score=0.72,
+            semantic_score=0.5,
+            skill_score=0.3,
+            matched_skills=["Windows"],
+            missing_skills=["ServiceNow"],
+            summary="Good match",
+        )
+        mock_matcher = MagicMock()
+        mock_matcher.match_resume_to_job.return_value = mock_match
+
+        with patch(
+            "litellm.acompletion",
+            new_callable=AsyncMock,
+            return_value=mock_response,
+        ):
+            result = await tailor.tailor(sample_resume, sample_job, matcher=mock_matcher)
+
+        assert result.semantic_score > 0.0
+        assert result.skill_score > 0.0
+        assert result.match_score == pytest.approx(0.72)
+
+    @pytest.mark.asyncio
+    async def test_tailor_accepts_matcher_param(self, llm_config, sample_resume, sample_job):
+        """Passing a matcher should reuse it instead of creating a new one."""
+        from job_applicator.embeddings.matching import MatchResult
+
+        tailor = ResumeTailor(llm_config)
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Tailored text"
+
+        mock_match = MatchResult(
+            job=sample_job,
+            score=0.8,
+            semantic_score=0.6,
+            skill_score=0.4,
+            matched_skills=["Windows"],
+            missing_skills=[],
+            summary="Strong match",
+        )
+        mock_matcher = MagicMock()
+        mock_matcher.match_resume_to_job.return_value = mock_match
+
+        with patch(
+            "litellm.acompletion",
+            new_callable=AsyncMock,
+            return_value=mock_response,
+        ):
+            await tailor.tailor(sample_resume, sample_job, matcher=mock_matcher)
+
+        mock_matcher.match_resume_to_job.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_refine_accepts_matcher_param(self, llm_config, sample_resume, sample_job):
+        """Refine should accept and use a matcher parameter."""
+        from job_applicator.embeddings.matching import MatchResult
+
+        tailor = ResumeTailor(llm_config)
+        initial = TailoredResume(
+            original_path="",
+            tailored_text="Initial text",
+            job_title="Technical Support Specialist",
+            job_company="CGI",
+            match_score=0.7,
+            semantic_score=0.5,
+            skill_score=0.3,
+            matched_skills=["Windows"],
+            missing_skills=["ServiceNow"],
+            changes_summary="changes",
+        )
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Refined text"
+
+        mock_match = MatchResult(
+            job=sample_job,
+            score=0.85,
+            semantic_score=0.65,
+            skill_score=0.5,
+            matched_skills=["Windows", "Office 365"],
+            missing_skills=[],
+            summary="Strong match",
+        )
+        mock_matcher = MagicMock()
+        mock_matcher.match_resume_to_job.return_value = mock_match
+
+        with patch(
+            "litellm.acompletion",
+            new_callable=AsyncMock,
+            return_value=mock_response,
+        ):
+            result = await tailor.refine(
+                sample_resume,
+                initial,
+                "Add detail",
+                sample_job,
+                matcher=mock_matcher,
+            )
+
+        assert result.semantic_score > 0.0
+        assert result.skill_score > 0.0
+        mock_matcher.match_resume_to_job.assert_called_once()
+
+    def test_call_llm_temperature_default(self, llm_config):
+        """_call_llm should default to temperature=0.4."""
+        tailor = ResumeTailor(llm_config)
+        import inspect
+
+        sig = inspect.signature(tailor._call_llm)
+        assert sig.parameters["temperature"].default == 0.4
 
 
 class TestTailoredResumeModel:
