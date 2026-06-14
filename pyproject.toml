@@ -72,7 +72,6 @@ select = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["S101", "S105", "S108", "S607", "ASYNC221"]
 "scripts/**/*.py" = ["S101", "S603"]
-"src/job_applicator/documents/ocr_meta_test.py" = ["S101", "S603"]
 
 [tool.ruff.format]
 quote-style = "double"
