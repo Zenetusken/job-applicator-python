@@ -62,6 +62,8 @@ Add to every command that loads a resume: `match`, `tailor`, `apply`, `generate-
 
 If both `--force-ocr` and `--ocr-mode` are passed, `--force-ocr` wins and the effective mode is `on`. Flag values are threaded through to `ResumeLoader.load(..., ocr_mode=...)`.
 
+> **Note:** Typer 0.25.1 in this project does not support the `choices`/`show_choices`/`case_sensitive` kwargs on `Option()`, so the implementation uses plain `str` options with descriptive help text. Validation of the mode value is handled by `ResumeLoader._load_pdf`.
+
 ## [S8] Error Handling
 
 - If OCR is requested but `paddleocr` is not installed, raise `DocumentError` with installation instructions.

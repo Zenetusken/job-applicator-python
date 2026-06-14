@@ -20,7 +20,7 @@ mypy src/job_applicator/ --ignore-missing-imports
 ruff check --fix src/ tests/
 ruff format src/ tests/
 
-# Tests (301 unit tests, all fast)
+# Tests (289 unit tests, all fast)
 pytest tests/unit/ -v
 pytest tests/unit/ -v -k test_name  # single test
 
@@ -89,6 +89,9 @@ src/job_applicator/
 - **`detect_seniority()` is a standalone utility.** Not auto-called on `JobListing` creation. Consumers call it explicitly or populate `seniority` field manually.
 - **`pdftotext` uses `-layout` flag.** Preserves multi-column resume formatting. Temp files cleaned up via `try/finally`.
 - **DOCX support via `python-docx`.** `ResumeLoader.load()` dispatches `.docx` to `_load_docx()` using `Document(path).paragraphs`.
+- **OCR fallback via `paddleocr`.** `ResumeLoader.load()` accepts `ocr_mode={auto,on,off}`. Auto mode falls back to OCR when extracted text is < 100 chars. Image resumes (`.png`, `.jpg`, `.jpeg`, `.tiff`, `.bmp`, `.webp`) use OCR directly. `--force-ocr` CLI flag forces OCR on all resume-loading commands.
+- **OCR models are lazy-loaded.** `OCRService` initializes PaddleOCR only on first extraction. First import triggers ~500MB+ model downloads.
+- **PyMuPDF is required for PDF OCR.** `extract_text_from_pdf` uses `fitz.open()` + page pixmap → temp PNG → OCR. Temp files cleaned up via `try/finally`.
 
 ## LLM Setup
 

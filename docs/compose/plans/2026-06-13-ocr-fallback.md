@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use compose:subagent (recommended) or compose:execute to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add PaddleOCR-based fallback text extraction for scanned PDFs and image resumes, controllable via `--ocr-mode` and `--force-ocr` CLI flags.
+**Goal:** Add PaddleOCR-based fallback text extraction for scanned PDFs and image resumes, controllable via `--ocr-mode` and `--force-ocr` CLI flags. Covers [S1] Problem (scanned PDFs/image resumes lack extractable text) and [S2] Goals.
 
 **Architecture:** A new `OCRService` in `documents/ocr.py` wraps PaddleOCR and exposes PDF and image extraction. `ResumeLoader` accepts an `ocr_mode` parameter and decides when to call the service. CLI commands receive two new flags and pass the resolved mode to `ResumeLoader.load`.
 
@@ -155,7 +155,7 @@ class OCRService:
             result = ocr.ocr(str(path), cls=True)
         except Exception as exc:
             raise DocumentError(f"OCR failed for image {path}: {exc}") from exc
-        return self._parse_result(result)
+        return self._parse_result(result).strip()
 
     def extract_text_from_pdf(self, path: Path) -> str:
         """Run OCR on every page of a PDF."""
@@ -170,7 +170,7 @@ class OCRService:
         try:
             page_texts: list[str] = []
             with fitz.open(str(path)) as doc:
-                for page_num, page in enumerate(doc, start=1):
+                for _page_num, page in enumerate(doc, start=1):
                     pix = page.get_pixmap(dpi=200)
                     import tempfile
 
@@ -185,7 +185,7 @@ class OCRService:
         except Exception as exc:
             raise DocumentError(f"OCR failed for PDF {path}: {exc}") from exc
 
-        full_text = "\n\n".join(page_texts)
+        full_text = "\n\n".join(page_texts).strip()
         logger.info("OCR extracted %d characters from PDF", len(full_text))
         return full_text
 
@@ -505,9 +505,7 @@ ocr_mode: str = typer.Option(
     "auto",
     "--ocr-mode",
     help="OCR mode: auto (fallback), on (always), off (never).",
-    show_choices=True,
-    choices=["auto", "on", "off"],
-    case_sensitive=False,
+    # Typer 0.25.1 does not support choices/show_choices/case_sensitive kwargs.
 ),
 force_ocr: bool = typer.Option(
     False,
@@ -620,7 +618,7 @@ git commit --allow-empty -m "chore: verification passed for OCR fallback"
 ## Self-Review Checklist
 
 - [ ] Spec coverage: Every `[Sn]` section from `2026-06-13-ocr-fallback-design.md` is covered by at least one task.
-- [ ] Placeholder scan: No "TBD", "TODO", or vague steps remain.
-- [ ] Type consistency: `ocr_mode` is always a `str`; `_resolve_ocr_mode` returns `str`.
-- [ ] CLI flag interaction: `--force-ocr` overrides `--ocr-mode` as specified in [S7].
-- [ ] Backwards compatibility: `ResumeLoader.load()` defaults to `ocr_mode="auto"`, preserving existing behavior.
+- [x] Placeholder scan: No "TBD", "TODO", or vague steps remain.
+- [x] Type consistency: `ocr_mode` is always a `str`; `_resolve_ocr_mode` returns `str`.
+- [x] CLI flag interaction: `--force-ocr` overrides `--ocr-mode` as specified in [S7].
+- [x] Backwards compatibility: `ResumeLoader.load()` defaults to `ocr_mode="auto"`, preserving existing behavior.
