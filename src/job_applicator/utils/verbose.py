@@ -115,6 +115,8 @@ class VerboseReporter:
     def record_tailoring(
         self,
         *,
+        job_title: str = "",
+        company: str = "",
         tone: str = "",
         tone_confidence: float = 0.0,
         pre_match_score: float | None = None,
@@ -125,6 +127,8 @@ class VerboseReporter:
         changes_summary: str = "",
     ) -> None:
         self.report.tailoring = TailoringReport(
+            job_title=job_title,
+            company=company,
             tone=tone,
             tone_confidence=tone_confidence,
             pre_match_score=pre_match_score,
@@ -134,6 +138,13 @@ class VerboseReporter:
             hallucination_actions=hallucination_actions or [],
             changes_summary=changes_summary,
         )
+
+    def record_batch_tailoring(self, reports: list[TailoringReport]) -> None:
+        """Record per-job tailoring results for batch commands."""
+        self.report.batch_tailoring = reports
+        if reports:
+            last = reports[-1]
+            self.report.tailoring = last
 
     def record_io(
         self,
@@ -192,7 +203,16 @@ class VerboseReporter:
             m = self.report.match
             table.add_row("Match", f"{m.job_count} jobs | model={m.embedding_model}")
 
-        if self.report.tailoring:
+        if self.report.batch_tailoring:
+            reports = self.report.batch_tailoring
+            tone_summary = ", ".join(f"{r.job_title}@{r.company}:{r.tone}" for r in reports[:3])
+            if len(reports) > 3:
+                tone_summary += f" (+{len(reports) - 3} more)"
+            table.add_row(
+                "Tailoring",
+                f"{len(reports)} job(s) | tones=[{tone_summary}]",
+            )
+        elif self.report.tailoring:
             t = self.report.tailoring
             table.add_row("Tailoring", f"{t.attempts} attempt(s) | tone={t.tone}")
 

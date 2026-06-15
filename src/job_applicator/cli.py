@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import partial
@@ -110,7 +111,7 @@ def _run_ats_preflight(resume: ResumeData) -> ATSCompatibilityResult:
     return result
 
 
-def _run_ats_post_tailor(original_text: str, tailored_text: str) -> None:
+def _run_ats_post_tailor(original_text: str, tailored_text: str) -> ATSCompatibilityResult | None:
     """Compare ATS compatibility before and after tailoring."""
     from job_applicator.documents.ats_checker import ATSChecker
     from job_applicator.documents.resume import ResumeLoader
@@ -142,6 +143,18 @@ def _run_ats_post_tailor(original_text: str, tailored_text: str) -> None:
             if not check["passed"] and original_checks.get(check["name"], False):
                 console.print(f"  [yellow]![/yellow] New issue: {check['details']}")
     console.print()
+    return tailored_result
+
+
+def _detect_tone(job: JobListing) -> ToneProfile:
+    """Detect job posting tone deterministically via keyword matching."""
+    from job_applicator.documents.tone_detector import ToneDetector
+
+    return ToneDetector().detect(
+        title=job.title,
+        description=job.description,
+        requirements=job.requirements,
+    )
 
 
 def version_callback(value: bool) -> None:
@@ -179,6 +192,33 @@ def main(
     ctx.obj = VerboseContext(verbose=verbose, log_file=log_file)
 
 
+def _verbose_option() -> bool:
+    """Reusable verbose flag for subcommands."""
+    return typer.Option(False, "--verbose", "-V", help="Emit structured observability report.")  # type: ignore[no-any-return]
+
+
+def _log_file_option() -> str | None:
+    """Reusable log-file flag for subcommands."""
+    return typer.Option(  # type: ignore[no-any-return]
+        None,
+        "--log-file",
+        help="Write verbose report to file (requires --verbose).",
+    )
+
+
+def _merge_verbose_ctx(ctx: typer.Context, verbose: bool, log_file: str | None) -> None:
+    """Merge subcommand --verbose/--log-file into global VerboseContext."""
+    existing = ctx.obj
+    global_verbose = isinstance(existing, VerboseContext) and existing.verbose
+    if log_file and not verbose and not global_verbose:
+        raise typer.BadParameter("--log-file requires --verbose")
+    if isinstance(existing, VerboseContext):
+        if verbose or existing.verbose:
+            ctx.obj = VerboseContext(verbose=True, log_file=log_file or existing.log_file)
+    else:
+        ctx.obj = VerboseContext(verbose=verbose, log_file=log_file)
+
+
 @app.command()
 def search(
     ctx: typer.Context,
@@ -189,8 +229,11 @@ def search(
     max_results: int = typer.Option(25, "--max", "-n", help="Max results."),
     headed: bool = typer.Option(False, "--headed", help="Run browser in headed mode."),
     as_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
+    verbose: bool = _verbose_option(),
+    log_file: str | None = _log_file_option(),
 ) -> None:
     """Search for jobs on a job board."""
+    _merge_verbose_ctx(ctx, verbose, log_file)
     settings = _get_settings(headed)
     setup_logging(settings.log_level)
 
@@ -247,12 +290,13 @@ def search(
                     "company": j.company,
                     "location": j.location,
                     "url": str(j.url),
-                    "description": j.description[:200],
+                    "description": j.description,
                     "requirements": j.requirements,
+                    "board": j.board.value,
                 }
                 for j in jobs
             ]
-            console.print(json.dumps(output, indent=2))
+            sys.stdout.write(json.dumps(output, indent=2) + "\n")
             return
 
         table = Table(title=f"Found {len(jobs)} jobs")
@@ -302,8 +346,11 @@ def apply(
         "--force-ocr",
         help="Force OCR; equivalent to --ocr-mode on.",
     ),
+    verbose: bool = _verbose_option(),
+    log_file: str | None = _log_file_option(),
 ) -> None:
     """Auto-apply to jobs with optional AI cover letters."""
+    _merge_verbose_ctx(ctx, verbose, log_file)
     settings = _get_settings(headed)
     if resume_path:
         settings.resume_path = resume_path
@@ -373,8 +420,8 @@ def apply(
                     )
 
                 user_profile = _load_user_profile(settings)
-                generator = CoverLetterGenerator(settings.llm)
 
+                generator = CoverLetterGenerator(settings.llm)
                 sem = asyncio.Semaphore(3)
 
                 async def _gen_one(
@@ -426,7 +473,7 @@ def apply(
                     }
                     for r in app_results
                 ]
-                console.print(json.dumps(output, indent=2))
+                sys.stdout.write(json.dumps(output, indent=2) + "\n")
             else:
                 table = Table(title="Application Results")
                 table.add_column("Job", style="cyan")
@@ -492,8 +539,11 @@ def generate_cover_letter(
         "--force-ocr",
         help="Force OCR; equivalent to --ocr-mode on.",
     ),
+    verbose: bool = _verbose_option(),
+    log_file: str | None = _log_file_option(),
 ) -> None:
     """Generate an AI cover letter for a specific job."""
+    _merge_verbose_ctx(ctx, verbose, log_file)
     settings = _get_settings(headed)
     if resume_path:
         settings.resume_path = resume_path
@@ -548,6 +598,12 @@ def generate_cover_letter(
             board=JobBoard.LINKEDIN,
         )
 
+        tone_profile = _detect_tone(job)
+        console.print(
+            f"[dim]Detected tone: {tone_profile.primary} "
+            f"(confidence: {tone_profile.confidence:.0%})[/dim]"
+        )
+
         generator = CoverLetterGenerator(settings.llm)
 
         # Load style guide if provided (supports comma-separated paths)
@@ -590,8 +646,14 @@ def generate_cover_letter(
                 details={"style_guide": settings.style_guide_path or "default"},
             )
 
+        from job_applicator.documents.tone_detector import ToneDetector
+
+        tone_section = ToneDetector().format_for_prompt(tone_profile)
+
         with console.status("Generating cover letter..."):
-            letter = await generator.generate(job, user_profile, resume_data, style)
+            letter = await generator.generate(
+                job, user_profile, resume_data, style, tone_section=tone_section
+            )
 
         console.print("\n[bold]Generated Cover Letter:[/bold]\n")
         console.print(letter)
@@ -626,8 +688,11 @@ def match(
         "--force-ocr",
         help="Force OCR; equivalent to --ocr-mode on.",
     ),
+    verbose: bool = _verbose_option(),
+    log_file: str | None = _log_file_option(),
 ) -> None:
     """Match resume to job listings using semantic embeddings."""
+    _merge_verbose_ctx(ctx, verbose, log_file)
     settings = _get_settings()
     if resume_path:
         settings.resume_path = resume_path
@@ -747,6 +812,7 @@ def match(
         # JSON output
         if as_json:
             import json
+            import sys
 
             output = [
                 {
@@ -761,7 +827,7 @@ def match(
                 }
                 for i, m in enumerate(matches)
             ]
-            console.print(json.dumps(output, indent=2))
+            sys.stdout.write(json.dumps(output, indent=2) + "\n")
             return
 
         # Display results
@@ -830,8 +896,11 @@ def batch(
         "--force-ocr",
         help="Force OCR; equivalent to --ocr-mode on.",
     ),
+    verbose: bool = _verbose_option(),
+    log_file: str | None = _log_file_option(),
 ) -> None:
     """Batch tailor resumes (and optionally cover letters) for multiple jobs."""
+    _merge_verbose_ctx(ctx, verbose, log_file)
     settings = _get_settings(headed)
     if resume_path:
         settings.resume_path = resume_path
@@ -862,7 +931,7 @@ def batch(
         from job_applicator.documents.resume import ResumeLoader
         from job_applicator.documents.resume_tailor import ResumeTailor
         from job_applicator.embeddings.matching import JobMatcher, MatchResult
-        from job_applicator.models import JobBoard, JobListing
+        from job_applicator.models import JobBoard, JobListing, TailoringReport
 
         if not settings.resume_path:
             console.print("[red]Resume path required. Use --resume.[/red]")
@@ -992,11 +1061,13 @@ def batch(
         output_dir = settings.output_dir
         await asyncio.to_thread(Path(output_dir).mkdir, parents=True, exist_ok=True)
         tailoring_scores: list[tuple[float, float]] = []
+        batch_reports: list[TailoringReport] = []
 
         async def _process_one(match_result: MatchResult) -> dict[str, object]:
             job = match_result.job
             safe_company = "".join(c if c.isalnum() or c in "-_" else "_" for c in job.company)[:30]
             safe_title = "".join(c if c.isalnum() or c in "-_" else "_" for c in job.title)[:30]
+            user_instructions = ""
 
             async with sem:
                 result: dict[str, object] = {
@@ -1006,6 +1077,7 @@ def batch(
                 }
 
                 try:
+                    tone_profile = _detect_tone(job)
                     if reporter:
                         reporter.record_llm_call(
                             model=settings.llm.model,
@@ -1020,15 +1092,29 @@ def batch(
                     tailored = await tailor_engine.tailor(
                         resume=resume_data,
                         job=job,
-                        user_instructions="",
+                        user_instructions=user_instructions,
                         style_guide=style,
+                        tone_profile=tone_profile,
                         matcher=matcher,
                     )
-                    _run_ats_post_tailor(resume_data.raw_text, tailored.tailored_text)
                     result["match_score"] = round(tailored.match_score, 4)
                     result["semantic_score"] = round(tailored.semantic_score, 4)
                     result["skill_score"] = round(tailored.skill_score, 4)
-                    tailoring_scores.append((tailored.match_score, tailored.semantic_score))
+                    post_ats = _run_ats_post_tailor(resume_data.raw_text, tailored.tailored_text)
+                    ats_score = post_ats.score if post_ats else 1.0
+                    tailoring_scores.append((tailored.match_score, ats_score))
+                    batch_reports.append(
+                        TailoringReport(
+                            job_title=job.title,
+                            company=job.company,
+                            tone=tone_profile.primary,
+                            tone_confidence=tone_profile.confidence,
+                            attempts=1,
+                            ats_before=ats_result.score if ats_result else 0.0,
+                            ats_after=ats_score,
+                            changes_summary=tailored.changes_summary or "",
+                        )
+                    )
 
                     resume_filename = f"tailored_{safe_company}_{safe_title}_{timestamp}.txt"
                     resume_path_out = str(Path(output_dir) / resume_filename)
@@ -1086,12 +1172,8 @@ def batch(
         with console.status("Processing jobs in parallel..."):
             batch_results = await asyncio.gather(*(_process_one(m) for m in matches))
 
-        if reporter and tailoring_scores:
-            reporter.record_tailoring(
-                attempts=len(tailoring_scores),
-                ats_before=ats_result.score if ats_result else 0.0,
-                ats_after=sum(s for _, s in tailoring_scores) / len(tailoring_scores),
-            )
+        if reporter and batch_reports:
+            reporter.record_batch_tailoring(batch_reports)
 
         summary = {
             "timestamp": timestamp,
@@ -1111,7 +1193,7 @@ def batch(
             )
 
         if as_json:
-            console.print(json.dumps(summary, indent=2))
+            sys.stdout.write(json.dumps(summary, indent=2) + "\n")
         else:
             table = Table(title="Batch Results")
             table.add_column("Job", style="cyan")
@@ -1286,10 +1368,11 @@ async def _cover_letter_workflow(
     from job_applicator.models import CoverLetterSession
 
     tone_section = ""
-    if tone_profile:
-        from job_applicator.documents.tone_detector import ToneDetector
+    if tone_profile is None:
+        tone_profile = _detect_tone(job)
+    from job_applicator.documents.tone_detector import ToneDetector
 
-        tone_section = ToneDetector().format_for_prompt(tone_profile)
+    tone_section = ToneDetector().format_for_prompt(tone_profile)
 
     session = CoverLetterSession(job_title=job.title, job_company=job.company)
     attempt = 0
@@ -1473,8 +1556,11 @@ def tailor(
         "--force-ocr",
         help="Force OCR; equivalent to --ocr-mode on.",
     ),
+    verbose: bool = _verbose_option(),
+    log_file: str | None = _log_file_option(),
 ) -> None:
     """Tailor a resume for a specific job with interactive preview."""
+    _merge_verbose_ctx(ctx, verbose, log_file)
     settings = _get_settings(headed)
     if resume_path:
         settings.resume_path = resume_path
@@ -1543,14 +1629,7 @@ def tailor(
             board=JobBoard.INDEED,
         )
 
-        from job_applicator.documents.tone_detector import ToneDetector
-
-        tone_detector = ToneDetector()
-        tone_profile = tone_detector.detect(
-            title=job.title,
-            description=job.description,
-            requirements=job.requirements,
-        )
+        tone_profile = _detect_tone(job)
         console.print(
             f"[dim]Detected tone: {tone_profile.primary} "
             f"(confidence: {tone_profile.confidence:.0%})[/dim]"
@@ -1665,13 +1744,18 @@ def tailor(
                     details={"job_title": job.title, "interactive": True},
                 )
             if reporter and result:
+                ats_before = ats_result.score if ats_result else 0.0
+                post_ats = _run_ats_post_tailor(resume_data.raw_text, result.tailored_text)
+                ats_after = post_ats.score if post_ats else ats_before
                 reporter.record_tailoring(
-                    tone="",
-                    tone_confidence=0.0,
+                    job_title=job.title,
+                    company=job.company,
+                    tone=tone_profile.primary if tone_profile else "",
+                    tone_confidence=tone_profile.confidence if tone_profile else 0.0,
                     pre_match_score=pre_match_score,
                     attempts=1,
-                    ats_before=0.0,
-                    ats_after=0.0,
+                    ats_before=ats_before,
+                    ats_after=ats_after,
                     hallucination_actions=[],
                     changes_summary=result.changes_summary or "",
                 )
@@ -1804,7 +1888,14 @@ def tailor(
                 user_instructions = ""
                 refined: TailoredResume | None = await _llm_with_retry(
                     console,
-                    partial(tailor_engine.refine, resume_data, result, "", job),
+                    partial(
+                        tailor_engine.refine,
+                        resume_data,
+                        result,
+                        "",
+                        job,
+                        tone_profile=tone_profile,
+                    ),
                     "Tailoring resume...",
                 )
                 if refined is None:
@@ -1830,6 +1921,7 @@ def tailor(
                         result,
                         user_instructions,
                         job,
+                        tone_profile=tone_profile,
                     ),
                     "Tailoring resume...",
                 )
@@ -1934,6 +2026,7 @@ def tailor(
                         result,
                         user_instructions,
                         job,
+                        tone_profile=tone_profile,
                     ),
                     "Refining section...",
                 )
@@ -1951,7 +2044,16 @@ def tailor(
             else:
                 console.print("[red]Invalid choice. Please enter A, R, I, D, V, S, or Q.[/red]")
 
-    asyncio.run(_run())
+    try:
+        asyncio.run(_run())
+    except Exception as exc:
+        if reporter:
+            reporter.record_error(str(exc))
+        raise
+    finally:
+        if reporter:
+            log_file = ctx.obj.log_file if isinstance(ctx.obj, VerboseContext) else None
+            reporter.render(console, log_file)
 
 
 def _sanitize_config(settings: AppSettings) -> dict[str, Any]:
@@ -1992,8 +2094,11 @@ def ats_check(
         "--force-ocr",
         help="Force OCR; equivalent to --ocr-mode on.",
     ),
+    verbose: bool = _verbose_option(),
+    log_file: str | None = _log_file_option(),
 ) -> None:
     """Check resume ATS (Applicant Tracking System) compatibility."""
+    _merge_verbose_ctx(ctx, verbose, log_file)
     settings = _get_settings()
     if resume_path:
         settings.resume_path = resume_path
@@ -2064,7 +2169,7 @@ def ats_check(
                 "warnings": result.warnings,
                 "suggestions": result.suggestions,
             }
-            console.print(json.dumps(output, indent=2))
+            sys.stdout.write(json.dumps(output, indent=2) + "\n")
             return
 
         # Display results
@@ -2113,8 +2218,11 @@ def ats_check(
 def config_init(
     ctx: typer.Context,
     output_path: str = typer.Option("config.toml", "--output", "-o", help="Output file path."),
+    verbose: bool = _verbose_option(),
+    log_file: str | None = _log_file_option(),
 ) -> None:
     """Create a sample config.toml file."""
+    _merge_verbose_ctx(ctx, verbose, log_file)
     config_content = """# Job Applicator Configuration
 
 # Profile
