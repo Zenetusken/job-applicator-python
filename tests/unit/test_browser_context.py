@@ -184,3 +184,19 @@ async def test_apply_screenshots_the_failed_page(
     assert len(fake.contexts) == 1
     assert len(fake.contexts[0].pages) == 1
     assert screenshotted["page"] is fake.contexts[0].pages[0]
+
+
+@pytest.mark.asyncio
+async def test_apply_returns_failed_when_context_entry_raises(
+    app_settings: AppSettings, sample_job: object
+) -> None:
+    """If persistent_page() entry raises (e.g. browser not started), apply() must
+    return ApplicationResult(FAILED) — not propagate and crash the apply loop."""
+    # Browser never started -> persistent_context() raises BrowserError on entry.
+    manager = BrowserManager(BrowserConfig(headless=True, timeout_ms=5000))
+    applicator = LinkedInApplicator(manager, app_settings)
+
+    result = await applicator.apply(sample_job)  # type: ignore[arg-type]
+
+    assert result.status.value == "failed"
+    assert "Browser not started" in (result.error_message or "")
