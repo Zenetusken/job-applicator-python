@@ -19,7 +19,7 @@ from playwright.async_api import BrowserContext, ElementHandle, Page
 from job_applicator.browser.actions import navigate, random_delay, wait_for_selector
 from job_applicator.browser.manager import BrowserManager
 from job_applicator.config import AppSettings
-from job_applicator.exceptions import NavigationError
+from job_applicator.exceptions import NavigationError, ScraperError
 from job_applicator.models import JobBoard, JobListing
 from job_applicator.scrapers.base import BaseScraper, SearchParams
 from job_applicator.utils.logging import get_logger
@@ -52,9 +52,8 @@ class IndeedScraper(BaseScraper):
         return False
 
     async def _new_stealth_page(self, context: BrowserContext) -> Page:
-        page = await context.new_page()
-        await self._browser.stealth_page(page)
-        return page
+        """Open a page in the (context-level stealthed) persistent context."""
+        return await context.new_page()
 
     def _build_search_url(self, params: SearchParams) -> str:
         """Build an Indeed job-search URL."""
@@ -84,11 +83,13 @@ class IndeedScraper(BaseScraper):
             await random_delay(2.0, 3.0)
 
             if await self._is_blocked(page):
-                logger.error(
+                # Distinguish a block from a legitimately empty result set —
+                # returning [] here would be indistinguishable from "no jobs".
+                raise ScraperError(
                     "Indeed returned an anti-bot challenge; automated scraping was blocked. "
-                    "Reduce frequency or seed a real browser session."
+                    "Reduce frequency or seed a real browser session.",
+                    context={"url": page.url},
                 )
-                return jobs
 
             cards: list[ElementHandle] = []
             for selector in ("div.job_seen_beacon", "[data-jk]", "div.cardOutline"):
@@ -108,6 +109,14 @@ class IndeedScraper(BaseScraper):
                 except Exception as exc:
                     logger.warning("Failed to extract Indeed card: %s", exc)
 
+            if not jobs:
+                # Cards were present but none parsed — almost certainly stale
+                # selectors against the live DOM, not a genuinely empty search.
+                logger.error(
+                    "Found %d Indeed card(s) but extracted 0 jobs — selectors are "
+                    "likely stale against the current Indeed DOM.",
+                    len(cards),
+                )
             logger.info("Scraped %d jobs from Indeed", len(jobs))
             return jobs
         finally:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
@@ -46,6 +46,7 @@ class BrowserManager:
             # localStorage, history, service workers) accumulates over time.
             # This is indistinguishable from a real user's browser.
             PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+            PROFILE_DIR.chmod(0o700)  # profile holds the live authenticated session
             self._persistent_context = await self._playwright.chromium.launch_persistent_context(
                 str(PROFILE_DIR),
                 headless=self._config.headless,
@@ -70,9 +71,17 @@ class BrowserManager:
                 PROFILE_DIR,
             )
         except Exception as exc:
+            # Clean up a partially-initialised launch (e.g. the stealth/timeout
+            # step raised after the context was created) so we don't leak a
+            # Chrome process or hold the profile's SingletonLock. start() runs
+            # inside __aenter__, so stop() would otherwise never run.
+            with suppress(Exception):
+                await self.stop()
             raise BrowserError(
-                f"Failed to launch browser: {exc}",
-                context={"headless": self._config.headless},
+                f"Failed to launch browser: {exc}. Another job-applicator instance "
+                f"may be using the browser profile, or a previous run left a lock "
+                f"(remove {PROFILE_DIR / 'SingletonLock'} and retry if so).",
+                context={"headless": self._config.headless, "profile": str(PROFILE_DIR)},
             ) from exc
 
     async def stop(self) -> None:
@@ -106,8 +115,9 @@ class BrowserManager:
         Only the page is closed on exit; the persistent context stays alive.
         """
         context = await self.persistent_context()
+        # Stealth is applied once to the context in start(); the context
+        # auto-applies it to every page it creates, so no per-page call here.
         page = await context.new_page()
-        await self._stealth.apply_stealth_async(page)
         try:
             yield page
         finally:
@@ -118,11 +128,6 @@ class BrowserManager:
         """Open a page in the persistent context (alias for persistent_page)."""
         async with self.persistent_page() as page:
             yield page
-
-    async def stealth_page(self, page: Page) -> Page:
-        """Apply stealth patches to a page to avoid bot detection."""
-        await self._stealth.apply_stealth_async(page)
-        return page
 
     async def __aenter__(self) -> BrowserManager:
         await self.start()

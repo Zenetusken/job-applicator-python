@@ -57,18 +57,23 @@ class IndeedApplicator(BaseApplicator):
                         job.title,
                         job.company,
                     )
+
+                async def _do_submit() -> ApplicationResult:
+                    # The multi-step Indeed apply form is not validated; refuse
+                    # rather than guess and risk a malformed real submission.
                     return ApplicationResult(
                         job=job,
-                        status=ApplicationStatus.SKIPPED,
-                        notes="DRY RUN: Easily-apply detected but not submitted. Use --submit.",
+                        status=ApplicationStatus.FAILED,
+                        error_message="Indeed live submission is not yet implemented/validated",
                     )
 
-                # The multi-step Indeed apply form is not validated; refuse rather
-                # than guess and risk a malformed real submission.
-                return ApplicationResult(
+                # Route through the same base-class dry-run gate as LinkedIn.
+                return await self._gated_submit(
+                    submit=submit,
                     job=job,
-                    status=ApplicationStatus.FAILED,
-                    error_message="Indeed live submission is not yet implemented/validated",
+                    cover_letter=cover_letter,
+                    do_submit=_do_submit,
+                    dry_run_note="DRY RUN: Easily-apply detected but not submitted. Use --submit.",
                 )
         except Exception as exc:
             logger.error("Failed to apply to %s at %s: %s", job.title, job.company, exc)

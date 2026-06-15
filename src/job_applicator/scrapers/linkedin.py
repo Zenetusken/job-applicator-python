@@ -6,9 +6,10 @@ import asyncio
 import json
 import time
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from playwright.async_api import BrowserContext, ElementHandle, Page
+from playwright.async_api import Error as PlaywrightError
 
 from job_applicator.browser.actions import (
     navigate,
@@ -29,6 +30,17 @@ LINKEDIN_BASE = "https://www.linkedin.com"
 LINKEDIN_JOBS = f"{LINKEDIN_BASE}/jobs/search"
 
 
+def _is_authenticated_url(url: str) -> bool:
+    """True only when the URL *path* is a logged-in LinkedIn page.
+
+    Path-based, not substring: the logged-out redirect
+    ``.../uas/login?session_redirect=...%2Ffeed%2F`` embeds ``feed`` in the
+    query string, so a substring ``"feed" in url`` check would false-positive
+    and report an authenticated session when there is none.
+    """
+    return urlsplit(url).path.startswith(("/feed", "/mynetwork"))
+
+
 class LinkedInScraper(BaseScraper):
     """Scrapes job listings from LinkedIn."""
 
@@ -40,10 +52,14 @@ class LinkedInScraper(BaseScraper):
         self._logged_in = False
 
     async def _new_stealth_page(self, context: BrowserContext) -> Page:
-        """Create a new page with stealth patches applied."""
-        page = await context.new_page()
-        await self._browser.stealth_page(page)
-        return page
+        """Open a page in the persistent context.
+
+        Stealth is applied once at the context level (BrowserManager.start), and
+        the context auto-applies it to every page it creates, so no per-page
+        stealth call is needed here (verified: navigator.webdriver is patched on
+        context-created pages without a second application).
+        """
+        return await context.new_page()
 
     @property
     def _cookie_file(self) -> Path:
@@ -63,7 +79,10 @@ class LinkedInScraper(BaseScraper):
             await context.add_cookies(cookies)
             logger.info("Loaded %d cookies from %s", len(cookies), self._cookie_file)
             return True
-        except (json.JSONDecodeError, OSError) as exc:
+        except (json.JSONDecodeError, OSError, ValueError, PlaywrightError) as exc:
+            # Best-effort: a bad cookie file, or a cookie Chromium rejects via
+            # add_cookies (which raises playwright Error), must degrade to "no
+            # session" rather than crash the caller.
             logger.warning("Failed to load cookies from %s: %s", self._cookie_file, exc)
             return False
 
@@ -72,6 +91,7 @@ class LinkedInScraper(BaseScraper):
         try:
             cookies = await context.cookies()
             self._cookie_file.parent.mkdir(parents=True, exist_ok=True)
+            self._cookie_file.parent.chmod(0o700)  # dir holds a session token
             self._cookie_file.write_text(json.dumps({"cookies": cookies}, indent=2))
             self._cookie_file.chmod(0o600)  # session token — owner-only
             logger.info("Saved %d cookies to %s", len(cookies), self._cookie_file)
@@ -120,15 +140,20 @@ class LinkedInScraper(BaseScraper):
         try:
             await page.goto(f"{LINKEDIN_BASE}/feed/", wait_until="domcontentloaded", timeout=15_000)
             await random_delay(1.0, 2.0)
-            if "feed" in page.url or "mynetwork" in page.url:
+            if _is_authenticated_url(page.url):
                 self._logged_in = True
                 logger.info("Reusing existing LinkedIn session")
                 return True
             logger.info("No active LinkedIn session (redirected to %s)", page.url)
             return False
-        except Exception as exc:
-            logger.warning("Session check failed: %s", exc)
-            return False
+        except PlaywrightError as exc:
+            # A transient page-load failure must NOT be misreported as "no
+            # session" (which would tell the user to re-authenticate). Surface
+            # it as a retryable NavigationError so scrape()'s retry can recover.
+            raise NavigationError(
+                f"LinkedIn session check failed to load the feed: {exc}",
+                context={"url": f"{LINKEDIN_BASE}/feed/"},
+            ) from exc
         finally:
             await page.close()
 
@@ -136,9 +161,15 @@ class LinkedInScraper(BaseScraper):
         """Public check: is a usable authenticated LinkedIn session available?
 
         Loads any saved cookies and verifies against the feed. Submits no
-        credentials, so it cannot trigger a login CAPTCHA.
+        credentials, so it cannot trigger a login CAPTCHA. A transient feed-load
+        failure is treated as "no session" (returns False) rather than raised —
+        this is a best-effort check (used by `import-cookies --verify`).
         """
-        return await self._ensure_session(await self._get_context())
+        try:
+            return await self._ensure_session(await self._get_context())
+        except NavigationError:
+            logger.warning("Session check could not load the feed; treating as no session.")
+            return False
 
     async def interactive_login(self, timeout_s: int = 300) -> bool:
         """Open LinkedIn's login page for a one-time, human-driven sign-in.
@@ -152,9 +183,14 @@ class LinkedInScraper(BaseScraper):
         profile retains it for subsequent headless runs.
         """
         context = await self._get_context()
-        if await self._ensure_session(context):
-            logger.info("Already signed in — existing session is active.")
-            return True
+        try:
+            if await self._ensure_session(context):
+                logger.info("Already signed in — existing session is active.")
+                return True
+        except NavigationError:
+            # A transient pre-check failure must not abort the login command;
+            # fall through and open the login page.
+            logger.info("Could not pre-check existing session; opening the login page.")
 
         page = await self._new_stealth_page(context)
         try:
@@ -179,7 +215,7 @@ class LinkedInScraper(BaseScraper):
             )
             deadline = time.monotonic() + timeout_s
             while time.monotonic() < deadline:
-                if "feed" in page.url or "mynetwork" in page.url:
+                if _is_authenticated_url(page.url):
                     self._logged_in = True
                     await self._save_cookies(context)
                     logger.info("Sign-in detected — session saved.")
@@ -191,14 +227,19 @@ class LinkedInScraper(BaseScraper):
         finally:
             await page.close()
 
+    @async_retry(max_attempts=3, base_delay=2.0, exceptions=(NavigationError,))
     async def scrape(self, params: SearchParams) -> list[JobListing]:
         """Scrape LinkedIn job listings.
 
         Reuses an existing authenticated session (persistent profile / saved
         cookies). Automated credential login is NOT attempted — run
         ``job-applicator login`` first to establish a session safely. Raising
-        here (rather than auto-logging-in) is deliberate: a programmatic login
-        is exactly what trips LinkedIn's anti-bot CAPTCHA.
+        ``LoginRequiredError`` here (rather than auto-logging-in) is deliberate:
+        a programmatic login is exactly what trips LinkedIn's anti-bot CAPTCHA.
+
+        The retry wraps both the session check and the scrape, and fires only on
+        the transient :class:`NavigationError`; ``LoginRequiredError`` (genuine
+        no-session) is not retried.
         """
         context = await self._get_context()
         if not self._logged_in and not await self._ensure_session(context):
@@ -210,15 +251,10 @@ class LinkedInScraper(BaseScraper):
             )
         return await self._scrape_listings(params, context)
 
-    @async_retry(max_attempts=3, base_delay=2.0, exceptions=(NavigationError,))
     async def _scrape_listings(
         self, params: SearchParams, context: BrowserContext
     ) -> list[JobListing]:
-        """Fetch and parse job cards from the search results page.
-
-        Retried only on :class:`NavigationError` (transient page-load timeouts);
-        the no-session case is handled (and raised once) by :meth:`scrape`.
-        """
+        """Fetch and parse job cards from the search results page."""
         jobs: list[JobListing] = []
         page = await self._new_stealth_page(context)
         try:

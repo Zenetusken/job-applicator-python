@@ -7,11 +7,12 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from playwright.async_api import Error as PlaywrightError
 
 from job_applicator.config import AppSettings
 from job_applicator.exceptions import LoginRequiredError
 from job_applicator.scrapers.base import SearchParams
-from job_applicator.scrapers.linkedin import LinkedInScraper
+from job_applicator.scrapers.linkedin import LinkedInScraper, _is_authenticated_url
 
 
 @pytest.mark.asyncio
@@ -145,3 +146,34 @@ async def test_interactive_login_saves_session_on_detect(
     assert await scraper.interactive_login(timeout_s=5) is True
     assert scraper._logged_in is True
     scraper._save_cookies.assert_awaited_once()
+
+
+def test_is_authenticated_url_rejects_logged_out_redirect() -> None:
+    """The logged-out /feed redirect embeds 'feed' in the query string, so a
+    substring check would false-positive; the path-based check must reject it."""
+    logged_out = (
+        "https://www.linkedin.com/uas/login"
+        "?session_redirect=https%3A%2F%2Fwww.linkedin.com%2Ffeed%2F"
+    )
+    assert _is_authenticated_url(logged_out) is False
+    assert _is_authenticated_url("https://www.linkedin.com/checkpoint/challenge/") is False
+    assert _is_authenticated_url("https://www.linkedin.com/feed/") is True
+    assert _is_authenticated_url("https://www.linkedin.com/mynetwork/") is True
+
+
+@pytest.mark.asyncio
+async def test_has_active_session_false_on_transient_error(
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transient feed-load failure degrades to False (not a raised traceback),
+    so `import-cookies --verify` reports cleanly instead of crashing."""
+    monkeypatch.setattr("job_applicator.scrapers.linkedin.random_delay", AsyncMock())
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    scraper._get_context = AsyncMock(return_value=MagicMock())
+    scraper._load_cookies = AsyncMock(return_value=False)
+    page = AsyncMock()
+    page.goto = AsyncMock(side_effect=PlaywrightError("net::ERR_TIMED_OUT"))
+    scraper._new_stealth_page = AsyncMock(return_value=page)
+
+    assert await scraper.has_active_session() is False  # NavigationError swallowed
+    page.close.assert_awaited_once()  # page still cleaned up

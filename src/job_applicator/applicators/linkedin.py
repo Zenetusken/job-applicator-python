@@ -49,8 +49,11 @@ class LinkedInApplicator(BaseApplicator):
                 await navigate(page, str(job.url))
                 await random_delay(2.0, 3.0)
 
-                # Skip if already applied (avoids duplicate submissions).
-                if await wait_for_selector(page, 'button:has-text("Applied")', timeout_ms=3_000):
+                # Skip if already applied (avoids duplicate submissions). Use a
+                # non-blocking query: the Applied state renders with the page, and
+                # wait_for_selector would block the full timeout on every fresh
+                # job where the element is absent (~3s wasted per listing).
+                if await page.query_selector('button:has-text("Applied")'):
                     logger.info("Already applied to %s at %s", job.title, job.company)
                     return ApplicationResult(job=job, status=ApplicationStatus.ALREADY_APPLIED)
 
@@ -119,7 +122,12 @@ class LinkedInApplicator(BaseApplicator):
             await random_delay(0.5, 1.0)
             await self._fill_form_fields(page)
 
-        submit_btn = await page.query_selector('button:has-text("Submit application")')
+        # Match the final submit by either label ("Submit application" is the
+        # usual text; fall back to a bare "Submit") so a label change/locale
+        # doesn't make a real application silently fail to send.
+        submit_btn = await page.query_selector(
+            'button:has-text("Submit application"), button:has-text("Submit")'
+        )
         if not submit_btn:
             return ApplicationResult(
                 job=job,
@@ -134,27 +142,31 @@ class LinkedInApplicator(BaseApplicator):
                 job.title,
                 job.company,
             )
+
+        async def _do_submit() -> ApplicationResult:
+            await submit_btn.click()
+            await random_delay(2.0, 3.0)
+            confirmed = await wait_for_selector(
+                page, 'div:has-text("Application sent")', timeout_ms=5_000
+            )
+            if confirmed:
+                logger.info("Successfully applied to %s at %s", job.title, job.company)
+                return ApplicationResult(
+                    job=job, status=ApplicationStatus.SUBMITTED, cover_letter=cover_letter
+                )
             return ApplicationResult(
                 job=job,
-                status=ApplicationStatus.SKIPPED,
-                cover_letter=cover_letter,
-                notes="DRY RUN: form prepared but not submitted. Use --submit to apply.",
+                status=ApplicationStatus.FAILED,
+                error_message="Submit clicked but no confirmation was detected",
             )
 
-        await submit_btn.click()
-        await random_delay(2.0, 3.0)
-        confirmed = await wait_for_selector(
-            page, 'div:has-text("Application sent")', timeout_ms=5_000
-        )
-        if confirmed:
-            logger.info("Successfully applied to %s at %s", job.title, job.company)
-            return ApplicationResult(
-                job=job, status=ApplicationStatus.SUBMITTED, cover_letter=cover_letter
-            )
-        return ApplicationResult(
+        # The dry-run gate lives in the base class so it cannot be bypassed.
+        return await self._gated_submit(
+            submit=submit,
             job=job,
-            status=ApplicationStatus.FAILED,
-            error_message="Submit clicked but no confirmation was detected",
+            cover_letter=cover_letter,
+            do_submit=_do_submit,
+            dry_run_note="DRY RUN: form prepared but not submitted. Use --submit to apply.",
         )
 
     async def _external_apply(self, page: Page, job: JobListing) -> ApplicationResult:

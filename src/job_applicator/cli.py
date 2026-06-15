@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import partial
@@ -17,6 +18,7 @@ from rich.table import Table
 
 from job_applicator import __version__
 from job_applicator.config import AppSettings
+from job_applicator.exceptions import JobApplicatorError
 from job_applicator.models import UserProfile
 from job_applicator.utils.diff import render_diff
 from job_applicator.utils.logging import setup_logging
@@ -309,6 +311,13 @@ def search(
 
     try:
         asyncio.run(_run())
+    except JobApplicatorError as exc:
+        # Typed, expected failures (no session, anti-bot block, missing resume)
+        # — show the message cleanly instead of a raw Python traceback.
+        if reporter:
+            reporter.record_error(str(exc))
+        console.print(f"[yellow]⚠ {exc}[/yellow]")
+        raise typer.Exit(1) from exc
     except Exception as exc:
         if reporter:
             reporter.record_error(str(exc))
@@ -408,6 +417,10 @@ def _normalize_cookie(entry: Any) -> dict[str, Any] | None:
         )
         if mapped:
             out["sameSite"] = mapped
+    # Chromium rejects a SameSite=None cookie that is not Secure, so an export
+    # that omits `secure` would otherwise yield a silently-dropped session cookie.
+    if out.get("sameSite") == "None":
+        out["secure"] = True
     return out
 
 
@@ -495,6 +508,7 @@ def import_cookies(
 
     cookie_path = LinkedInScraper.COOKIE_PATH
     cookie_path.parent.mkdir(parents=True, exist_ok=True)
+    cookie_path.parent.chmod(0o700)  # dir holds a session token
     cookie_path.write_text(json.dumps({"cookies": cookies}, indent=2))
     cookie_path.chmod(0o600)  # session token — owner-only
     console.print(f"[green]Wrote {len(cookies)} cookie(s) to {cookie_path}[/green]")
@@ -603,9 +617,10 @@ def apply(
                 console.print("[yellow]No jobs found to apply to.[/yellow]")
                 return
 
-            # Generate cover letters if requested
+            # Generate cover letters only when actually submitting — a dry run
+            # never sends them, so generating up front would waste LLM calls.
             cover_letters: dict[str, str] = {}
-            if cover_letter and settings.resume_path:
+            if cover_letter and settings.resume_path and submit:
                 from job_applicator.documents.cover_letter import CoverLetterGenerator
                 from job_applicator.documents.resume import ResumeLoader
 
@@ -684,6 +699,7 @@ def apply(
                         "submitted": "green",
                         "failed": "red",
                         "skipped": "yellow",
+                        "already_applied": "magenta",
                         "pending": "blue",
                     }.get(r.status.value, "white")
                     table.add_row(
@@ -694,17 +710,21 @@ def apply(
                     )
 
                 console.print(table)
-                submitted = sum(1 for r in app_results if r.status.value == "submitted")
-                failed = sum(1 for r in app_results if r.status.value == "failed")
-                skipped = sum(1 for r in app_results if r.status.value == "skipped")
-                console.print(
-                    f"\n[green]{submitted}[/green] submitted, "
-                    f"[red]{failed}[/red] failed, "
-                    f"[yellow]{skipped}[/yellow] skipped"
-                )
+                # Count every status (incl. already_applied) so the summary
+                # never silently under-reports outcomes.
+                counts = Counter(r.status.value for r in app_results)
+                summary = ", ".join(f"{n} {status}" for status, n in sorted(counts.items()))
+                console.print(f"\n{summary}")
 
     try:
         asyncio.run(_run())
+    except JobApplicatorError as exc:
+        # Typed, expected failures (no session, anti-bot block, missing resume)
+        # — show the message cleanly instead of a raw Python traceback.
+        if reporter:
+            reporter.record_error(str(exc))
+        console.print(f"[yellow]⚠ {exc}[/yellow]")
+        raise typer.Exit(1) from exc
     except Exception as exc:
         if reporter:
             reporter.record_error(str(exc))
@@ -858,6 +878,13 @@ def generate_cover_letter(
 
     try:
         asyncio.run(_run())
+    except JobApplicatorError as exc:
+        # Typed, expected failures (no session, anti-bot block, missing resume)
+        # — show the message cleanly instead of a raw Python traceback.
+        if reporter:
+            reporter.record_error(str(exc))
+        console.print(f"[yellow]⚠ {exc}[/yellow]")
+        raise typer.Exit(1) from exc
     except Exception as exc:
         if reporter:
             reporter.record_error(str(exc))
@@ -1055,6 +1082,13 @@ def match(
 
     try:
         asyncio.run(_run())
+    except JobApplicatorError as exc:
+        # Typed, expected failures (no session, anti-bot block, missing resume)
+        # — show the message cleanly instead of a raw Python traceback.
+        if reporter:
+            reporter.record_error(str(exc))
+        console.print(f"[yellow]⚠ {exc}[/yellow]")
+        raise typer.Exit(1) from exc
     except Exception as exc:
         if reporter:
             reporter.record_error(str(exc))
@@ -1427,6 +1461,13 @@ def batch(
 
     try:
         asyncio.run(_run())
+    except JobApplicatorError as exc:
+        # Typed, expected failures (no session, anti-bot block, missing resume)
+        # — show the message cleanly instead of a raw Python traceback.
+        if reporter:
+            reporter.record_error(str(exc))
+        console.print(f"[yellow]⚠ {exc}[/yellow]")
+        raise typer.Exit(1) from exc
     except Exception as exc:
         if reporter:
             reporter.record_error(str(exc))
@@ -2244,6 +2285,13 @@ def tailor(
 
     try:
         asyncio.run(_run())
+    except JobApplicatorError as exc:
+        # Typed, expected failures (no session, anti-bot block, missing resume)
+        # — show the message cleanly instead of a raw Python traceback.
+        if reporter:
+            reporter.record_error(str(exc))
+        console.print(f"[yellow]⚠ {exc}[/yellow]")
+        raise typer.Exit(1) from exc
     except Exception as exc:
         if reporter:
             reporter.record_error(str(exc))
