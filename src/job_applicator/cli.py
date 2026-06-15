@@ -812,7 +812,6 @@ def match(
         # JSON output
         if as_json:
             import json
-            import sys
 
             output = [
                 {
@@ -1734,7 +1733,6 @@ def tailor(
                     resume_data, job, user_instructions, style, tone_profile
                 )
             session.add_attempt(result)
-            _run_ats_post_tailor(resume_data.raw_text, result.tailored_text)
 
             if reporter:
                 reporter.record_llm_call(
@@ -2052,8 +2050,8 @@ def tailor(
         raise
     finally:
         if reporter:
-            log_file = ctx.obj.log_file if isinstance(ctx.obj, VerboseContext) else None
-            reporter.render(console, log_file)
+            report_log_file = ctx.obj.log_file if isinstance(ctx.obj, VerboseContext) else None
+            reporter.render(console, report_log_file)
 
 
 def _sanitize_config(settings: AppSettings) -> dict[str, Any]:
