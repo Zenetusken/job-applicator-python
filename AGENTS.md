@@ -20,7 +20,7 @@ mypy src/job_applicator/ --ignore-missing-imports
 ruff check --fix src/ tests/
 ruff format src/ tests/
 
-# Tests (315 unit tests, all fast)
+# Tests (319 unit tests, all fast)
 pytest tests/unit/ -v
 pytest tests/unit/ -v -k test_name  # single test
 
@@ -74,6 +74,11 @@ src/job_applicator/
 - **Skill validation uses fuzzy matching.** `_skills_match()` in `resume_tailor.py` checks exact match, token containment (subset), and `SequenceMatcher` ratio >= 0.85. Prevents "ai" matching "training" while catching typos.
 - **Tool hallucination has two passes.** Pass 1: checks job requirements not in original. Pass 2: checks `tool_replacements` keys in tailored text not in original AND not in requirements. Catches LLM-invented tools.
 - **`tailor()` accepts optional `tone_profile`.** When provided, skips internal `ToneDetector.detect()`. Eliminates double detection when CLI already computed the profile.
+- **`refine()` accepts optional `tone_profile`.** When provided, injects tone directives into the refinement prompt. Without it, refinement loses tone alignment.
+- **Tone directives in system prompts.** `TAILOR_SYSTEM_PROMPT` has a `TONE` section telling the LLM to use specified verbs, emphasize themes, avoid patterns. `cover_letter.py` `SYSTEM_PROMPT` replaces static "professional but personable" with dynamic tone awareness. Both generators follow tone when provided, fall back to professional tone when not.
+- **`_detect_tone(job)` is the shared helper.** Used by `tailor`, `batch`, `generate-cover-letter`, and `_cover_letter_workflow`. Deterministic keyword-based detection, no LLM.
+- **`format_for_prompt()` produces actionable directives.** Returns `"Use these action verbs: ..."` / `"Emphasize: ..."` / `"Avoid: ..."` instead of labels. Returns `"Match the job posting's natural tone."` for `unknown` tone.
+- **Batch per-job tone.** Each job in batch gets its own `ToneProfile` via `_detect_tone(job)` and its own `TailoringReport`. `record_batch_tailoring()` accumulates per-job results. `VerboseReport.batch_tailoring` holds the list.
 - **`refine()` recomputes match scores.** Creates synthetic `ResumeData` from refined text and runs `JobMatcher.match_resume_to_job()`. No more stale scores.
 - **`CoverLetterGenerator.refine()` exists.** Uses same structured generation pipeline as `generate()` — system prompt, style guide, tone section, instructor fallback. `_refine_cover_letter()` in cli.py delegates to it.
 - **Tone detection is keyword-based, not LLM-based.** `ToneDetector.detect()` in `tone_detector.py` uses keyword frequency heuristics — fast, but may misclassify edge cases (e.g. a startup posting heavy on compliance jargon).
@@ -92,6 +97,11 @@ src/job_applicator/
 - **OCR fallback via `paddleocr`.** `ResumeLoader.load()` accepts `ocr_mode={auto,on,off}`. Auto mode falls back to OCR when extracted text is < 100 chars. Image resumes (`.png`, `.jpg`, `.jpeg`, `.tiff`, `.bmp`, `.webp`) use OCR directly. `--force-ocr` CLI flag forces OCR on all resume-loading commands.
 - **OCR models are lazy-loaded.** `OCRService` initializes PaddleOCR only on first extraction. First import triggers ~500MB+ model downloads.
 - **PyMuPDF is required for PDF OCR.** `extract_text_from_pdf` uses `fitz.open()` + page pixmap → temp PNG → OCR. Temp files cleaned up via `try/finally`.
+- **LinkedIn login uses Playwright locator API.** LinkedIn removed `name` attributes from login form. Use `page.locator('input[type="email"]').last` and `page.locator('button:has-text("Sign in"]').last`. Do NOT use `input[name="session_key"]` — it no longer exists.
+- **LinkedIn scraper shares browser context.** `login()` and `scrape()` use the same `BrowserContext` via `_get_context()`. Cookies persist across pages. Do NOT use `self._browser.new_page()` (creates isolated context).
+- **LinkedIn description extraction clicks cards.** Scraper clicks each job card, waits for content change, clicks "show more" button, then extracts. Search page cards only have title/company/location — descriptions come from the detail panel.
+- **`--verbose` and `--log-file` work both before and after the command.** `job-applicator --verbose match` and `job-applicator match --verbose` both work. `_merge_verbose_ctx()` in cli.py handles merging subcommand flags with global callback.
+- **JSON output goes to stdout, logs go to stderr.** `sys.stdout.write()` for JSON, `RichHandler(console=Console(file=sys.stderr))` for logging. Enables `job-applicator match --json | jq .` without Rich wrapping corruption.
 
 ## LLM Setup
 
@@ -129,4 +139,4 @@ Score >= 60% = compatible. Returns warnings and actionable suggestions.
 
 - `config.toml` (contains credentials)
 - `.venv/`, `__pycache__/`, `.mypy_cache/`, `.ruff_cache/`
-- `output/`, `screenshots/`
+- `output/`, `screenshots/`, `logs/`
