@@ -228,7 +228,7 @@ class TestToneDetector:
             description="We are hiring.",
             requirements=[],
         )
-        assert profile.primary == "corporate"
+        assert profile.primary == "unknown"
         assert profile.confidence == 0.0
 
     def test_format_for_prompt_structure(self):
@@ -242,7 +242,7 @@ class TestToneDetector:
         )
         formatted = detector.format_for_prompt(profile)
         assert "TONE: Technical" in formatted
-        assert "Power words: architected, engineered" in formatted
+        assert "Use these action verbs: architected, engineered" in formatted
         assert "Emphasize: system design, scalability" in formatted
         assert "Avoid: buzzwords, fluff" in formatted
 

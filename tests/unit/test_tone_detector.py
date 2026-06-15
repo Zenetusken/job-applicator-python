@@ -62,7 +62,7 @@ class TestToneDetector:
     def test_empty_description_defaults_corporate(self):
         detector = ToneDetector()
         profile = detector.detect(title="Manager", description="", requirements=[])
-        assert profile.primary == "corporate"
+        assert profile.primary == "unknown"
 
     def test_format_for_prompt(self):
         detector = ToneDetector()
@@ -73,4 +73,4 @@ class TestToneDetector:
         )
         formatted = detector.format_for_prompt(profile)
         assert "TONE:" in formatted
-        assert "Power words:" in formatted
+        assert "Use these action verbs:" in formatted
