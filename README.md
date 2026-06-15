@@ -12,6 +12,7 @@ AI-powered job application tool using Playwright browser automation with modern 
 - **Resume Tailoring**: LLM-powered resume rewriting for specific jobs with hallucination guards
 - **Date Audit**: Pre-ingestion CV validation — checks ordering, staleness, timeline coherence
 - **Style Analysis**: Mimic writing style from example resumes/cover letters
+- **ATS Compatibility Check**: Validate resumes against ATS heuristics (contact info, standard sections, length, no ASCII tables) with a score and actionable suggestions
 - **Structured Outputs**: Instructor for type-safe LLM responses
 
 ## Tech Stack
@@ -55,6 +56,9 @@ job-applicator apply --site linkedin --query "python" --limit 5
 
 # Generate a cover letter
 job-applicator generate-cover-letter --job-title "Python Dev" --company "Acme"
+
+# Check resume ATS compatibility (score >= 60% = compatible)
+job-applicator ats-check --resume resume.pdf
 
 # Match resume to jobs using embeddings
 job-applicator match --resume resume.pdf --jobs-file jobs.json --top-k 10
