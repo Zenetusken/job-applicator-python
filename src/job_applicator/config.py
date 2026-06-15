@@ -34,6 +34,10 @@ class BrowserConfig(BaseSettings):
     viewport_height: int = 1080
     timeout_ms: int = 30_000
     user_agent: str | None = None
+    # Empty = auto-detect from the host. The timezone in particular drives how
+    # geo-aware sites (Indeed/LinkedIn) locate the browser; set to pin a region.
+    locale: str = ""
+    timezone: str = ""
 
 
 class LLMConfig(BaseSettings):
@@ -74,6 +78,8 @@ class TargetConfig(BaseSettings):
     linkedin_password: str = ""
     indeed_email: str = ""
     indeed_password: str = ""
+    # Indeed redirects by region; override e.g. "ca.indeed.com" / "uk.indeed.com".
+    indeed_domain: str = "www.indeed.com"
 
 
 class AppSettings(BaseSettings):

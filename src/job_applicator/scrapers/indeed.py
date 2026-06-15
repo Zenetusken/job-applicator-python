@@ -5,14 +5,19 @@ credentials. Indeed fronts pages with Cloudflare / anti-bot, so automated
 scraping from a fresh or headless profile may be challenged; the shared
 persistent profile + stealth reduce that but cannot defeat an active challenge.
 
-NOTE: This implementation mirrors the LinkedIn scraper's architecture and safety
-model but has NOT been validated against live Indeed — selectors are best-effort
-and may need tuning against the current Indeed DOM.
+Selectors were tuned against the live Indeed DOM (2026-06-15): result cards
+``div.job_seen_beacon`` / ``[data-jk]``, title link ``a.jcs-JobTitle`` (relative
+href), company ``[data-testid="company-name"]``, location
+``[data-testid="text-location"]``. Indeed redirects by region: the scraper
+auto-detects the regional site it lands on (e.g. ca.indeed.com) and re-issues
+the search there, caching the host for the session; ``target.indeed_domain``
+pins a region explicitly. Headless scraping can still hit Indeed's
+Cloudflare/anti-bot, surfaced as a ``ScraperError``.
 """
 
 from __future__ import annotations
 
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from playwright.async_api import BrowserContext, ElementHandle, Page
 
@@ -31,12 +36,30 @@ INDEED_BASE = "https://www.indeed.com"
 INDEED_JOBS = f"{INDEED_BASE}/jobs"
 
 
+def _is_indeed_host(host: str) -> bool:
+    """True only for genuine Indeed hosts (any regional ``*.indeed.com``)."""
+    h = host.lower()
+    return h == "indeed.com" or h.endswith(".indeed.com")
+
+
 class IndeedScraper(BaseScraper):
     """Scrapes public job listings from Indeed."""
 
     def __init__(self, browser: BrowserManager, config: AppSettings) -> None:
         self._browser = browser
         self._config = config
+        self._resolved_base: str | None = None
+
+    @property
+    def _base(self) -> str:
+        """Region-appropriate Indeed origin.
+
+        Defaults to the configured ``target.indeed_domain`` (www.indeed.com), but
+        once a search auto-detects the regional site Indeed redirects to (e.g.
+        ca.indeed.com), that host is cached here for the rest of the session — so
+        users don't need to know their region up front.
+        """
+        return self._resolved_base or f"https://{self._config.target.indeed_domain}"
 
     @property
     def board(self) -> JobBoard:
@@ -62,7 +85,7 @@ class IndeedScraper(BaseScraper):
             query["l"] = params.location
         if params.remote_only:
             query["sc"] = "0kf:attr(DSQF7);"  # Indeed's "Remote" filter token (best-effort)
-        return f"{INDEED_JOBS}?{urlencode(query)}"
+        return f"{self._base}/jobs?{urlencode(query)}"
 
     async def _is_blocked(self, page: Page) -> bool:
         """Detect an Indeed anti-bot / Cloudflare challenge."""
@@ -74,31 +97,23 @@ class IndeedScraper(BaseScraper):
 
     @async_retry(max_attempts=3, base_delay=2.0, exceptions=(NavigationError,))
     async def scrape(self, params: SearchParams) -> list[JobListing]:
-        """Scrape Indeed job listings for the given search params."""
+        """Scrape Indeed job listings for the given search params.
+
+        Indeed redirects by region; _load_results pins whatever regional host it
+        lands on (e.g. ca.indeed.com), so if a region mismatch bounces us to a
+        regional homepage with no results, the search is re-issued once there.
+        """
         jobs: list[JobListing] = []
         context = await self._browser.persistent_context()
         page = await self._new_stealth_page(context)
         try:
-            await navigate(page, self._build_search_url(params))
-            await random_delay(2.0, 3.0)
-
-            if await self._is_blocked(page):
-                # Distinguish a block from a legitimately empty result set —
-                # returning [] here would be indistinguishable from "no jobs".
-                raise ScraperError(
-                    "Indeed returned an anti-bot challenge; automated scraping was blocked. "
-                    "Reduce frequency or seed a real browser session.",
-                    context={"url": page.url},
-                )
-
-            cards: list[ElementHandle] = []
-            for selector in ("div.job_seen_beacon", "[data-jk]", "div.cardOutline"):
-                if await wait_for_selector(page, selector, timeout_ms=5_000):
-                    cards = await page.query_selector_all(selector)
-                    if cards:
-                        break
+            searched = urlsplit(self._base).netloc
+            cards = await self._load_results(page, params)
+            if not cards and urlsplit(self._base).netloc != searched:
+                logger.info("Indeed redirected to %s; re-issuing the search there.", self._base)
+                cards = await self._load_results(page, params)
             if not cards:
-                logger.warning("No Indeed job cards found on page")
+                logger.warning("No Indeed job cards found (page: %s)", page.url)
                 return jobs
 
             for card in cards[: params.max_results]:
@@ -113,8 +128,8 @@ class IndeedScraper(BaseScraper):
                 # Cards were present but none parsed — almost certainly stale
                 # selectors against the live DOM, not a genuinely empty search.
                 logger.error(
-                    "Found %d Indeed card(s) but extracted 0 jobs — selectors are "
-                    "likely stale against the current Indeed DOM.",
+                    "Found %d Indeed card(s) but extracted 0 jobs — selectors may be "
+                    "stale against the current Indeed DOM.",
                     len(cards),
                 )
             logger.info("Scraped %d jobs from Indeed", len(jobs))
@@ -122,23 +137,48 @@ class IndeedScraper(BaseScraper):
         finally:
             await page.close()
 
+    async def _load_results(self, page: Page, params: SearchParams) -> list[ElementHandle]:
+        """Navigate to the search, fail on anti-bot, return job-card handles.
+
+        Pins the regional Indeed host actually landed on (Indeed redirects by
+        region) so job-link URLs and any retry use the same origin.
+        """
+        await navigate(page, self._build_search_url(params))
+        await random_delay(2.0, 3.0)
+        if await self._is_blocked(page):
+            # Distinguish a block from a legitimately empty result set —
+            # returning [] here would be indistinguishable from "no jobs".
+            raise ScraperError(
+                "Indeed returned an anti-bot challenge; automated scraping was blocked. "
+                "Reduce frequency or seed a real browser session.",
+                context={"url": page.url},
+            )
+        host = urlsplit(page.url).netloc
+        if _is_indeed_host(host):
+            self._resolved_base = f"https://{host}"  # pin the region we landed on
+        for selector in ("div.job_seen_beacon", "[data-jk]", "div.cardOutline"):
+            if await wait_for_selector(page, selector, timeout_ms=5_000):
+                cards = await page.query_selector_all(selector)
+                if cards:
+                    return cards
+        return []
+
     async def _extract_job(self, card: ElementHandle, board: JobBoard) -> JobListing | None:
         """Extract job data from an Indeed result card."""
-        title_el = await card.query_selector("h2.jobTitle a, a.jcs-JobTitle, h2 a")
+        # Selectors verified against the live Indeed DOM (2026-06-15).
+        title_el = await card.query_selector("a.jcs-JobTitle, h2 a")
         if not title_el:
             return None
         title = (await title_el.inner_text()).strip()
         href = await title_el.get_attribute("href")
         if not href:
             return None
-        url = href if href.startswith("http") else f"{INDEED_BASE}{href}"
+        url = href if href.startswith("http") else f"{self._base}{href}"
 
-        company_el = await card.query_selector('[data-testid="company-name"], span.companyName')
+        company_el = await card.query_selector('[data-testid="company-name"]')
         company = (await company_el.inner_text()).strip() if company_el else "Unknown"
 
-        location_el = await card.query_selector(
-            '[data-testid="text-location"], div.companyLocation'
-        )
+        location_el = await card.query_selector('[data-testid="text-location"]')
         location = (await location_el.inner_text()).strip() if location_el else ""
 
         return JobListing(

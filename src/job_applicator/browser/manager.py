@@ -12,6 +12,7 @@ from playwright_stealth import Stealth
 from job_applicator.config import BrowserConfig
 from job_applicator.exceptions import BrowserError
 from job_applicator.utils.logging import get_logger
+from job_applicator.utils.region import detect_locale, detect_timezone
 
 logger = get_logger("browser.manager")
 
@@ -47,6 +48,10 @@ class BrowserManager:
             # This is indistinguishable from a real user's browser.
             PROFILE_DIR.mkdir(parents=True, exist_ok=True)
             PROFILE_DIR.chmod(0o700)  # profile holds the live authenticated session
+            # Advertise the host's real locale/timezone (auto-detected unless
+            # configured) so geo-aware sites serve the correct region.
+            resolved_locale = self._config.locale or detect_locale()
+            resolved_tz = self._config.timezone or detect_timezone()
             self._persistent_context = await self._playwright.chromium.launch_persistent_context(
                 str(PROFILE_DIR),
                 headless=self._config.headless,
@@ -59,16 +64,17 @@ class BrowserManager:
                     "height": self._config.viewport_height,
                 },
                 user_agent=self._config.user_agent or DEFAULT_USER_AGENT,
-                locale="en-US",
-                timezone_id="America/New_York",
+                locale=resolved_locale,
+                timezone_id=resolved_tz,
             )
             self._persistent_context.set_default_timeout(self._config.timeout_ms)
             # Apply stealth to the persistent context
             await self._stealth.apply_stealth_async(self._persistent_context)
             logger.info(
-                "Browser launched (headless=%s, profile=%s)",
+                "Browser launched (headless=%s, locale=%s, tz=%s)",
                 self._config.headless,
-                PROFILE_DIR,
+                resolved_locale,
+                resolved_tz,
             )
         except Exception as exc:
             # Clean up a partially-initialised launch (e.g. the stealth/timeout
