@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
+from playwright_stealth import Stealth
 
 from job_applicator.config import BrowserConfig
 from job_applicator.exceptions import BrowserError
@@ -20,6 +22,11 @@ DEFAULT_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
 )
 
+# Persistent Chrome profile directory — preserves ALL browser state (cookies,
+# localStorage, IndexedDB, service workers, history) between runs. LinkedIn
+# fingerprints this state; a fresh context every time looks like a bot.
+PROFILE_DIR = Path.home() / ".job-applicator" / "browser-profile"
+
 
 class BrowserManager:
     """Manages Playwright browser lifecycle and contexts."""
@@ -29,23 +36,52 @@ class BrowserManager:
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
         self._persistent_context: BrowserContext | None = None
+        self._stealth = Stealth()
 
     async def start(self) -> None:
         """Launch the Playwright browser."""
         try:
             self._playwright = await async_playwright().start()
-            self._browser = await self._playwright.chromium.launch(
+            # Use a persistent Chrome profile so browser state (cookies,
+            # localStorage, history, service workers) accumulates over time.
+            # This is indistinguishable from a real user's browser.
+            PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+            PROFILE_DIR.chmod(0o700)  # profile holds the live authenticated session
+            self._persistent_context = await self._playwright.chromium.launch_persistent_context(
+                str(PROFILE_DIR),
                 headless=self._config.headless,
                 slow_mo=self._config.slow_mo,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                ],
+                viewport={
+                    "width": self._config.viewport_width,
+                    "height": self._config.viewport_height,
+                },
+                user_agent=self._config.user_agent or DEFAULT_USER_AGENT,
+                locale="en-US",
+                timezone_id="America/New_York",
             )
+            self._persistent_context.set_default_timeout(self._config.timeout_ms)
+            # Apply stealth to the persistent context
+            await self._stealth.apply_stealth_async(self._persistent_context)
             logger.info(
-                "Browser launched (headless=%s)",
+                "Browser launched (headless=%s, profile=%s)",
                 self._config.headless,
+                PROFILE_DIR,
             )
         except Exception as exc:
+            # Clean up a partially-initialised launch (e.g. the stealth/timeout
+            # step raised after the context was created) so we don't leak a
+            # Chrome process or hold the profile's SingletonLock. start() runs
+            # inside __aenter__, so stop() would otherwise never run.
+            with suppress(Exception):
+                await self.stop()
             raise BrowserError(
-                f"Failed to launch browser: {exc}",
-                context={"headless": self._config.headless},
+                f"Failed to launch browser: {exc}. Another job-applicator instance "
+                f"may be using the browser profile, or a previous run left a lock "
+                f"(remove {PROFILE_DIR / 'SingletonLock'} and retry if so).",
+                context={"headless": self._config.headless, "profile": str(PROFILE_DIR)},
             ) from exc
 
     async def stop(self) -> None:
@@ -61,66 +97,37 @@ class BrowserManager:
             self._playwright = None
         logger.info("Browser closed")
 
-    async def _create_context(self, browser: Browser) -> BrowserContext:
-        """Build a context with the configured viewport/UA/locale settings."""
-        context = await browser.new_context(
-            viewport={
-                "width": self._config.viewport_width,
-                "height": self._config.viewport_height,
-            },
-            user_agent=self._config.user_agent or DEFAULT_USER_AGENT,
-            locale="en-US",
-            timezone_id="America/New_York",
-        )
-        context.set_default_timeout(self._config.timeout_ms)
-        return context
-
-    @asynccontextmanager
-    async def new_context(self) -> AsyncIterator[BrowserContext]:
-        """Create a new (isolated) browser context with configured settings."""
-        if not self._browser:
-            raise BrowserError("Browser not started. Call start() first.")
-
-        context = await self._create_context(self._browser)
-        try:
-            yield context
-        finally:
-            await context.close()
-
     async def persistent_context(self) -> BrowserContext:
-        """Return a single shared context that lives for the manager's lifetime.
+        """Return the persistent browser context.
 
-        Unlike :meth:`new_context`, this context is created once and reused, and
-        is NOT closed when an individual page finishes. Cookies/auth set by one
-        component (e.g. the scraper logging in) are therefore visible to another
-        (e.g. the applicator submitting Easy Apply) using the same manager. It
-        is closed in :meth:`stop`.
+        With launch_persistent_context, this IS the browser — there's no
+        separate Browser object. All state (cookies, localStorage, etc.)
+        persists on disk between runs.
         """
-        if not self._browser:
-            raise BrowserError("Browser not started. Call start() first.")
         if self._persistent_context is None:
-            self._persistent_context = await self._create_context(self._browser)
+            raise BrowserError("Browser not started. Call start() first.")
         return self._persistent_context
 
     @asynccontextmanager
-    async def new_page(self) -> AsyncIterator[Page]:
-        """Create a new page in an isolated context."""
-        async with self.new_context() as context:
-            page = await context.new_page()
-            yield page
-
-    @asynccontextmanager
     async def persistent_page(self) -> AsyncIterator[Page]:
-        """Open a page in the shared persistent context (auth/cookies preserved).
+        """Open a page in the persistent context (auth/cookies preserved).
 
-        Only the page is closed on exit; the shared context stays alive.
+        Only the page is closed on exit; the persistent context stays alive.
         """
         context = await self.persistent_context()
+        # Stealth is applied once to the context in start(); the context
+        # auto-applies it to every page it creates, so no per-page call here.
         page = await context.new_page()
         try:
             yield page
         finally:
             await page.close()
+
+    @asynccontextmanager
+    async def new_page(self) -> AsyncIterator[Page]:
+        """Open a page in the persistent context (alias for persistent_page)."""
+        async with self.persistent_page() as page:
+            yield page
 
     async def __aenter__(self) -> BrowserManager:
         await self.start()

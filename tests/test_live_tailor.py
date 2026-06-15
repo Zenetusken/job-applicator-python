@@ -126,11 +126,12 @@ Python Developer | CodeBase Corp | 2019-2021
     checks.append(("skill_score > 0", getattr(result, "skill_score", 0) > 0))
     checks.append(("match_score > 0", getattr(result, "match_score", 0) > 0))
 
-    # Check that scores decompose correctly
+    # Check that scores decompose correctly: match = 0.6*semantic + 0.4*skill
+    # (the combined-scoring weights in embeddings/matching.py), NOT a raw sum.
     sem = getattr(result, "semantic_score", 0)
     sk = getattr(result, "skill_score", 0)
     total = getattr(result, "match_score", 0)
-    checks.append(("scores sum ≈ match_score", abs(sem + sk - total) < 0.01))
+    checks.append(("weighted scores ≈ match_score", abs((0.6 * sem + 0.4 * sk) - total) < 0.01))
 
     # F4: seniority detection
     from job_applicator.models import detect_seniority

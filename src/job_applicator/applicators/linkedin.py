@@ -29,12 +29,19 @@ class LinkedInApplicator(BaseApplicator):
         self._browser = browser
         self._config = config
 
-    async def apply(self, job: JobListing, cover_letter: str | None = None) -> ApplicationResult:
+    async def apply(
+        self, job: JobListing, cover_letter: str | None = None, submit: bool = False
+    ) -> ApplicationResult:
         """Apply to a LinkedIn job.
 
         Runs in the manager's shared persistent context so the authenticated
-        session established by the scraper's ``login()`` is reused — Easy Apply
-        requires being logged in.
+        session (seeded via ``job-applicator login`` / ``import-cookies``) is
+        reused — Easy Apply requires being logged in.
+
+        When ``submit`` is False (default), the form is filled but NOT submitted
+        (a dry run); the final "Submit application" click only happens when
+        ``submit`` is True. This prevents automated runs from sending real
+        applications without explicit opt-in.
         """
         page: Page | None = None
         try:
@@ -42,13 +49,21 @@ class LinkedInApplicator(BaseApplicator):
                 await navigate(page, str(job.url))
                 await random_delay(2.0, 3.0)
 
+                # Skip if already applied (avoids duplicate submissions). Use a
+                # non-blocking query: the Applied state renders with the page, and
+                # wait_for_selector would block the full timeout on every fresh
+                # job where the element is absent (~3s wasted per listing).
+                if await page.query_selector('button:has-text("Applied")'):
+                    logger.info("Already applied to %s at %s", job.title, job.company)
+                    return ApplicationResult(job=job, status=ApplicationStatus.ALREADY_APPLIED)
+
                 # Check for "Easy Apply" button
                 easy_apply = await wait_for_selector(
                     page, 'button:has-text("Easy Apply")', timeout_ms=5_000
                 )
 
                 if easy_apply:
-                    return await self._easy_apply(page, job, cover_letter)
+                    return await self._easy_apply(page, job, cover_letter, submit)
                 else:
                     return await self._external_apply(page, job)
 
@@ -70,9 +85,14 @@ class LinkedInApplicator(BaseApplicator):
             )
 
     async def _easy_apply(
-        self, page: Page, job: JobListing, cover_letter: str | None
+        self, page: Page, job: JobListing, cover_letter: str | None, submit: bool
     ) -> ApplicationResult:
-        """Handle LinkedIn Easy Apply flow."""
+        """Handle LinkedIn Easy Apply flow.
+
+        Fills the form and advances through multi-step pages, then stops at the
+        final "Submit application" step. The submit click only happens when
+        ``submit`` is True; otherwise this is a dry run that submits nothing.
+        """
         await click(page, 'button:has-text("Easy Apply")')
         await random_delay(1.0, 2.0)
 
@@ -91,38 +111,62 @@ class LinkedInApplicator(BaseApplicator):
             if cl_field:
                 await cl_field.fill(cover_letter)
 
-        # Click through multi-step forms
-        for _ in range(5):
-            next_btn = await page.query_selector('button:has-text("Next")')
-            if next_btn:
-                await next_btn.click()
-                await random_delay(0.5, 1.0)
-                await self._fill_form_fields(page)
-            else:
+        # Advance through multi-step forms (Next / Review) — never Submit here.
+        for _ in range(6):
+            advance = await page.query_selector(
+                'button:has-text("Next"), button:has-text("Review")'
+            )
+            if not advance:
                 break
+            await advance.click()
+            await random_delay(0.5, 1.0)
+            await self._fill_form_fields(page)
 
-        # Submit
-        submit_btn = await page.query_selector('button:has-text("Submit")')
-        if submit_btn:
+        # Match the final submit by either label ("Submit application" is the
+        # usual text; fall back to a bare "Submit") so a label change/locale
+        # doesn't make a real application silently fail to send.
+        submit_btn = await page.query_selector(
+            'button:has-text("Submit application"), button:has-text("Submit")'
+        )
+        if not submit_btn:
+            return ApplicationResult(
+                job=job,
+                status=ApplicationStatus.FAILED,
+                error_message="Could not reach the Submit step of the Easy Apply flow",
+            )
+
+        if not submit:
+            logger.info(
+                "DRY RUN — Easy Apply form prepared for %s at %s; NOT submitted "
+                "(re-run with --submit to actually apply).",
+                job.title,
+                job.company,
+            )
+
+        async def _do_submit() -> ApplicationResult:
             await submit_btn.click()
             await random_delay(2.0, 3.0)
-
-            # Check for confirmation
             confirmed = await wait_for_selector(
                 page, 'div:has-text("Application sent")', timeout_ms=5_000
             )
             if confirmed:
                 logger.info("Successfully applied to %s at %s", job.title, job.company)
                 return ApplicationResult(
-                    job=job,
-                    status=ApplicationStatus.SUBMITTED,
-                    cover_letter=cover_letter,
+                    job=job, status=ApplicationStatus.SUBMITTED, cover_letter=cover_letter
                 )
+            return ApplicationResult(
+                job=job,
+                status=ApplicationStatus.FAILED,
+                error_message="Submit clicked but no confirmation was detected",
+            )
 
-        return ApplicationResult(
+        # The dry-run gate lives in the base class so it cannot be bypassed.
+        return await self._gated_submit(
+            submit=submit,
             job=job,
-            status=ApplicationStatus.FAILED,
-            error_message="Could not complete Easy Apply flow",
+            cover_letter=cover_letter,
+            do_submit=_do_submit,
+            dry_run_note="DRY RUN: form prepared but not submitted. Use --submit to apply.",
         )
 
     async def _external_apply(self, page: Page, job: JobListing) -> ApplicationResult:

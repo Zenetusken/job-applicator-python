@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import partial
@@ -17,12 +18,15 @@ from rich.table import Table
 
 from job_applicator import __version__
 from job_applicator.config import AppSettings
+from job_applicator.exceptions import JobApplicatorError
 from job_applicator.models import UserProfile
 from job_applicator.utils.diff import render_diff
 from job_applicator.utils.logging import setup_logging
 from job_applicator.utils.verbose import VerboseReporter
 
 if TYPE_CHECKING:
+    from job_applicator.applicators.base import BaseApplicator
+    from job_applicator.browser.manager import BrowserManager
     from job_applicator.documents.tone_detector import ToneProfile
     from job_applicator.models import (
         ApplicationResult,
@@ -34,6 +38,7 @@ if TYPE_CHECKING:
         StyleGuide,
         TailoredResume,
     )
+    from job_applicator.scrapers.base import BaseScraper
 
 app = typer.Typer(
     name="job-applicator",
@@ -263,13 +268,7 @@ def search(
         )
 
         async with BrowserManager(settings.browser) as browser:
-            if site == "linkedin":
-                from job_applicator.scrapers.linkedin import LinkedInScraper
-
-                scraper = LinkedInScraper(browser, settings)
-            else:
-                console.print(f"[yellow]{site} scraper not yet implemented[/yellow]")
-                raise typer.Exit(1)
+            scraper = _make_scraper(site, browser, settings)
 
             with console.status(f"Searching {site} for '{query}'..."):
                 jobs = await scraper.scrape(params)
@@ -312,6 +311,13 @@ def search(
 
     try:
         asyncio.run(_run())
+    except JobApplicatorError as exc:
+        # Typed, expected failures (no session, anti-bot block, missing resume)
+        # — show the message cleanly instead of a raw Python traceback.
+        if reporter:
+            reporter.record_error(str(exc))
+        console.print(f"[yellow]⚠ {exc}[/yellow]")
+        raise typer.Exit(1) from exc
     except Exception as exc:
         if reporter:
             reporter.record_error(str(exc))
@@ -323,6 +329,210 @@ def search(
             if isinstance(vctx, VerboseContext):
                 log_file = vctx.log_file
             reporter.render(console, log_file=log_file)
+
+
+@app.command()
+def login(
+    ctx: typer.Context,
+    site: str = typer.Option("linkedin", "--site", "-s", help="Job board to sign in to."),
+    timeout: int = typer.Option(
+        300, "--timeout", help="Seconds to wait for you to complete the manual sign-in."
+    ),
+    verbose: bool = _verbose_option(),
+    log_file: str | None = _log_file_option(),
+) -> None:
+    """Sign in once in a real browser window; the session is saved and reused.
+
+    LinkedIn blocks automated password logins with a CAPTCHA, so this opens a
+    headed browser, pre-fills your configured credentials, and waits while you
+    click Sign in and solve any CAPTCHA/2FA. The authenticated session is stored
+    in the persistent browser profile and reused by `search`/`apply` headlessly,
+    so you only do this once (until the session expires). You submit the form
+    yourself — nothing is automated — which is far safer than a programmatic
+    login, though no automated LinkedIn use is entirely risk-free.
+    """
+    _merge_verbose_ctx(ctx, verbose, log_file)
+    settings = _get_settings(headed=True)  # manual sign-in needs a visible window
+    setup_logging(settings.log_level)
+
+    if site != "linkedin":
+        console.print(f"[yellow]{site} login not yet implemented[/yellow]")
+        raise typer.Exit(1)
+
+    async def _run() -> bool:
+        from job_applicator.browser.manager import BrowserManager
+        from job_applicator.scrapers.linkedin import LinkedInScraper
+
+        async with BrowserManager(settings.browser) as browser:
+            scraper = LinkedInScraper(browser, settings)
+            return await scraper.interactive_login(timeout_s=timeout)
+
+    console.print(
+        Panel(
+            "A browser window will open. Click [bold]Sign in[/bold] and solve any "
+            "CAPTCHA / 2FA. Your credentials are pre-filled from config; nothing is "
+            "submitted automatically.",
+            title="LinkedIn sign-in",
+            style="cyan",
+        )
+    )
+    if asyncio.run(_run()):
+        console.print(
+            "[green]✓ Signed in. Session saved — `search`/`apply` will reuse it headlessly.[/green]"
+        )
+    else:
+        console.print("[red]✗ Sign-in not detected. Re-run `job-applicator login`.[/red]")
+        raise typer.Exit(1)
+
+
+def _normalize_cookie(entry: Any) -> dict[str, Any] | None:
+    """Best-effort conversion of an exported cookie dict to Playwright format.
+
+    Handles common browser-extension exports (e.g. `expirationDate` instead of
+    `expires`, `sameSite: "no_restriction"`). Returns None for unusable entries.
+    """
+    if not isinstance(entry, dict):
+        return None
+    name = entry.get("name")
+    value = entry.get("value")
+    if not name or value is None:
+        return None
+    out: dict[str, Any] = {"name": str(name), "value": str(value)}
+    domain = entry.get("domain")
+    if domain:
+        out["domain"] = str(domain)
+        out["path"] = str(entry.get("path", "/"))
+    else:
+        out["url"] = str(entry.get("url", "https://www.linkedin.com"))
+    exp = entry.get("expires", entry.get("expirationDate"))
+    if isinstance(exp, int | float) and not isinstance(exp, bool) and exp > 0:
+        out["expires"] = float(exp)
+    for key in ("httpOnly", "secure"):
+        if key in entry:
+            out[key] = bool(entry[key])
+    same = entry.get("sameSite")
+    if isinstance(same, str):
+        mapped = {"no_restriction": "None", "none": "None", "lax": "Lax", "strict": "Strict"}.get(
+            same.lower()
+        )
+        if mapped:
+            out["sameSite"] = mapped
+    # Chromium rejects a SameSite=None cookie that is not Secure, so an export
+    # that omits `secure` would otherwise yield a silently-dropped session cookie.
+    if out.get("sameSite") == "None":
+        out["secure"] = True
+    return out
+
+
+@app.command(name="import-cookies")
+def import_cookies(
+    ctx: typer.Context,
+    li_at: str = typer.Option(
+        "", "--li-at", help="The `li_at` session cookie value copied from your browser."
+    ),
+    jsessionid: str = typer.Option(
+        "", "--jsessionid", help="Optional JSESSIONID value (needed only for some write actions)."
+    ),
+    file: str = typer.Option(
+        "", "--file", help="Path to a cookie JSON export (alternative to --li-at)."
+    ),
+    verify: bool = typer.Option(
+        True, "--verify/--no-verify", help="Confirm the session by loading the feed once."
+    ),
+    verbose: bool = _verbose_option(),
+    log_file: str | None = _log_file_option(),
+) -> None:
+    """Import a LinkedIn session cookie exported from your normal browser.
+
+    This keeps the actual sign-in in your everyday browser (a normal, human
+    event) — the tool only *reuses* the resulting session, so the login never
+    happens inside an automation-controlled browser.
+
+    Get the cookie: log into LinkedIn normally, open DevTools -> Application ->
+    Cookies -> https://www.linkedin.com -> copy the `li_at` value, then run:
+
+        job-applicator import-cookies --li-at "<value>"
+
+    Or pass a JSON export from a cookie-manager extension with --file.
+    """
+    import json
+
+    _merge_verbose_ctx(ctx, verbose, log_file)
+    settings = _get_settings()
+    setup_logging(settings.log_level)
+
+    from job_applicator.scrapers.linkedin import LinkedInScraper
+
+    cookies: list[dict[str, Any]] = []
+    if file:
+        try:
+            raw = json.loads(Path(file).read_text())
+        except (OSError, ValueError) as exc:
+            console.print(f"[red]Could not read cookie file: {exc}[/red]")
+            raise typer.Exit(1) from exc
+        entries = raw.get("cookies", raw) if isinstance(raw, dict) else raw
+        if not isinstance(entries, list):
+            console.print('[red]Cookie file must be a JSON list or {"cookies": [...]}.[/red]')
+            raise typer.Exit(1)
+        cookies = [c for c in (_normalize_cookie(e) for e in entries) if c]
+    elif li_at:
+        cookies.append(
+            {
+                "name": "li_at",
+                "value": li_at,
+                "domain": ".linkedin.com",
+                "path": "/",
+                "httpOnly": True,
+                "secure": True,
+                "sameSite": "None",
+            }
+        )
+        if jsessionid:
+            cookies.append(
+                {
+                    "name": "JSESSIONID",
+                    "value": jsessionid,
+                    "domain": ".www.linkedin.com",
+                    "path": "/",
+                    "secure": True,
+                    "sameSite": "None",
+                }
+            )
+    else:
+        console.print("[red]Provide --li-at <value> or --file <path>.[/red]")
+        raise typer.Exit(1)
+
+    if not cookies:
+        console.print("[red]No usable cookies found in the input.[/red]")
+        raise typer.Exit(1)
+
+    cookie_path = LinkedInScraper.COOKIE_PATH
+    cookie_path.parent.mkdir(parents=True, exist_ok=True)
+    cookie_path.parent.chmod(0o700)  # dir holds a session token
+    cookie_path.write_text(json.dumps({"cookies": cookies}, indent=2))
+    cookie_path.chmod(0o600)  # session token — owner-only
+    console.print(f"[green]Wrote {len(cookies)} cookie(s) to {cookie_path}[/green]")
+
+    if not verify:
+        return
+
+    async def _verify() -> bool:
+        from job_applicator.browser.manager import BrowserManager
+
+        async with BrowserManager(settings.browser) as browser:
+            scraper = LinkedInScraper(browser, settings)
+            return await scraper.has_active_session()
+
+    with console.status("Verifying session by loading your LinkedIn feed once..."):
+        ok = asyncio.run(_verify())
+    if ok:
+        console.print("[green]✓ Session valid — `search` will reuse it headlessly.[/green]")
+    else:
+        console.print(
+            "[yellow]Imported, but the feed did not load as logged-in. The li_at value may be "
+            "stale — re-copy it from a freshly logged-in browser and try again.[/yellow]"
+        )
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -346,11 +556,28 @@ def apply(
         "--force-ocr",
         help="Force OCR; equivalent to --ocr-mode on.",
     ),
+    submit: bool = typer.Option(
+        False,
+        "--submit/--no-submit",
+        help="Actually submit applications (default: dry run — fills forms, never submits).",
+    ),
     verbose: bool = _verbose_option(),
     log_file: str | None = _log_file_option(),
 ) -> None:
-    """Auto-apply to jobs with optional AI cover letters."""
+    """Auto-apply to jobs with optional AI cover letters.
+
+    By default this is a DRY RUN: each job's Easy Apply form is opened and
+    filled, but never submitted. Pass --submit to send real applications.
+    """
     _merge_verbose_ctx(ctx, verbose, log_file)
+    if submit:
+        console.print(
+            "[bold red]--submit set: real applications WILL be sent on your account.[/bold red]"
+        )
+    else:
+        console.print(
+            "[dim]Dry run: forms are filled but NOT submitted. Pass --submit to apply.[/dim]"
+        )
     settings = _get_settings(headed)
     if resume_path:
         settings.resume_path = resume_path
@@ -371,25 +598,14 @@ def apply(
         from job_applicator.models import JobBoard
         from job_applicator.scrapers.base import SearchParams
 
-        if site == "linkedin":
-            from job_applicator.applicators.linkedin import LinkedInApplicator
-            from job_applicator.scrapers.linkedin import LinkedInScraper
-        else:
-            console.print(f"[yellow]{site} not yet implemented[/yellow]")
-            raise typer.Exit(1)
-
         async with BrowserManager(settings.browser) as browser:
             # Search for jobs
             if query:
-                scraper = LinkedInScraper(browser, settings) if site == "linkedin" else None
-                if not scraper:
-                    console.print(f"[yellow]{site} not yet implemented[/yellow]")
-                    raise typer.Exit(1)
-
+                scraper = _make_scraper(site, browser, settings)
                 params = SearchParams(
                     query=query,
                     max_results=limit,
-                    board=JobBoard.LINKEDIN,
+                    board=JobBoard(site),
                 )
                 with console.status(f"Searching {site}..."):
                     jobs = await scraper.scrape(params)
@@ -401,9 +617,10 @@ def apply(
                 console.print("[yellow]No jobs found to apply to.[/yellow]")
                 return
 
-            # Generate cover letters if requested
+            # Generate cover letters only when actually submitting — a dry run
+            # never sends them, so generating up front would waste LLM calls.
             cover_letters: dict[str, str] = {}
-            if cover_letter and settings.resume_path:
+            if cover_letter and settings.resume_path and submit:
                 from job_applicator.documents.cover_letter import CoverLetterGenerator
                 from job_applicator.documents.resume import ResumeLoader
 
@@ -443,16 +660,13 @@ def apply(
                             cover_letters[url] = letter
 
             # Apply to jobs
-            applicator = LinkedInApplicator(browser, settings) if site == "linkedin" else None
-            if not applicator:
-                console.print(f"[yellow]{site} applicator not yet implemented[/yellow]")
-                raise typer.Exit(1)
+            applicator = _make_applicator(site, browser, settings)
 
             app_results: list[ApplicationResult] = []
             for job in jobs[:limit]:
                 with console.status(f"Applying to {job.title} at {job.company}..."):
                     job_letter = cover_letters.get(str(job.url))
-                    ar: ApplicationResult = await applicator.apply(job, job_letter)
+                    ar: ApplicationResult = await applicator.apply(job, job_letter, submit=submit)
                     app_results.append(ar)
 
             if reporter and app_results:
@@ -485,6 +699,7 @@ def apply(
                         "submitted": "green",
                         "failed": "red",
                         "skipped": "yellow",
+                        "already_applied": "magenta",
                         "pending": "blue",
                     }.get(r.status.value, "white")
                     table.add_row(
@@ -495,17 +710,21 @@ def apply(
                     )
 
                 console.print(table)
-                submitted = sum(1 for r in app_results if r.status.value == "submitted")
-                failed = sum(1 for r in app_results if r.status.value == "failed")
-                skipped = sum(1 for r in app_results if r.status.value == "skipped")
-                console.print(
-                    f"\n[green]{submitted}[/green] submitted, "
-                    f"[red]{failed}[/red] failed, "
-                    f"[yellow]{skipped}[/yellow] skipped"
-                )
+                # Count every status (incl. already_applied) so the summary
+                # never silently under-reports outcomes.
+                counts = Counter(r.status.value for r in app_results)
+                summary = ", ".join(f"{n} {status}" for status, n in sorted(counts.items()))
+                console.print(f"\n{summary}")
 
     try:
         asyncio.run(_run())
+    except JobApplicatorError as exc:
+        # Typed, expected failures (no session, anti-bot block, missing resume)
+        # — show the message cleanly instead of a raw Python traceback.
+        if reporter:
+            reporter.record_error(str(exc))
+        console.print(f"[yellow]⚠ {exc}[/yellow]")
+        raise typer.Exit(1) from exc
     except Exception as exc:
         if reporter:
             reporter.record_error(str(exc))
@@ -659,6 +878,13 @@ def generate_cover_letter(
 
     try:
         asyncio.run(_run())
+    except JobApplicatorError as exc:
+        # Typed, expected failures (no session, anti-bot block, missing resume)
+        # — show the message cleanly instead of a raw Python traceback.
+        if reporter:
+            reporter.record_error(str(exc))
+        console.print(f"[yellow]⚠ {exc}[/yellow]")
+        raise typer.Exit(1) from exc
     except Exception as exc:
         if reporter:
             reporter.record_error(str(exc))
@@ -856,6 +1082,13 @@ def match(
 
     try:
         asyncio.run(_run())
+    except JobApplicatorError as exc:
+        # Typed, expected failures (no session, anti-bot block, missing resume)
+        # — show the message cleanly instead of a raw Python traceback.
+        if reporter:
+            reporter.record_error(str(exc))
+        console.print(f"[yellow]⚠ {exc}[/yellow]")
+        raise typer.Exit(1) from exc
     except Exception as exc:
         if reporter:
             reporter.record_error(str(exc))
@@ -975,15 +1208,9 @@ def batch(
             from job_applicator.browser.manager import BrowserManager
             from job_applicator.scrapers.base import SearchParams
 
-            if site == "linkedin":
-                from job_applicator.scrapers.linkedin import LinkedInScraper
-            else:
-                console.print(f"[yellow]{site} not yet implemented[/yellow]")
-                raise typer.Exit(1)
-
             async with BrowserManager(settings.browser) as browser:
-                scraper = LinkedInScraper(browser, settings)
-                params = SearchParams(query=query, max_results=top_k * 2, board=JobBoard.LINKEDIN)
+                scraper = _make_scraper(site, browser, settings)
+                params = SearchParams(query=query, max_results=top_k * 2, board=JobBoard(site))
                 with console.status(f"Searching {site}..."):
                     jobs = await scraper.scrape(params)
         else:
@@ -1234,6 +1461,13 @@ def batch(
 
     try:
         asyncio.run(_run())
+    except JobApplicatorError as exc:
+        # Typed, expected failures (no session, anti-bot block, missing resume)
+        # — show the message cleanly instead of a raw Python traceback.
+        if reporter:
+            reporter.record_error(str(exc))
+        console.print(f"[yellow]⚠ {exc}[/yellow]")
+        raise typer.Exit(1) from exc
     except Exception as exc:
         if reporter:
             reporter.record_error(str(exc))
@@ -2051,6 +2285,13 @@ def tailor(
 
     try:
         asyncio.run(_run())
+    except JobApplicatorError as exc:
+        # Typed, expected failures (no session, anti-bot block, missing resume)
+        # — show the message cleanly instead of a raw Python traceback.
+        if reporter:
+            reporter.record_error(str(exc))
+        console.print(f"[yellow]⚠ {exc}[/yellow]")
+        raise typer.Exit(1) from exc
     except Exception as exc:
         if reporter:
             reporter.record_error(str(exc))
@@ -2294,6 +2535,34 @@ def _get_settings(headed: bool = False) -> AppSettings:
     if headed:
         settings.browser.headless = False
     return settings
+
+
+def _make_scraper(site: str, browser: BrowserManager, settings: AppSettings) -> BaseScraper:
+    """Construct the scraper for a job board, or exit if unsupported."""
+    if site == "linkedin":
+        from job_applicator.scrapers.linkedin import LinkedInScraper
+
+        return LinkedInScraper(browser, settings)
+    if site == "indeed":
+        from job_applicator.scrapers.indeed import IndeedScraper
+
+        return IndeedScraper(browser, settings)
+    console.print(f"[yellow]{site} scraper not yet implemented[/yellow]")
+    raise typer.Exit(1)
+
+
+def _make_applicator(site: str, browser: BrowserManager, settings: AppSettings) -> BaseApplicator:
+    """Construct the applicator for a job board, or exit if unsupported."""
+    if site == "linkedin":
+        from job_applicator.applicators.linkedin import LinkedInApplicator
+
+        return LinkedInApplicator(browser, settings)
+    if site == "indeed":
+        from job_applicator.applicators.indeed import IndeedApplicator
+
+        return IndeedApplicator(browser, settings)
+    console.print(f"[yellow]{site} applicator not yet implemented[/yellow]")
+    raise typer.Exit(1)
 
 
 def _load_user_profile(settings: AppSettings) -> UserProfile:
