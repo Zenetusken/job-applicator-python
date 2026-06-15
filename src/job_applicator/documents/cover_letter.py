@@ -254,6 +254,7 @@ class CoverLetterGenerator:
                 ],
                 response_model=CoverLetterOutput,
                 max_retries=1,
+                max_tokens=self._config.max_tokens,
                 extra_body={"chat_template_kwargs": {"enable_thinking": False}},
             )
             return strip_thinking_process(response.cover_letter)
