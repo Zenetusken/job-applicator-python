@@ -2240,7 +2240,7 @@ timeout_ms = 30000
 api_base = "http://localhost:8000/v1"
 api_key = "not-needed-for-local"
 model = "Qwen/Qwen3-8B-AWQ"
-max_tokens = 1024
+max_tokens = 4096
 temperature = 0.7
 
 # Targets

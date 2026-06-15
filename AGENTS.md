@@ -20,7 +20,7 @@ mypy src/job_applicator/ --ignore-missing-imports
 ruff check --fix src/ tests/
 ruff format src/ tests/
 
-# Tests (319 unit tests, all fast)
+# Tests (332 unit tests, all fast)
 pytest tests/unit/ -v
 pytest tests/unit/ -v -k test_name  # single test
 
@@ -66,13 +66,18 @@ src/job_applicator/
 - **Resume tailoring hallucination guards.** `_validate_skills()` strips hallucinated skills. `_strip_hallucinated_tools()` replaces tools not in original resume. `_strip_hallucinated_education()` removes education if original has none.
 - **Education extraction must be explicit.** LLMs silently drop education entries. `_extract_education_entries()` injects a numbered checklist into the prompt to force inclusion.
 - **Embeddings need `openai/` prefix for vLLM.** `model = f"openai/{config.model}"` when calling litellm.
-- **Resume PDF parser is fragile.** Skills extraction breaks on bullet-per-line PDFs. The parser handles this, but verify with `ResumeLoader.load()`.
+- **Resume PDF parser is fragile.** Skills extraction breaks on bullet-per-line PDFs. The parser handles this, but verify with `ResumeLoader.load()`. `_extract_skills_section()` recognizes qualified headers too (`Technical/Core/Key/Professional/Relevant/Soft Skills`, `Competencies`, `Proficiencies`) — keep this aligned with the tailor's section headers.
 - **`sentence-transformers` needs CUDA torch.** If you get `libcudart.so` errors, reinstall: `pip install torch --index-url https://download.pytorch.org/whl/cu124`
 - **Embedding cache at `~/.job-applicator/embeddings/`.** Style cache at `~/.job-applicator/styles/`. Clear with `EmbeddingService.clear_cache()`.
 - **Skill matching threshold is 0.55.** Lower = more matches, higher = stricter. Tune in `matching.py:_match_skills()`.
 - **`parse_sections()` uses known headers.** Matches against `KNOWN_HEADERS` frozenset (case-insensitive) and Title Case with colon suffix. ALL CAPS names (e.g. "JOHN DOE") are NOT matched as headers. Add new headers to the frozenset in `resume_tailor.py` if needed.
 - **Skill validation uses fuzzy matching.** `_skills_match()` in `resume_tailor.py` checks exact match, token containment (subset), and `SequenceMatcher` ratio >= 0.85. Prevents "ai" matching "training" while catching typos.
 - **Tool hallucination has two passes.** Pass 1: checks job requirements not in original. Pass 2: checks `tool_replacements` keys in tailored text not in original AND not in requirements. Catches LLM-invented tools.
+- **Tool stripping uses alphanumeric word boundaries, not `re.escape` substrings.** `_alnum_boundary_pattern()` in `resume_tailor.py` wraps terms in `(?<![A-Za-z0-9])…(?![A-Za-z0-9])` so a `Java` requirement never corrupts `JavaScript` (and `React` isn't considered present just because the original says `Reactive`). It still matches symbol-ending terms like `C++`.
+- **`LLMConfig.max_tokens` is honored everywhere (default 4096).** `resume_tailor.py`, `cover_letter.py`, and `style_analyzer.py` all pass `self._config.max_tokens` to litellm/instructor — do not hardcode `1024`/`4096`. 4096 fits a full résumé; cover letters/style analysis stay well under it.
+- **`config.toml` is actually loaded.** `AppSettings.settings_customise_sources()` adds a `TomlConfigSettingsSource` as the lowest-priority source (env vars override it). Point at an alternate file via `JOB_APPLICATOR_CONFIG_FILE`; a missing file is a no-op.
+- **Skill matching is not greedy 1:1.** `_match_skills()` skips skills already claimed by an earlier requirement and falls back to the next-best *available* skill, so two requirements competing for one skill no longer falsely mark the loser as "missing".
+- **No hardcoded PII in matching.** `JobMatcher._is_pii_or_noise()` filters bullet glyphs, the candidate's own name, and bare email/contact lines generically — never hardcode a specific name/email.
 - **`tailor()` accepts optional `tone_profile`.** When provided, skips internal `ToneDetector.detect()`. Eliminates double detection when CLI already computed the profile.
 - **`refine()` accepts optional `tone_profile`.** When provided, injects tone directives into the refinement prompt. Without it, refinement loses tone alignment.
 - **Tone directives in system prompts.** `TAILOR_SYSTEM_PROMPT` has a `TONE` section telling the LLM to use specified verbs, emphasize themes, avoid patterns. `cover_letter.py` `SYSTEM_PROMPT` replaces static "professional but personable" with dynamic tone awareness. Both generators follow tone when provided, fall back to professional tone when not.

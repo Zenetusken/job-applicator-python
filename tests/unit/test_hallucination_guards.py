@@ -248,6 +248,32 @@ class TestStripHallucinatedTools:
         result = tailor._strip_hallucinated_tools(tailored, original, requirements)
         assert "  " not in result
 
+    def test_partial_word_not_corrupted(self, tailor: ResumeTailor):
+        """A 'Java' requirement must not corrupt 'JavaScript' in the tailored text."""
+        original = "Experienced JavaScript developer"
+        tailored = "Built apps with JavaScript and React"
+        requirements = ["Java"]
+        result = tailor._strip_hallucinated_tools(tailored, original, requirements)
+        # "JavaScript" survives intact (the old bug stripped "Java" → "Script").
+        assert "JavaScript" in result
+
+    def test_standalone_hallucinated_tool_still_removed(self, tailor: ResumeTailor):
+        """Word boundaries must not stop removal of a genuinely hallucinated tool."""
+        original = "Backend developer"
+        tailored = "Skilled in Java and Python"
+        requirements = ["Java"]
+        result = tailor._strip_hallucinated_tools(tailored, original, requirements)
+        assert "Java" not in result
+        assert "Python" in result
+
+    def test_original_presence_check_uses_word_boundaries(self, tailor: ResumeTailor):
+        """'React' is hallucinated even if the original only mentions 'Reactive'."""
+        original = "Built Reactive streaming systems"
+        tailored = "Built UIs in React"
+        requirements = ["React"]
+        result = tailor._strip_hallucinated_tools(tailored, original, requirements)
+        assert "React" not in result
+
     def test_empty_requirements_no_change(self, tailor: ResumeTailor):
         original = "Developer"
         tailored = "Python developer with 5 years experience"

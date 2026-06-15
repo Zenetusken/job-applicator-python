@@ -42,6 +42,40 @@ def test_resume_loader_text_file(tmp_path: object) -> None:
     assert "Python" in resume.skills
 
 
+def test_resume_loader_recognizes_technical_skills_header(tmp_path: object) -> None:
+    """Parser must recognize qualified skills headers (not just 'Skills')."""
+    import pathlib
+
+    p = pathlib.Path(str(tmp_path)) / "resume.txt"
+    p.write_text(
+        "Jane Smith\njane@example.com\n\n"
+        "Technical Skills\nPython\nKubernetes\nTerraform\n\n"
+        "Experience\nSenior Engineer at Acme"
+    )
+    loader = ResumeLoader()
+    resume = loader.load(p)
+    assert "Python" in resume.skills
+    assert "Kubernetes" in resume.skills
+    assert "Terraform" in resume.skills
+
+
+def test_resume_loader_recognizes_core_competencies_header(tmp_path: object) -> None:
+    """'Core Competencies' is a recognized inline skills header."""
+    import pathlib
+
+    p = pathlib.Path(str(tmp_path)) / "resume.txt"
+    p.write_text(
+        "Jane Smith\njane@example.com\n\n"
+        "Core Competencies: Python, Docker, AWS\n\n"
+        "Experience\nSenior Engineer at Acme"
+    )
+    loader = ResumeLoader()
+    resume = loader.load(p)
+    assert "Python" in resume.skills
+    assert "Docker" in resume.skills
+    assert "AWS" in resume.skills
+
+
 def test_resume_loader_docx(tmp_path: object) -> None:
     """Test loading a DOCX resume."""
     import pathlib

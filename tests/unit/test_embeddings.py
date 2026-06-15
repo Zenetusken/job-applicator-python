@@ -199,3 +199,73 @@ class TestJobMatcher:
             matcher.compute_resume_embedding(resume)
             call_text = mock_embed.call_args[0][0]
             assert "Represent this sentence for searching relevant passages" in call_text
+
+    def test_is_pii_or_noise_filters_generically(self) -> None:
+        """PII filtering must be generic — no hardcoded names/emails."""
+        from job_applicator.embeddings.matching import JobMatcher
+
+        # Bullet glyphs are noise.
+        assert JobMatcher._is_pii_or_noise("•", "") is True
+        # The candidate's own name (any name) is filtered.
+        assert JobMatcher._is_pii_or_noise("JANE SMITH", "jane smith") is True
+        # A bare email/contact line is filtered.
+        assert JobMatcher._is_pii_or_noise("jane.smith@example.com", "jane smith") is True
+        # Real content is kept.
+        assert JobMatcher._is_pii_or_noise("Built data pipelines in Python", "jane smith") is False
+
+    def test_compute_resume_embedding_drops_name_and_email(self) -> None:
+        """The raw-text fallback must not embed the candidate's name/email."""
+        from job_applicator.embeddings.matching import JobMatcher
+        from job_applicator.models import ResumeData
+
+        config = EmbeddingConfig(device="cpu", memory_limit_gb=0.5)
+        matcher = JobMatcher(config)
+
+        # Sparse structured data forces the raw-text fallback path.
+        resume = ResumeData(
+            raw_text=(
+                "JANE SMITH\njane.smith@example.com\n"
+                "Skills\nPython\nKubernetes\n"
+                "Experience\nSenior Engineer at Acme"
+            ),
+            name="JANE SMITH",
+            skills=["•"],
+        )
+
+        with patch.object(
+            matcher._service, "embed", return_value=np.zeros(1024, dtype=np.float32)
+        ) as mock_embed:
+            matcher.compute_resume_embedding(resume)
+            call_text = mock_embed.call_args[0][0]
+
+        assert "JANE SMITH" not in call_text
+        assert "jane.smith@example.com" not in call_text
+        assert "Python" in call_text  # real skills survive
+
+    def test_match_skills_shares_best_available_skill(self) -> None:
+        """Two requirements that both prefer one skill must not falsely mark one missing."""
+        from job_applicator.embeddings.matching import JobMatcher
+
+        config = EmbeddingConfig(device="cpu", memory_limit_gb=0.5)
+        matcher = JobMatcher(config)
+
+        # Pass strings straight through as their own "embeddings".
+        matcher._service.embed_batch = lambda texts: list(texts)  # type: ignore[method-assign]
+
+        sim_table = {
+            ("Python programming", "Python"): 0.90,
+            ("Python programming", "Java"): 0.20,
+            ("Python development", "Python"): 0.80,
+            ("Python development", "Java"): 0.60,
+        }
+        matcher._service.similarity = lambda a, b: sim_table[(a, b)]  # type: ignore[method-assign]
+
+        matched, missing = matcher._match_skills(
+            ["Python", "Java"],
+            ["Python programming", "Python development"],
+        )
+
+        # Both requirements are satisfied: the second falls back to its best
+        # *available* skill (Java) instead of being marked missing.
+        assert missing == []
+        assert set(matched) == {"Python", "Java"}

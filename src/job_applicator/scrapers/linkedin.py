@@ -106,7 +106,10 @@ class LinkedInScraper(BaseScraper):
                 await self.login(email, password)
             else:
                 raise LoginRequiredError(
-                    "LinkedIn credentials required. Set LINKEDIN_EMAIL and LINKEDIN_PASSWORD.",
+                    "LinkedIn credentials required. Set them in config.toml under "
+                    "[target] (linkedin_email / linkedin_password) or via the "
+                    "JOB_APPLICATOR_TARGET_LINKEDIN_EMAIL and "
+                    "JOB_APPLICATOR_TARGET_LINKEDIN_PASSWORD environment variables.",
                 )
 
         context = await self._get_context()

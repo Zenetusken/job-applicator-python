@@ -58,6 +58,20 @@ class JobMatcher:
         """
         return self._service.embed(prefix + text if prefix else text)
 
+    @staticmethod
+    def _is_pii_or_noise(line: str, name_lower: str) -> bool:
+        """Whether a raw-text line is bullet noise or personal contact info.
+
+        Filters generically (no hardcoded names): bullet glyphs, the
+        candidate's own name, and lines that are just an email address.
+        """
+        if line in ("•", "·", "-"):
+            return True
+        if name_lower and line.lower() == name_lower:
+            return True
+        # A bare email/contact line (single token containing "@").
+        return "@" in line and " " not in line
+
     def compute_resume_embedding(self, resume: ResumeData) -> EmbeddingVector:
         """Compute embedding for a resume.
 
@@ -86,6 +100,9 @@ class JobMatcher:
             lines = resume.raw_text.split("\n")
             current_section = ""
             section_text: list[str] = []
+            # Skip the candidate's own name and contact lines: PII that adds
+            # noise rather than signal to the match embedding.
+            name_lower = resume.name.strip().lower() if resume.name else ""
 
             for line in lines:
                 stripped = line.strip()
@@ -106,7 +123,9 @@ class JobMatcher:
                         parts.append(f"{current_section}: {' '.join(section_text)}")
                     current_section = stripped
                     section_text = []
-                elif stripped not in ("•", "·", "-", "ANDREI PETROV", "andre.zen799@gmail.com"):
+                elif self._is_pii_or_noise(stripped, name_lower):
+                    continue
+                else:
                     section_text.append(stripped)
 
             # Add last section
@@ -279,8 +298,7 @@ class JobMatcher:
             valid_skills = [
                 line.strip()
                 for line in lines
-                if 10 < len(line.strip()) < 80
-                and not line.strip().startswith(("•", "·", "-", "AND", "Experienced"))
+                if 10 < len(line.strip()) < 80 and not line.strip().startswith(("•", "·", "-"))
             ]
 
         if not valid_skills:
@@ -300,13 +318,18 @@ class JobMatcher:
             best_score = 0.0
             best_skill = ""
 
+            # Pick the best skill that hasn't already been claimed by an
+            # earlier requirement, so two requirements never fight over the
+            # same skill (which used to mark the loser as falsely "missing").
             for j, skill in enumerate(valid_skills):
+                if skill in used_skills:
+                    continue
                 sim = self._service.similarity(req_embs[i], skill_embs[j])
                 if sim > best_score:
                     best_score = sim
                     best_skill = skill
 
-            if best_score >= threshold and best_skill not in used_skills:
+            if best_score >= threshold and best_skill:
                 matched.append(best_skill)
                 used_skills.add(best_skill)
             else:

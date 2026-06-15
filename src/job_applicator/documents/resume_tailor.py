@@ -26,6 +26,18 @@ if TYPE_CHECKING:
 logger = get_logger("documents.resume_tailor")
 
 
+def _alnum_boundary_pattern(term: str) -> re.Pattern[str]:
+    """Case-insensitive pattern matching ``term`` not flanked by alphanumerics.
+
+    Used instead of ``\\b`` so partial matches like "Java" inside "JavaScript"
+    are rejected, while still matching terms that end in symbols (e.g. "C++").
+    """
+    return re.compile(
+        r"(?<![A-Za-z0-9])" + re.escape(term) + r"(?![A-Za-z0-9])",
+        re.IGNORECASE,
+    )
+
+
 @dataclass
 class ResumeSection:
     """A parsed section of a resume."""
@@ -947,13 +959,14 @@ class ResumeTailor:
             if not req_lower or len(req_lower) < 3:
                 continue
 
-            # Check if this tool/requirement is in the original resume
-            if req_lower in original_lower:
+            # Check if this tool/requirement is in the original resume.
+            # Word-boundary match so "Go" doesn't count as present in "Good".
+            if _alnum_boundary_pattern(req_lower).search(original_lower):
                 continue  # Original has it, keep it
 
-            # Check if it appears in the tailored text
-            # Use word boundary matching to avoid partial matches
-            pattern = re.compile(re.escape(req), re.IGNORECASE)
+            # Check if it appears in the tailored text. Word-boundary match so
+            # "Java" doesn't corrupt "JavaScript".
+            pattern = _alnum_boundary_pattern(req)
             if pattern.search(result):
                 # Hallucinated tool — replace with generic if available
                 replacement = tool_replacements.get(req_lower)
@@ -1072,7 +1085,7 @@ class ResumeTailor:
                     {"role": "system", "content": TAILOR_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
                 ],
-                max_tokens=4096,
+                max_tokens=self._config.max_tokens,
                 temperature=temperature,
                 extra_body={
                     "chat_template_kwargs": {"enable_thinking": False},

@@ -13,7 +13,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from job_applicator.config import LLMConfig
 from job_applicator.exceptions import LLMError
@@ -174,7 +174,7 @@ class StyleAnalyzer:
 
             # Try instructor first (structured output with automatic retry)
             try:
-                client = instructor.from_litellm(acompletion)
+                client: Any = instructor.from_litellm(acompletion)
                 response = await client.create(
                     model=model,
                     api_base=self._config.api_base,
@@ -185,7 +185,7 @@ class StyleAnalyzer:
                     ],
                     response_model=StyleGuide,
                     max_retries=2,
-                    max_tokens=1024,
+                    max_tokens=self._config.max_tokens,
                     temperature=0.1,
                     extra_body={
                         "chat_template_kwargs": {"enable_thinking": False},
@@ -205,7 +205,7 @@ class StyleAnalyzer:
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": ANALYSIS_PROMPT.format(text=text[:3000])},
                 ],
-                max_tokens=1024,
+                max_tokens=self._config.max_tokens,
                 temperature=0.1,
                 extra_body={
                     "chat_template_kwargs": {"enable_thinking": False},

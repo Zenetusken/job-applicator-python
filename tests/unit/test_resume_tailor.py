@@ -59,6 +59,27 @@ class TestResumeTailor:
         tailor = ResumeTailor(llm_config)
         assert tailor._config == llm_config
 
+    @pytest.mark.asyncio
+    async def test_call_llm_honors_configured_max_tokens(self):
+        """_call_llm must pass the configured max_tokens, not a hardcoded value."""
+        from job_applicator.config import LLMConfig
+
+        config = LLMConfig(api_base="http://localhost:8000/v1", model="m", max_tokens=1234)
+        tailor = ResumeTailor(config)
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "ok"
+
+        with patch(
+            "litellm.acompletion",
+            new_callable=AsyncMock,
+            return_value=mock_response,
+        ) as mock_acompletion:
+            await tailor._call_llm("prompt")
+
+        assert mock_acompletion.call_args.kwargs["max_tokens"] == 1234
+
     def test_prompt_template_formatting(self):
         prompt = TAILOR_PROMPT_TEMPLATE.format(
             job_title="Test Job",
