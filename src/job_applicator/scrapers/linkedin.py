@@ -108,14 +108,24 @@ class LinkedInScraper(BaseScraper):
             await navigate(page, search_url)
             await random_delay(2.0, 3.0)
 
-            # Wait for job cards to load
-            found = await wait_for_selector(page, ".job-card-container", timeout_ms=15_000)
-            if not found:
+            # Wait for job cards to load (multiple selector fallbacks)
+            selectors = [
+                ".job-card-container",
+                "[data-job-id]",
+                ".jobs-search-results__list-item",
+                ".job-card-list__entity",
+                "li.jobs-search-results__list-item",
+            ]
+            found = False
+            for selector in selectors:
+                found = await wait_for_selector(page, selector, timeout_ms=5_000)
+                if found:
+                    cards = await page.query_selector_all(selector)
+                    if cards:
+                        break
+            if not found or not cards:
                 logger.warning("No job cards found on page")
                 return jobs
-
-            # Extract job cards
-            cards = await page.query_selector_all(".job-card-container")
             for card in cards[: params.max_results]:
                 try:
                     job = await self._extract_job(card, params.board)

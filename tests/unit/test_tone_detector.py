@@ -73,10 +73,12 @@ class TestToneDetector:
             requirements=[],
         )
         # Neither the technical keyword 'api' (therapist) nor 'roi' (android)
-        # should register, so no tone signal is detected.
+        # should register, so no technical/corporate tone signal is detected.
         assert profile.scores["technical"] == 0.0
         assert profile.scores["corporate"] == 0.0
-        assert profile.primary == "unknown"
+        # The caring tone should be detected from 'wellness', 'therapist', 'support'
+        assert profile.scores["caring"] > 0.0
+        assert profile.primary == "caring"
 
     def test_word_boundary_still_matches_symbol_and_phrase_keywords(self):
         """L-5: boundary matching must still catch 'ci/cd' and multi-word phrases."""

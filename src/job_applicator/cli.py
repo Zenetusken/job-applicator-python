@@ -1157,8 +1157,13 @@ def batch(
                         cl_path = str(Path(output_dir) / cl_filename)
                         await asyncio.to_thread(Path(cl_path).write_text, letter)
                         written_paths.append(cl_path)
+                        tailored.cover_letter_path = cl_path
                         result["cover_letter_path"] = cl_path
                         result["cover_letter"] = True
+                        # Re-write meta.json with cover_letter_path
+                        await asyncio.to_thread(
+                            Path(meta_path).write_text, tailored.model_dump_json(indent=2)
+                        )
                     except Exception as exc:
                         result["cover_letter"] = False
                         result["cl_error"] = str(exc)
@@ -1541,6 +1546,9 @@ def tailor(
     min_score: float = typer.Option(
         0.0, "--min-score", help="Abort if match score is below this threshold (0.0-1.0)."
     ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip interactive prompts (auto-answer yes)."
+    ),
     ocr_mode: str = typer.Option(
         "auto",
         "--ocr-mode",
@@ -1571,7 +1579,7 @@ def tailor(
             "resume": settings.resume_path,
             "job": job_description,
             "min_score": min_score,
-            "interactive": True,
+            "interactive": not yes,
         },
         config=_sanitize_config(settings),
     )
@@ -1688,20 +1696,25 @@ def tailor(
             for o in audit.ordering_issues:
                 console.print(f"  [red]• {o}[/red]")
 
-        if audit.is_stale or audit.ordering_issues:
-            console.print(
-                "\n[bold yellow]This CV may be outdated or have ordering "
-                "issues. Please verify your CV is up to date before "
-                "proceeding.[/bold yellow]"
-            )
-            confirm = (
-                console.input("\n[bold cyan]Proceed anyway? (y/n): [/bold cyan]").strip().lower()
-            )
-            if confirm != "y":
-                console.print("[yellow]Aborted. Please update your CV.[/yellow]")
-                raise typer.Exit(0)
-        else:
-            console.print("[green]✓ Dates look coherent and current.[/green]")
+            if audit.is_stale or audit.ordering_issues:
+                console.print(
+                    "\n[bold yellow]This CV may be outdated or have ordering "
+                    "issues. Please verify your CV is up to date before "
+                    "proceeding.[/bold yellow]"
+                )
+                if yes:
+                    console.print("[dim]--yes flag set, proceeding automatically.[/dim]")
+                else:
+                    confirm = (
+                        console.input("\n[bold cyan]Proceed anyway? (y/n): [/bold cyan]")
+                        .strip()
+                        .lower()
+                    )
+                    if confirm != "y":
+                        console.print("[yellow]Aborted. Please update your CV.[/yellow]")
+                        raise typer.Exit(0)
+            else:
+                console.print("[green]✓ Dates look coherent and current.[/green]")
 
         # Pre-tailor match score check
         pre_match_score = None

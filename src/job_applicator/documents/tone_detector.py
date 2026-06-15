@@ -92,6 +92,26 @@ TONE_KEYWORDS: dict[str, list[str]] = {
         "typography",
         "color theory",
     ],
+    "caring": [
+        "compassionate",
+        "empathy",
+        "empathetic",
+        "nurturing",
+        "supportive",
+        "patient care",
+        "healthcare",
+        "wellness",
+        "therapist",
+        "counseling",
+        "advocacy",
+        "human-centered",
+        "client-centered",
+        "service-oriented",
+        "helping others",
+        "caregiving",
+        "rehabilitation",
+        "mental health",
+    ],
 }
 
 TONE_POWER_WORDS: dict[str, list[str]] = {
@@ -135,6 +155,16 @@ TONE_POWER_WORDS: dict[str, list[str]] = {
         "styled",
         "composed",
     ],
+    "caring": [
+        "supported",
+        "advocated",
+        "nurtured",
+        "guided",
+        "empathized",
+        "listened",
+        "comforted",
+        "empowered",
+    ],
 }
 
 TONE_EMPHASIS: dict[str, list[str]] = {
@@ -166,6 +196,14 @@ TONE_EMPHASIS: dict[str, list[str]] = {
         "brand consistency",
         "creative problem-solving",
     ],
+    "caring": [
+        "patient care",
+        "wellness advocacy",
+        "empathetic support",
+        "human-centered care",
+        "service excellence",
+        "compassionate communication",
+    ],
 }
 
 TONE_AVOID: dict[str, list[str]] = {
@@ -173,6 +211,7 @@ TONE_AVOID: dict[str, list[str]] = {
     "startup": ["corporate speak", "bureaucratic language", "overly formal"],
     "technical": ["buzzwords without substance", "vague claims", "fluff"],
     "creative": ["rigid corporate language", "purely technical focus", "dry tone"],
+    "caring": ["clinical detachment", "impersonal language", "rigid process focus"],
 }
 
 

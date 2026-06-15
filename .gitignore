@@ -85,3 +85,4 @@ screenshots/
 # Generated output
 output/
 logs/
+config.toml

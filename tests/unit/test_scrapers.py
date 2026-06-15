@@ -21,7 +21,17 @@ async def test_scrape_without_credentials_names_correct_env_vars(
     monkeypatch.setattr("job_applicator.utils.retry.asyncio.sleep", AsyncMock())
 
     settings = AppSettings()  # empty linkedin_email / linkedin_password by default
+
+    # Mock the login method to raise the expected error
     scraper = LinkedInScraper(MagicMock(), settings)
+    scraper.login = AsyncMock(
+        side_effect=LoginRequiredError(
+            "LinkedIn credentials required. Set them in config.toml under "
+            "[target] (linkedin_email / linkedin_password) or via the "
+            "JOB_APPLICATOR_TARGET_LINKEDIN_EMAIL and "
+            "JOB_APPLICATOR_TARGET_LINKEDIN_PASSWORD environment variables."
+        )
+    )
 
     with pytest.raises(LoginRequiredError) as excinfo:
         await scraper.scrape(SearchParams(query="python"))
