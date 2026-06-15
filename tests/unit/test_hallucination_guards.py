@@ -185,6 +185,20 @@ class TestValidateSkills:
         assert "- C" in result
         assert "Python" in result
 
+    @pytest.mark.parametrize(
+        "header",
+        ["Professional Skills", "Relevant Skills", "Soft Skills", "Competencies", "Proficiencies"],
+    )
+    def test_qualified_skills_headers_recognized(self, tailor: ResumeTailor, header: str):
+        """Header set must stay aligned with the parser so hallucinated skills under
+        qualified headers (e.g. 'Professional Skills') are still stripped."""
+        original = ["Python", "Docker"]
+        text = f"John Doe\n\n{header}\n- Python\n- Rust\n- Docker\n\nEXPERIENCE\nJob"
+        result = tailor._validate_skills(text, original)
+        assert "Python" in result
+        assert "Docker" in result
+        assert "Rust" not in result
+
 
 # ---------------------------------------------------------------------------
 # _strip_hallucinated_tools
@@ -314,6 +328,22 @@ class TestStripHallucinatedTools:
         requirements = ["NonexistentTool"]
         result = tailor._strip_hallucinated_tools(tailored, original, requirements)
         assert "such as ." not in result
+
+    def test_pass2_short_key_substring_in_original_word_still_stripped(self, tailor: ResumeTailor):
+        """Pass 2 uses alphanumeric boundaries: 'aws' inside the original word 'draws'
+        must not count as the tool being present, so a hallucinated 'AWS' is stripped."""
+        original = "Engineer who draws architecture diagrams"
+        tailored = "Built data pipelines on AWS for the team"
+        result = tailor._strip_hallucinated_tools(tailored, original, [])
+        assert "AWS" not in result
+        assert "cloud platforms" in result
+
+    def test_pass2_keeps_tool_present_in_original_as_word(self, tailor: ResumeTailor):
+        """Pass 2 keeps a tool that genuinely appears as a word in the original."""
+        original = "Deployed services on AWS for three years"
+        tailored = "Maintained AWS infrastructure"
+        result = tailor._strip_hallucinated_tools(tailored, original, [])
+        assert "AWS" in result
 
 
 # ---------------------------------------------------------------------------
