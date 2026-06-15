@@ -190,7 +190,7 @@ class CoverLetterGenerator:
 
     def __init__(self, config: LLMConfig) -> None:
         self._config = config
-        self._client = None
+        self._client: Any = None
         self._style_cache: StyleGuide | None = None
 
     def _get_client(self) -> Any:
@@ -285,6 +285,7 @@ class CoverLetterGenerator:
                 ],
                 response_model=CoverLetterOutput,
                 max_retries=1,
+                max_tokens=self._config.max_tokens,
                 extra_body={
                     "chat_template_kwargs": {"enable_thinking": False},
                 },
@@ -379,6 +380,7 @@ class CoverLetterGenerator:
                 ],
                 response_model=CoverLetterOutput,
                 max_retries=1,
+                max_tokens=self._config.max_tokens,
                 extra_body={"chat_template_kwargs": {"enable_thinking": False}},
             )
             return strip_thinking_process(response.cover_letter)

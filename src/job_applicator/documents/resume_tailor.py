@@ -26,6 +26,18 @@ if TYPE_CHECKING:
 logger = get_logger("documents.resume_tailor")
 
 
+def _alnum_boundary_pattern(term: str) -> re.Pattern[str]:
+    """Case-insensitive pattern matching ``term`` not flanked by alphanumerics.
+
+    Used instead of ``\\b`` so partial matches like "Java" inside "JavaScript"
+    are rejected, while still matching terms that end in symbols (e.g. "C++").
+    """
+    return re.compile(
+        r"(?<![A-Za-z0-9])" + re.escape(term) + r"(?![A-Za-z0-9])",
+        re.IGNORECASE,
+    )
+
+
 @dataclass
 class ResumeSection:
     """A parsed section of a resume."""
@@ -860,9 +872,13 @@ class ResumeTailor:
             stripped = line.strip()
 
             # Detect skills section header
+            # Header set kept aligned with the parser's
+            # ResumeLoader._extract_skills_section() regex.
             if re.match(
-                r"^\*{0,2}\s*(?:SKILLS|Core Competencies|Technical Skills"
-                r"|Key Skills)\s*\*{0,2}$",
+                r"^\*{0,2}\s*"
+                r"(?:(?:Technical|Core|Key|Professional|Relevant|Soft)\s+)?"
+                r"(?:Skills|Competencies|Proficiencies)"
+                r"\s*\*{0,2}$",
                 stripped,
                 re.IGNORECASE,
             ):
@@ -947,13 +963,14 @@ class ResumeTailor:
             if not req_lower or len(req_lower) < 3:
                 continue
 
-            # Check if this tool/requirement is in the original resume
-            if req_lower in original_lower:
+            # Check if this tool/requirement is in the original resume.
+            # Word-boundary match so "Go" doesn't count as present in "Good".
+            if _alnum_boundary_pattern(req_lower).search(original_lower):
                 continue  # Original has it, keep it
 
-            # Check if it appears in the tailored text
-            # Use word boundary matching to avoid partial matches
-            pattern = re.compile(re.escape(req), re.IGNORECASE)
+            # Check if it appears in the tailored text. Word-boundary match so
+            # "Java" doesn't corrupt "JavaScript".
+            pattern = _alnum_boundary_pattern(req)
             if pattern.search(result):
                 # Hallucinated tool — replace with generic if available
                 replacement = tool_replacements.get(req_lower)
@@ -994,21 +1011,23 @@ class ResumeTailor:
         # Pass 2: check tool_replacements keys against tailored vs original
         req_lower_set = {r.lower().strip() for r in job_requirements}
         for tool_key, replacement in tool_replacements.items():
-            if tool_key in original_lower:
+            # Alphanumeric boundaries (consistent with Pass 1) so a short key
+            # like "aws" isn't seen as present in "draws" or matched inside
+            # another word in the tailored text.
+            if _alnum_boundary_pattern(tool_key).search(original_lower):
                 continue
             if tool_key in req_lower_set:
                 continue
-            tool_pattern = re.compile(r"\b" + re.escape(tool_key) + r"\b", re.IGNORECASE)
-            if tool_pattern.search(result):
-                result_lower = result.lower()
-                tool_pos = result_lower.find(tool_key)
-                if tool_pos >= 0:
-                    context = result_lower[max(0, tool_pos - 50) : tool_pos + len(tool_key) + 50]
-                    if replacement.lower() in context:
-                        result = tool_pattern.sub("", result)
-                    else:
-                        result = tool_pattern.sub(replacement, result)
-                    logger.info("Pass2: replaced hallucinated tool '%s'", tool_key)
+            tool_pattern = _alnum_boundary_pattern(tool_key)
+            match = tool_pattern.search(result)
+            if match:
+                tool_pos = match.start()
+                context = result.lower()[max(0, tool_pos - 50) : tool_pos + len(tool_key) + 50]
+                if replacement.lower() in context:
+                    result = tool_pattern.sub("", result)
+                else:
+                    result = tool_pattern.sub(replacement, result)
+                logger.info("Pass2: replaced hallucinated tool '%s'", tool_key)
 
         # Clean up double spaces and broken phrases from removals
         result = re.sub(r"  +", " ", result)
@@ -1072,7 +1091,7 @@ class ResumeTailor:
                     {"role": "system", "content": TAILOR_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
                 ],
-                max_tokens=4096,
+                max_tokens=self._config.max_tokens,
                 temperature=temperature,
                 extra_body={
                     "chat_template_kwargs": {"enable_thinking": False},

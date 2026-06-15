@@ -42,6 +42,40 @@ def test_resume_loader_text_file(tmp_path: object) -> None:
     assert "Python" in resume.skills
 
 
+def test_resume_loader_recognizes_technical_skills_header(tmp_path: object) -> None:
+    """Parser must recognize qualified skills headers (not just 'Skills')."""
+    import pathlib
+
+    p = pathlib.Path(str(tmp_path)) / "resume.txt"
+    p.write_text(
+        "Jane Smith\njane@example.com\n\n"
+        "Technical Skills\nPython\nKubernetes\nTerraform\n\n"
+        "Experience\nSenior Engineer at Acme"
+    )
+    loader = ResumeLoader()
+    resume = loader.load(p)
+    assert "Python" in resume.skills
+    assert "Kubernetes" in resume.skills
+    assert "Terraform" in resume.skills
+
+
+def test_resume_loader_recognizes_core_competencies_header(tmp_path: object) -> None:
+    """'Core Competencies' is a recognized inline skills header."""
+    import pathlib
+
+    p = pathlib.Path(str(tmp_path)) / "resume.txt"
+    p.write_text(
+        "Jane Smith\njane@example.com\n\n"
+        "Core Competencies: Python, Docker, AWS\n\n"
+        "Experience\nSenior Engineer at Acme"
+    )
+    loader = ResumeLoader()
+    resume = loader.load(p)
+    assert "Python" in resume.skills
+    assert "Docker" in resume.skills
+    assert "AWS" in resume.skills
+
+
 def test_resume_loader_docx(tmp_path: object) -> None:
     """Test loading a DOCX resume."""
     import pathlib
@@ -338,3 +372,32 @@ class TestCoverLetterWithTone:
         call_args = mock_call.call_args
         prompt = str(call_args)
         assert "Tailored resume with optimized" in prompt
+
+    @pytest.mark.asyncio
+    async def test_refine_honors_configured_max_tokens(self) -> None:
+        """refine()'s instructor call must pass the configured max_tokens, not omit it."""
+        config = LLMConfig(api_base="http://localhost:8000/v1", model="m", max_tokens=1234)
+        generator = CoverLetterGenerator(config)
+
+        mock_output = MagicMock()
+        mock_output.cover_letter = "Dear Hiring Manager,\n\nRefined cover letter."
+        mock_client = MagicMock()
+        mock_client.create = AsyncMock(return_value=mock_output)
+
+        job = JobListing(
+            title="Dev",
+            company="Co",
+            url="https://example.com",
+            board=JobBoard.INDEED,
+        )
+        resume = ResumeData(raw_text="Resume text", skills=["Python"])
+
+        with patch.object(generator, "_get_client", return_value=mock_client):
+            await generator.refine(
+                job,
+                resume,
+                current_text="Old cover letter.",
+                user_feedback="Make it punchier.",
+            )
+
+        assert mock_client.create.call_args.kwargs["max_tokens"] == 1234

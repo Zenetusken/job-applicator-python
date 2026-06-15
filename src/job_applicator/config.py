@@ -6,10 +6,21 @@ Validated immediately at startup via Pydantic Settings.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+    TomlConfigSettingsSource,
+)
+
+# Path to the TOML config file. Overridable via JOB_APPLICATOR_CONFIG_FILE so
+# tests and alternate deployments can point at a different file.
+CONFIG_FILE_ENV_VAR = "JOB_APPLICATOR_CONFIG_FILE"
+DEFAULT_CONFIG_FILE = "config.toml"
 
 
 class BrowserConfig(BaseSettings):
@@ -33,7 +44,9 @@ class LLMConfig(BaseSettings):
     api_base: str = "http://localhost:8000/v1"
     api_key: str = "not-needed-for-local"
     model: str = "cyankiwi/Qwen3.5-4B-AWQ-4bit"
-    max_tokens: int = 1024
+    # Upper bound for a single completion. Sized for full résumé tailoring;
+    # cover letters and style analysis stay well under this cap.
+    max_tokens: int = 4096
     temperature: float = 0.7
 
 
@@ -83,6 +96,32 @@ class AppSettings(BaseSettings):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     target: TargetConfig = Field(default_factory=TargetConfig)
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Load values from config.toml in addition to env vars.
+
+        Priority (highest first): explicit init args > environment variables >
+        .env file > file secrets > config.toml. The TOML file only fills in
+        values that were not supplied by a higher-priority source.
+        """
+        sources: list[PydanticBaseSettingsSource] = [
+            init_settings,
+            env_settings,
+            dotenv_settings,
+            file_secret_settings,
+        ]
+        toml_file = os.environ.get(CONFIG_FILE_ENV_VAR, DEFAULT_CONFIG_FILE)
+        if Path(toml_file).is_file():
+            sources.append(TomlConfigSettingsSource(settings_cls, toml_file=Path(toml_file)))
+        return tuple(sources)
 
     @field_validator("output_dir")
     @classmethod

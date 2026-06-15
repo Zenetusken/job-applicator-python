@@ -273,11 +273,16 @@ class ResumeLoader:
         """
         import re
 
-        # Match standalone Skills header (optional markdown bold, optional
+        # Match a standalone Skills header (optional markdown bold, optional
         # colon, optional leading whitespace). Also allow inline skills after
-        # colon on the same line, e.g. "Skills: Python, Java".
+        # the colon on the same line, e.g. "Skills: Python, Java". Recognizes
+        # the common qualified variants the tailor uses too ("Technical
+        # Skills", "Core Competencies", "Key Skills", etc.).
         pattern = re.compile(
-            r"^\s*\*{0,2}\s*Skills\s*\*{0,2}\s*:?\s*(.*)$",
+            r"^\s*\*{0,2}\s*"
+            r"(?:(?:Technical|Core|Key|Professional|Relevant|Soft)\s+)?"
+            r"(?:Skills|Competencies|Proficiencies)"
+            r"\s*\*{0,2}\s*:?\s*(.*)$",
             re.IGNORECASE | re.MULTILINE,
         )
         match = pattern.search(text)
