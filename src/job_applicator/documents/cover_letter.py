@@ -158,13 +158,18 @@ Guidelines:
 - Be specific to the job and company
 - Highlight relevant experience and skills from the resume
 - Keep it concise (3-4 paragraphs, 300-400 words)
-- Use a professional but personable tone
 - Do not use placeholder text like [Company Name]
 - Do not repeat the entire resume
 - Do not invent experience, skills, or qualifications not in the resume
 - Mirror the job posting's language and terminology
 - End with a clear call to action
 - Write in first person ("I am excited to apply...")
+- When a TONE directive is provided, follow it precisely:
+  - Use the specified action verbs naturally in your writing
+  - Emphasize the listed themes where relevant
+  - Avoid the listed patterns entirely
+  - Match the vocabulary and sentence style of the tone
+- When no tone directive is provided, use a professional but personable tone
 
 EXAMPLE — strong opening paragraph:
 "I am writing to express my interest in the Help Desk Analyst position at

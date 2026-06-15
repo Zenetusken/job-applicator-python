@@ -391,6 +391,8 @@ class LLMReport(BaseModel):
 
 
 class TailoringReport(BaseModel):
+    job_title: str = ""
+    company: str = ""
     tone: str = ""
     tone_confidence: float = 0.0
     pre_match_score: float | None = None
@@ -422,6 +424,7 @@ class VerboseReport(BaseModel):
     match: MatchReport | None = None
     llm: LLMReport | None = None
     tailoring: TailoringReport | None = None
+    batch_tailoring: list[TailoringReport] = Field(default_factory=list)
     io: IOReport | None = None
     errors: list[str] = Field(default_factory=list)
 
