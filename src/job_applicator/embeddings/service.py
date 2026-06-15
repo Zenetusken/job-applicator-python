@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -103,10 +103,17 @@ class EmbeddingService:
 
         # Generate embedding
         model = self._load_model()
-        embedding: EmbeddingVector = model.encode(  # type: ignore[assignment]
-            text,
-            normalize_embeddings=self._config.normalize_embeddings,
-            show_progress_bar=False,
+        # cast (not type: ignore) so this type-checks whether or not the
+        # optional sentence-transformers extra is installed: encode() returns
+        # a union we narrow to EmbeddingVector, and with the extra absent it is
+        # Any. A bare ignore would be flagged unused on a clean [dev] install.
+        embedding = cast(
+            EmbeddingVector,
+            model.encode(
+                text,
+                normalize_embeddings=self._config.normalize_embeddings,
+                show_progress_bar=False,
+            ),
         )
 
         # Save to cache
@@ -147,11 +154,14 @@ class EmbeddingService:
         # Generate embeddings for uncached texts
         if uncached_texts:
             model = self._load_model()
-            embeddings: list[EmbeddingVector] = model.encode(  # type: ignore[assignment]
-                uncached_texts,
-                batch_size=self._config.batch_size,
-                normalize_embeddings=self._config.normalize_embeddings,
-                show_progress_bar=len(uncached_texts) > 10,
+            embeddings = cast(
+                list[EmbeddingVector],
+                model.encode(
+                    uncached_texts,
+                    batch_size=self._config.batch_size,
+                    normalize_embeddings=self._config.normalize_embeddings,
+                    show_progress_bar=len(uncached_texts) > 10,
+                ),
             )
 
             # Save to cache and fill results
