@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from pathlib import Path
 from typing import Any
@@ -22,9 +21,9 @@ from job_applicator.config import AppSettings
 from job_applicator.exceptions import LoginRequiredError, NavigationError
 from job_applicator.models import JobBoard, JobListing
 from job_applicator.scrapers.base import BaseScraper, SearchParams
+from job_applicator.utils.cookies import load_cookies, save_cookies
 from job_applicator.utils.logging import get_logger
 from job_applicator.utils.retry import async_retry
-from job_applicator.utils.secure_store import write_secret_json
 
 logger = get_logger("scrapers.linkedin")
 
@@ -68,46 +67,20 @@ class LinkedInScraper(BaseScraper):
         return self.COOKIE_PATH
 
     async def _load_cookies(self, context: BrowserContext) -> bool:
-        """Load cookies from disk into the browser context."""
-        if not self._cookie_file.exists():
-            logger.debug("No cookie file found at %s", self._cookie_file)
-            return False
-        try:
-            data = json.loads(self._cookie_file.read_text())
-        except (json.JSONDecodeError, OSError, ValueError) as exc:
-            logger.warning("Failed to read cookies from %s: %s", self._cookie_file, exc)
-            return False
-        cookies = data.get("cookies", []) if isinstance(data, dict) else []
-        if not cookies:
-            logger.warning("Cookie file at %s contains no cookies", self._cookie_file)
-            return False
-        # context.add_cookies is all-or-nothing; fall back to per-cookie so a
-        # single malformed entry can't void an otherwise-valid session.
-        try:
-            await context.add_cookies(cookies)
-            added = len(cookies)
-        except (ValueError, PlaywrightError):
-            added = 0
-            for cookie in cookies:
-                try:
-                    await context.add_cookies([cookie])
-                    added += 1
-                except (ValueError, PlaywrightError) as exc:
-                    logger.warning("Skipping invalid cookie %r: %s", cookie.get("name", "?"), exc)
-        if not added:
-            logger.warning("No usable cookies loaded from %s", self._cookie_file)
-            return False
-        logger.info("Loaded %d/%d cookies from %s", added, len(cookies), self._cookie_file)
-        return True
+        """Load saved cookies into the context (best-effort, per-cookie tolerant)."""
+        added = await load_cookies(context, self._cookie_file)
+        if added:
+            logger.info("Loaded %d cookies from %s", added, self._cookie_file)
+        return added > 0
 
     @classmethod
     def write_cookie_file(cls, cookies: Any) -> None:
-        """Persist cookies to the shared on-disk session file (atomic, 0600).
+        """Persist cookies to the on-disk session file (atomic, 0600).
 
         Single owner of the cookie-file path + ``{"cookies": [...]}`` envelope,
         shared by the scraper's _save_cookies and the `import-cookies` command.
         """
-        write_secret_json(cls.COOKIE_PATH, {"cookies": cookies})
+        save_cookies(cls.COOKIE_PATH, cookies)
 
     async def _save_cookies(self, context: BrowserContext) -> None:
         """Persist cookies from the browser context to disk (best-effort)."""

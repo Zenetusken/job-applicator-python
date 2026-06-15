@@ -17,6 +17,7 @@ Cloudflare/anti-bot, surfaced as a ``ScraperError``.
 
 from __future__ import annotations
 
+from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
 from playwright.async_api import BrowserContext, ElementHandle, Page
@@ -27,6 +28,7 @@ from job_applicator.config import AppSettings
 from job_applicator.exceptions import NavigationError, ScraperError
 from job_applicator.models import JobBoard, JobListing
 from job_applicator.scrapers.base import BaseScraper, SearchParams
+from job_applicator.utils.cookies import load_cookies
 from job_applicator.utils.logging import get_logger
 from job_applicator.utils.retry import async_retry
 
@@ -44,6 +46,8 @@ def _is_indeed_host(host: str) -> bool:
 
 class IndeedScraper(BaseScraper):
     """Scrapes public job listings from Indeed."""
+
+    COOKIE_PATH = Path.home() / ".job-applicator" / "cookies" / "indeed.json"
 
     def __init__(self, browser: BrowserManager, config: AppSettings) -> None:
         self._browser = browser
@@ -105,6 +109,10 @@ class IndeedScraper(BaseScraper):
         """
         jobs: list[JobListing] = []
         context = await self._browser.persistent_context()
+        # Reuse the real browser's Indeed session (incl. any Cloudflare
+        # clearance) imported via `import-cookies --site indeed`, so the scraper
+        # presents as a warm, established visitor rather than a fresh bot.
+        await load_cookies(context, self.COOKIE_PATH)
         page = await self._new_stealth_page(context)
         try:
             searched = urlsplit(self._base).netloc
