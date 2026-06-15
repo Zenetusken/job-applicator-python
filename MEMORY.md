@@ -7,7 +7,7 @@ _Last synced: 2026-06-15_
 
 ## Snapshot
 
-- **Stats:** 27 source modules (`src/job_applicator/`), 365 unit tests (all fast, no browser/GPU).
+- **Stats:** 27 source modules (`src/job_applicator/`), 374 unit tests (all fast, no browser/GPU).
 - **Python:** 3.12+ (dev box 3.12.8). Mypy strict; ruff (100-char lines, double quotes).
 - **Quality gates (all must pass, in order):**
   `ruff check src/ tests/` → `ruff format --check src/ tests/` →
