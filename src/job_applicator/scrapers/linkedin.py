@@ -23,6 +23,7 @@ from job_applicator.models import JobBoard, JobListing
 from job_applicator.scrapers.base import BaseScraper, SearchParams
 from job_applicator.utils.logging import get_logger
 from job_applicator.utils.retry import async_retry
+from job_applicator.utils.secure_store import write_secret_json
 
 logger = get_logger("scrapers.linkedin")
 
@@ -90,10 +91,7 @@ class LinkedInScraper(BaseScraper):
         """Persist cookies from the browser context to disk."""
         try:
             cookies = await context.cookies()
-            self._cookie_file.parent.mkdir(parents=True, exist_ok=True)
-            self._cookie_file.parent.chmod(0o700)  # dir holds a session token
-            self._cookie_file.write_text(json.dumps({"cookies": cookies}, indent=2))
-            self._cookie_file.chmod(0o600)  # session token — owner-only
+            write_secret_json(self._cookie_file, {"cookies": cookies})  # atomic, 0600
             logger.info("Saved %d cookies to %s", len(cookies), self._cookie_file)
         except OSError as exc:
             logger.warning("Failed to save cookies to %s: %s", self._cookie_file, exc)
