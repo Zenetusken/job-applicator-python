@@ -34,6 +34,10 @@ embeddings = [
 pdf = [
     "pymupdf>=1.24",
 ]
+browser = [
+    # Reads/decrypts a local browser's cookie store for `import-cookies --from-browser`.
+    "browser-cookie3>=0.19",
+]
 dev = [
     "ruff>=0.12",
     "mypy>=1.16",

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from job_applicator.cli import _normalize_cookie
+from types import SimpleNamespace
+
+from job_applicator.cli import _cookiejar_to_playwright, _is_linkedin_domain, _normalize_cookie
 
 
 def test_normalize_extension_format() -> None:
@@ -42,3 +44,63 @@ def test_normalize_falls_back_to_url_without_domain() -> None:
     assert out is not None
     assert out["url"] == "https://www.linkedin.com"
     assert "domain" not in out
+
+
+def test_cookiejar_to_playwright_converts_cookie() -> None:
+    """A browser_cookie3 / cookiejar cookie maps to a Playwright cookie dict."""
+    ck = SimpleNamespace(
+        name="li_at",
+        value="abc",
+        domain=".linkedin.com",
+        path="/",
+        secure=True,
+        expires=1893456000,
+    )
+    assert _cookiejar_to_playwright(ck) == {
+        "name": "li_at",
+        "value": "abc",
+        "domain": ".linkedin.com",
+        "path": "/",
+        "expires": 1893456000.0,
+        "secure": True,
+    }
+
+
+def test_cookiejar_to_playwright_handles_missing_expiry() -> None:
+    ck = SimpleNamespace(
+        name="JSESSIONID",
+        value="x",
+        domain=".www.linkedin.com",
+        path="/",
+        secure=False,
+        expires=None,
+    )
+    out = _cookiejar_to_playwright(ck)
+    assert out is not None
+    assert "expires" not in out
+    assert out["secure"] is False
+
+
+def test_cookiejar_to_playwright_propagates_httponly() -> None:
+    ck = SimpleNamespace(
+        name="li_at",
+        value="abc",
+        domain=".linkedin.com",
+        path="/",
+        secure=True,
+        expires=1893456000,
+        _rest={"HttpOnly": ""},
+    )
+    out = _cookiejar_to_playwright(ck)
+    assert out is not None
+    assert out["httpOnly"] is True
+
+
+def test_is_linkedin_domain_rejects_lookalikes() -> None:
+    assert _is_linkedin_domain("linkedin.com") is True
+    assert _is_linkedin_domain(".linkedin.com") is True
+    assert _is_linkedin_domain("www.linkedin.com") is True
+    # Look-alikes that browser_cookie3's substring filter would wrongly include:
+    assert _is_linkedin_domain("notlinkedin.com") is False
+    assert _is_linkedin_domain("linkedin.com.evil.example") is False
+    assert _is_linkedin_domain("") is False

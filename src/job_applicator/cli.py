@@ -424,17 +424,97 @@ def _normalize_cookie(entry: Any) -> dict[str, Any] | None:
     return out
 
 
+def _cookiejar_to_playwright(cookie: Any) -> dict[str, Any] | None:
+    """Convert a stdlib cookiejar cookie (from browser_cookie3) to Playwright form."""
+    raw: dict[str, Any] = {
+        "name": cookie.name,
+        "value": cookie.value,
+        "domain": cookie.domain,
+        "path": cookie.path or "/",
+        "secure": bool(getattr(cookie, "secure", False)),
+    }
+    expires = getattr(cookie, "expires", None)
+    if expires:
+        raw["expires"] = expires
+    # cookiejar keeps httpOnly as a nonstandard attr (browser_cookie3 sets it);
+    # propagate it so the imported cookie matches the real browser cookie.
+    rest = getattr(cookie, "_rest", None) or {}
+    if any(str(key).lower() == "httponly" for key in rest):
+        raw["httpOnly"] = True
+    return _normalize_cookie(raw)
+
+
+def _is_linkedin_domain(domain: str) -> bool:
+    """True only for genuine LinkedIn hosts (not look-alikes like notlinkedin.com)."""
+    host = domain.lstrip(".").lower()
+    return host == "linkedin.com" or host.endswith(".linkedin.com")
+
+
+def _cookies_from_browser(browser: str) -> list[dict[str, Any]]:
+    """Read LinkedIn cookies directly from a local browser's cookie store.
+
+    Uses browser_cookie3, which decrypts the browser's on-disk cookie database —
+    this reaches httpOnly cookies (like `li_at`) that page scripts cannot. Only
+    invoked when the user explicitly passes `--from-browser`.
+    """
+    try:
+        import browser_cookie3
+    except ImportError as exc:
+        console.print(
+            "[red]--from-browser needs the optional dependency: "
+            'pip install "job-applicator[browser]"[/red]'
+        )
+        raise typer.Exit(1) from exc
+
+    loaders = {
+        "chrome": browser_cookie3.chrome,
+        "chromium": browser_cookie3.chromium,
+        "brave": browser_cookie3.brave,
+        "edge": browser_cookie3.edge,
+        "firefox": browser_cookie3.firefox,
+    }
+    loader = loaders.get(browser.lower())
+    if loader is None:
+        console.print(f"[red]Unsupported browser '{browser}'. Choose: {', '.join(loaders)}.[/red]")
+        raise typer.Exit(1)
+    try:
+        jar = loader(domain_name="linkedin.com")
+    except Exception as exc:  # browser_cookie3 raises various OS/keyring/db errors
+        console.print(
+            f"[red]Could not read {browser} cookies: {exc}. Is {browser} installed and your "
+            "login keyring unlocked?[/red]"
+        )
+        raise typer.Exit(1) from exc
+    # browser_cookie3's domain filter is a SUBSTRING match, so it can sweep in
+    # look-alike hosts (e.g. notlinkedin.com); keep only genuine LinkedIn cookies.
+    return [
+        c
+        for c in (_cookiejar_to_playwright(ck) for ck in jar)
+        if c and _is_linkedin_domain(str(c.get("domain", "")))
+    ]
+
+
 @app.command(name="import-cookies")
 def import_cookies(
     ctx: typer.Context,
     li_at: str = typer.Option(
-        "", "--li-at", help="The `li_at` session cookie value copied from your browser."
+        "",
+        "--li-at",
+        help="The `li_at` cookie value. NOTE: a value here is visible in shell history — "
+        "prefer --from-browser, or pass '-' to read the token from stdin.",
     ),
     jsessionid: str = typer.Option(
         "", "--jsessionid", help="Optional JSESSIONID value (needed only for some write actions)."
     ),
     file: str = typer.Option(
         "", "--file", help="Path to a cookie JSON export (alternative to --li-at)."
+    ),
+    from_browser: str = typer.Option(
+        "",
+        "--from-browser",
+        help="Read the LinkedIn session straight from a local browser's cookie store "
+        "(chrome/chromium/brave/edge/firefox). Needs the [browser] extra; reads/decrypts "
+        "your browser cookie store, so it only runs when you pass this flag.",
     ),
     verify: bool = typer.Option(
         True, "--verify/--no-verify", help="Confirm the session by loading the feed once."
@@ -454,6 +534,12 @@ def import_cookies(
         job-applicator import-cookies --li-at "<value>"
 
     Or pass a JSON export from a cookie-manager extension with --file.
+
+    To avoid copying anything at all, read the session straight from a local
+    browser (this decrypts that browser's cookie store, so it only happens when
+    you ask for it):
+
+        job-applicator import-cookies --from-browser chrome
     """
     import json
 
@@ -464,7 +550,10 @@ def import_cookies(
     from job_applicator.scrapers.linkedin import LinkedInScraper
 
     cookies: list[dict[str, Any]] = []
-    if file:
+    if from_browser:
+        cookies = _cookies_from_browser(from_browser)
+        console.print(f"[green]Read {len(cookies)} LinkedIn cookie(s) from {from_browser}.[/green]")
+    elif file:
         try:
             raw = json.loads(Path(file).read_text())
         except (OSError, ValueError) as exc:
@@ -476,7 +565,12 @@ def import_cookies(
             raise typer.Exit(1)
         cookies = [c for c in (_normalize_cookie(e) for e in entries) if c]
     elif li_at:
-        cookies.append(
+        if li_at == "-":  # read from stdin to keep the token out of shell history
+            li_at = sys.stdin.readline().strip()
+        if not li_at:
+            console.print("[red]No token provided on stdin.[/red]")
+            raise typer.Exit(1)
+        seed = _normalize_cookie(
             {
                 "name": "li_at",
                 "value": li_at,
@@ -487,8 +581,10 @@ def import_cookies(
                 "sameSite": "None",
             }
         )
+        if seed:
+            cookies.append(seed)
         if jsessionid:
-            cookies.append(
+            js = _normalize_cookie(
                 {
                     "name": "JSESSIONID",
                     "value": jsessionid,
@@ -498,20 +594,26 @@ def import_cookies(
                     "sameSite": "None",
                 }
             )
+            if js:
+                cookies.append(js)
     else:
-        console.print("[red]Provide --li-at <value> or --file <path>.[/red]")
+        console.print(
+            "[red]Provide --from-browser <name>, --li-at <value>, or --file <path>.[/red]"
+        )
         raise typer.Exit(1)
 
     if not cookies:
         console.print("[red]No usable cookies found in the input.[/red]")
         raise typer.Exit(1)
+    if not any(c.get("name") == "li_at" for c in cookies):
+        console.print(
+            "[red]No `li_at` session cookie in the import — it would not authenticate. "
+            "Are you logged into LinkedIn in that browser / export?[/red]"
+        )
+        raise typer.Exit(1)
 
-    cookie_path = LinkedInScraper.COOKIE_PATH
-    cookie_path.parent.mkdir(parents=True, exist_ok=True)
-    cookie_path.parent.chmod(0o700)  # dir holds a session token
-    cookie_path.write_text(json.dumps({"cookies": cookies}, indent=2))
-    cookie_path.chmod(0o600)  # session token — owner-only
-    console.print(f"[green]Wrote {len(cookies)} cookie(s) to {cookie_path}[/green]")
+    LinkedInScraper.write_cookie_file(cookies)
+    console.print(f"[green]Wrote {len(cookies)} cookie(s) to {LinkedInScraper.COOKIE_PATH}[/green]")
 
     if not verify:
         return

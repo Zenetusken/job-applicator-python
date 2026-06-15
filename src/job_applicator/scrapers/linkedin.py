@@ -6,6 +6,7 @@ import asyncio
 import json
 import time
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlencode, urlsplit
 
 from playwright.async_api import BrowserContext, ElementHandle, Page
@@ -23,6 +24,7 @@ from job_applicator.models import JobBoard, JobListing
 from job_applicator.scrapers.base import BaseScraper, SearchParams
 from job_applicator.utils.logging import get_logger
 from job_applicator.utils.retry import async_retry
+from job_applicator.utils.secure_store import write_secret_json
 
 logger = get_logger("scrapers.linkedin")
 
@@ -72,30 +74,48 @@ class LinkedInScraper(BaseScraper):
             return False
         try:
             data = json.loads(self._cookie_file.read_text())
-            cookies = data.get("cookies", [])
-            if not cookies:
-                logger.warning("Cookie file at %s contains no cookies", self._cookie_file)
-                return False
-            await context.add_cookies(cookies)
-            logger.info("Loaded %d cookies from %s", len(cookies), self._cookie_file)
-            return True
-        except (json.JSONDecodeError, OSError, ValueError, PlaywrightError) as exc:
-            # Best-effort: a bad cookie file, or a cookie Chromium rejects via
-            # add_cookies (which raises playwright Error), must degrade to "no
-            # session" rather than crash the caller.
-            logger.warning("Failed to load cookies from %s: %s", self._cookie_file, exc)
+        except (json.JSONDecodeError, OSError, ValueError) as exc:
+            logger.warning("Failed to read cookies from %s: %s", self._cookie_file, exc)
             return False
+        cookies = data.get("cookies", []) if isinstance(data, dict) else []
+        if not cookies:
+            logger.warning("Cookie file at %s contains no cookies", self._cookie_file)
+            return False
+        # context.add_cookies is all-or-nothing; fall back to per-cookie so a
+        # single malformed entry can't void an otherwise-valid session.
+        try:
+            await context.add_cookies(cookies)
+            added = len(cookies)
+        except (ValueError, PlaywrightError):
+            added = 0
+            for cookie in cookies:
+                try:
+                    await context.add_cookies([cookie])
+                    added += 1
+                except (ValueError, PlaywrightError) as exc:
+                    logger.warning("Skipping invalid cookie %r: %s", cookie.get("name", "?"), exc)
+        if not added:
+            logger.warning("No usable cookies loaded from %s", self._cookie_file)
+            return False
+        logger.info("Loaded %d/%d cookies from %s", added, len(cookies), self._cookie_file)
+        return True
+
+    @classmethod
+    def write_cookie_file(cls, cookies: Any) -> None:
+        """Persist cookies to the shared on-disk session file (atomic, 0600).
+
+        Single owner of the cookie-file path + ``{"cookies": [...]}`` envelope,
+        shared by the scraper's _save_cookies and the `import-cookies` command.
+        """
+        write_secret_json(cls.COOKIE_PATH, {"cookies": cookies})
 
     async def _save_cookies(self, context: BrowserContext) -> None:
-        """Persist cookies from the browser context to disk."""
+        """Persist cookies from the browser context to disk (best-effort)."""
         try:
             cookies = await context.cookies()
-            self._cookie_file.parent.mkdir(parents=True, exist_ok=True)
-            self._cookie_file.parent.chmod(0o700)  # dir holds a session token
-            self._cookie_file.write_text(json.dumps({"cookies": cookies}, indent=2))
-            self._cookie_file.chmod(0o600)  # session token — owner-only
+            self.write_cookie_file(cookies)
             logger.info("Saved %d cookies to %s", len(cookies), self._cookie_file)
-        except OSError as exc:
+        except Exception as exc:
             logger.warning("Failed to save cookies to %s: %s", self._cookie_file, exc)
 
     @property
