@@ -4,8 +4,10 @@ AI-powered job application tool using Playwright browser automation with modern 
 
 ## Features
 
-- **Job Search**: Scrape job listings from LinkedIn and Indeed
-- **Auto-Apply**: Automatically fill and submit job applications
+- **Job Search**: Scrape job listings from LinkedIn (session-authenticated) and Indeed (public, Cloudflare-fronted)
+- **Session Reuse**: Sign in once in your real browser; the tool reuses the session — it never automates login (which would trip anti-bot defenses and risk your account)
+- **Region-Aware Browser**: Auto-detects the host's locale, IANA timezone, and Chrome version so geo-aware boards serve your real region
+- **Auto-Apply**: Automatically fill and submit job applications (dry-run by default; `--submit` to send)
 - **AI Cover Letters**: Generate personalized cover letters using LLM (litellm - supports 100+ providers)
 - **Resume Parsing**: Load and parse PDF/text/image resumes with intelligent skill extraction; OCR fallback for scanned PDFs
 - **Semantic Job Matching**: Match resumes to jobs using mxbai-embed-large-v1 embeddings
@@ -50,9 +52,12 @@ job-applicator config-init
 
 # Search for jobs
 job-applicator search --site linkedin --query "python developer"
+job-applicator search --site indeed --query "python developer" --location "Montreal, QC"
 
-# Auto-apply with AI cover letters
+# Auto-apply with AI cover letters (dry run — fills forms but does NOT submit)
 job-applicator apply --site linkedin --query "python" --limit 5
+# Add --submit to actually send applications
+job-applicator apply --site linkedin --query "python" --limit 5 --submit
 
 # Generate a cover letter
 job-applicator generate-cover-letter --job-title "Python Dev" --company "Acme"
@@ -81,6 +86,38 @@ job-applicator generate-cover-letter --resume resume.pdf --style-guide example.t
 # Detailed match report with per-skill breakdown
 python scripts/detailed_match_report.py
 ```
+
+### Authentication & Sessions
+
+The tool **never automates login** — programmatic sign-in is exactly what trips a
+job board's risk-based CAPTCHA and raises your account's risk score. Instead you
+establish a session once as a human and the tool reuses it:
+
+```bash
+# Option A — sign in once in a real (headed) browser window; the session is
+# saved to the persistent Chrome profile and reused headlessly afterwards.
+job-applicator login
+
+# Option B — reuse the session already in your everyday browser. Reads (decrypts)
+# that browser's cookie store; only runs when you pass --from-browser.
+job-applicator import-cookies --site linkedin --from-browser chrome
+job-applicator import-cookies --site indeed   --from-browser chrome
+
+# Other import sources:
+job-applicator import-cookies --li-at "<value>"          # paste the LinkedIn li_at cookie
+job-applicator import-cookies --li-at -                   # ...or read it from stdin (no shell history)
+job-applicator import-cookies --site indeed --file cookies.json   # a cookie-manager JSON export
+```
+
+- **LinkedIn** needs the `li_at` session cookie (required — nothing authenticates without it).
+- **Indeed** search is public; importing is optional but a real session's Cloudflare
+  `cf_clearance` cookie makes a warm visit far less likely to be challenged. `--from-browser`
+  needs the optional `[browser]` extra: `pip install -e ".[browser]"`.
+- **Region** is auto-detected (locale + timezone + Chrome UA). Indeed redirects by region and
+  the scraper follows the regional host it lands on (e.g. `ca.indeed.com`); pin one explicitly
+  with `target.indeed_domain` if needed.
+- Indeed's Cloudflare protection also fingerprints at the TLS layer, which Playwright cannot
+  fully reproduce — cookie + UA reuse improves the odds but cannot *guarantee* a bypass.
 
 ### Enhanced Tailor Workflow
 
@@ -133,6 +170,21 @@ model = "cyankiwi/Qwen3.5-4B-AWQ-4bit"
 model_name = "mixedbread-ai/mxbai-embed-large-v1"
 device = "cuda"
 memory_limit_gb = 1.5
+```
+
+### Browser & Region Configuration
+
+```toml
+[browser]
+headless = true
+# Empty = auto-detect from the host. Set to pin a region for geo-aware boards.
+locale = ""          # e.g. "en-CA"
+timezone = ""        # e.g. "America/Toronto" (IANA name)
+# user_agent = ""    # empty = match the host's installed Chrome major version
+
+[target]
+# Indeed redirects by region; the scraper auto-detects, or pin one here.
+indeed_domain = "www.indeed.com"   # e.g. "ca.indeed.com", "uk.indeed.com"
 ```
 
 ## Development

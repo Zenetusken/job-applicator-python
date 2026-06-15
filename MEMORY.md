@@ -7,24 +7,28 @@ _Last synced: 2026-06-15_
 
 ## Snapshot
 
-- **Stats:** 27 source modules (`src/job_applicator/`), 365 unit tests (all fast, no browser/GPU).
+- **Stats:** 31 source modules (`src/job_applicator/`), 437 unit tests (458 total incl. integration-marked; all fast, no browser/GPU).
 - **Python:** 3.12+ (dev box 3.12.8). Mypy strict; ruff (100-char lines, double quotes).
 - **Quality gates (all must pass, in order):**
   `ruff check src/ tests/` → `ruff format --check src/ tests/` →
-  `mypy src/job_applicator/ --ignore-missing-imports` → `pytest tests/unit/ -v`.
-- **Install:** `python3.12 -m venv .venv && pip install -e ".[dev]"`. The optional
-  `[embeddings]` extra (sentence-transformers + CUDA torch) is NOT needed for gates.
+  `mypy src/` → `pytest tests/unit/ -v`.
+  (Untyped third-party imports — paddleocr, fitz, playwright_stealth, browser_cookie3 —
+  are silenced via per-module `ignore_missing_imports` overrides in `pyproject.toml`,
+  so no `--ignore-missing-imports` flag is needed.)
+- **Install:** `python3.12 -m venv .venv && pip install -e ".[dev]"`. Optional extras:
+  `[embeddings]` (sentence-transformers + CUDA torch), `[browser]` (browser-cookie3, for
+  `import-cookies --from-browser`) — neither is needed for the gates.
 - **Browser flows:** `playwright install chromium` once.
 
 ## Architecture (single source of truth: AGENTS.md)
 
-- `cli.py` — Typer CLI: search, apply, match, batch, generate-cover-letter, tailor, ats-check, config-init.
-- `config.py` — `AppSettings` + sub-configs; loads `config.toml` (lowest priority) + `JOB_APPLICATOR_*` env.
+- `cli.py` — Typer CLI: search, login, import-cookies, apply, match, batch, generate-cover-letter, tailor, ats-check, config-init.
+- `config.py` — `AppSettings` + sub-configs; loads `config.toml` (lowest priority) + `JOB_APPLICATOR_*` env. `BrowserConfig` has `locale`/`timezone` (empty=auto); `TargetConfig` has `indeed_domain`.
 - `models.py` — all shared Pydantic contracts (`extra="forbid"`).
 - `documents/` — resume parsing, tailoring, cover letters, style/tone, ats_checker, ocr.
-- `browser/` `scrapers/` `applicators/` — Playwright lifecycle + LinkedIn/Indeed.
+- `browser/` `scrapers/` `applicators/` — Playwright lifecycle + LinkedIn (session) / Indeed (public, Cloudflare). Both scrapers/applicators live.
 - `embeddings/` — mxbai-embed-large-v1 service + job matching.
-- `utils/` — logging, retry, diff, verbose, **llm (strip_thinking_process), text (contains_word)**.
+- `utils/` — logging, retry, diff, verbose, **llm (strip_thinking_process), text (contains_word), cookies (save/load/read), region (locale/tz/UA detect), url (host_matches), secure_store (atomic 0600)**.
 
 ## Key Decisions / Invariants
 
@@ -51,6 +55,28 @@ Full audit produced 4 HIGH, 7 MEDIUM, 10 LOW findings. All fixed across three st
   word-boundary matching for tone/ATS (`utils/text.contains_word`); single ATS model
   (`ATSCompatibilityResult.is_compatible` computed); dead-code removal; `detect_seniority` uses
   description fallback; PaddleOCR `<3.0` pin documented; ATS suggestions skip optional sections.
+
+## Auth, Indeed & Region (recent work, PRs #9–#14)
+
+- **Auth model: never automate login.** `LinkedInScraper.login()`/`IndeedScraper.login()` never
+  submit credentials (automated login trips anti-bot + risks the account). Seed a session once via
+  `job-applicator login` (headed) or `import-cookies --from-browser <chrome|…>` (reuses the everyday
+  browser's cookie store, incl. httpOnly `li_at`/`cf_clearance`). Sessions persist via the Chrome
+  profile + `~/.job-applicator/cookies/{linkedin,indeed}.json`.
+- **`import-cookies` per-site `_SiteSpec`** — `required_cookie` (LinkedIn `li_at`, hard-fail) vs
+  `preferred_cookie` (Indeed `cf_clearance`, warn only — search is public), `session_flags`,
+  `feed_verify`. Add a board = add a spec entry, not `if site == …` branches.
+- **Indeed = live but Cloudflare-fronted.** Selectors tuned 2026-06-15 (with legacy fallbacks);
+  follows region redirects (`_resolved_base`, e.g. `ca.indeed.com`; `target.indeed_domain` pins).
+  Cookie+UA reuse helps but TLS-fingerprinting means a challenge (`ScraperError`) can still occur.
+- **Region auto-detect (`utils/region.py`)** — timezone from `TZ`→`/etc/localtime`→`/etc/timezone`,
+  `posix/`/`right/` prefixes stripped, validated against the IANA db before reaching Playwright
+  (a bad `timezone_id` crashes the launch). UA matches host Chrome major (`lru_cache`d). Windows
+  w/o `TZ` falls back to default — pin `browser.timezone`.
+- **Shared `utils/url.host_matches`** — single exact-or-subdomain matcher (strips leading `.`);
+  used by the cookie look-alike filter and `_is_indeed_host`. Don't re-implement.
+- **Easy Apply is dry-run by default.** `apply` fills forms but does NOT submit unless `--submit`;
+  the final submit routes through `BaseApplicator._gated_submit`.
 
 ## Recurring Gotchas (see AGENTS.md for the full list)
 

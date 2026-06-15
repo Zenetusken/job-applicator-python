@@ -11,6 +11,12 @@ log_level = "INFO"
 headless = true
 slow_mo = 0
 timeout_ms = 30000
+# Region the browser advertises to geo-aware sites (Indeed/LinkedIn).
+# Leave empty to auto-detect from the host (locale + IANA timezone + Chrome UA).
+# Set to pin a region, e.g. locale = "en-CA", timezone = "America/Toronto".
+# locale = ""
+# timezone = ""
+# user_agent = ""   # empty = match the host's installed Chrome major version
 
 # LLM (for AI cover letters)
 [llm]
@@ -26,3 +32,6 @@ max_applications_per_day = 20
 delay_between_applications_s = 2.0
 # linkedin_email = "your-email@example.com"
 # linkedin_password = "your-password"
+# Indeed redirects by region; override to pin one, e.g. "ca.indeed.com" / "uk.indeed.com".
+# Left at the default, the scraper auto-detects the regional site Indeed sends you to.
+indeed_domain = "www.indeed.com"

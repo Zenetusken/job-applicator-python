@@ -14,13 +14,13 @@ pip install -e ".[dev]"
 # Lint + format + typecheck (run in this order)
 ruff check src/ tests/
 ruff format --check src/ tests/
-mypy src/job_applicator/ --ignore-missing-imports
+mypy src/   # untyped third-party imports are silenced via per-module overrides in pyproject.toml
 
 # Auto-fix lint/format
 ruff check --fix src/ tests/
 ruff format src/ tests/
 
-# Tests (375 unit tests, all fast)
+# Tests (437 unit tests, all fast; 458 total incl. integration-marked)
 pytest tests/unit/ -v
 pytest tests/unit/ -v -k test_name  # single test
 
@@ -33,16 +33,17 @@ job-applicator match --resume resume.pdf
 
 ```
 src/job_applicator/
-├── cli.py              # Typer CLI (search, apply, match, batch, generate-cover-letter, tailor, ats-check, config-init)
+├── cli.py              # Typer CLI (search, login, import-cookies, apply, match, batch, generate-cover-letter, tailor, ats-check, config-init)
 ├── config.py           # AppSettings + sub-configs (BrowserConfig, LLMConfig, EmbeddingConfig, TargetConfig)
 ├── models.py           # All shared Pydantic models (JobListing, ResumeData, StyleGuide, TailoredResume, DateAuditResult, etc.)
 ├── exceptions.py       # JobApplicatorError hierarchy
 ├── browser/            # Playwright lifecycle (manager.py) + low-level actions (actions.py)
-├── scrapers/           # base.py (ABC) → linkedin.py, indeed.py (stub)
-├── applicators/        # base.py (ABC) → linkedin.py, indeed.py (stub)
+├── scrapers/           # base.py (ABC) → linkedin.py, indeed.py (both live; Indeed selectors tuned 2026-06-15)
+├── applicators/        # base.py (ABC) → linkedin.py (Easy Apply, dry-run gated), indeed.py
 ├── documents/          # cover_letter.py (LLM), resume.py (parser), resume_tailor.py (tailoring), style_analyzer.py, tone_detector.py, ats_checker.py, ocr.py
 ├── embeddings/         # service.py (mxbai-embed-large-v1), matching.py (job matching)
-└── utils/              # logging.py, retry.py, diff.py, verbose.py, llm.py (strip_thinking_process), text.py (contains_word)
+└── utils/              # logging, retry, diff, verbose, llm (strip_thinking_process), text (contains_word),
+                        #   cookies (save/load/read), region (locale/tz/UA detection), url (host_matches), secure_store (atomic 0600 writes)
 ```
 
 ## Conventions
@@ -109,9 +110,14 @@ src/job_applicator/
 - **LinkedIn login uses Playwright locator API.** LinkedIn removed `name` attributes from login form. Use `page.locator('input[type="email"]').last` and `page.locator('button:has-text("Sign in"]').last`. Do NOT use `input[name="session_key"]` — it no longer exists.
 - **Browser uses stealth + persistent profile.** `BrowserManager` uses `launch_persistent_context()` with a Chrome user data directory at `~/.job-applicator/browser-profile/`. This preserves ALL browser state (cookies, localStorage, IndexedDB, service workers, history) between runs. Stealth patches from `playwright-stealth` are applied to every page. Anti-automation flags are disabled via `--disable-blink-features=AutomationControlled`. The persistent context is closed in `BrowserManager.stop()`.
 - **LinkedIn auth = seed once, reuse the session. Automated login is DISABLED (account safety).** `LinkedInScraper.login()` no longer submits credentials — programmatic login is exactly what trips LinkedIn's risk-based CAPTCHA and raises the account's risk score. Instead run `job-applicator login` once: it opens a HEADED browser, pre-fills config creds, and waits while the human clicks Sign in + solves any CAPTCHA/2FA. The authenticated session is retained by the persistent Chrome profile (`~/.job-applicator/browser-profile/`) and reused headlessly across runs (verified to persist across separate processes). `scrape()` calls `_ensure_session()` (loads the optional cookie JSON, checks `/feed`) and raises `LoginRequiredError` pointing at `job-applicator login` when there's no session — it never auto-logs-in. `_scrape_listings()` (the retried inner method) only retries on `NavigationError`, so a no-session run fails fast without repeated hits.
-- **Cookie JSON is a portable backup, not the primary mechanism.** `~/.job-applicator/cookies/linkedin.json` is written by `interactive_login` after a successful sign-in and loaded by `_ensure_session`, but the persistent profile already carries the session, so the JSON is redundant for continuity (useful only for export/import between machines).
+- **Cookie JSON is both a portable backup and a first-class auth path.** `~/.job-applicator/cookies/{linkedin,indeed}.json` is written by `interactive_login` after sign-in AND by `import-cookies`, and loaded by `_ensure_session`/`scrape`. The persistent profile already carries the LinkedIn session so the JSON is redundant *there*, but `import-cookies --from-browser` is the supported way to seed a session from your everyday browser (incl. httpOnly cookies like `li_at`/`cf_clearance` that page scripts can't read).
+- **Region/UA/timezone are auto-detected at launch (`utils/region.py`).** `detect_timezone()` reads `TZ` → `/etc/localtime` → `/etc/timezone`, strips the `posix/`/`right/` zoneinfo prefixes, and **validates each candidate against the IANA db before returning** — a non-canonical/bogus value must never reach Playwright's `timezone_id` (it raises at launch). Windows without `TZ` falls back to the default; pin `browser.timezone`. `detect_chrome_user_agent()` is `lru_cache`d (shells out to `chrome --version`; anchor the major-version regex on the `Chrome`/`Chromium` keyword so Brave's `1.71.x Chromium: 130` yields 130). `detect_locale()` tolerates numeric/script subtags (`es-419`, `zh_Hans_CN`→`zh-CN`).
+- **`import-cookies` is driven by a per-site `_SiteSpec` (cli.py).** Each board declares `required_cookie` (hard-fail if absent — LinkedIn `li_at`), `preferred_cookie` (warn only — Indeed `cf_clearance`, since search is public), `session_flags` (LinkedIn-only `--li-at`/`--jsessionid`), and `feed_verify` (post-import logged-in check; off for Cloudflare-fronted Indeed). Add a board by adding a spec entry — don't sprinkle `if site == ...` branches.
+- **One host matcher: `utils/url.host_matches(host, base)`.** Used by `import-cookies`' look-alike filter (browser_cookie3's domain filter is a substring match that sweeps in `notlinkedin.com`) and Indeed's `_is_indeed_host`. Strips a leading `.` (cookie-domain form) and matches exact-or-subdomain only. Don't re-implement domain-suffix checks.
+- **Indeed is public + Cloudflare-fronted.** No login (`IndeedScraper.login()` returns False). `scrape()` loads `cf_clearance` + the warm session via `load_cookies`, follows Indeed's region redirect (pins the regional host it lands on, e.g. `ca.indeed.com`, in `_resolved_base`; `target.indeed_domain` pins one explicitly), and raises `ScraperError` on an active challenge. Cookie+UA reuse improves the odds but Cloudflare's TLS-layer fingerprinting can't be fully reproduced by Playwright — a challenge is still possible.
+- **Secure cookie writes (`utils/secure_store.write_secret_json`).** Atomic (`mkstemp`+`os.replace`) at mode `0600`, and refuses a symlinked path/parent. `utils/cookies.save_cookies` wraps it with the `{"cookies": [...]}` envelope; `load_cookies` is all-or-nothing-tolerant (falls back to per-cookie add so one malformed entry can't void the batch).
 - **If a session won't establish:** re-run `job-applicator login` and complete the sign-in; solve any challenge in the window (a human solving it clears suspicion). A VPN/clean IP helps if the account/IP is already flagged. Stealth lowers fingerprint detection but cannot solve a CAPTCHA or clear an existing block. Note: automated scraping/Easy-Apply still carries inherent LinkedIn-ToS risk — keep volume low.
-- **Scraper AND applicator share one authenticated context.** `BrowserManager.persistent_context()` returns a single context that lives for the manager's lifetime; `persistent_page()` opens a page in it and closes only the page. The scraper's `login()`/`scrape()` and the applicator's `apply()`/`check_already_applied()` all go through it, so the login session is reused for Easy Apply. Do NOT use `self._browser.new_page()` / `new_context()` for authenticated flows (those are isolated and logged-out), and do NOT reach into `self._browser._browser` — use the public `persistent_context()`/`persistent_page()` API. The persistent context is closed in `BrowserManager.stop()`. When no `user_agent` is configured, the manager applies `DEFAULT_USER_AGENT` (a real desktop UA) so sites don't see "HeadlessChrome".
+- **Scraper AND applicator share one authenticated context.** `BrowserManager.persistent_context()` returns a single context that lives for the manager's lifetime; `persistent_page()` opens a page in it and closes only the page. The scraper's `login()`/`scrape()` and the applicator's `apply()`/`check_already_applied()` all go through it, so the login session is reused for Easy Apply. Do NOT use `self._browser.new_page()` / `new_context()` for authenticated flows (those are isolated and logged-out), and do NOT reach into `self._browser._browser` — use the public `persistent_context()`/`persistent_page()` API. The persistent context is closed in `BrowserManager.stop()`. When `user_agent`/`locale`/`timezone` are unset (the default), `BrowserManager.start()` auto-detects them via `utils/region.py` (`detect_chrome_user_agent`/`detect_locale`/`detect_timezone`) so sites see a real desktop UA matching the host's installed Chrome and the host's real region — not "HeadlessChrome" or a hardcoded US default. There is no longer a `DEFAULT_USER_AGENT` constant in `manager.py`.
 - **Applicator screenshots the failed page in place.** On error, `LinkedInApplicator.apply()` screenshots the *same* page that failed (it no longer re-navigates a fresh page, which used to hide the real failure state).
 - **LinkedIn description extraction clicks cards.** Scraper clicks each job card, waits for content change, clicks "show more" button, then extracts. Search page cards only have title/company/location — descriptions come from the detail panel.
 - **`--verbose` and `--log-file` work both before and after the command.** `job-applicator --verbose match` and `job-applicator match --verbose` both work. `_merge_verbose_ctx()` in cli.py handles merging subcommand flags with global callback.
