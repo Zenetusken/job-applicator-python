@@ -8,6 +8,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, HttpUrl, computed_field
 
+from job_applicator.utils.text import contains_word
+
 
 class JobBoard(StrEnum):
     """Supported job boards."""
@@ -68,13 +70,11 @@ def detect_seniority(title: str, description: str = "") -> str | None:
     only consulted when the title is inconclusive (titles are terse and
     unambiguous, whereas descriptions are noisier).
     """
-    import re
-
     for text in (title, description):
         text_lower = text.lower()
         for level, keywords in _SENIORITY_KEYWORDS.items():
             for kw in keywords:
-                if re.search(rf"\b{re.escape(kw)}\b", text_lower):
+                if contains_word(text_lower, kw):
                     return level
     return None
 

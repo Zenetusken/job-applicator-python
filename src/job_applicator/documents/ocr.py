@@ -28,9 +28,11 @@ class OCRService:
                     "paddleocr is not installed. Run: pip install paddleocr"
                 ) from exc
             # These kwargs are valid for PaddleOCR 2.x (pinned <3.0 in
-            # pyproject). PaddleOCR 3.x renamed/removed them (use_gpu -> device,
-            # show_log dropped, ocr(cls=) -> predict()); migrate here if the pin
-            # is ever raised to >=3.0.
+            # pyproject). When upgrading to >=3.0, change:
+            #   use_gpu -> device
+            #   show_log -> dropped (use logging config instead)
+            #   ocr(cls=) -> predict()
+            # See: https://github.com/PaddlePaddle/PaddleOCR/blob/main/doc/doc_en/whl_en.md
             self._ocr = PaddleOCR(
                 use_angle_cls=True,
                 lang="en",

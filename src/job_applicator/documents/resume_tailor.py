@@ -31,6 +31,10 @@ def _alnum_boundary_pattern(term: str) -> re.Pattern[str]:
 
     Used instead of ``\\b`` so partial matches like "Java" inside "JavaScript"
     are rejected, while still matching terms that end in symbols (e.g. "C++").
+
+    This is the case-insensitive regex equivalent of ``contains_word()`` from
+    ``utils.text``; the regex form is needed when we need a ``re.Pattern`` for
+    ``sub()`` or ``search()`` operations.
     """
     return re.compile(
         r"(?<![A-Za-z0-9])" + re.escape(term) + r"(?![A-Za-z0-9])",
