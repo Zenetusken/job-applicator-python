@@ -42,8 +42,10 @@ AI-powered job application tool using Playwright browser automation with modern 
 
 ## Target Boards
 
-- LinkedIn (Phase 1)
-- Indeed (Phase 2)
+- LinkedIn (Phase 1) — implemented. Session-authenticated (reuse a human-established session).
+- Indeed (Phase 2) — implemented. Public search, Cloudflare-fronted; selectors tuned against the
+  live DOM (2026-06-15) with region auto-detection. TLS-layer fingerprinting means automated
+  scraping can still be challenged.
 
 ## Key Design Decisions
 
@@ -53,6 +55,12 @@ AI-powered job application tool using Playwright browser automation with modern 
 - mxbai-embed-large-v1 for semantic job matching (~1.5 GB VRAM)
 - Style analyzer with persistent cache and multi-document support
 - Combined scoring: 60% semantic similarity + 40% skill coverage
+- **Never automate login.** Seed a session once as a human (`login` headed flow, or
+  `import-cookies --from-browser`); the tool only reuses it. Automated sign-in trips anti-bot
+  defenses and risks the account.
+- **Region-aware browser.** Locale, IANA timezone, and Chrome UA are auto-detected
+  (`utils/region.py`) unless pinned in `[browser]` config, so geo-aware boards serve the real region.
+- **Easy Apply is dry-run by default;** real submission requires `apply --submit`.
 
 ## GPU Memory Layout
 
