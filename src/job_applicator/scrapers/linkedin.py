@@ -13,7 +13,7 @@ from job_applicator.browser.actions import (
 )
 from job_applicator.browser.manager import BrowserManager
 from job_applicator.config import AppSettings
-from job_applicator.exceptions import BrowserError, LoginRequiredError
+from job_applicator.exceptions import LoginRequiredError
 from job_applicator.models import JobBoard, JobListing
 from job_applicator.scrapers.base import BaseScraper, SearchParams
 from job_applicator.utils.logging import get_logger
@@ -32,31 +32,19 @@ class LinkedInScraper(BaseScraper):
         self._browser = browser
         self._config = config
         self._logged_in = False
-        self._context: BrowserContext | None = None
 
     @property
     def board(self) -> JobBoard:
         return JobBoard.LINKEDIN
 
     async def _get_context(self) -> BrowserContext:
-        """Get or create a persistent browser context for login + scraping."""
-        if self._context is None:
-            if not self._browser._browser:
-                raise BrowserError("Browser not started")
-            self._context = await self._browser._browser.new_context(
-                viewport={
-                    "width": self._config.browser.viewport_width,
-                    "height": self._config.browser.viewport_height,
-                },
-                user_agent=(
-                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
-                ),
-                locale="en-US",
-                timezone_id="America/New_York",
-            )
-            self._context.set_default_timeout(self._config.browser.timeout_ms)
-        return self._context
+        """Get the manager's shared persistent context for login + scraping.
+
+        Using the manager's persistent context (rather than reaching into a
+        private browser handle) means the login session established here is the
+        same one the applicator reuses for authenticated Easy Apply.
+        """
+        return await self._browser.persistent_context()
 
     async def login(self, email: str, password: str) -> bool:
         """Authenticate with LinkedIn."""

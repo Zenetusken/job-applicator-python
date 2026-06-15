@@ -30,9 +30,14 @@ class LinkedInApplicator(BaseApplicator):
         self._config = config
 
     async def apply(self, job: JobListing, cover_letter: str | None = None) -> ApplicationResult:
-        """Apply to a LinkedIn job."""
-        try:
-            async with self._browser.new_page() as page:
+        """Apply to a LinkedIn job.
+
+        Runs in the manager's shared persistent context so the authenticated
+        session established by the scraper's ``login()`` is reused — Easy Apply
+        requires being logged in.
+        """
+        async with self._browser.persistent_page() as page:
+            try:
                 await navigate(page, str(job.url))
                 await random_delay(2.0, 3.0)
 
@@ -46,20 +51,20 @@ class LinkedInApplicator(BaseApplicator):
                 else:
                     return await self._external_apply(page, job)
 
-        except Exception as exc:
-            logger.error("Failed to apply to %s at %s: %s", job.title, job.company, exc)
-            if self._config.screenshot_on_error:
-                try:
-                    async with self._browser.new_page() as page:
-                        await navigate(page, str(job.url))
+            except Exception as exc:
+                logger.error("Failed to apply to %s at %s: %s", job.title, job.company, exc)
+                if self._config.screenshot_on_error:
+                    # Capture the page in its actual failure state rather than
+                    # re-navigating to a fresh page (which hid the real error).
+                    try:
                         await screenshot(page, Path(f"error_{job.company}_{job.title}.png"))
-                except Exception as e:
-                    logger.debug("Screenshot failed: %s", e)
-            return ApplicationResult(
-                job=job,
-                status=ApplicationStatus.FAILED,
-                error_message=str(exc),
-            )
+                    except Exception as e:
+                        logger.debug("Screenshot failed: %s", e)
+                return ApplicationResult(
+                    job=job,
+                    status=ApplicationStatus.FAILED,
+                    error_message=str(exc),
+                )
 
     async def _easy_apply(
         self, page: Page, job: JobListing, cover_letter: str | None
@@ -162,7 +167,7 @@ class LinkedInApplicator(BaseApplicator):
 
     async def check_already_applied(self, job: JobListing) -> bool:
         """Check if already applied to this job."""
-        async with self._browser.new_page() as page:
+        async with self._browser.persistent_page() as page:
             await navigate(page, str(job.url))
             await random_delay(1.0, 2.0)
 
