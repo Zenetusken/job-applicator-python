@@ -372,3 +372,32 @@ class TestCoverLetterWithTone:
         call_args = mock_call.call_args
         prompt = str(call_args)
         assert "Tailored resume with optimized" in prompt
+
+    @pytest.mark.asyncio
+    async def test_refine_honors_configured_max_tokens(self) -> None:
+        """refine()'s instructor call must pass the configured max_tokens, not omit it."""
+        config = LLMConfig(api_base="http://localhost:8000/v1", model="m", max_tokens=1234)
+        generator = CoverLetterGenerator(config)
+
+        mock_output = MagicMock()
+        mock_output.cover_letter = "Dear Hiring Manager,\n\nRefined cover letter."
+        mock_client = MagicMock()
+        mock_client.create = AsyncMock(return_value=mock_output)
+
+        job = JobListing(
+            title="Dev",
+            company="Co",
+            url="https://example.com",
+            board=JobBoard.INDEED,
+        )
+        resume = ResumeData(raw_text="Resume text", skills=["Python"])
+
+        with patch.object(generator, "_get_client", return_value=mock_client):
+            await generator.refine(
+                job,
+                resume,
+                current_text="Old cover letter.",
+                user_feedback="Make it punchier.",
+            )
+
+        assert mock_client.create.call_args.kwargs["max_tokens"] == 1234
