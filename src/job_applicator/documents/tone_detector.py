@@ -205,7 +205,7 @@ class ToneDetector:
             scores[tone] = count / max(len(keywords), 1)
 
         if not any(scores.values()):
-            primary = "corporate"
+            primary = "unknown"
             confidence = 0.0
         else:
             primary = max(scores, key=scores.get)  # type: ignore[arg-type]
@@ -224,11 +224,17 @@ class ToneDetector:
         )
 
     def format_for_prompt(self, profile: ToneProfile) -> str:
-        """Format tone profile as a prompt injection string."""
+        """Format tone profile as actionable LLM directives."""
+        if profile.primary == "unknown":
+            return (
+                "TONE: Match the job posting's natural tone. "
+                "Use clear, direct language appropriate for the role."
+            )
         lines = [
-            f"TONE: {profile.primary.title()}",
-            f"- Power words: {', '.join(profile.power_words)}",
+            f"TONE: {profile.primary.title()} (confidence: {profile.confidence:.0%})",
+            f"- Use these action verbs: {', '.join(profile.power_words[:5])}",
             f"- Emphasize: {', '.join(profile.emphasis)}",
             f"- Avoid: {', '.join(profile.avoid)}",
+            "- Mirror the job posting's vocabulary and sentence structure.",
         ]
         return "\n".join(lines)

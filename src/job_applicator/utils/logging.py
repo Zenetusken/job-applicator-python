@@ -5,9 +5,12 @@ from __future__ import annotations
 import logging
 import sys
 
+from rich.console import Console
+
 
 def setup_logging(level: str = "INFO") -> logging.Logger:
     """Configure structured logging with rich output."""
+    stderr_console = Console(file=sys.stderr, stderr=True)
     try:
         from rich.logging import RichHandler
 
@@ -15,9 +18,10 @@ def setup_logging(level: str = "INFO") -> logging.Logger:
             rich_tracebacks=True,
             show_time=True,
             show_path=False,
+            console=stderr_console,
         )
     except ImportError:
-        handler = logging.StreamHandler(sys.stdout)
+        handler = logging.StreamHandler(sys.stderr)
 
     logging.basicConfig(
         level=level.upper(),

@@ -500,6 +500,12 @@ TAILOR_SYSTEM_PROMPT = (
     "section (action verbs, relevance framing). Can condense to 1-2 bullets "
     "if the role is not directly relevant to the job.\n\n"
     "9. REFERENCES — include if present. Single line is fine.\n\n"
+    "TONE — when a TONE directive is provided in the user message:\n"
+    "- Use the specified action verbs in experience bullets\n"
+    "- Emphasize the listed themes in the summary and experience\n"
+    "- Avoid the listed patterns in all sections\n"
+    "- Mirror the job posting's vocabulary and sentence structure\n"
+    "- If no tone directive is provided, use clear professional language\n\n"
     "FORMATTING:\n"
     "- **Bold** for section headers and job titles/company names\n"
     "- *Italics* for dates\n"
@@ -696,6 +702,7 @@ class ResumeTailor:
         user_feedback: str,
         job: JobListing,
         matcher: JobMatcher | None = None,
+        tone_profile: ToneProfile | None = None,
     ) -> TailoredResume:
         """Refine a tailored resume based on user feedback.
 
@@ -705,10 +712,20 @@ class ResumeTailor:
             user_feedback: User's feedback/instructions
             job: Target job listing
             matcher: Optional JobMatcher instance to reuse
+            tone_profile: Optional tone profile to maintain across refinements
 
         Returns:
             New TailoredResume with refinements applied
         """
+        tone_directive = ""
+        if tone_profile:
+            from job_applicator.documents.tone_detector import ToneDetector
+
+            tone_directive = (
+                f"\n\n{ToneDetector().format_for_prompt(tone_profile)}\n"
+                "Maintain this tone throughout the refined resume."
+            )
+
         prompt = (
             f"The user wants changes to this tailored resume.\n\n"
             f"Job: {job.title} at {job.company}\n"
@@ -720,7 +737,8 @@ class ResumeTailor:
             f"User feedback:\n{user_feedback}\n\n"
             f"Apply the user's feedback while keeping the resume tailored "
             f"for the job. Do NOT add skills not in the candidate's actual "
-            f"skills list. Do NOT add Education if none exists in original.\n"
+            f"skills list. Do NOT add Education if none exists in original."
+            f"{tone_directive}\n"
             f"Return the complete updated resume text."
         )
 
