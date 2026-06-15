@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from job_applicator.cli import _cookiejar_to_playwright, _is_linkedin_domain, _normalize_cookie
+from job_applicator.cli import _cookiejar_to_playwright, _normalize_cookie
 
 
 def test_normalize_extension_format() -> None:
@@ -94,13 +94,3 @@ def test_cookiejar_to_playwright_propagates_httponly() -> None:
     out = _cookiejar_to_playwright(ck)
     assert out is not None
     assert out["httpOnly"] is True
-
-
-def test_is_linkedin_domain_rejects_lookalikes() -> None:
-    assert _is_linkedin_domain("linkedin.com") is True
-    assert _is_linkedin_domain(".linkedin.com") is True
-    assert _is_linkedin_domain("www.linkedin.com") is True
-    # Look-alikes that browser_cookie3's substring filter would wrongly include:
-    assert _is_linkedin_domain("notlinkedin.com") is False
-    assert _is_linkedin_domain("linkedin.com.evil.example") is False
-    assert _is_linkedin_domain("") is False
