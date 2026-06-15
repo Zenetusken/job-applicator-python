@@ -64,11 +64,24 @@ def test_missing_config_toml_uses_defaults(tmp_path: Path, monkeypatch: pytest.M
     assert settings.profile_name == "default"
 
 
-def test_app_settings_output_dir_created(tmp_path: object) -> None:
+def test_app_settings_construction_has_no_filesystem_side_effect(tmp_path: object) -> None:
+    """Constructing settings must NOT create the output dir (no validator side effects)."""
     import pathlib
 
     output = pathlib.Path(str(tmp_path)) / "test_output"
     AppSettings(output_dir=str(output))
+    assert not output.exists()
+
+
+def test_ensure_output_dir_creates_and_returns_path(tmp_path: object) -> None:
+    """ensure_output_dir() explicitly creates the directory and returns it."""
+    import pathlib
+
+    output = pathlib.Path(str(tmp_path)) / "test_output"
+    settings = AppSettings(output_dir=str(output))
+    assert not output.exists()
+    returned = settings.ensure_output_dir()
+    assert returned == output
     assert output.exists()
 
 

@@ -20,7 +20,7 @@ mypy src/job_applicator/ --ignore-missing-imports
 ruff check --fix src/ tests/
 ruff format src/ tests/
 
-# Tests (332 unit tests, all fast)
+# Tests (365 unit tests, all fast)
 pytest tests/unit/ -v
 pytest tests/unit/ -v -k test_name  # single test
 
@@ -42,7 +42,7 @@ src/job_applicator/
 ├── applicators/        # base.py (ABC) → linkedin.py, indeed.py (stub)
 ├── documents/          # cover_letter.py (LLM), resume.py (parser), resume_tailor.py (tailoring), style_analyzer.py, tone_detector.py, ats_checker.py, ocr.py
 ├── embeddings/         # service.py (mxbai-embed-large-v1), matching.py (job matching)
-└── utils/              # logging.py, retry.py, diff.py
+└── utils/              # logging.py, retry.py, diff.py, verbose.py, llm.py (strip_thinking_process), text.py (contains_word)
 ```
 
 ## Conventions
@@ -62,7 +62,7 @@ src/job_applicator/
 
 ## Gotchas
 
-- **LLM output has thinking process.** Qwen models prepend reasoning. Use `extra_body={"chat_template_kwargs": {"enable_thinking": False}}` in litellm calls to suppress. Fallback: `strip_thinking_process()` in `cover_letter.py`.
+- **LLM output has thinking process.** Qwen models prepend reasoning. Use `extra_body={"chat_template_kwargs": {"enable_thinking": False}}` in litellm calls to suppress. Fallback: `strip_thinking_process()` lives in `utils/llm.py` (re-exported from `cover_letter.py` for backward compatibility); import it from `utils.llm`.
 - **Resume tailoring hallucination guards.** `_validate_skills()` strips hallucinated skills. `_strip_hallucinated_tools()` replaces tools not in original resume. `_strip_hallucinated_education()` removes education if original has none.
 - **Education extraction must be explicit.** LLMs silently drop education entries. `_extract_education_entries()` injects a numbered checklist into the prompt to force inclusion.
 - **Embeddings need `openai/` prefix for vLLM.** `model = f"openai/{config.model}"` when calling litellm.
@@ -96,14 +96,19 @@ src/job_applicator/
 - **`MatchResult` has `semantic_score` and `skill_score` fields.** Raw component scores stored alongside the combined `score`. `resume_tailor.py` uses these directly — never recompute from combined score.
 - **`_refine_cover_letter()` returns `bool`.** `True` on success, `False` on failure. Caller checks `if not result:` — not `if result is None:`.
 - **Batch command loads style guide independently of `--cover-letter`.** Providing `--style-guide --no-cover-letter` still applies the style guide to resume tailoring.
-- **`detect_seniority()` is a standalone utility.** Not auto-called on `JobListing` creation. Consumers call it explicitly or populate `seniority` field manually.
+- **`detect_seniority()` is a standalone utility.** Not auto-called on `JobListing` creation. Consumers call it explicitly or populate `seniority` field manually. The title is the strongest signal and takes precedence; the `description` arg is consulted only as a fallback when the title is inconclusive.
+- **Config validation has no filesystem side effects.** `AppSettings` does not create the output dir on construction. Callers create it explicitly right before writing via `settings.ensure_output_dir()` (returns the `Path`).
+- **One ATS result model.** `ATSCompatibilityResult` is the single ATS contract; `is_compatible` is a `@computed_field` (`score >= 0.6`) so it serializes. There is no separate `ATSReport`.
+- **Word-boundary matching for tone + ATS sections.** `tone_detector.py` and `ats_checker.py` match keywords/section headers via `utils.text.contains_word()` (alphanumeric boundaries), so `api` never matches inside `therapist` and `education` never matches inside `educational`.
+- **ATS suggestions skip optional sections.** `_generate_suggestions()` never nags to add optional `Certifications`/`Languages` sections; those still appear as informational checks but not as suggestions.
 - **`pdftotext` uses `-layout` flag.** Preserves multi-column resume formatting. Temp files cleaned up via `try/finally`.
 - **DOCX support via `python-docx`.** `ResumeLoader.load()` dispatches `.docx` to `_load_docx()` using `Document(path).paragraphs`.
 - **OCR fallback via `paddleocr`.** `ResumeLoader.load()` accepts `ocr_mode={auto,on,off}`. Auto mode falls back to OCR when extracted text is < 100 chars. Image resumes (`.png`, `.jpg`, `.jpeg`, `.tiff`, `.bmp`, `.webp`) use OCR directly. `--force-ocr` CLI flag forces OCR on all resume-loading commands.
 - **OCR models are lazy-loaded.** `OCRService` initializes PaddleOCR only on first extraction. First import triggers ~500MB+ model downloads.
 - **PyMuPDF is required for PDF OCR.** `extract_text_from_pdf` uses `fitz.open()` + page pixmap → temp PNG → OCR. Temp files cleaned up via `try/finally`.
 - **LinkedIn login uses Playwright locator API.** LinkedIn removed `name` attributes from login form. Use `page.locator('input[type="email"]').last` and `page.locator('button:has-text("Sign in"]').last`. Do NOT use `input[name="session_key"]` — it no longer exists.
-- **LinkedIn scraper shares browser context.** `login()` and `scrape()` use the same `BrowserContext` via `_get_context()`. Cookies persist across pages. Do NOT use `self._browser.new_page()` (creates isolated context).
+- **Scraper AND applicator share one authenticated context.** `BrowserManager.persistent_context()` returns a single context that lives for the manager's lifetime; `persistent_page()` opens a page in it and closes only the page. The scraper's `login()`/`scrape()` and the applicator's `apply()`/`check_already_applied()` all go through it, so the login session is reused for Easy Apply. Do NOT use `self._browser.new_page()` / `new_context()` for authenticated flows (those are isolated and logged-out), and do NOT reach into `self._browser._browser` — use the public `persistent_context()`/`persistent_page()` API. The persistent context is closed in `BrowserManager.stop()`. When no `user_agent` is configured, the manager applies `DEFAULT_USER_AGENT` (a real desktop UA) so sites don't see "HeadlessChrome".
+- **Applicator screenshots the failed page in place.** On error, `LinkedInApplicator.apply()` screenshots the *same* page that failed (it no longer re-navigates a fresh page, which used to hide the real failure state).
 - **LinkedIn description extraction clicks cards.** Scraper clicks each job card, waits for content change, clicks "show more" button, then extracts. Search page cards only have title/company/location — descriptions come from the detail panel.
 - **`--verbose` and `--log-file` work both before and after the command.** `job-applicator --verbose match` and `job-applicator match --verbose` both work. `_merge_verbose_ctx()` in cli.py handles merging subcommand flags with global callback.
 - **JSON output goes to stdout, logs go to stderr.** `sys.stdout.write()` for JSON, `RichHandler(console=Console(file=sys.stderr))` for logging. Enables `job-applicator match --json | jq .` without Rich wrapping corruption.

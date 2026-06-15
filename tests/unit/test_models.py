@@ -7,6 +7,7 @@ import pytest
 from job_applicator.models import (
     ApplicationResult,
     ApplicationStatus,
+    ATSCompatibilityResult,
     CoverLetterResult,
     CoverLetterSession,
     JobBoard,
@@ -15,8 +16,33 @@ from job_applicator.models import (
     TailoredResume,
     TailorSession,
     UserProfile,
+    VerboseReport,
     detect_seniority,
 )
+
+
+class TestATSModelConsolidation:
+    """L-6: ATSReport was merged into ATSCompatibilityResult (single source of truth)."""
+
+    def test_legacy_ats_report_removed(self) -> None:
+        import job_applicator.models as models
+
+        assert not hasattr(models, "ATSReport")
+
+    def test_is_compatible_is_computed_from_score(self) -> None:
+        assert ATSCompatibilityResult(score=0.6).is_compatible is True
+        assert ATSCompatibilityResult(score=0.59).is_compatible is False
+
+    def test_is_compatible_serializes(self) -> None:
+        """The computed flag must survive serialization for telemetry consumers."""
+        dumped = ATSCompatibilityResult(score=0.8).model_dump()
+        assert dumped["is_compatible"] is True
+
+    def test_verbose_report_uses_consolidated_model(self) -> None:
+        report = VerboseReport(command="ats-check", args={}, config={})
+        report.ats = ATSCompatibilityResult(score=0.9)
+        assert isinstance(report.ats, ATSCompatibilityResult)
+        assert report.ats.is_compatible is True
 
 
 def test_job_listing_creation() -> None:
@@ -261,6 +287,19 @@ class TestDetectSeniority:
     def test_word_boundary(self) -> None:
         """Ensure 'senior' doesn't match 'seniority'."""
         assert detect_seniority("Questions about seniority") is None
+
+    def test_description_used_as_fallback(self) -> None:
+        """L-8: when the title is inconclusive, the description is consulted."""
+        assert detect_seniority("Software Engineer", "This is a senior-level role.") == "senior"
+
+    def test_title_takes_precedence_over_description(self) -> None:
+        """L-8: the title wins even when the description mentions another level."""
+        assert (
+            detect_seniority("Junior Developer", "You will work with our senior staff.") == "junior"
+        )
+
+    def test_no_match_in_title_or_description(self) -> None:
+        assert detect_seniority("Software Engineer", "Build great products.") is None
 
 
 class TestPromptVersion:

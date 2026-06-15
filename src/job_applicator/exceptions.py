@@ -59,5 +59,11 @@ class CoverLetterError(DocumentError):
     """Cover letter generation error."""
 
 
-class LLMError(CoverLetterError):
-    """LLM API call failed."""
+class LLMError(JobApplicatorError):
+    """LLM API call failed.
+
+    LLM calls back several features (cover letters, resume tailoring, style
+    analysis), so this is a direct ``JobApplicatorError`` rather than a
+    ``CoverLetterError`` subclass — an LLM failure during tailoring is not a
+    cover-letter error and must not be caught by ``except CoverLetterError``.
+    """

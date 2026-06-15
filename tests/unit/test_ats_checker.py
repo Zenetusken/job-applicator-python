@@ -128,6 +128,34 @@ class TestSectionHeaderChecks:
         assert any("experience" in w.lower() for w in result.warnings)
 
 
+class TestSectionWordBoundary:
+    def test_substring_does_not_satisfy_section(self, checker: ATSChecker) -> None:
+        """L-5: 'educational' must not count as an 'Education' section header."""
+        resume = ResumeData(
+            raw_text=(
+                "John Doe\njohn@example.com\n555-123-4567\n"
+                "I have strong educational philosophy and experiences across teams. " * 6
+            ),
+            name="John Doe",
+            email="john@example.com",
+            phone="555-123-4567",
+        )
+        result = checker.check(resume)
+        edu_check = next(c for c in result.checks if c["name"] == "education_section")
+        assert edu_check["passed"] is False
+
+
+class TestOptionalSectionSuggestions:
+    def test_optional_sections_not_suggested_when_absent(
+        self, checker: ATSChecker, bad_resume: ResumeData
+    ) -> None:
+        """L-10: never nag to add optional 'Certifications'/'Languages' sections."""
+        result = checker.check(bad_resume)
+        joined = " ".join(result.suggestions).lower()
+        assert "certifications" not in joined
+        assert "languages" not in joined
+
+
 class TestLengthChecks:
     def test_reasonable_length(self, checker: ATSChecker, good_resume: ResumeData) -> None:
         result = checker.check(good_resume)

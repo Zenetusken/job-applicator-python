@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, computed_field
 
 
 class JobBoard(StrEnum):
@@ -63,14 +63,19 @@ def detect_seniority(title: str, description: str = "") -> str | None:
     """Detect seniority level from job title and description.
 
     Returns one of: intern, junior, mid, senior, lead, principal, staff, director, None.
+
+    The title is the strongest signal and takes precedence; the description is
+    only consulted when the title is inconclusive (titles are terse and
+    unambiguous, whereas descriptions are noisier).
     """
     import re
 
-    title_lower = title.lower()
-    for level, keywords in _SENIORITY_KEYWORDS.items():
-        for kw in keywords:
-            if re.search(rf"\b{re.escape(kw)}\b", title_lower):
-                return level
+    for text in (title, description):
+        text_lower = text.lower()
+        for level, keywords in _SENIORITY_KEYWORDS.items():
+            for kw in keywords:
+                if re.search(rf"\b{re.escape(kw)}\b", text_lower):
+                    return level
     return None
 
 
@@ -338,6 +343,7 @@ class ATSCompatibilityResult(BaseModel):
         description="Actionable suggestions to improve ATS compatibility",
     )
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def is_compatible(self) -> bool:
         return self.score >= 0.6
@@ -355,16 +361,6 @@ class ResumeParsingReport(BaseModel):
     parsed_skills: list[str] = Field(default_factory=list)
     parsed_summary_preview: str = ""
     warnings: list[str] = Field(default_factory=list)
-
-    model_config = {"extra": "forbid"}
-
-
-class ATSReport(BaseModel):
-    score: float = 0.0
-    is_compatible: bool = False
-    checks: list[dict[str, Any]] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
-    suggestions: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
@@ -420,7 +416,7 @@ class VerboseReport(BaseModel):
     duration_ms: int = 0
     config: dict[str, Any] = Field(default_factory=dict)
     resume: ResumeParsingReport | None = None
-    ats: ATSReport | None = None
+    ats: ATSCompatibilityResult | None = None
     match: MatchReport | None = None
     llm: LLMReport | None = None
     tailoring: TailoringReport | None = None

@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -123,11 +123,16 @@ class AppSettings(BaseSettings):
             sources.append(TomlConfigSettingsSource(settings_cls, toml_file=Path(toml_file)))
         return tuple(sources)
 
-    @field_validator("output_dir")
-    @classmethod
-    def ensure_output_dir(cls, v: str) -> str:
-        Path(v).mkdir(parents=True, exist_ok=True)
-        return v
+    def ensure_output_dir(self) -> Path:
+        """Create the output directory if needed and return it.
+
+        Directory creation is an explicit, opt-in side effect performed by
+        callers right before they write output — constructing settings must
+        stay free of filesystem side effects.
+        """
+        path = Path(self.output_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
     def get_resume_path(self) -> Path:
         """Get resolved resume path."""
