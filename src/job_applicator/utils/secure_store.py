@@ -21,12 +21,16 @@ def write_secret_json(path: Path, payload: dict[str, Any]) -> None:
       ``create`` and ``chmod``;
     - content is written to a temp file in the same directory and atomically
       :func:`os.replace`-d into place — a crash never leaves a half-written
-      token, and a pre-existing symlink at ``path`` is *replaced* rather than
-      followed (so an attacker can't redirect the write to another file).
+      token, a pre-existing symlink *at* ``path`` is replaced (not followed),
+      and a symlinked *parent* directory is refused outright, so the token write
+      cannot be redirected through a planted symlink.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.parent.chmod(0o700)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".cookies-", suffix=".tmp")
+    parent = path.parent
+    if parent.is_symlink():
+        raise OSError(f"refusing to write a secret into a symlinked directory: {parent}")
+    parent.mkdir(parents=True, exist_ok=True)
+    parent.chmod(0o700)
+    fd, tmp = tempfile.mkstemp(dir=parent, prefix=".cookies-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, indent=2)

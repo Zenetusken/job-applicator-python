@@ -177,3 +177,27 @@ async def test_has_active_session_false_on_transient_error(
 
     assert await scraper.has_active_session() is False  # NavigationError swallowed
     page.close.assert_awaited_once()  # page still cleaned up
+
+
+@pytest.mark.asyncio
+async def test_load_cookies_skips_invalid_cookie(
+    app_settings: AppSettings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A single invalid cookie must not void an otherwise-valid session
+    (context.add_cookies is all-or-nothing, so we fall back to per-cookie)."""
+    monkeypatch.setattr(LinkedInScraper, "COOKIE_PATH", tmp_path / "linkedin.json")
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    scraper._cookie_file.write_text(
+        json.dumps({"cookies": [{"name": "li_at", "value": "good"}, {"name": "bad", "value": "x"}]})
+    )
+
+    async def add_cookies(cks: list[dict[str, str]]) -> None:
+        if len(cks) > 1:  # whole batch rejected because of the bad cookie
+            raise PlaywrightError("batch rejected")
+        if cks[0]["name"] == "bad":
+            raise PlaywrightError("bad cookie")
+
+    context = AsyncMock()
+    context.add_cookies = add_cookies
+
+    assert await scraper._load_cookies(context) is True  # the good cookie still loaded

@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 from job_applicator.utils.secure_store import write_secret_json
 
 
@@ -41,3 +43,16 @@ def test_write_secret_json_replaces_symlink_not_target(tmp_path: Path) -> None:
     assert target.read_text() == "untouched"  # target not overwritten
     assert not link.is_symlink()  # link replaced by a real file
     assert json.loads(link.read_text())["cookies"] == ["secret"]
+
+
+def test_write_secret_json_refuses_symlinked_parent(tmp_path: Path) -> None:
+    """A symlinked PARENT directory is refused, so the token isn't redirected
+    into an attacker-controlled location."""
+    real = tmp_path / "attacker_dir"
+    real.mkdir()
+    linked_parent = tmp_path / "cookies"
+    os.symlink(real, linked_parent)
+
+    with pytest.raises(OSError):
+        write_secret_json(linked_parent / "linkedin.json", {"cookies": ["secret"]})
+    assert list(real.iterdir()) == []  # nothing written into the symlink target

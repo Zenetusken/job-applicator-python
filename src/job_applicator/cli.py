@@ -22,7 +22,6 @@ from job_applicator.exceptions import JobApplicatorError
 from job_applicator.models import UserProfile
 from job_applicator.utils.diff import render_diff
 from job_applicator.utils.logging import setup_logging
-from job_applicator.utils.secure_store import write_secret_json
 from job_applicator.utils.verbose import VerboseReporter
 
 if TYPE_CHECKING:
@@ -437,7 +436,18 @@ def _cookiejar_to_playwright(cookie: Any) -> dict[str, Any] | None:
     expires = getattr(cookie, "expires", None)
     if expires:
         raw["expires"] = expires
+    # cookiejar keeps httpOnly as a nonstandard attr (browser_cookie3 sets it);
+    # propagate it so the imported cookie matches the real browser cookie.
+    rest = getattr(cookie, "_rest", None) or {}
+    if any(str(key).lower() == "httponly" for key in rest):
+        raw["httpOnly"] = True
     return _normalize_cookie(raw)
+
+
+def _is_linkedin_domain(domain: str) -> bool:
+    """True only for genuine LinkedIn hosts (not look-alikes like notlinkedin.com)."""
+    host = domain.lstrip(".").lower()
+    return host == "linkedin.com" or host.endswith(".linkedin.com")
 
 
 def _cookies_from_browser(browser: str) -> list[dict[str, Any]]:
@@ -475,7 +485,13 @@ def _cookies_from_browser(browser: str) -> list[dict[str, Any]]:
             "login keyring unlocked?[/red]"
         )
         raise typer.Exit(1) from exc
-    return [c for c in (_cookiejar_to_playwright(ck) for ck in jar) if c]
+    # browser_cookie3's domain filter is a SUBSTRING match, so it can sweep in
+    # look-alike hosts (e.g. notlinkedin.com); keep only genuine LinkedIn cookies.
+    return [
+        c
+        for c in (_cookiejar_to_playwright(ck) for ck in jar)
+        if c and _is_linkedin_domain(str(c.get("domain", "")))
+    ]
 
 
 @app.command(name="import-cookies")
@@ -533,18 +549,9 @@ def import_cookies(
 
     from job_applicator.scrapers.linkedin import LinkedInScraper
 
-    if li_at == "-":  # read the token from stdin to keep it out of shell history
-        li_at = sys.stdin.readline().strip()
-
     cookies: list[dict[str, Any]] = []
     if from_browser:
         cookies = _cookies_from_browser(from_browser)
-        if not any(c.get("name") == "li_at" for c in cookies):
-            console.print(
-                f"[red]No `li_at` cookie found in {from_browser}. "
-                "Are you logged into LinkedIn there?[/red]"
-            )
-            raise typer.Exit(1)
         console.print(f"[green]Read {len(cookies)} LinkedIn cookie(s) from {from_browser}.[/green]")
     elif file:
         try:
@@ -558,7 +565,12 @@ def import_cookies(
             raise typer.Exit(1)
         cookies = [c for c in (_normalize_cookie(e) for e in entries) if c]
     elif li_at:
-        cookies.append(
+        if li_at == "-":  # read from stdin to keep the token out of shell history
+            li_at = sys.stdin.readline().strip()
+        if not li_at:
+            console.print("[red]No token provided on stdin.[/red]")
+            raise typer.Exit(1)
+        seed = _normalize_cookie(
             {
                 "name": "li_at",
                 "value": li_at,
@@ -569,8 +581,10 @@ def import_cookies(
                 "sameSite": "None",
             }
         )
+        if seed:
+            cookies.append(seed)
         if jsessionid:
-            cookies.append(
+            js = _normalize_cookie(
                 {
                     "name": "JSESSIONID",
                     "value": jsessionid,
@@ -580,6 +594,8 @@ def import_cookies(
                     "sameSite": "None",
                 }
             )
+            if js:
+                cookies.append(js)
     else:
         console.print(
             "[red]Provide --from-browser <name>, --li-at <value>, or --file <path>.[/red]"
@@ -589,10 +605,15 @@ def import_cookies(
     if not cookies:
         console.print("[red]No usable cookies found in the input.[/red]")
         raise typer.Exit(1)
+    if not any(c.get("name") == "li_at" for c in cookies):
+        console.print(
+            "[red]No `li_at` session cookie in the import — it would not authenticate. "
+            "Are you logged into LinkedIn in that browser / export?[/red]"
+        )
+        raise typer.Exit(1)
 
-    cookie_path = LinkedInScraper.COOKIE_PATH
-    write_secret_json(cookie_path, {"cookies": cookies})  # atomic, 0600, no symlink-follow
-    console.print(f"[green]Wrote {len(cookies)} cookie(s) to {cookie_path}[/green]")
+    LinkedInScraper.write_cookie_file(cookies)
+    console.print(f"[green]Wrote {len(cookies)} cookie(s) to {LinkedInScraper.COOKIE_PATH}[/green]")
 
     if not verify:
         return
