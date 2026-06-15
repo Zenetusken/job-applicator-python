@@ -162,7 +162,11 @@ class VerboseReporter:
         if console is not None:
             self._render_terminal(console)
         if log_file:
-            Path(log_file).write_text(self.report.model_dump_json(indent=2), encoding="utf-8")
+            try:
+                Path(log_file).write_text(self.report.model_dump_json(indent=2), encoding="utf-8")
+            except (IsADirectoryError, PermissionError, OSError) as exc:
+                if console is not None:
+                    console.print(f"[yellow]Warning: Could not write verbose log: {exc}[/yellow]")
 
     def _render_terminal(self, console: Console) -> None:
         table = Table(title="Observability Report")

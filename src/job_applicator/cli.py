@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from job_applicator.documents.tone_detector import ToneProfile
     from job_applicator.models import (
         ApplicationResult,
+        ATSCompatibilityResult,
         CoverLetterResult,
         CoverLetterSession,
         JobListing,
@@ -89,7 +90,7 @@ def _resolve_ocr_mode(ocr_mode: str, force_ocr: bool) -> str:
     return ocr_mode
 
 
-def _run_ats_preflight(resume: ResumeData) -> None:
+def _run_ats_preflight(resume: ResumeData) -> ATSCompatibilityResult:
     """Run ATS compatibility check and warn if issues found."""
     from job_applicator.documents.ats_checker import ATSChecker
 
@@ -97,7 +98,7 @@ def _run_ats_preflight(resume: ResumeData) -> None:
     result = checker.check(resume)
 
     if result.is_compatible:
-        return
+        return result
 
     console.print(f"\n[yellow]⚠ ATS Compatibility: {result.score:.0%} (Not Compatible)[/yellow]")
     for warning in result.warnings[:3]:
@@ -106,6 +107,7 @@ def _run_ats_preflight(resume: ResumeData) -> None:
         "  [dim]Tip: Run 'job-applicator ats-check --resume <path>' for full report[/dim]"
     )
     console.print()
+    return result
 
 
 def _run_ats_post_tailor(original_text: str, tailored_text: str) -> None:
@@ -360,7 +362,15 @@ def apply(
 
                 loader = ResumeLoader()
                 resume_data = loader.load(settings.resume_path, ocr_mode=effective_ocr_mode)
-                _run_ats_preflight(resume_data)
+                ats_result = _run_ats_preflight(resume_data)
+                if reporter:
+                    reporter.record_ats(
+                        score=ats_result.score,
+                        is_compatible=ats_result.is_compatible,
+                        checks=ats_result.checks,
+                        warnings=ats_result.warnings,
+                        suggestions=ats_result.suggestions,
+                    )
 
                 user_profile = _load_user_profile(settings)
                 generator = CoverLetterGenerator(settings.llm)
@@ -656,7 +666,19 @@ def match(
             )
         if not as_json:
             console.print(f"[green]Loaded resume: {resume_data.name}[/green]")
-            _run_ats_preflight(resume_data)
+            ats_result = _run_ats_preflight(resume_data)
+        else:
+            from job_applicator.documents.ats_checker import ATSChecker
+
+            ats_result = ATSChecker().check(resume_data)
+        if reporter:
+            reporter.record_ats(
+                score=ats_result.score,
+                is_compatible=ats_result.is_compatible,
+                checks=ats_result.checks,
+                warnings=ats_result.warnings,
+                suggestions=ats_result.suggestions,
+            )
 
         # Load jobs
         jobs: list[JobListing] = []
@@ -861,7 +883,15 @@ def batch(
             )
         if not as_json:
             console.print(f"[green]Loaded resume: {resume_data.name}[/green]")
-        _run_ats_preflight(resume_data)
+        ats_result = _run_ats_preflight(resume_data)
+        if reporter:
+            reporter.record_ats(
+                score=ats_result.score,
+                is_compatible=ats_result.is_compatible,
+                checks=ats_result.checks,
+                warnings=ats_result.warnings,
+                suggestions=ats_result.suggestions,
+            )
 
         jobs: list[JobListing] = []
         if jobs_file:
@@ -906,6 +936,26 @@ def batch(
         with console.status("Computing match scores..."):
             matches = matcher.rank_jobs(resume_data, jobs, top_k=top_k)
 
+        if reporter and matches:
+            reporter.record_match(
+                embedding_model=settings.embedding.model_name,
+                device=settings.embedding.device,
+                load_time_ms=0,
+                results=[
+                    {
+                        "rank": i + 1,
+                        "title": m.job.title,
+                        "company": m.job.company,
+                        "score": round(m.score, 4),
+                        "semantic_score": round(m.semantic_score, 4),
+                        "skill_score": round(m.skill_score, 4),
+                        "matched_skills": m.matched_skills,
+                        "missing_skills": m.missing_skills,
+                    }
+                    for i, m in enumerate(matches)
+                ],
+            )
+
         if min_score > 0:
             before = len(matches)
             matches = [m for m in matches if m.score >= min_score]
@@ -941,6 +991,7 @@ def batch(
         timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
         output_dir = settings.output_dir
         await asyncio.to_thread(Path(output_dir).mkdir, parents=True, exist_ok=True)
+        tailoring_scores: list[tuple[float, float]] = []
 
         async def _process_one(match_result: MatchResult) -> dict[str, object]:
             job = match_result.job
@@ -955,6 +1006,17 @@ def batch(
                 }
 
                 try:
+                    if reporter:
+                        reporter.record_llm_call(
+                            model=settings.llm.model,
+                            endpoint=settings.llm.api_base,
+                            temperature=settings.llm.temperature,
+                            details={
+                                "job_title": job.title,
+                                "company": job.company,
+                                "type": "tailor",
+                            },
+                        )
                     tailored = await tailor_engine.tailor(
                         resume=resume_data,
                         job=job,
@@ -966,6 +1028,7 @@ def batch(
                     result["match_score"] = round(tailored.match_score, 4)
                     result["semantic_score"] = round(tailored.semantic_score, 4)
                     result["skill_score"] = round(tailored.skill_score, 4)
+                    tailoring_scores.append((tailored.match_score, tailored.semantic_score))
 
                     resume_filename = f"tailored_{safe_company}_{safe_title}_{timestamp}.txt"
                     resume_path_out = str(Path(output_dir) / resume_filename)
@@ -990,6 +1053,17 @@ def batch(
 
                 if cl_generator is not None:
                     try:
+                        if reporter:
+                            reporter.record_llm_call(
+                                model=settings.llm.model,
+                                endpoint=settings.llm.api_base,
+                                temperature=settings.llm.temperature,
+                                details={
+                                    "job_title": job.title,
+                                    "company": job.company,
+                                    "type": "cover_letter",
+                                },
+                            )
                         letter = await cl_generator.generate(
                             job,
                             user_profile,
@@ -1012,6 +1086,13 @@ def batch(
         with console.status("Processing jobs in parallel..."):
             batch_results = await asyncio.gather(*(_process_one(m) for m in matches))
 
+        if reporter and tailoring_scores:
+            reporter.record_tailoring(
+                attempts=len(tailoring_scores),
+                ats_before=ats_result.score if ats_result else 0.0,
+                ats_after=sum(s for _, s in tailoring_scores) / len(tailoring_scores),
+            )
+
         summary = {
             "timestamp": timestamp,
             "resume": settings.resume_path,
@@ -1026,7 +1107,7 @@ def batch(
         if reporter:
             reporter.record_io(
                 files_written=written_paths,
-                batch_summary_path=str(Path(output_dir) / "batch_summary.json"),
+                batch_summary_path=summary_path,
             )
 
         if as_json:
@@ -1439,7 +1520,15 @@ def tailor(
                 parsed_summary_preview=resume_data.summary[:200] if resume_data.summary else "",
             )
         console.print(f"[green]Loaded resume: {resume_data.name}[/green]")
-        _run_ats_preflight(resume_data)
+        ats_result = _run_ats_preflight(resume_data)
+        if reporter:
+            reporter.record_ats(
+                score=ats_result.score,
+                is_compatible=ats_result.is_compatible,
+                checks=ats_result.checks,
+                warnings=ats_result.warnings,
+                suggestions=ats_result.suggestions,
+            )
 
         req_list = [r.strip() for r in requirements.split(",") if r.strip()] if requirements else []
         url = HttpUrl(job_url) if job_url else HttpUrl("https://example.com/placeholder")
@@ -1874,8 +1963,11 @@ def _sanitize_config(settings: AppSettings) -> dict[str, Any]:
 def _redact_secrets(obj: Any) -> None:
     if isinstance(obj, dict):
         for key, value in obj.items():
-            if isinstance(key, str) and any(
-                s in key.lower() for s in ("password", "secret", "key", "token")
+            if isinstance(key, str) and (
+                "password" in key.lower()
+                or "secret" in key.lower()
+                or "api_key" in key.lower()
+                or ("token" in key.lower() and "max_tokens" not in key.lower())
             ):
                 obj[key] = "[REDACTED]"
             else:
@@ -1912,6 +2004,15 @@ def ats_check(
     from job_applicator.documents.resume import ResumeLoader
 
     if not settings.resume_path:
+        reporter = _get_reporter(
+            ctx=ctx,
+            command="ats-check",
+            args={"resume": "", "ocr_mode": effective_ocr_mode},
+            config=_sanitize_config(settings),
+        )
+        if reporter:
+            reporter.record_error("Resume path required. Use --resume.")
+            reporter.render(console, log_file=None)
         console.print("[red]Resume path required. Use --resume.[/red]")
         raise typer.Exit(1)
 
@@ -1995,6 +2096,10 @@ def ats_check(
             console.print("\n[bold cyan]Suggestions:[/bold cyan]")
             for suggestion in result.suggestions:
                 console.print(f"  [cyan]*[/cyan] {suggestion}")
+    except Exception as exc:
+        if reporter:
+            reporter.record_error(str(exc))
+        raise
     finally:
         if reporter:
             log_file = None
