@@ -88,6 +88,19 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
 
+# Third-party packages that ship no type stubs or py.typed marker. They are
+# installed but un-annotated, so strict mypy can't analyze them; ignore the
+# missing imports for these specific modules rather than weakening strict mode
+# globally. Revisit if any of them start shipping types.
+[[tool.mypy.overrides]]
+module = [
+    "paddleocr.*",
+    "fitz.*",
+    "playwright_stealth.*",
+    "browser_cookie3.*",
+]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"

@@ -23,6 +23,7 @@ from job_applicator.models import UserProfile
 from job_applicator.utils.cookies import save_cookies
 from job_applicator.utils.diff import render_diff
 from job_applicator.utils.logging import setup_logging
+from job_applicator.utils.url import host_matches
 from job_applicator.utils.verbose import VerboseReporter
 
 if TYPE_CHECKING:
@@ -445,20 +446,6 @@ def _cookiejar_to_playwright(cookie: Any) -> dict[str, Any] | None:
     return _normalize_cookie(raw)
 
 
-def _host_matches(host: str, base: str) -> bool:
-    """True if `host` is `base` or a subdomain of it (not a look-alike).
-
-    e.g. base "linkedin.com" matches www.linkedin.com but NOT notlinkedin.com.
-    """
-    h = host.lstrip(".").lower()
-    return h == base or h.endswith("." + base)
-
-
-def _is_linkedin_domain(domain: str) -> bool:
-    """True only for genuine LinkedIn hosts (kept for back-compat)."""
-    return _host_matches(domain, "linkedin.com")
-
-
 def _cookies_from_browser(browser: str, base_domain: str) -> list[dict[str, Any]]:
     """Read a site's cookies directly from a local browser's cookie store.
 
@@ -499,8 +486,54 @@ def _cookies_from_browser(browser: str, base_domain: str) -> list[dict[str, Any]
     return [
         c
         for c in (_cookiejar_to_playwright(ck) for ck in jar)
-        if c and _host_matches(str(c.get("domain", "")), base_domain)
+        if c and host_matches(str(c.get("domain", "")), base_domain)
     ]
+
+
+@dataclass(frozen=True)
+class _SiteSpec:
+    """Per-board rules for ``import-cookies``, so the command body stays board-agnostic.
+
+    ``required_cookie`` is a hard gate (absent => refuse, since the session can't
+    work without it). ``preferred_cookie`` is a soft signal (absent => warn but
+    save). ``session_flags`` enables the LinkedIn ``--li-at``/``--jsessionid``
+    seed inputs. ``feed_verify`` runs the post-import logged-in feed check.
+    """
+
+    cookie_path: Path
+    base_domain: str
+    required_cookie: str | None
+    preferred_cookie: str | None
+    session_flags: bool
+    feed_verify: bool
+
+
+def _site_specs() -> dict[str, _SiteSpec]:
+    from job_applicator.scrapers.indeed import IndeedScraper
+    from job_applicator.scrapers.linkedin import LinkedInScraper
+
+    return {
+        # li_at is the LinkedIn session token: nothing authenticates without it.
+        "linkedin": _SiteSpec(
+            cookie_path=LinkedInScraper.COOKIE_PATH,
+            base_domain="linkedin.com",
+            required_cookie="li_at",
+            preferred_cookie=None,
+            session_flags=True,
+            feed_verify=True,
+        ),
+        # Indeed search is public — no cookie is strictly required. cf_clearance
+        # (Cloudflare) is what actually helps a warm session avoid challenges, so
+        # it's preferred-not-required; CTK and friends are mere tracking cookies.
+        "indeed": _SiteSpec(
+            cookie_path=IndeedScraper.COOKIE_PATH,
+            base_domain="indeed.com",
+            required_cookie=None,
+            preferred_cookie="cf_clearance",
+            session_flags=False,
+            feed_verify=False,
+        ),
+    }
 
 
 @app.command(name="import-cookies")
@@ -559,18 +592,12 @@ def import_cookies(
     settings = _get_settings()
     setup_logging(settings.log_level)
 
-    from job_applicator.scrapers.indeed import IndeedScraper
-    from job_applicator.scrapers.linkedin import LinkedInScraper
-
-    specs = {
-        "linkedin": (LinkedInScraper.COOKIE_PATH, "linkedin.com", "li_at"),
-        "indeed": (IndeedScraper.COOKIE_PATH, "indeed.com", "CTK"),
-    }
+    specs = _site_specs()
     if site not in specs:
         console.print(f"[red]Unsupported site '{site}'. Choose: {', '.join(specs)}.[/red]")
         raise typer.Exit(1)
-    cookie_path, base_domain, key_cookie = specs[site]
-    if (li_at or jsessionid) and site != "linkedin":
+    spec = specs[site]
+    if (li_at or jsessionid) and not spec.session_flags:
         console.print(
             "[red]--li-at/--jsessionid are LinkedIn-only; "
             f"use --from-browser/--file for {site}.[/red]"
@@ -579,7 +606,7 @@ def import_cookies(
 
     cookies: list[dict[str, Any]] = []
     if from_browser:
-        cookies = _cookies_from_browser(from_browser, base_domain)
+        cookies = _cookies_from_browser(from_browser, spec.base_domain)
         console.print(f"[green]Read {len(cookies)} {site} cookie(s) from {from_browser}.[/green]")
     elif file:
         try:
@@ -633,21 +660,31 @@ def import_cookies(
     if not cookies:
         console.print("[red]No usable cookies found in the input.[/red]")
         raise typer.Exit(1)
-    if not any(c.get("name") == key_cookie for c in cookies):
+    names = {c.get("name") for c in cookies}
+    if spec.required_cookie and spec.required_cookie not in names:
         console.print(
-            f"[red]No `{key_cookie}` cookie in the import — it would not authenticate. "
-            f"Are you logged into / browsing {site} in that browser / export?[/red]"
+            f"[red]No `{spec.required_cookie}` cookie in the import — it would not authenticate. "
+            f"Are you logged into {site} in that browser / export?[/red]"
         )
         raise typer.Exit(1)
+    if spec.preferred_cookie and spec.preferred_cookie not in names:
+        # Not fatal: the search is public, but without this cookie a fresh
+        # automation session is more likely to be challenged.
+        console.print(
+            f"[yellow]No `{spec.preferred_cookie}` cookie in the import — {site} may still "
+            f"challenge the scrape. Visiting {site} once in your browser first can "
+            f"seed it.[/yellow]"
+        )
 
-    save_cookies(cookie_path, cookies)
-    console.print(f"[green]Wrote {len(cookies)} cookie(s) to {cookie_path}[/green]")
+    save_cookies(spec.cookie_path, cookies)
+    console.print(f"[green]Wrote {len(cookies)} cookie(s) to {spec.cookie_path}[/green]")
 
     if not verify:
         return
-    if site != "linkedin":
-        # A LinkedIn feed check confirms the session; verifying Indeed would mean
-        # a Cloudflare-fronted scrape, so leave that to `search --site indeed`.
+    if not spec.feed_verify:
+        # A logged-in feed check confirms a LinkedIn session; for a public,
+        # Cloudflare-fronted board like Indeed there's no equivalent cheap probe,
+        # so leave validation to `search --site <site>`.
         console.print(
             f"[green]Cookies saved. Run `job-applicator search --site {site}` to test.[/green]"
         )
@@ -655,6 +692,7 @@ def import_cookies(
 
     async def _verify() -> bool:
         from job_applicator.browser.manager import BrowserManager
+        from job_applicator.scrapers.linkedin import LinkedInScraper
 
         async with BrowserManager(settings.browser) as browser:
             scraper = LinkedInScraper(browser, settings)

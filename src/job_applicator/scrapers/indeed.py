@@ -31,17 +31,14 @@ from job_applicator.scrapers.base import BaseScraper, SearchParams
 from job_applicator.utils.cookies import load_cookies
 from job_applicator.utils.logging import get_logger
 from job_applicator.utils.retry import async_retry
+from job_applicator.utils.url import host_matches
 
 logger = get_logger("scrapers.indeed")
-
-INDEED_BASE = "https://www.indeed.com"
-INDEED_JOBS = f"{INDEED_BASE}/jobs"
 
 
 def _is_indeed_host(host: str) -> bool:
     """True only for genuine Indeed hosts (any regional ``*.indeed.com``)."""
-    h = host.lower()
-    return h == "indeed.com" or h.endswith(".indeed.com")
+    return host_matches(host, "indeed.com")
 
 
 class IndeedScraper(BaseScraper):
@@ -173,7 +170,10 @@ class IndeedScraper(BaseScraper):
 
     async def _extract_job(self, card: ElementHandle, board: JobBoard) -> JobListing | None:
         """Extract job data from an Indeed result card."""
-        # Selectors verified against the live Indeed DOM (2026-06-15).
+        # Primary selectors verified against the live Indeed DOM (2026-06-15);
+        # the legacy fallbacks (span.companyName / div.companyLocation) still
+        # appear on some regional sites and A/B buckets, so keep them rather than
+        # silently degrade company/location to "Unknown"/"".
         title_el = await card.query_selector("a.jcs-JobTitle, h2 a")
         if not title_el:
             return None
@@ -183,10 +183,12 @@ class IndeedScraper(BaseScraper):
             return None
         url = href if href.startswith("http") else f"{self._base}{href}"
 
-        company_el = await card.query_selector('[data-testid="company-name"]')
+        company_el = await card.query_selector('[data-testid="company-name"], span.companyName')
         company = (await company_el.inner_text()).strip() if company_el else "Unknown"
 
-        location_el = await card.query_selector('[data-testid="text-location"]')
+        location_el = await card.query_selector(
+            '[data-testid="text-location"], div.companyLocation'
+        )
         location = (await location_el.inner_text()).strip() if location_el else ""
 
         return JobListing(
