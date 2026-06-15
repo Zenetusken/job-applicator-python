@@ -11,7 +11,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from job_applicator.models import (
-    ATSReport,
+    ATSCompatibilityResult,
     IOReport,
     LLMReport,
     MatchReport,
@@ -61,14 +61,12 @@ class VerboseReporter:
         self,
         *,
         score: float,
-        is_compatible: bool,
         checks: list[dict[str, Any]],
         warnings: list[str],
         suggestions: list[str],
     ) -> None:
-        self.report.ats = ATSReport(
+        self.report.ats = ATSCompatibilityResult(
             score=score,
-            is_compatible=is_compatible,
             checks=checks,
             warnings=warnings,
             suggestions=suggestions,

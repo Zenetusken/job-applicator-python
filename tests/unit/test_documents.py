@@ -59,6 +59,25 @@ def test_resume_loader_recognizes_technical_skills_header(tmp_path: object) -> N
     assert "Terraform" in resume.skills
 
 
+def test_summary_fallback_keeps_substantial_first_paragraph() -> None:
+    """L-7: with no Summary/Objective header, a substantial first paragraph is the summary."""
+    text = (
+        "John Doe\njohn@example.com\n555-123-4567\n"
+        "Seasoned backend engineer with a decade of experience building "
+        "reliable distributed systems for fintech companies.\n\n"
+        "Experience\nSenior Engineer at Acme"
+    )
+    resume = ResumeLoader().parse_text(text)
+    assert resume.summary.startswith("Seasoned backend engineer")
+
+
+def test_summary_fallback_drops_too_short_paragraph() -> None:
+    """L-7: a tiny first paragraph is not treated as a summary."""
+    text = "John Doe\njohn@example.com\n555-123-4567\nHello there.\n\nExperience\nDev"
+    resume = ResumeLoader().parse_text(text)
+    assert resume.summary == ""
+
+
 def test_resume_loader_recognizes_core_competencies_header(tmp_path: object) -> None:
     """'Core Competencies' is a recognized inline skills header."""
     import pathlib

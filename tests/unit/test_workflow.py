@@ -358,6 +358,7 @@ class TestSaveCoverLetter:
         console = MagicMock(spec=Console)
         settings = MagicMock()
         settings.output_dir = str(tmp_path)
+        settings.ensure_output_dir.return_value = tmp_path
         job = MagicMock()
         job.company = "TechCorp"
         job.title = "Senior Dev"
@@ -377,6 +378,7 @@ class TestSaveCoverLetter:
         console = MagicMock(spec=Console)
         settings = MagicMock()
         settings.output_dir = str(tmp_path)
+        settings.ensure_output_dir.return_value = tmp_path
         job = MagicMock()
         job.company = "TechCorp"
         job.title = "Senior Dev"
@@ -393,6 +395,7 @@ class TestSaveCoverLetter:
         console = MagicMock(spec=Console)
         settings = MagicMock()
         settings.output_dir = str(tmp_path)
+        settings.ensure_output_dir.return_value = tmp_path
         job = MagicMock()
         job.company = "TechCorp"
         job.title = "Senior Dev"
@@ -414,6 +417,7 @@ class TestSaveCoverLetter:
         console = MagicMock(spec=Console)
         settings = MagicMock()
         settings.output_dir = str(tmp_path)
+        settings.ensure_output_dir.return_value = tmp_path
         job = MagicMock()
         job.company = "TechCorp"
         job.title = "Senior Dev"

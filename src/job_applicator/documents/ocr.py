@@ -27,6 +27,10 @@ class OCRService:
                 raise DocumentError(
                     "paddleocr is not installed. Run: pip install paddleocr"
                 ) from exc
+            # These kwargs are valid for PaddleOCR 2.x (pinned <3.0 in
+            # pyproject). PaddleOCR 3.x renamed/removed them (use_gpu -> device,
+            # show_log dropped, ocr(cls=) -> predict()); migrate here if the pin
+            # is ever raised to >=3.0.
             self._ocr = PaddleOCR(
                 use_angle_cls=True,
                 lang="en",

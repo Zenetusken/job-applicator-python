@@ -413,7 +413,6 @@ def apply(
                 if reporter:
                     reporter.record_ats(
                         score=ats_result.score,
-                        is_compatible=ats_result.is_compatible,
                         checks=ats_result.checks,
                         warnings=ats_result.warnings,
                         suggestions=ats_result.suggestions,
@@ -739,7 +738,6 @@ def match(
         if reporter:
             reporter.record_ats(
                 score=ats_result.score,
-                is_compatible=ats_result.is_compatible,
                 checks=ats_result.checks,
                 warnings=ats_result.warnings,
                 suggestions=ats_result.suggestions,
@@ -955,7 +953,6 @@ def batch(
         if reporter:
             reporter.record_ats(
                 score=ats_result.score,
-                is_compatible=ats_result.is_compatible,
                 checks=ats_result.checks,
                 warnings=ats_result.warnings,
                 suggestions=ats_result.suggestions,
@@ -1058,7 +1055,7 @@ def batch(
         sem = asyncio.Semaphore(3)
         timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
         output_dir = settings.output_dir
-        await asyncio.to_thread(Path(output_dir).mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(settings.ensure_output_dir)
         tailoring_scores: list[tuple[float, float]] = []
         batch_reports: list[TailoringReport] = []
 
@@ -1291,8 +1288,7 @@ async def _save_cover_letter(
     """Save cover letter to disk and return the path."""
     from datetime import datetime as dt
 
-    output_dir = Path(settings.output_dir)
-    await asyncio.to_thread(output_dir.mkdir, parents=True, exist_ok=True)
+    output_dir = await asyncio.to_thread(settings.ensure_output_dir)
     safe_company = job.company.replace(" ", "_").replace("/", "_")
     safe_title = job.title.replace(" ", "_").replace("/", "_")
     timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
@@ -1609,7 +1605,6 @@ def tailor(
         if reporter:
             reporter.record_ats(
                 score=ats_result.score,
-                is_compatible=ats_result.is_compatible,
                 checks=ats_result.checks,
                 warnings=ats_result.warnings,
                 suggestions=ats_result.suggestions,
@@ -1828,8 +1823,7 @@ def tailor(
             if choice == "A":
                 from datetime import datetime as dt
 
-                output_dir = Path(settings.output_dir)
-                await asyncio.to_thread(output_dir.mkdir, parents=True, exist_ok=True)
+                output_dir = await asyncio.to_thread(settings.ensure_output_dir)
 
                 safe_company = job.company.replace(" ", "_").replace("/", "_")
                 safe_title = job.title.replace(" ", "_").replace("/", "_")
@@ -2151,7 +2145,6 @@ def ats_check(
         if reporter:
             reporter.record_ats(
                 score=result.score,
-                is_compatible=result.is_compatible,
                 checks=result.checks,
                 warnings=result.warnings,
                 suggestions=result.suggestions,

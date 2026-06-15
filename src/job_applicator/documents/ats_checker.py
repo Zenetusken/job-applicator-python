@@ -6,6 +6,7 @@ import re
 
 from job_applicator.models import ATSCompatibilityResult, ResumeData
 from job_applicator.utils.logging import get_logger
+from job_applicator.utils.text import contains_word
 
 logger = get_logger("documents.ats_checker")
 
@@ -86,7 +87,7 @@ class ATSChecker:
     ) -> None:
         text_lower = resume.raw_text.lower()
         for section in _STANDARD_SECTIONS:
-            found = section in text_lower
+            found = contains_word(text_lower, section)
             checks.append(
                 {
                     "name": f"{section}_section",
@@ -105,7 +106,7 @@ class ATSChecker:
     ) -> None:
         text_lower = resume.raw_text.lower()
         for section in _OPTIONAL_SECTIONS:
-            found = section in text_lower
+            found = contains_word(text_lower, section)
             checks.append(
                 {
                     "name": f"{section}_section",
@@ -163,7 +164,10 @@ class ATSChecker:
         checks: list[dict[str, object]],
         suggestions: list[str],
     ) -> None:
-        failed = [c for c in checks if not c["passed"]]
+        # Optional sections (certifications, languages) are not required for ATS
+        # compatibility, so their absence must not generate "add this" nagging.
+        optional = {f"{section}_section" for section in _OPTIONAL_SECTIONS}
+        failed = [c for c in checks if not c["passed"] and c["name"] not in optional]
         for check in failed:
             name = check["name"]
             if name == "email_present":
@@ -180,7 +184,3 @@ class ATSChecker:
                 suggestions.append("Expand your resume with more detail about your experience.")
             elif name == "no_tables":
                 suggestions.append("Replace table formatting with plain text lists.")
-            elif name == "certifications_section":
-                suggestions.append("Add a 'Certifications' section if you have relevant certs.")
-            elif name == "languages_section":
-                suggestions.append("Add a 'Languages' section to highlight language skills.")

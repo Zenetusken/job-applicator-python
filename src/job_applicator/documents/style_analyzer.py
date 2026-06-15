@@ -214,7 +214,7 @@ class StyleAnalyzer:
 
             content = response.choices[0].message.content
 
-            from job_applicator.documents.cover_letter import strip_thinking_process
+            from job_applicator.utils.llm import strip_thinking_process
 
             content = strip_thinking_process(content)
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from job_applicator.utils.logging import get_logger
+from job_applicator.utils.text import contains_word
 
 logger = get_logger("documents.tone_detector")
 
@@ -201,7 +202,7 @@ class ToneDetector:
         scores: dict[str, float] = {}
 
         for tone, keywords in TONE_KEYWORDS.items():
-            count = sum(1 for kw in keywords if kw in combined)
+            count = sum(1 for kw in keywords if contains_word(combined, kw))
             scores[tone] = count / max(len(keywords), 1)
 
         if not any(scores.values()):

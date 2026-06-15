@@ -2,7 +2,16 @@
 
 from __future__ import annotations
 
-from job_applicator.documents.cover_letter import strip_thinking_process
+from job_applicator.utils.llm import strip_thinking_process
+
+
+def test_strip_thinking_process_lives_in_utils_with_back_compat_reexport() -> None:
+    """L-3: the helper now lives in utils.llm; cover_letter re-exports the same object."""
+    from job_applicator.documents import cover_letter
+    from job_applicator.utils import llm
+
+    assert llm.strip_thinking_process is strip_thinking_process
+    assert cover_letter.strip_thinking_process is strip_thinking_process
 
 
 def test_strip_thinking_process_with_thinking() -> None:

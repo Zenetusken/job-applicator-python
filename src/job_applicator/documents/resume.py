@@ -249,10 +249,8 @@ class ResumeLoader:
                 paragraph_lines.append(stripped)
             if paragraph_lines:
                 summary = " ".join(paragraph_lines)
-                # Only use if it looks like a summary (not a section header)
-                if len(summary) > 50 and not summary.isupper():
-                    summary = summary
-                else:
+                # Only keep it if it looks like a summary, not a stray header.
+                if len(summary) <= 50 or summary.isupper():
                     summary = ""
 
         logger.info("Parsed resume: name=%s, skills=%d", name, len(skills))

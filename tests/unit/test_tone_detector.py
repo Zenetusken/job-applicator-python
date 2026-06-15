@@ -64,6 +64,30 @@ class TestToneDetector:
         profile = detector.detect(title="Manager", description="", requirements=[])
         assert profile.primary == "unknown"
 
+    def test_word_boundary_avoids_substring_false_positives(self):
+        """L-5: 'api' must not be counted inside 'therapist', nor 'roi' in 'android'."""
+        detector = ToneDetector()
+        profile = detector.detect(
+            title="Wellness Coordinator",
+            description="Support a therapist team building android wellness reminders.",
+            requirements=[],
+        )
+        # Neither the technical keyword 'api' (therapist) nor 'roi' (android)
+        # should register, so no tone signal is detected.
+        assert profile.scores["technical"] == 0.0
+        assert profile.scores["corporate"] == 0.0
+        assert profile.primary == "unknown"
+
+    def test_word_boundary_still_matches_symbol_and_phrase_keywords(self):
+        """L-5: boundary matching must still catch 'ci/cd' and multi-word phrases."""
+        detector = ToneDetector()
+        profile = detector.detect(
+            title="Engineer",
+            description="We value a ci/cd pipeline and strong system design.",
+            requirements=[],
+        )
+        assert profile.scores["technical"] > 0.0
+
     def test_format_for_prompt(self):
         detector = ToneDetector()
         profile = detector.detect(

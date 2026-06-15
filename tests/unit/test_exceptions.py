@@ -31,7 +31,10 @@ def test_exception_hierarchy() -> None:
     assert issubclass(DocumentError, JobApplicatorError)
     assert issubclass(ResumeNotFoundError, DocumentError)
     assert issubclass(CoverLetterError, DocumentError)
-    assert issubclass(LLMError, CoverLetterError)
+    # LLMError backs several features (cover letters, tailoring, style analysis),
+    # so it is a direct JobApplicatorError, NOT a CoverLetterError subclass.
+    assert issubclass(LLMError, JobApplicatorError)
+    assert not issubclass(LLMError, CoverLetterError)
 
 
 def test_exception_context() -> None:

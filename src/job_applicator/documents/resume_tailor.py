@@ -1092,9 +1092,7 @@ class ResumeTailor:
                 },
             )
 
-            from job_applicator.documents.cover_letter import (
-                strip_thinking_process,
-            )
+            from job_applicator.utils.llm import strip_thinking_process
 
             content = strip_thinking_process(response.choices[0].message.content)
             return content.strip()
