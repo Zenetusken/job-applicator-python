@@ -1,17 +1,84 @@
-"""Indeed applicator — Phase 2 implementation."""
+"""Indeed applicator.
+
+Mirrors the LinkedIn applicator's safety model: dry-run by default (never submits
+without explicit opt-in). Many Indeed postings redirect to an external ATS, which
+is reported as SKIPPED. The actual on-site "Easily apply" submission flow is NOT
+implemented/validated — it refuses rather than guessing at a real submission.
+"""
 
 from __future__ import annotations
 
 from job_applicator.applicators.base import BaseApplicator
-from job_applicator.exceptions import ApplicatorError
-from job_applicator.models import ApplicationResult, JobListing
+from job_applicator.browser.actions import navigate, random_delay, wait_for_selector
+from job_applicator.browser.manager import BrowserManager
+from job_applicator.config import AppSettings
+from job_applicator.models import ApplicationResult, ApplicationStatus, JobListing
+from job_applicator.utils.logging import get_logger
+
+logger = get_logger("applicators.indeed")
 
 
 class IndeedApplicator(BaseApplicator):
-    """Submits job applications on Indeed (stub — Phase 2)."""
+    """Submits applications on Indeed (best-effort; not validated against live Indeed)."""
 
-    async def apply(self, job: JobListing, cover_letter: str | None = None) -> ApplicationResult:
-        raise ApplicatorError("Indeed applicator not yet implemented (Phase 2)")
+    def __init__(self, browser: BrowserManager, config: AppSettings) -> None:
+        self._browser = browser
+        self._config = config
+
+    async def apply(
+        self, job: JobListing, cover_letter: str | None = None, submit: bool = False
+    ) -> ApplicationResult:
+        """Apply to an Indeed job.
+
+        Only on-site "Easily apply" postings are automatable; many Indeed jobs
+        redirect to an external ATS and are reported as SKIPPED. As with
+        LinkedIn, when ``submit`` is False (default) nothing is submitted.
+        """
+        try:
+            async with self._browser.persistent_page() as page:
+                await navigate(page, str(job.url))
+                await random_delay(2.0, 3.0)
+
+                easily_apply = await wait_for_selector(
+                    page,
+                    'button:has-text("Easily apply"), #indeedApplyButton',
+                    timeout_ms=5_000,
+                )
+                if not easily_apply:
+                    return ApplicationResult(
+                        job=job,
+                        status=ApplicationStatus.SKIPPED,
+                        notes="External application required — manual follow-up needed",
+                    )
+
+                if not submit:
+                    logger.info(
+                        "DRY RUN — Indeed 'Easily apply' detected for %s at %s; NOT submitted.",
+                        job.title,
+                        job.company,
+                    )
+                    return ApplicationResult(
+                        job=job,
+                        status=ApplicationStatus.SKIPPED,
+                        notes="DRY RUN: Easily-apply detected but not submitted. Use --submit.",
+                    )
+
+                # The multi-step Indeed apply form is not validated; refuse rather
+                # than guess and risk a malformed real submission.
+                return ApplicationResult(
+                    job=job,
+                    status=ApplicationStatus.FAILED,
+                    error_message="Indeed live submission is not yet implemented/validated",
+                )
+        except Exception as exc:
+            logger.error("Failed to apply to %s at %s: %s", job.title, job.company, exc)
+            return ApplicationResult(
+                job=job, status=ApplicationStatus.FAILED, error_message=str(exc)
+            )
 
     async def check_already_applied(self, job: JobListing) -> bool:
-        raise ApplicatorError("Indeed applicator not yet implemented (Phase 2)")
+        """Best-effort check for an existing Indeed application."""
+        async with self._browser.persistent_page() as page:
+            await navigate(page, str(job.url))
+            await random_delay(1.0, 2.0)
+            return bool(await wait_for_selector(page, 'text="Applied"', timeout_ms=3_000))

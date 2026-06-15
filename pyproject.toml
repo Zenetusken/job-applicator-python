@@ -10,6 +10,7 @@ license = "MIT"
 dependencies = [
     # Core
     "playwright>=1.53",
+    "playwright-stealth>=2.0",  # Stealth() class + apply_stealth_async — 2.x API used in browser/manager.py
     "pydantic>=2.12",
     "pydantic-settings>=2.10",
     "typer>=0.16",

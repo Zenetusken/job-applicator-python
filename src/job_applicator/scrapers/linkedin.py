@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+import time
+from pathlib import Path
 from urllib.parse import urlencode
 
 from playwright.async_api import BrowserContext, ElementHandle, Page
@@ -13,7 +17,7 @@ from job_applicator.browser.actions import (
 )
 from job_applicator.browser.manager import BrowserManager
 from job_applicator.config import AppSettings
-from job_applicator.exceptions import LoginRequiredError
+from job_applicator.exceptions import LoginRequiredError, NavigationError
 from job_applicator.models import JobBoard, JobListing
 from job_applicator.scrapers.base import BaseScraper, SearchParams
 from job_applicator.utils.logging import get_logger
@@ -28,10 +32,51 @@ LINKEDIN_JOBS = f"{LINKEDIN_BASE}/jobs/search"
 class LinkedInScraper(BaseScraper):
     """Scrapes job listings from LinkedIn."""
 
+    COOKIE_PATH = Path.home() / ".job-applicator" / "cookies" / "linkedin.json"
+
     def __init__(self, browser: BrowserManager, config: AppSettings) -> None:
         self._browser = browser
         self._config = config
         self._logged_in = False
+
+    async def _new_stealth_page(self, context: BrowserContext) -> Page:
+        """Create a new page with stealth patches applied."""
+        page = await context.new_page()
+        await self._browser.stealth_page(page)
+        return page
+
+    @property
+    def _cookie_file(self) -> Path:
+        return self.COOKIE_PATH
+
+    async def _load_cookies(self, context: BrowserContext) -> bool:
+        """Load cookies from disk into the browser context."""
+        if not self._cookie_file.exists():
+            logger.debug("No cookie file found at %s", self._cookie_file)
+            return False
+        try:
+            data = json.loads(self._cookie_file.read_text())
+            cookies = data.get("cookies", [])
+            if not cookies:
+                logger.warning("Cookie file at %s contains no cookies", self._cookie_file)
+                return False
+            await context.add_cookies(cookies)
+            logger.info("Loaded %d cookies from %s", len(cookies), self._cookie_file)
+            return True
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Failed to load cookies from %s: %s", self._cookie_file, exc)
+            return False
+
+    async def _save_cookies(self, context: BrowserContext) -> None:
+        """Persist cookies from the browser context to disk."""
+        try:
+            cookies = await context.cookies()
+            self._cookie_file.parent.mkdir(parents=True, exist_ok=True)
+            self._cookie_file.write_text(json.dumps({"cookies": cookies}, indent=2))
+            self._cookie_file.chmod(0o600)  # session token — owner-only
+            logger.info("Saved %d cookies to %s", len(cookies), self._cookie_file)
+        except OSError as exc:
+            logger.warning("Failed to save cookies to %s: %s", self._cookie_file, exc)
 
     @property
     def board(self) -> JobBoard:
@@ -47,63 +92,136 @@ class LinkedInScraper(BaseScraper):
         return await self._browser.persistent_context()
 
     async def login(self, email: str, password: str) -> bool:
-        """Authenticate with LinkedIn."""
-        if not email or not password:
-            raise LoginRequiredError("LinkedIn credentials not configured")
+        """Automated credential login is intentionally DISABLED for account safety.
 
-        context = await self._get_context()
-        page = await context.new_page()
+        LinkedIn blocks programmatic logins with a CAPTCHA, and repeated
+        automated attempts raise the account's risk score. This method never
+        submits credentials and never touches the browser — use
+        :meth:`interactive_login` (the ``job-applicator login`` command) to sign
+        in once in a real browser window.
+        """
+        logger.warning(
+            "Automated LinkedIn login is disabled for account safety. "
+            "Run `job-applicator login` to sign in once via a real browser window."
+        )
+        return False
+
+    async def _ensure_session(self, context: BrowserContext) -> bool:
+        """Return True if an authenticated LinkedIn session is already active.
+
+        Loads any saved cookies (a portable seed) into the context, then
+        verifies by loading the feed. The persistent browser profile usually
+        already carries the session on its own. Never submits credentials, so it
+        cannot trigger a login CAPTCHA (it is still an automated request, so
+        keep overall scraping volume modest).
+        """
+        await self._load_cookies(context)
+        page = await self._new_stealth_page(context)
         try:
-            await navigate(page, f"{LINKEDIN_BASE}/login")
+            await page.goto(f"{LINKEDIN_BASE}/feed/", wait_until="domcontentloaded", timeout=15_000)
             await random_delay(1.0, 2.0)
-
-            # LinkedIn uses dynamic IDs — use type-based locators with .last
-            # to get the visible form fields (hidden ones exist for OAuth)
-            email_loc = page.locator('input[type="email"]').last
-            pwd_loc = page.locator('input[type="password"]').last
-            sign_in = page.locator('button:has-text("Sign in")').last
-
-            await email_loc.wait_for(state="visible", timeout=10_000)
-            await email_loc.fill(email)
-            await pwd_loc.fill(password)
-            await sign_in.click()
-
-            # Wait for feed or challenge page
-            await random_delay(2.0, 4.0)
-
             if "feed" in page.url or "mynetwork" in page.url:
                 self._logged_in = True
-                logger.info("LinkedIn login successful")
+                logger.info("Reusing existing LinkedIn session")
                 return True
-
-            logger.warning(
-                "LinkedIn login may have failed (challenge/CAPTCHA?). "
-                "Consider using cookie-based session or manual credentials."
-            )
+            logger.info("No active LinkedIn session (redirected to %s)", page.url)
+            return False
+        except Exception as exc:
+            logger.warning("Session check failed: %s", exc)
             return False
         finally:
             await page.close()
 
-    @async_retry(max_attempts=3, base_delay=2.0)
-    async def scrape(self, params: SearchParams) -> list[JobListing]:
-        """Scrape LinkedIn job listings."""
-        if not self._logged_in:
+    async def has_active_session(self) -> bool:
+        """Public check: is a usable authenticated LinkedIn session available?
+
+        Loads any saved cookies and verifies against the feed. Submits no
+        credentials, so it cannot trigger a login CAPTCHA.
+        """
+        return await self._ensure_session(await self._get_context())
+
+    async def interactive_login(self, timeout_s: int = 300) -> bool:
+        """Open LinkedIn's login page for a one-time, human-driven sign-in.
+
+        Requires a headed browser (use the ``job-applicator login`` command).
+        Pre-fills the configured credentials but does NOT submit — you click
+        Sign in and solve any CAPTCHA/2FA yourself. Human-driven sign-in is far
+        safer than a programmatic submit, though running inside an
+        automation-controlled browser is never fully risk-free. Polls until a
+        logged-in page is detected, then saves the session; the persistent
+        profile retains it for subsequent headless runs.
+        """
+        context = await self._get_context()
+        if await self._ensure_session(context):
+            logger.info("Already signed in — existing session is active.")
+            return True
+
+        page = await self._new_stealth_page(context)
+        try:
+            await navigate(page, f"{LINKEDIN_BASE}/login")
+            await random_delay(1.0, 2.0)
+
+            # Pre-fill from config to save typing; the human reviews and submits.
             email = self._config.target.linkedin_email
             password = self._config.target.linkedin_password
-            if email and password:
-                await self.login(email, password)
-            else:
-                raise LoginRequiredError(
-                    "LinkedIn credentials required. Set them in config.toml under "
-                    "[target] (linkedin_email / linkedin_password) or via the "
-                    "JOB_APPLICATOR_TARGET_LINKEDIN_EMAIL and "
-                    "JOB_APPLICATOR_TARGET_LINKEDIN_PASSWORD environment variables.",
-                )
+            try:
+                if email:
+                    await page.locator('input[type="email"]').last.fill(email)
+                if password:
+                    await page.locator('input[type="password"]').last.fill(password)
+            except Exception as exc:
+                logger.debug("Could not pre-fill credentials: %s", exc)
 
+            logger.info(
+                "Waiting up to %ds for manual sign-in — click Sign in in the "
+                "browser window and solve any CAPTCHA/2FA...",
+                timeout_s,
+            )
+            deadline = time.monotonic() + timeout_s
+            while time.monotonic() < deadline:
+                if "feed" in page.url or "mynetwork" in page.url:
+                    self._logged_in = True
+                    await self._save_cookies(context)
+                    logger.info("Sign-in detected — session saved.")
+                    return True
+                await asyncio.sleep(2.0)
+
+            logger.error("Sign-in not detected within %ds.", timeout_s)
+            return False
+        finally:
+            await page.close()
+
+    async def scrape(self, params: SearchParams) -> list[JobListing]:
+        """Scrape LinkedIn job listings.
+
+        Reuses an existing authenticated session (persistent profile / saved
+        cookies). Automated credential login is NOT attempted — run
+        ``job-applicator login`` first to establish a session safely. Raising
+        here (rather than auto-logging-in) is deliberate: a programmatic login
+        is exactly what trips LinkedIn's anti-bot CAPTCHA.
+        """
         context = await self._get_context()
-        page = await context.new_page()
+        if not self._logged_in and not await self._ensure_session(context):
+            raise LoginRequiredError(
+                "No authenticated LinkedIn session found. Run `job-applicator login` "
+                "to sign in once in a real browser window (you solve any CAPTCHA/2FA). "
+                "The session is saved to the persistent browser profile and reused "
+                "automatically on subsequent runs.",
+            )
+        return await self._scrape_listings(params, context)
+
+    @async_retry(max_attempts=3, base_delay=2.0, exceptions=(NavigationError,))
+    async def _scrape_listings(
+        self, params: SearchParams, context: BrowserContext
+    ) -> list[JobListing]:
+        """Fetch and parse job cards from the search results page.
+
+        Retried only on :class:`NavigationError` (transient page-load timeouts);
+        the no-session case is handled (and raised once) by :meth:`scrape`.
+        """
+        jobs: list[JobListing] = []
+        page = await self._new_stealth_page(context)
         try:
-            jobs: list[JobListing] = []
             search_url = self._build_search_url(params)
             await navigate(page, search_url)
             await random_delay(2.0, 3.0)
