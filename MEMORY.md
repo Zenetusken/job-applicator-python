@@ -35,8 +35,10 @@ _Last synced: 2026-06-15_
 - Pydantic models cross module boundaries, never dicts. All exceptions subclass `JobApplicatorError`.
 - Async for I/O, sync for CPU. Config centralized in `AppSettings`; no global mutable state.
 - Combined match score = 60% semantic + 40% skill coverage. Skill semantic threshold 0.55.
-- LLM via litellm + instructor; vLLM at `http://localhost:8000/v1` (model `cyankiwi/Qwen3.5-4B-AWQ-4bit`),
-  `openai/` prefix for local. Suppress Qwen reasoning via `enable_thinking: False` + `strip_thinking_process()`.
+- LLM via litellm + instructor; **client of an external** OpenAI-compatible endpoint (`[llm] api_base`,
+  default `http://localhost:8000/v1`, model `cyankiwi/Qwen3.5-4B-AWQ-4bit`) — the app never starts one
+  (optional `[serve]` extra + `scripts/serve-vllm.sh` self-host a local vLLM). `openai/` prefix for local.
+  Suppress Qwen reasoning via `enable_thinking: False` + `strip_thinking_process()`.
 - Resume-tailoring hallucination guards must be preserved (skills/tools/education validation,
   fuzzy `_skills_match()` ratio ≥ 0.85, `KNOWN_HEADERS` frozenset). See AGENTS.md gotchas.
 
