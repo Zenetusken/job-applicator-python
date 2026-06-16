@@ -21,8 +21,8 @@ ruff check --fix src/ tests/
 ruff format src/ tests/
 
 # Tests — 461 fast unit tests (the green gate); 482 total, the extra 21 are live (need vLLM/GPU)
-pytest tests/unit/ -v
-pytest tests/unit/ -v -k test_name  # single test
+pytest -m unit -v               # or: pytest tests/unit/ -v   (auto-marked by location)
+pytest -m unit -v -k test_name  # single test
 
 # CLI
 job-applicator --help
@@ -149,9 +149,10 @@ Score >= 60% = compatible. Returns warnings and actionable suggestions.
 
 ## Testing
 
-- Unit suite (`pytest tests/unit/`, 461 tests) is fast — no browser, no GPU. This is the green gate.
+- Tests are auto-marked by location (`tests/conftest.py`): `pytest -m unit` / `-m live` /
+  `-m integration` all work. Unit suite (`pytest -m unit`, 461) is fast — no browser/GPU; the green gate.
 - The 21 live tests at `tests/` root (`test_tier1_live.py`, `test_tier2_live.py`, `test_batch_live.py`,
-  `test_live_tailor.py`) need vLLM (`localhost:8000`) + GPU; run them manually, not in the gate.
+  `test_live_tailor.py`) carry `-m live`; they need vLLM (`localhost:8000`) + GPU; run them manually.
 - Tests use fixtures from `tests/conftest.py`
 - Embedding tests mock the model (CPU fallback)
 - `scripts/smoke_test_match.py` — real resume matching (needs GPU)
