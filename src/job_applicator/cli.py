@@ -252,7 +252,6 @@ def search(
     )
 
     async def _run() -> None:
-        from job_applicator.browser.manager import BrowserManager
         from job_applicator.models import JobBoard
         from job_applicator.scrapers.base import SearchParams
 
@@ -269,7 +268,7 @@ def search(
             board=board_map[site],
         )
 
-        async with BrowserManager(settings.browser) as browser:
+        async with _make_browser(site, settings) as browser:
             scraper = _make_scraper(site, browser, settings)
 
             with console.status(f"Searching {site} for '{query}'..."):
@@ -769,11 +768,10 @@ def apply(
     )
 
     async def _run() -> None:
-        from job_applicator.browser.manager import BrowserManager
         from job_applicator.models import JobBoard
         from job_applicator.scrapers.base import SearchParams
 
-        async with BrowserManager(settings.browser) as browser:
+        async with _make_browser(site, settings) as browser:
             # Search for jobs
             if query:
                 scraper = _make_scraper(site, browser, settings)
@@ -1380,10 +1378,9 @@ def batch(
                 console.print(f"[red]Error reading jobs file: {exc}[/red]")
                 raise typer.Exit(1) from exc
         elif query:
-            from job_applicator.browser.manager import BrowserManager
             from job_applicator.scrapers.base import SearchParams
 
-            async with BrowserManager(settings.browser) as browser:
+            async with _make_browser(site, settings) as browser:
                 scraper = _make_scraper(site, browser, settings)
                 params = SearchParams(query=query, max_results=top_k * 2, board=JobBoard(site))
                 with console.status(f"Searching {site}..."):
@@ -2712,18 +2709,51 @@ def _get_settings(headed: bool = False) -> AppSettings:
     return settings
 
 
-def _make_scraper(site: str, browser: BrowserManager, settings: AppSettings) -> BaseScraper:
-    """Construct the scraper for a job board, or exit if unsupported."""
+def _scraper_class(site: str) -> type[BaseScraper]:
+    """Resolve a board's scraper class, or exit if unsupported.
+
+    Site validation lives here so it happens BEFORE any browser is launched.
+    """
     if site == "linkedin":
         from job_applicator.scrapers.linkedin import LinkedInScraper
 
-        return LinkedInScraper(browser, settings)
+        return LinkedInScraper
     if site == "indeed":
         from job_applicator.scrapers.indeed import IndeedScraper
 
-        return IndeedScraper(browser, settings)
+        return IndeedScraper
     console.print(f"[yellow]{site} scraper not yet implemented[/yellow]")
     raise typer.Exit(1)
+
+
+def _make_browser(site: str, settings: AppSettings) -> BrowserManager:
+    """Build a browser per the board's declared ``BrowserPolicy``.
+
+    The policy lives on the scraper class (not here), so a board's anti-bot needs
+    can't drift from the CLI and every caller building a browser gets them right.
+    Indeed declares headed + ephemeral-profile + virtual-display (its Cloudflare
+    managed challenge fails headless); LinkedIn keeps the default headless shared
+    profile. ``--headed`` (config headless=False) shows a real window instead of a
+    virtual one. Validates the site before constructing anything (so an unknown
+    board never launches a browser).
+    """
+    from job_applicator.browser.manager import BrowserManager
+
+    policy = _scraper_class(site).browser_policy()
+    cfg = settings.browser
+    if policy.headed:
+        cfg = cfg.model_copy(update={"headless": False})
+    # Use a virtual display only when forcing headed AND the user didn't ask to
+    # watch (--headed leaves config headless=False → show a real window).
+    use_virtual = policy.virtual_display and settings.browser.headless
+    return BrowserManager(
+        cfg, ephemeral_profile=policy.ephemeral_profile, virtual_display=use_virtual
+    )
+
+
+def _make_scraper(site: str, browser: BrowserManager, settings: AppSettings) -> BaseScraper:
+    """Construct the scraper for a job board, or exit if unsupported."""
+    return _scraper_class(site)(browser, settings)
 
 
 def _make_applicator(site: str, browser: BrowserManager, settings: AppSettings) -> BaseApplicator:

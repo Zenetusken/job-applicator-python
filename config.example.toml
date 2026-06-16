@@ -32,6 +32,6 @@ max_applications_per_day = 20
 delay_between_applications_s = 2.0
 # linkedin_email = "your-email@example.com"
 # linkedin_password = "your-password"
-# Indeed redirects by region; override to pin one, e.g. "ca.indeed.com" / "uk.indeed.com".
-# Left at the default, the scraper auto-detects the regional site Indeed sends you to.
-indeed_domain = "www.indeed.com"
+# Empty = auto-detect the regional Indeed host from your timezone (e.g. ca.indeed.com
+# in Canada). Set to pin one, e.g. "ca.indeed.com" / "uk.indeed.com" / "www.indeed.com".
+indeed_domain = ""

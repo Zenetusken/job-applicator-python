@@ -78,8 +78,10 @@ class TargetConfig(BaseSettings):
     linkedin_password: str = ""
     indeed_email: str = ""
     indeed_password: str = ""
-    # Indeed redirects by region; override e.g. "ca.indeed.com" / "uk.indeed.com".
-    indeed_domain: str = "www.indeed.com"
+    # Empty = auto-detect the regional Indeed host from the host timezone (e.g.
+    # ca.indeed.com in Canada). Set to pin one explicitly, e.g. "ca.indeed.com" /
+    # "uk.indeed.com" / "www.indeed.com".
+    indeed_domain: str = ""
 
 
 class AppSettings(BaseSettings):

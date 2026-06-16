@@ -109,15 +109,17 @@ job-applicator import-cookies --li-at -                   # ...or read it from s
 job-applicator import-cookies --site indeed --file cookies.json   # a cookie-manager JSON export
 ```
 
-- **LinkedIn** needs the `li_at` session cookie (required — nothing authenticates without it).
-- **Indeed** search is public; importing is optional but a real session's Cloudflare
-  `cf_clearance` cookie makes a warm visit far less likely to be challenged. `--from-browser`
-  needs the optional `[browser]` extra: `pip install -e ".[browser]"`.
-- **Region** is auto-detected (locale + timezone + Chrome UA). Indeed redirects by region and
-  the scraper follows the regional host it lands on (e.g. `ca.indeed.com`); pin one explicitly
-  with `target.indeed_domain` if needed.
-- Indeed's Cloudflare protection also fingerprints at the TLS layer, which Playwright cannot
-  fully reproduce — cookie + UA reuse improves the odds but cannot *guarantee* a bypass.
+- **LinkedIn** needs the `li_at` session cookie (required — nothing authenticates without it),
+  and runs fully headless on the shared persistent profile.
+- **Indeed** search is public; cookie import is optional. Indeed sits behind a Cloudflare
+  *managed challenge* that blocks headless Chrome, so the Indeed scraper runs **headed** on a
+  fresh profile — kept windowless via a virtual display (Xvfb). Install the optional `[indeed]`
+  extra for that to be automatic on any host: `pip install -e ".[indeed]"` (needs the system
+  `Xvfb` binary, e.g. `apt install xvfb`). Without it, Indeed uses your ambient display, or run
+  the command under `xvfb-run`. `--headed` shows a real window instead.
+- **Region** is auto-detected: the browser advertises the host locale + timezone + Chrome UA,
+  and the Indeed host is derived from your timezone (e.g. `ca.indeed.com` in Canada). Pin one
+  explicitly with `target.indeed_domain` (e.g. `ca.indeed.com`) if needed.
 
 ### Enhanced Tailor Workflow
 

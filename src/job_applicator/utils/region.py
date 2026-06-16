@@ -132,6 +132,112 @@ def detect_timezone() -> str:
     return _DEFAULT_TIMEZONE
 
 
+def _timezone_country(tz: str) -> str:
+    """Map an IANA timezone to its primary ISO country code via the tz database.
+
+    Reads ``/usr/share/zoneinfo/zone1970.tab`` (then ``zone.tab``), the canonical
+    zone→country table shipped with the OS — data-driven, not a hardcoded map.
+    Returns "" when the table is absent (e.g. Windows) or the zone isn't found.
+    """
+    for path in ("/usr/share/zoneinfo/zone1970.tab", "/usr/share/zoneinfo/zone.tab"):
+        try:
+            for line in Path(path).read_text(encoding="utf-8").splitlines():
+                if not line or line.startswith("#"):
+                    continue
+                cols = line.split("\t")
+                if len(cols) >= 3 and cols[2].strip() == tz:
+                    return cols[0].split(",")[0].strip().upper()  # first/primary country
+        except OSError:
+            continue
+    return ""
+
+
+# ISO country codes where Indeed serves a dedicated regional site at
+# "<cc>.indeed.com". Anything NOT listed (the US, and countries where Indeed has
+# no site) falls back to www.indeed.com — which always resolves — so we never
+# emit a host like bs.indeed.com / is.indeed.com that doesn't exist (a dead host
+# would raise NavigationError, strictly worse than the global default).
+_INDEED_COUNTRIES = frozenset(
+    {
+        "ca",
+        "ie",
+        "gb",
+        "au",
+        "nz",
+        "in",
+        "pk",
+        "sg",
+        "hk",
+        "ph",
+        "my",
+        "th",
+        "vn",
+        "id",
+        "jp",
+        "kr",
+        "tw",
+        "de",
+        "at",
+        "ch",
+        "fr",
+        "be",
+        "nl",
+        "lu",
+        "es",
+        "it",
+        "pt",
+        "pl",
+        "se",
+        "no",
+        "dk",
+        "fi",
+        "gr",
+        "cz",
+        "hu",
+        "ro",
+        "tr",
+        "ru",
+        "ua",
+        "br",
+        "mx",
+        "ar",
+        "cl",
+        "co",
+        "pe",
+        "ve",
+        "ec",
+        "za",
+        "ng",
+        "eg",
+        "ma",
+        "ae",
+        "sa",
+        "qa",
+        "kw",
+        "bh",
+        "om",
+        "il",
+    }
+)
+# Indeed serves a few regions under a non-ISO subdomain.
+_INDEED_SUBDOMAIN_OVERRIDES = {"gb": "uk"}
+
+
+def detect_indeed_domain() -> str:
+    """Best-effort Indeed regional host from the host's timezone, else www.indeed.com.
+
+    Uses the timezone (the reliable geo signal) rather than the locale, which is
+    frequently left at ``en_US`` even for non-US users. Indeed does not reliably
+    redirect www→region by IP, so picking the right host up front matters. Only
+    countries Indeed actually serves yield a regional host; everything else uses
+    www.indeed.com so a non-existent subdomain is never produced.
+    """
+    country = _timezone_country(detect_timezone()).lower()
+    if country not in _INDEED_COUNTRIES:
+        return "www.indeed.com"
+    return f"{_INDEED_SUBDOMAIN_OVERRIDES.get(country, country)}.indeed.com"
+
+
 def _platform_ua_token() -> str:
     system = platform.system()
     if system == "Darwin":

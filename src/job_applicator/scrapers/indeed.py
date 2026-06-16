@@ -1,18 +1,21 @@
 """Indeed job scraper.
 
 Indeed job search is public (no login required), so this scraper never submits
-credentials. Indeed fronts pages with Cloudflare / anti-bot, so automated
-scraping from a fresh or headless profile may be challenged; the shared
-persistent profile + stealth reduce that but cannot defeat an active challenge.
+credentials. Indeed is fronted by a Cloudflare *managed JS challenge* that blocks
+headless Chrome. The fix is not a special engine: run **headed** from a **clean
+(ephemeral) profile** and the existing stack clears the challenge (it even passes
+cold). That requirement is declared by ``IndeedScraper.browser_policy()`` so the
+browser is built correctly (see ``cli._make_browser``); an active challenge is
+surfaced as a ``ScraperError``. See
+``docs/compose/reports/2026-06-15-indeed-cloudflare-research.md``.
 
 Selectors were tuned against the live Indeed DOM (2026-06-15): result cards
 ``div.job_seen_beacon`` / ``[data-jk]``, title link ``a.jcs-JobTitle`` (relative
 href), company ``[data-testid="company-name"]``, location
 ``[data-testid="text-location"]``. Indeed redirects by region: the scraper
-auto-detects the regional site it lands on (e.g. ca.indeed.com) and re-issues
-the search there, caching the host for the session; ``target.indeed_domain``
-pins a region explicitly. Headless scraping can still hit Indeed's
-Cloudflare/anti-bot, surfaced as a ``ScraperError``.
+auto-detects the regional site it lands on (e.g. ca.indeed.com) and re-issues the
+search there, caching the host for the session; ``target.indeed_domain`` pins a
+region explicitly.
 """
 
 from __future__ import annotations
@@ -27,9 +30,10 @@ from job_applicator.browser.manager import BrowserManager
 from job_applicator.config import AppSettings
 from job_applicator.exceptions import NavigationError, ScraperError
 from job_applicator.models import JobBoard, JobListing
-from job_applicator.scrapers.base import BaseScraper, SearchParams
+from job_applicator.scrapers.base import BaseScraper, BrowserPolicy, SearchParams
 from job_applicator.utils.cookies import load_cookies
 from job_applicator.utils.logging import get_logger
+from job_applicator.utils.region import detect_indeed_domain
 from job_applicator.utils.retry import async_retry
 from job_applicator.utils.url import host_matches
 
@@ -46,21 +50,37 @@ class IndeedScraper(BaseScraper):
 
     COOKIE_PATH = Path.home() / ".job-applicator" / "cookies" / "indeed.json"
 
+    @classmethod
+    def browser_policy(cls) -> BrowserPolicy:
+        """Indeed's Cloudflare managed challenge needs a headed browser on a clean
+        profile; run it windowless via Xvfb."""
+        return BrowserPolicy(headed=True, ephemeral_profile=True, virtual_display=True)
+
     def __init__(self, browser: BrowserManager, config: AppSettings) -> None:
         self._browser = browser
         self._config = config
         self._resolved_base: str | None = None
+        self._auto_base: str | None = None  # cached region origin (computed once)
 
     @property
     def _base(self) -> str:
         """Region-appropriate Indeed origin.
 
-        Defaults to the configured ``target.indeed_domain`` (www.indeed.com), but
-        once a search auto-detects the regional site Indeed redirects to (e.g.
-        ca.indeed.com), that host is cached here for the rest of the session — so
-        users don't need to know their region up front.
+        Order: a host pinned mid-session by a region redirect (``_resolved_base``)
+        > the explicitly configured ``target.indeed_domain`` > a host auto-detected
+        from the machine's timezone (e.g. ca.indeed.com in Canada). Indeed does not
+        reliably redirect www→region by IP, so picking the right host up front
+        matters — and the timezone is a better signal than the often-en_US locale.
+
+        The auto-detected origin is computed once and cached on the instance, so
+        repeated ``_base`` reads (e.g. per result card) don't re-scan the tz table.
         """
-        return self._resolved_base or f"https://{self._config.target.indeed_domain}"
+        if self._resolved_base:
+            return self._resolved_base
+        if self._auto_base is None:
+            domain = self._config.target.indeed_domain or detect_indeed_domain()
+            self._auto_base = f"https://{domain}"
+        return self._auto_base
 
     @property
     def board(self) -> JobBoard:
@@ -105,10 +125,18 @@ class IndeedScraper(BaseScraper):
         regional homepage with no results, the search is re-issued once there.
         """
         jobs: list[JobListing] = []
+        # Indeed needs a headed browser (see browser_policy); warn if built headless
+        # so a direct (non-CLI) caller gets a clear signal instead of a silent block.
+        if getattr(self._browser, "headless", None) is True:
+            logger.warning(
+                "Indeed is being scraped with a HEADLESS browser; Cloudflare will "
+                "likely challenge it. Build the browser per IndeedScraper.browser_policy() "
+                "(headed) — the CLI does this automatically."
+            )
         context = await self._browser.persistent_context()
-        # Reuse the real browser's Indeed session (incl. any Cloudflare
-        # clearance) imported via `import-cookies --site indeed`, so the scraper
-        # presents as a warm, established visitor rather than a fresh bot.
+        # Apply any imported Indeed cookies (e.g. cf_clearance) as a best-effort warm
+        # start. NOT required: Indeed runs headed on a fresh profile, which clears the
+        # Cloudflare challenge cold — a warm session can only help, never gate.
         await load_cookies(context, self.COOKIE_PATH)
         page = await self._new_stealth_page(context)
         try:

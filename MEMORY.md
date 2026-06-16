@@ -7,7 +7,7 @@ _Last synced: 2026-06-15_
 
 ## Snapshot
 
-- **Stats:** 31 source modules (`src/job_applicator/`), 437 unit tests (458 total incl. integration-marked; all fast, no browser/GPU).
+- **Stats:** 31 source modules (`src/job_applicator/`), 451 unit tests (472 total incl. integration-marked; all fast, no browser/GPU).
 - **Python:** 3.12+ (dev box 3.12.8). Mypy strict; ruff (100-char lines, double quotes).
 - **Quality gates (all must pass, in order):**
   `ruff check src/ tests/` → `ruff format --check src/ tests/` →
@@ -66,13 +66,19 @@ Full audit produced 4 HIGH, 7 MEDIUM, 10 LOW findings. All fixed across three st
 - **`import-cookies` per-site `_SiteSpec`** — `required_cookie` (LinkedIn `li_at`, hard-fail) vs
   `preferred_cookie` (Indeed `cf_clearance`, warn only — search is public), `session_flags`,
   `feed_verify`. Add a board = add a spec entry, not `if site == …` branches.
-- **Indeed = live but Cloudflare-fronted.** Selectors tuned 2026-06-15 (with legacy fallbacks);
-  follows region redirects (`_resolved_base`, e.g. `ca.indeed.com`; `target.indeed_domain` pins).
-  Cookie+UA reuse helps but TLS-fingerprinting means a challenge (`ScraperError`) can still occur.
+- **Indeed = live; runs HEADED + ephemeral profile (Cloudflare managed challenge).** The wall is
+  a Cloudflare JS challenge that blocks headless Chrome — NOT TLS/JA3 (bundled Chromium's JA4 ==
+  real Chrome) and NOT rate-limit. Fix needs no special engine: `cli._make_browser` runs Indeed
+  headed on a fresh profile (existing Playwright+stealth stack passes), windowless via Xvfb
+  (`virtual_display`, optional `[indeed]` extra = pyvirtualdisplay; else ambient `$DISPLAY` /
+  `xvfb-run`). LinkedIn stays headless persistent. Indeed domain auto-derives from timezone (see
+  below). Full empirical matrix: `docs/compose/reports/2026-06-15-indeed-cloudflare-research.md`.
 - **Region auto-detect (`utils/region.py`)** — timezone from `TZ`→`/etc/localtime`→`/etc/timezone`,
   `posix/`/`right/` prefixes stripped, validated against the IANA db before reaching Playwright
   (a bad `timezone_id` crashes the launch). UA matches host Chrome major (`lru_cache`d). Windows
-  w/o `TZ` falls back to default — pin `browser.timezone`.
+  w/o `TZ` falls back to default — pin `browser.timezone`. `detect_indeed_domain()` maps the
+  timezone → ISO country via `/usr/share/zoneinfo/zone1970.tab` → `<cc>.indeed.com` (timezone, not
+  the often-`en_US` locale, is the geo signal); `target.indeed_domain` pins it explicitly.
 - **Shared `utils/url.host_matches`** — single exact-or-subdomain matcher (strips leading `.`);
   used by the cookie look-alike filter and `_is_indeed_host`. Don't re-implement.
 - **Easy Apply is dry-run by default.** `apply` fills forms but does NOT submit unless `--submit`;

@@ -4,8 +4,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from job_applicator.models import JobBoard, JobListing
+
+if TYPE_CHECKING:
+    from job_applicator.browser.manager import BrowserManager
+    from job_applicator.config import AppSettings
 
 
 @dataclass
@@ -19,8 +24,33 @@ class SearchParams:
     board: JobBoard = JobBoard.LINKEDIN
 
 
+@dataclass(frozen=True)
+class BrowserPolicy:
+    """A board's browser requirements, driven by its anti-bot defenses.
+
+    Lives with the board (not the CLI) so the requirement can't drift from what
+    the scraper actually needs and so any caller that builds a browser for a board
+    gets it right. ``headed`` forces a visible/real browser (overriding the
+    configured headless); ``ephemeral_profile`` uses a fresh throwaway profile per
+    run; ``virtual_display`` runs the headed browser windowless via Xvfb.
+    """
+
+    headed: bool = False
+    ephemeral_profile: bool = False
+    virtual_display: bool = False
+
+
 class BaseScraper(ABC):
     """Abstract base class for job board scrapers."""
+
+    def __init__(self, browser: BrowserManager, config: AppSettings) -> None:
+        self._browser = browser
+        self._config = config
+
+    @classmethod
+    def browser_policy(cls) -> BrowserPolicy:
+        """Browser requirements for this board (default: headless, persistent)."""
+        return BrowserPolicy()
 
     @property
     @abstractmethod
