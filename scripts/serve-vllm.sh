@@ -32,6 +32,15 @@ if ! command -v vllm >/dev/null 2>&1; then
     exit 1
 fi
 
+# Non-blocking HF-token status (gated models need it; public models don't). Honors
+# HF_TOKEN / HUGGING_FACE_HUB_TOKEN and the cached login file under HF_HOME (or default).
+hf_token_file="${HF_HOME:-$HOME/.cache/huggingface}/token"
+if [ -n "${HF_TOKEN:-}" ] || [ -n "${HUGGING_FACE_HUB_TOKEN:-}" ] || [ -s "$hf_token_file" ]; then
+    echo "HF token : detected" >&2
+else
+    echo "HF token : none — public models OK; for gated models run: huggingface-cli login" >&2
+fi
+
 echo "Starting vLLM  (model=$MODEL  host=$HOST  port=$PORT  gpu_mem=$GPU_MEM)" >&2
 exec vllm serve "$MODEL" \
     --host "$HOST" \

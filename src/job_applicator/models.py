@@ -425,3 +425,57 @@ class VerboseReport(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
+
+
+class LLMEndpointCheck(BaseModel):
+    """Reachability + model availability for the configured LLM endpoint."""
+
+    api_base: str
+    reachable: bool
+    model_configured: str
+    http_status: int | None = None
+    model_available: bool = False  # configured id present in the endpoint's /models list
+    models_seen: list[str] = Field(default_factory=list)
+    error: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+class EmbeddingsCheck(BaseModel):
+    """Whether the semantic-matching embedding model is already downloaded."""
+
+    model_name: str
+    cached: bool
+    cache_path: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+class SelfHostCheck(BaseModel):
+    """Optional self-hosting prerequisites (only relevant when running scripts/serve-vllm.sh)."""
+
+    vllm_installed: bool
+    hf_token_present: bool
+
+    model_config = {"extra": "forbid"}
+
+
+class DoctorReport(BaseModel):
+    """Aggregate AI-backend health check rendered by `job-applicator doctor`."""
+
+    llm: LLMEndpointCheck
+    embeddings: EmbeddingsCheck
+    self_host: SelfHostCheck
+
+    @property
+    def ok(self) -> bool:
+        """Blocking signal: the endpoint answered /models with HTTP 200. Connection
+        failures and auth failures (401/403) are both not-ok but rendered differently.
+        Model-presence and the embeddings cache are advisory only (cloud/Ollama name
+        models differently; a fresh box downloads the embedder on first use).
+
+        A plain property, not a computed_field, so the model still round-trips through
+        model_dump()/model_validate() under extra='forbid'."""
+        return self.llm.reachable and self.llm.http_status == 200
+
+    model_config = {"extra": "forbid"}

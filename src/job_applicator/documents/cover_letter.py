@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from job_applicator.config import LLMConfig
 from job_applicator.exceptions import LLMError
 from job_applicator.models import JobListing, ResumeData, StyleGuide, UserProfile
-from job_applicator.utils.llm import strip_thinking_process
+from job_applicator.utils.llm import llm_call_error, strip_thinking_process
 from job_applicator.utils.logging import get_logger
 from job_applicator.utils.retry import async_retry
 
@@ -187,7 +187,7 @@ class CoverLetterGenerator:
                 )
                 letter = strip_thinking_process(response.choices[0].message.content)
             except Exception as exc:
-                raise LLMError(f"LLM API call failed: {exc}") from exc
+                raise llm_call_error(exc, self._config.api_base) from exc
 
         logger.info(
             "Generated cover letter for %s at %s (%d chars)",
@@ -262,19 +262,22 @@ class CoverLetterGenerator:
             logger.info("Instructor failed for refine, falling back to direct litellm")
             from litellm import acompletion
 
-            response = await acompletion(
-                model=model,
-                api_base=self._config.api_base,
-                api_key=self._config.api_key,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_message},
-                ],
-                max_tokens=self._config.max_tokens,
-                temperature=self._config.temperature,
-                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-            )
-            return strip_thinking_process(response.choices[0].message.content)
+            try:
+                response = await acompletion(
+                    model=model,
+                    api_base=self._config.api_base,
+                    api_key=self._config.api_key,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": user_message},
+                    ],
+                    max_tokens=self._config.max_tokens,
+                    temperature=self._config.temperature,
+                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                )
+                return strip_thinking_process(response.choices[0].message.content)
+            except Exception as exc:
+                raise llm_call_error(exc, self._config.api_base) from exc
 
     def _build_prompt(
         self,

@@ -22,7 +22,7 @@ _Last synced: 2026-06-15_
 
 ## Architecture (single source of truth: AGENTS.md)
 
-- `cli.py` — Typer CLI: search, login, import-cookies, apply, match, batch, generate-cover-letter, tailor, ats-check, config-init.
+- `cli.py` — Typer CLI: search, login, import-cookies, apply, match, batch, generate-cover-letter, tailor, ats-check, config-init, doctor. `doctor` (→ `diagnostics.py`) probes the LLM endpoint (`/v1/models`) + embeddings cache + self-host prereqs; only endpoint reachability is blocking.
 - `config.py` — `AppSettings` + sub-configs; loads `config.toml` (lowest priority) + `JOB_APPLICATOR_*` env. `BrowserConfig` has `locale`/`timezone` (empty=auto); `TargetConfig` has `indeed_domain`.
 - `models.py` — all shared Pydantic contracts (`extra="forbid"`).
 - `documents/` — resume parsing, tailoring, cover letters, style/tone, ats_checker, ocr.

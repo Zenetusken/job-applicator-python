@@ -13,15 +13,17 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
 from job_applicator import __version__
-from job_applicator.config import AppSettings
+from job_applicator.config import AppSettings, LLMConfig
 from job_applicator.exceptions import JobApplicatorError
-from job_applicator.models import UserProfile
+from job_applicator.models import DoctorReport, UserProfile
 from job_applicator.utils.cookies import save_cookies
 from job_applicator.utils.diff import render_diff
+from job_applicator.utils.llm import SERVE_SCRIPT
 from job_applicator.utils.logging import setup_logging
 from job_applicator.utils.url import host_matches
 from job_applicator.utils.verbose import VerboseReporter
@@ -85,7 +87,7 @@ async def _llm_with_retry(  # noqa: UP047 — mypy doesn't support PEP 695 yet
             with console.status(status_message):
                 return await operation()
         except Exception as exc:
-            console.print(f"[red]LLM error: {exc}[/red]")
+            console.print(f"[red]LLM error: {escape(str(exc))}[/red]")
             choice = console.input(f"[bold cyan]{on_fail_choices}? [/bold cyan]").strip().upper()
             if choice == "Q":
                 return None
@@ -317,7 +319,7 @@ def search(
         # — show the message cleanly instead of a raw Python traceback.
         if reporter:
             reporter.record_error(str(exc))
-        console.print(f"[yellow]⚠ {exc}[/yellow]")
+        console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
         raise typer.Exit(1) from exc
     except Exception as exc:
         if reporter:
@@ -611,7 +613,7 @@ def import_cookies(
         try:
             raw = json.loads(Path(file).read_text())
         except (OSError, ValueError) as exc:
-            console.print(f"[red]Could not read cookie file: {exc}[/red]")
+            console.print(f"[red]Could not read cookie file: {escape(str(exc))}[/red]")
             raise typer.Exit(1) from exc
         entries = raw.get("cookies", raw) if isinstance(raw, dict) else raw
         if not isinstance(entries, list):
@@ -896,7 +898,7 @@ def apply(
         # — show the message cleanly instead of a raw Python traceback.
         if reporter:
             reporter.record_error(str(exc))
-        console.print(f"[yellow]⚠ {exc}[/yellow]")
+        console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
         raise typer.Exit(1) from exc
     except Exception as exc:
         if reporter:
@@ -1056,7 +1058,7 @@ def generate_cover_letter(
         # — show the message cleanly instead of a raw Python traceback.
         if reporter:
             reporter.record_error(str(exc))
-        console.print(f"[yellow]⚠ {exc}[/yellow]")
+        console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
         raise typer.Exit(1) from exc
     except Exception as exc:
         if reporter:
@@ -1260,7 +1262,7 @@ def match(
         # — show the message cleanly instead of a raw Python traceback.
         if reporter:
             reporter.record_error(str(exc))
-        console.print(f"[yellow]⚠ {exc}[/yellow]")
+        console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
         raise typer.Exit(1) from exc
     except Exception as exc:
         if reporter:
@@ -1375,7 +1377,7 @@ def batch(
                 console.print(f"[red]Jobs file not found: {jobs_file}[/red]")
                 raise typer.Exit(1) from None
             except Exception as exc:
-                console.print(f"[red]Error reading jobs file: {exc}[/red]")
+                console.print(f"[red]Error reading jobs file: {escape(str(exc))}[/red]")
                 raise typer.Exit(1) from exc
         elif query:
             from job_applicator.scrapers.base import SearchParams
@@ -1638,7 +1640,7 @@ def batch(
         # — show the message cleanly instead of a raw Python traceback.
         if reporter:
             reporter.record_error(str(exc))
-        console.print(f"[yellow]⚠ {exc}[/yellow]")
+        console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
         raise typer.Exit(1) from exc
     except Exception as exc:
         if reporter:
@@ -1686,7 +1688,7 @@ async def _generate_cover_letter(
         session.add_attempt(result)
         return result
     except Exception as exc:
-        console.print(f"[red]LLM error: {exc}[/red]")
+        console.print(f"[red]LLM error: {escape(str(exc))}[/red]")
         return None
 
 
@@ -1754,7 +1756,7 @@ async def _refine_cover_letter(
         session.add_attempt(new_result)
         return True
     except Exception as exc:
-        console.print(f"[red]LLM error: {exc}[/red]")
+        console.print(f"[red]LLM error: {escape(str(exc))}[/red]")
         return False
 
 
@@ -2172,7 +2174,7 @@ def tailor(
                     changes_summary=result.changes_summary or "",
                 )
         except Exception as exc:
-            console.print(f"[red]LLM error: {exc}[/red]")
+            console.print(f"[red]LLM error: {escape(str(exc))}[/red]")
             console.print("[yellow]Could not generate tailored resume.[/yellow]")
             if reporter:
                 reporter.record_error(str(exc))
@@ -2462,7 +2464,7 @@ def tailor(
         # — show the message cleanly instead of a raw Python traceback.
         if reporter:
             reporter.record_error(str(exc))
-        console.print(f"[yellow]⚠ {exc}[/yellow]")
+        console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
         raise typer.Exit(1) from exc
     except Exception as exc:
         if reporter:
@@ -2656,11 +2658,11 @@ timeout_ms = 30000
 
 # LLM (for AI cover letters)
 [llm]
-api_base = "http://localhost:8000/v1"
-api_key = "not-needed-for-local"
-model = "Qwen/Qwen3-8B-AWQ"
-max_tokens = 4096
-temperature = 0.7
+api_base = "__LLM_API_BASE__"
+api_key = "__LLM_API_KEY__"
+model = "__LLM_MODEL__"
+max_tokens = __LLM_MAX_TOKENS__
+temperature = __LLM_TEMPERATURE__
 
 # Targets
 [target]
@@ -2669,6 +2671,17 @@ delay_between_applications_s = 2.0
 # linkedin_email = "your-email@example.com"
 # linkedin_password = "your-password"
 """
+    # Fill the [llm] section from the LLMConfig defaults so config-init never drifts
+    # from the code (brace-safe placeholders → .replace, not an f-string over the template).
+    for _token, _field in (
+        ("__LLM_API_BASE__", "api_base"),
+        ("__LLM_API_KEY__", "api_key"),
+        ("__LLM_MODEL__", "model"),
+        ("__LLM_MAX_TOKENS__", "max_tokens"),
+        ("__LLM_TEMPERATURE__", "temperature"),
+    ):
+        config_content = config_content.replace(_token, str(LLMConfig.model_fields[_field].default))
+
     config_path = Path(output_path)
     if config_path.exists():
         console.print("[yellow]config.toml already exists. Skipping.[/yellow]")
@@ -2699,6 +2712,96 @@ delay_between_applications_s = 2.0
             if isinstance(vctx, VerboseContext):
                 log_file = vctx.log_file
             reporter.render(console, log_file=log_file)
+
+
+@app.command()
+def doctor(
+    ctx: typer.Context,
+    verbose: bool = _verbose_option(),
+    log_file: str | None = _log_file_option(),
+) -> None:
+    """Check the AI backend: LLM endpoint reachability, embeddings, self-host prereqs."""
+    _merge_verbose_ctx(ctx, verbose, log_file)
+    from job_applicator.diagnostics import run_diagnostics
+
+    settings = _get_settings()
+    report = asyncio.run(run_diagnostics(settings))
+    _render_doctor(report)
+    if not report.ok:
+        raise typer.Exit(1)
+
+
+def _render_doctor(report: DoctorReport) -> None:
+    """Render a DoctorReport as a human-readable health check.
+
+    HTTP-200 reachability is the only blocking signal; a reachable-but-rejected
+    endpoint (401/403) and a model/embeddings mismatch are surfaced distinctly. All
+    dynamic values are markup-escaped, so an error string or model id containing
+    brackets can't corrupt or crash the report.
+    """
+    good = "[green]✓[/green]"
+    bad = "[red]✗[/red]"
+    warn = "[yellow]•[/yellow]"
+    llm = report.llm
+    api_base = escape(llm.api_base)
+
+    console.print("\n[bold]job-applicator doctor[/bold]\n")
+
+    if not llm.reachable:
+        console.print(f"  LLM endpoint   {bad} not reachable  {api_base}")
+        if llm.error:
+            console.print(f"                 [dim]{escape(llm.error)}[/dim]")
+        console.print(f"                 → start one: [cyan]{SERVE_SCRIPT}[/cyan]")
+        console.print("                 → or point your llm.api_base at a running provider")
+    elif llm.http_status == 200:
+        console.print(f"  LLM endpoint   {good} reachable  {api_base}")
+        if llm.model_available:
+            console.print(f"    model        {good} {escape(llm.model_configured)}")
+        else:
+            console.print(
+                f"    model        {warn} '{escape(llm.model_configured)}' not listed by "
+                "the endpoint (fine for cloud/Ollama; for a local vLLM, check the id)"
+            )
+            if llm.models_seen:
+                listed = ", ".join(escape(m) for m in llm.models_seen[:5])
+                extra = len(llm.models_seen) - 5
+                more = f" (+{extra} more)" if extra > 0 else ""
+                console.print(f"                 endpoint serves: {listed}{more}")
+    elif llm.http_status in (401, 403):
+        console.print(
+            f"  LLM endpoint   {bad} reachable but rejected (HTTP {llm.http_status})  {api_base}"
+        )
+        console.print("                 → the server is up; check your llm.api_key / credentials")
+    else:
+        console.print(f"  LLM endpoint   {bad} reachable but /models failed  {api_base}")
+        if llm.error:
+            console.print(f"                 [dim]{escape(llm.error)}[/dim]")
+
+    emb = report.embeddings
+    if emb.cached:
+        console.print(f"  Embeddings     {good} {escape(emb.model_name)} cached")
+    else:
+        console.print(
+            f"  Embeddings     {warn} {escape(emb.model_name)} not cached "
+            "(auto-downloads on first match)"
+        )
+
+    sh = report.self_host
+    vllm_part = f"{good} vllm" if sh.vllm_installed else f"{warn} vllm not installed"
+    token_part = f"{good} HF token" if sh.hf_token_present else f"{warn} no HF token"
+    console.print(f"  Self-host      {vllm_part} · {token_part}  [dim](only if self-hosting)[/dim]")
+
+    console.print()
+    if report.ok and llm.model_available:
+        console.print("[green]All systems go — AI features ready.[/green]\n")
+    elif report.ok:
+        console.print("[yellow]Reachable; configured model not listed (advisory).[/yellow]\n")
+    elif llm.reachable:
+        console.print("[red]Reachable but not usable — AI features will fail until fixed.[/red]\n")
+    else:
+        console.print(
+            "[red]LLM endpoint unreachable — AI features will fail until it is up.[/red]\n"
+        )
 
 
 def _get_settings(headed: bool = False) -> AppSettings:
