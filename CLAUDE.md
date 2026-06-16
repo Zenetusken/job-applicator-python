@@ -36,9 +36,11 @@ AI-powered job application tool using Playwright browser automation with modern 
 
 ## Testing
 
-- `pytest -m unit` — fast, isolated (no browser)
-- `pytest -m integration` — uses Playwright with mocked sites
-- `pytest` — all tests
+- `pytest tests/unit/` — fast, isolated unit suite (461 tests; no browser/GPU/vLLM). The green gate.
+- `pytest` — everything, but the 21 live tests at `tests/` root need vLLM (`localhost:8000`) + GPU
+  and fail without that infra.
+- Split is by directory (`tests/unit/` vs the live `tests/test_*_live.py`); the `unit`/`integration`
+  markers in `pyproject.toml` are declared but not applied, so `pytest -m unit` collects nothing.
 
 ## Target Boards
 

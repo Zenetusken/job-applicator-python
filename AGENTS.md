@@ -20,7 +20,7 @@ mypy src/   # untyped third-party imports are silenced via per-module overrides 
 ruff check --fix src/ tests/
 ruff format src/ tests/
 
-# Tests (461 unit tests, all fast; 482 total incl. integration-marked)
+# Tests — 461 fast unit tests (the green gate); 482 total, the extra 21 are live (need vLLM/GPU)
 pytest tests/unit/ -v
 pytest tests/unit/ -v -k test_name  # single test
 
@@ -149,7 +149,9 @@ Score >= 60% = compatible. Returns warnings and actionable suggestions.
 
 ## Testing
 
-- All tests are `pytest -m unit` (no browser, no GPU needed)
+- Unit suite (`pytest tests/unit/`, 461 tests) is fast — no browser, no GPU. This is the green gate.
+- The 21 live tests at `tests/` root (`test_tier1_live.py`, `test_tier2_live.py`, `test_batch_live.py`,
+  `test_live_tailor.py`) need vLLM (`localhost:8000`) + GPU; run them manually, not in the gate.
 - Tests use fixtures from `tests/conftest.py`
 - Embedding tests mock the model (CPU fallback)
 - `scripts/smoke_test_match.py` — real resume matching (needs GPU)
@@ -160,5 +162,6 @@ Score >= 60% = compatible. Returns warnings and actionable suggestions.
 ## Files Not to Commit
 
 - `config.toml` (contains credentials)
+- `.mimocode/` (local harness/tooling config — kept on disk, not tracked)
 - `.venv/`, `__pycache__/`, `.mypy_cache/`, `.ruff_cache/`
 - `output/`, `screenshots/`, `logs/`

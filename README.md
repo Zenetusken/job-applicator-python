@@ -201,8 +201,8 @@ ruff format src/ tests/
 # Type check
 mypy src/job_applicator/
 
-# Test
-pytest -m unit
+# Test (fast unit suite — the green gate; live tests need vLLM + GPU)
+pytest tests/unit/
 ```
 
 ## Architecture

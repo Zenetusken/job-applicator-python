@@ -7,7 +7,7 @@ _Last synced: 2026-06-15_
 
 ## Snapshot
 
-- **Stats:** 31 source modules (`src/job_applicator/`), 461 unit tests (482 total incl. integration-marked; all fast, no browser/GPU).
+- **Stats:** 31 source modules (`src/job_applicator/`), 461 fast unit tests (`pytest tests/unit/` — the green gate, no browser/GPU); 482 total, the extra 21 are live tests needing vLLM (`localhost:8000`) + GPU.
 - **Python:** 3.12+ (dev box 3.12.8). Mypy strict; ruff (100-char lines, double quotes).
 - **Quality gates (all must pass, in order):**
   `ruff check src/ tests/` → `ruff format --check src/ tests/` →
@@ -99,4 +99,4 @@ Full audit produced 4 HIGH, 7 MEDIUM, 10 LOW findings. All fixed across three st
 
 - Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`; scopes like `fix(ocr):`).
 - Keep AGENTS.md authoritative (architecture tree, test count, gotchas) and in sync with code.
-- Feature flow: spec → plan → report under `docs/compose/`. Custom commands in `.mimocode/command/`.
+- Feature flow: spec → plan → report under `docs/compose/`. Local harness/tooling config (`.mimocode/`) is gitignored, not tracked.
