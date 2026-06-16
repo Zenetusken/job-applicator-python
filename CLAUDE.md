@@ -44,8 +44,9 @@ AI-powered job application tool using Playwright browser automation with modern 
 
 - LinkedIn (Phase 1) — implemented. Session-authenticated (reuse a human-established session).
 - Indeed (Phase 2) — implemented. Public search, Cloudflare-fronted; selectors tuned against the
-  live DOM (2026-06-15) with region auto-detection. TLS-layer fingerprinting means automated
-  scraping can still be challenged.
+  live DOM (2026-06-15) with region auto-detection. The wall is a Cloudflare *managed JS challenge*
+  that blocks headless Chrome (not TLS/JA3, not rate-limit), so Indeed runs **headed** on a clean
+  profile (windowless via Xvfb) — declared by `IndeedScraper.browser_policy()`.
 
 ## Key Design Decisions
 
@@ -60,6 +61,9 @@ AI-powered job application tool using Playwright browser automation with modern 
   defenses and risks the account.
 - **Region-aware browser.** Locale, IANA timezone, and Chrome UA are auto-detected
   (`utils/region.py`) unless pinned in `[browser]` config, so geo-aware boards serve the real region.
+- **A board declares its browser needs.** `BaseScraper.browser_policy()` (headed / ephemeral
+  profile / virtual display) lives on the scraper, not the CLI, so anti-bot requirements can't drift
+  and any caller builds the right browser. `cli._make_browser` reads it.
 - **Easy Apply is dry-run by default;** real submission requires `apply --submit`.
 
 ## GPU Memory Layout

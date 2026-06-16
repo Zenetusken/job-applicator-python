@@ -7,7 +7,7 @@ _Last synced: 2026-06-15_
 
 ## Snapshot
 
-- **Stats:** 31 source modules (`src/job_applicator/`), 451 unit tests (472 total incl. integration-marked; all fast, no browser/GPU).
+- **Stats:** 31 source modules (`src/job_applicator/`), 461 unit tests (482 total incl. integration-marked; all fast, no browser/GPU).
 - **Python:** 3.12+ (dev box 3.12.8). Mypy strict; ruff (100-char lines, double quotes).
 - **Quality gates (all must pass, in order):**
   `ruff check src/ tests/` → `ruff format --check src/ tests/` →
@@ -68,17 +68,21 @@ Full audit produced 4 HIGH, 7 MEDIUM, 10 LOW findings. All fixed across three st
   `feed_verify`. Add a board = add a spec entry, not `if site == …` branches.
 - **Indeed = live; runs HEADED + ephemeral profile (Cloudflare managed challenge).** The wall is
   a Cloudflare JS challenge that blocks headless Chrome — NOT TLS/JA3 (bundled Chromium's JA4 ==
-  real Chrome) and NOT rate-limit. Fix needs no special engine: `cli._make_browser` runs Indeed
-  headed on a fresh profile (existing Playwright+stealth stack passes), windowless via Xvfb
-  (`virtual_display`, optional `[indeed]` extra = pyvirtualdisplay; else ambient `$DISPLAY` /
-  `xvfb-run`). LinkedIn stays headless persistent. Indeed domain auto-derives from timezone (see
-  below). Full empirical matrix: `docs/compose/reports/2026-06-15-indeed-cloudflare-research.md`.
+  real Chrome) and NOT rate-limit. Fix needs no special engine. **The browser policy lives on the
+  board**: `BaseScraper.browser_policy() -> BrowserPolicy` (default headless/persistent),
+  `IndeedScraper` overrides → headed+ephemeral+virtual_display. `cli._make_browser` READS the
+  policy (no `if site == "indeed"`) and `_scraper_class(site)` validates the board before any
+  launch. Windowless via Xvfb (`virtual_display`, optional `[indeed]` extra = pyvirtualdisplay;
+  else ambient `$DISPLAY` / `xvfb-run`); `--headed` shows a real window. LinkedIn stays headless
+  persistent. `scrape()` warns if given a headless browser. Indeed `search`/`batch` validated;
+  `apply` wired-but-unvalidated. Full matrix: `docs/compose/reports/2026-06-15-indeed-cloudflare-research.md`.
 - **Region auto-detect (`utils/region.py`)** — timezone from `TZ`→`/etc/localtime`→`/etc/timezone`,
   `posix/`/`right/` prefixes stripped, validated against the IANA db before reaching Playwright
   (a bad `timezone_id` crashes the launch). UA matches host Chrome major (`lru_cache`d). Windows
   w/o `TZ` falls back to default — pin `browser.timezone`. `detect_indeed_domain()` maps the
-  timezone → ISO country via `/usr/share/zoneinfo/zone1970.tab` → `<cc>.indeed.com` (timezone, not
-  the often-`en_US` locale, is the geo signal); `target.indeed_domain` pins it explicitly.
+  timezone → ISO country via `/usr/share/zoneinfo/zone1970.tab`, then to `<cc>.indeed.com` only for
+  countries in the `_INDEED_COUNTRIES` allowlist (else `www.indeed.com` — never a dead host);
+  timezone, not the often-`en_US` locale, is the geo signal. `target.indeed_domain` pins explicitly.
 - **Shared `utils/url.host_matches`** — single exact-or-subdomain matcher (strips leading `.`);
   used by the cookie look-alike filter and `_is_indeed_host`. Don't re-implement.
 - **Easy Apply is dry-run by default.** `apply` fills forms but does NOT submit unless `--submit`;
