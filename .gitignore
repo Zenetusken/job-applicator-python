@@ -82,7 +82,9 @@ config.toml
 *.log
 screenshots/
 
+# Local harness / tooling config — personal, not part of the public project
+.mimocode/
+
 # Generated output
 output/
 logs/
-config.toml
