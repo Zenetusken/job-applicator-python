@@ -30,6 +30,7 @@ from job_applicator.models import JobBoard, JobListing
 from job_applicator.scrapers.base import BaseScraper, SearchParams
 from job_applicator.utils.cookies import load_cookies
 from job_applicator.utils.logging import get_logger
+from job_applicator.utils.region import detect_indeed_domain
 from job_applicator.utils.retry import async_retry
 from job_applicator.utils.url import host_matches
 
@@ -55,12 +56,14 @@ class IndeedScraper(BaseScraper):
     def _base(self) -> str:
         """Region-appropriate Indeed origin.
 
-        Defaults to the configured ``target.indeed_domain`` (www.indeed.com), but
-        once a search auto-detects the regional site Indeed redirects to (e.g.
-        ca.indeed.com), that host is cached here for the rest of the session — so
-        users don't need to know their region up front.
+        Order: a host pinned mid-session by a region redirect (``_resolved_base``)
+        > the explicitly configured ``target.indeed_domain`` > a host auto-detected
+        from the machine's timezone (e.g. ca.indeed.com in Canada). Indeed does not
+        reliably redirect www→region by IP, so picking the right host up front
+        matters — and the timezone is a better signal than the often-en_US locale.
         """
-        return self._resolved_base or f"https://{self._config.target.indeed_domain}"
+        domain = self._config.target.indeed_domain or detect_indeed_domain()
+        return self._resolved_base or f"https://{domain}"
 
     @property
     def board(self) -> JobBoard:

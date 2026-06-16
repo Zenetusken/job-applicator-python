@@ -38,6 +38,13 @@ browser = [
     # Reads/decrypts a local browser's cookie store for `import-cookies --from-browser`.
     "browser-cookie3>=0.19",
 ]
+indeed = [
+    # Indeed's Cloudflare managed challenge blocks headless Chrome, so the scraper
+    # runs headed; pyvirtualdisplay keeps that windowless + server-capable (needs the
+    # system Xvfb binary, e.g. `apt install xvfb`). Without it, Indeed falls back to
+    # the ambient $DISPLAY or asks you to run under `xvfb-run`.
+    "pyvirtualdisplay>=3.0",
+]
 dev = [
     "ruff>=0.12",
     "mypy>=1.16",
@@ -87,6 +94,8 @@ strict = true
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
+# Local stubs for otherwise-untyped third-party deps (e.g. pyvirtualdisplay).
+mypy_path = "stubs"
 
 # Third-party packages that ship no type stubs or py.typed marker. They are
 # installed but un-annotated, so strict mypy can't analyze them; ignore the

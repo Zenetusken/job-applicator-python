@@ -7,11 +7,15 @@ browser. A small fake Playwright surface stands in for chromium.
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import pytest
 
 from job_applicator.applicators.linkedin import LinkedInApplicator
 from job_applicator.browser.manager import BrowserManager
 from job_applicator.config import AppSettings, BrowserConfig
+from job_applicator.exceptions import BrowserError
 from job_applicator.scrapers.linkedin import LinkedInScraper
 
 
@@ -151,6 +155,45 @@ async def test_apply_screenshots_the_failed_page(
     # Exactly one page was opened, and that's the page we screenshotted.
     assert len(fake_ctx.pages) == 1
     assert screenshotted["page"] is fake_ctx.pages[0]
+
+
+def test_resolve_profile_dir_ephemeral_creates_temp() -> None:
+    """Indeed's ephemeral profile = a fresh throwaway dir (the validated config)."""
+    manager = BrowserManager(BrowserConfig(), ephemeral_profile=True)
+    path = manager._resolve_profile_dir()
+    try:
+        assert path.exists()
+        assert manager._tmp_profile is not None
+    finally:
+        manager._tmp_profile.cleanup()  # type: ignore[union-attr]
+
+
+def test_resolve_profile_dir_custom(tmp_path: Path) -> None:
+    """A per-board profile_dir override is honoured and created."""
+    target = tmp_path / "indeed-profile"
+    manager = BrowserManager(BrowserConfig(), profile_dir=target)
+    path = manager._resolve_profile_dir()
+    assert path == target
+    assert target.exists()
+    assert manager._tmp_profile is None
+
+
+def test_virtual_display_falls_back_to_ambient(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No pyvirtualdisplay + a real $DISPLAY → use it (returns None), no error."""
+    monkeypatch.setitem(sys.modules, "pyvirtualdisplay", None)  # force ImportError
+    monkeypatch.setenv("DISPLAY", ":0")
+    manager = BrowserManager(BrowserConfig(), virtual_display=True)
+    assert manager._enter_virtual_display() is None
+
+
+def test_virtual_display_raises_when_no_display(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No pyvirtualdisplay AND no display → a clear, actionable error."""
+    monkeypatch.setitem(sys.modules, "pyvirtualdisplay", None)  # force ImportError
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    manager = BrowserManager(BrowserConfig(), virtual_display=True)
+    with pytest.raises(BrowserError, match="display"):
+        manager._enter_virtual_display()
 
 
 @pytest.mark.asyncio

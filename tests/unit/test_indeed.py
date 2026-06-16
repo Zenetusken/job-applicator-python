@@ -17,12 +17,24 @@ def test_indeed_board(app_settings: AppSettings) -> None:
 
 
 def test_indeed_search_url(app_settings: AppSettings) -> None:
+    app_settings.target.indeed_domain = "www.indeed.com"  # pin (default is "" = auto)
     scraper = IndeedScraper(MagicMock(), app_settings)
     url = scraper._build_search_url(SearchParams(query="python developer", location="Montreal, QC"))
-    # Default region origin derives from config (target.indeed_domain), not a constant.
-    assert url.startswith(f"https://{app_settings.target.indeed_domain}/jobs?")
+    assert url.startswith("https://www.indeed.com/jobs?")
     assert "q=python+developer" in url
     assert "l=Montreal" in url
+
+
+def test_indeed_base_auto_detects_region_when_unpinned(
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Empty indeed_domain → derive the regional host from the timezone."""
+    app_settings.target.indeed_domain = ""  # auto
+    monkeypatch.setattr(
+        "job_applicator.scrapers.indeed.detect_indeed_domain", lambda: "ca.indeed.com"
+    )
+    scraper = IndeedScraper(MagicMock(), app_settings)
+    assert scraper._base == "https://ca.indeed.com"
 
 
 def test_indeed_search_url_respects_region_domain(app_settings: AppSettings) -> None:
@@ -91,6 +103,7 @@ async def test_scrape_auto_retries_on_region_redirect(
 ) -> None:
     """If the search bounces to a regional Indeed host with no results, the
     scraper pins that host and re-issues the search there (auto region)."""
+    app_settings.target.indeed_domain = "www.indeed.com"  # pin so calls[0] is deterministic
     scraper = IndeedScraper(MagicMock(), app_settings)
     # Isolate from any real ~/.job-applicator/cookies/indeed.json so scrape()'s
     # load_cookies() is a no-op on a non-existent path (no env-dependent failure).

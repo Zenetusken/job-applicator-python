@@ -132,6 +132,45 @@ def detect_timezone() -> str:
     return _DEFAULT_TIMEZONE
 
 
+def _timezone_country(tz: str) -> str:
+    """Map an IANA timezone to its primary ISO country code via the tz database.
+
+    Reads ``/usr/share/zoneinfo/zone1970.tab`` (then ``zone.tab``), the canonical
+    zone→country table shipped with the OS — data-driven, not a hardcoded map.
+    Returns "" when the table is absent (e.g. Windows) or the zone isn't found.
+    """
+    for path in ("/usr/share/zoneinfo/zone1970.tab", "/usr/share/zoneinfo/zone.tab"):
+        try:
+            for line in Path(path).read_text(encoding="utf-8").splitlines():
+                if not line or line.startswith("#"):
+                    continue
+                cols = line.split("\t")
+                if len(cols) >= 3 and cols[2].strip() == tz:
+                    return cols[0].split(",")[0].strip().upper()  # first/primary country
+        except OSError:
+            continue
+    return ""
+
+
+# Indeed serves most countries at "<cc>.indeed.com" (e.g. ca/de/fr/au), the US at
+# www.indeed.com, and a few regions under a non-ISO subdomain.
+_INDEED_SUBDOMAIN_OVERRIDES = {"GB": "uk"}
+
+
+def detect_indeed_domain() -> str:
+    """Best-effort Indeed regional host from the host's timezone, else www.indeed.com.
+
+    Uses the timezone (the reliable geo signal) rather than the locale, which is
+    frequently left at ``en_US`` even for non-US users. Indeed does not reliably
+    redirect www→region by IP, so picking the right host up front matters.
+    """
+    country = _timezone_country(detect_timezone())
+    if not country or country == "US":
+        return "www.indeed.com"
+    sub = _INDEED_SUBDOMAIN_OVERRIDES.get(country, country.lower())
+    return f"{sub}.indeed.com"
+
+
 def _platform_ua_token() -> str:
     system = platform.system()
     if system == "Darwin":

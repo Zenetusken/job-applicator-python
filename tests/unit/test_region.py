@@ -114,6 +114,30 @@ def test_detect_chrome_major_parses_version(
     region._detect_chrome_major.cache_clear()
 
 
+def test_timezone_country_maps_via_zone_tab() -> None:
+    # America/Toronto resolves to CA via the OS zone1970.tab on Linux/macOS.
+    country = region._timezone_country("America/Toronto")
+    assert country in ("CA", "")  # CA where the tz db ships zone1970.tab; "" on Windows
+
+
+@pytest.mark.parametrize(
+    ("country", "expected"),
+    [
+        ("CA", "ca.indeed.com"),
+        ("US", "www.indeed.com"),
+        ("GB", "uk.indeed.com"),  # Indeed uses uk, not gb
+        ("DE", "de.indeed.com"),
+        ("", "www.indeed.com"),  # unknown → US default
+    ],
+)
+def test_detect_indeed_domain_from_country(
+    monkeypatch: pytest.MonkeyPatch, country: str, expected: str
+) -> None:
+    monkeypatch.setattr(region, "detect_timezone", lambda: "Some/Zone")
+    monkeypatch.setattr(region, "_timezone_country", lambda tz: country)
+    assert region.detect_indeed_domain() == expected
+
+
 def test_detect_chrome_user_agent_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
     region._detect_chrome_major.cache_clear()
     region.detect_chrome_user_agent.cache_clear()

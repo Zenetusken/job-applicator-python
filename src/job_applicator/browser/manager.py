@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
 from playwright_stealth import Stealth
@@ -13,6 +16,9 @@ from job_applicator.config import BrowserConfig
 from job_applicator.exceptions import BrowserError
 from job_applicator.utils.logging import get_logger
 from job_applicator.utils.region import detect_chrome_user_agent, detect_locale, detect_timezone
+
+if TYPE_CHECKING:
+    from pyvirtualdisplay import Display
 
 logger = get_logger("browser.manager")
 
@@ -25,29 +31,101 @@ PROFILE_DIR = Path.home() / ".job-applicator" / "browser-profile"
 class BrowserManager:
     """Manages Playwright browser lifecycle and contexts."""
 
-    def __init__(self, config: BrowserConfig) -> None:
+    def __init__(
+        self,
+        config: BrowserConfig,
+        *,
+        profile_dir: Path | None = None,
+        ephemeral_profile: bool = False,
+        virtual_display: bool = False,
+    ) -> None:
+        """Manage a Playwright browser.
+
+        ``profile_dir`` overrides the shared persistent profile (use a dedicated
+        one per board to avoid cross-contamination). ``ephemeral_profile`` uses a
+        fresh throwaway profile per run — the empirically reliable choice for the
+        Cloudflare-fronted Indeed path, which passes from a clean profile.
+        ``virtual_display`` runs a headed browser windowless on an X virtual
+        display (Xvfb) — Indeed's managed challenge fails headless, so it must run
+        headed, and a virtual display keeps that off-screen and server-capable.
+        """
         self._config = config
+        self._profile_dir = profile_dir
+        self._ephemeral_profile = ephemeral_profile
+        self._virtual_display = virtual_display
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
         self._persistent_context: BrowserContext | None = None
         self._stealth = Stealth()
+        self._display: Display | None = None
+        self._tmp_profile: tempfile.TemporaryDirectory[str] | None = None
+
+    def _enter_virtual_display(self) -> Display | None:
+        """Start an Xvfb virtual display for a headed browser; graceful fallback.
+
+        Prefers pyvirtualdisplay (the optional ``[indeed]`` extra). If it's
+        unavailable or Xvfb won't start, fall back to the ambient ``$DISPLAY``
+        (a window may appear); if there's no display at all, raise with guidance.
+        """
+        try:
+            from pyvirtualdisplay import Display
+        except ImportError:
+            if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+                logger.info(
+                    "pyvirtualdisplay not installed; using ambient display (window may show)."
+                )
+                return None
+            raise BrowserError(
+                "Headed mode needs a display. Install the optional extra "
+                '(pip install "job-applicator[indeed]") to auto-manage a virtual '
+                "display, or run the command under `xvfb-run`."
+            ) from None
+        try:
+            disp = Display(
+                visible=False,
+                size=(self._config.viewport_width, self._config.viewport_height),
+            )
+            disp.start()
+        except Exception as exc:
+            if os.environ.get("DISPLAY"):
+                logger.warning("Virtual display failed (%s); using ambient display.", exc)
+                return None
+            raise BrowserError(
+                f"Could not start a virtual display (Xvfb): {exc}. Install Xvfb "
+                "(e.g. `apt install xvfb`) or run under `xvfb-run`."
+            ) from exc
+        logger.info("Started virtual display for headed browser")
+        return disp
+
+    def _resolve_profile_dir(self) -> Path:
+        """Return the user-data dir to launch with (ephemeral temp dir if requested)."""
+        if self._ephemeral_profile:
+            self._tmp_profile = tempfile.TemporaryDirectory(prefix="ja-profile-")
+            return Path(self._tmp_profile.name)  # mkdtemp already creates this 0700
+        profile = self._profile_dir or PROFILE_DIR
+        profile.mkdir(parents=True, exist_ok=True)
+        profile.chmod(0o700)  # profile holds the live authenticated session
+        return profile
 
     async def start(self) -> None:
         """Launch the Playwright browser."""
         try:
             self._playwright = await async_playwright().start()
+            # A headed browser (required to clear Cloudflare's managed challenge on
+            # Indeed) needs a display; run it windowless on a virtual one.
+            if self._virtual_display:
+                self._display = self._enter_virtual_display()
             # Use a persistent Chrome profile so browser state (cookies,
             # localStorage, history, service workers) accumulates over time.
             # This is indistinguishable from a real user's browser.
-            PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-            PROFILE_DIR.chmod(0o700)  # profile holds the live authenticated session
+            profile_dir = self._resolve_profile_dir()
             # Advertise the host's real locale/timezone (auto-detected unless
             # configured) so geo-aware sites serve the correct region.
             resolved_locale = self._config.locale or detect_locale()
             resolved_tz = self._config.timezone or detect_timezone()
             resolved_ua = self._config.user_agent or detect_chrome_user_agent()
             self._persistent_context = await self._playwright.chromium.launch_persistent_context(
-                str(PROFILE_DIR),
+                str(profile_dir),
                 headless=self._config.headless,
                 slow_mo=self._config.slow_mo,
                 args=[
@@ -95,6 +173,14 @@ class BrowserManager:
         if self._playwright:
             await self._playwright.stop()
             self._playwright = None
+        if self._display is not None:
+            with suppress(Exception):
+                self._display.stop()
+            self._display = None
+        if self._tmp_profile is not None:
+            with suppress(Exception):
+                self._tmp_profile.cleanup()
+            self._tmp_profile = None
         logger.info("Browser closed")
 
     async def persistent_context(self) -> BrowserContext:

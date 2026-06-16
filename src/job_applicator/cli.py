@@ -252,7 +252,6 @@ def search(
     )
 
     async def _run() -> None:
-        from job_applicator.browser.manager import BrowserManager
         from job_applicator.models import JobBoard
         from job_applicator.scrapers.base import SearchParams
 
@@ -269,7 +268,7 @@ def search(
             board=board_map[site],
         )
 
-        async with BrowserManager(settings.browser) as browser:
+        async with _make_browser(site, settings) as browser:
             scraper = _make_scraper(site, browser, settings)
 
             with console.status(f"Searching {site} for '{query}'..."):
@@ -769,11 +768,10 @@ def apply(
     )
 
     async def _run() -> None:
-        from job_applicator.browser.manager import BrowserManager
         from job_applicator.models import JobBoard
         from job_applicator.scrapers.base import SearchParams
 
-        async with BrowserManager(settings.browser) as browser:
+        async with _make_browser(site, settings) as browser:
             # Search for jobs
             if query:
                 scraper = _make_scraper(site, browser, settings)
@@ -1380,10 +1378,9 @@ def batch(
                 console.print(f"[red]Error reading jobs file: {exc}[/red]")
                 raise typer.Exit(1) from exc
         elif query:
-            from job_applicator.browser.manager import BrowserManager
             from job_applicator.scrapers.base import SearchParams
 
-            async with BrowserManager(settings.browser) as browser:
+            async with _make_browser(site, settings) as browser:
                 scraper = _make_scraper(site, browser, settings)
                 params = SearchParams(query=query, max_results=top_k * 2, board=JobBoard(site))
                 with console.status(f"Searching {site}..."):
@@ -2710,6 +2707,25 @@ def _get_settings(headed: bool = False) -> AppSettings:
     if headed:
         settings.browser.headless = False
     return settings
+
+
+def _make_browser(site: str, settings: AppSettings) -> BrowserManager:
+    """Build a browser configured for a board's anti-bot needs.
+
+    Indeed sits behind a Cloudflare *managed challenge* that blocks headless Chrome,
+    so it must run HEADED — on a fresh (ephemeral) profile, which empirically clears
+    the challenge — and is kept windowless via a virtual display (Xvfb). If the user
+    explicitly passed --headed, show a real window instead so they can watch.
+    LinkedIn authenticates with a session token and runs headless on the shared
+    persistent profile, unchanged.
+    """
+    from job_applicator.browser.manager import BrowserManager
+
+    if site == "indeed":
+        wants_window = not settings.browser.headless  # user passed --headed
+        indeed_cfg = settings.browser.model_copy(update={"headless": False})
+        return BrowserManager(indeed_cfg, ephemeral_profile=True, virtual_display=not wants_window)
+    return BrowserManager(settings.browser)
 
 
 def _make_scraper(site: str, browser: BrowserManager, settings: AppSettings) -> BaseScraper:
