@@ -37,6 +37,32 @@ def test_indeed_base_auto_detects_region_when_unpinned(
     assert scraper._base == "https://ca.indeed.com"
 
 
+def test_indeed_base_caches_auto_detection(
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_base computes the auto-detected origin once, not per access (no per-card I/O)."""
+    app_settings.target.indeed_domain = ""
+    calls = {"n": 0}
+
+    def fake_detect() -> str:
+        calls["n"] += 1
+        return "ca.indeed.com"
+
+    monkeypatch.setattr("job_applicator.scrapers.indeed.detect_indeed_domain", fake_detect)
+    scraper = IndeedScraper(MagicMock(), app_settings)
+    for _ in range(5):
+        assert scraper._base == "https://ca.indeed.com"
+    assert calls["n"] == 1  # detected once, then cached on the instance
+
+
+def test_indeed_browser_policy_is_headed_ephemeral_virtual() -> None:
+    """The Cloudflare requirement lives on the board, not just the CLI."""
+    policy = IndeedScraper.browser_policy()
+    assert policy.headed is True
+    assert policy.ephemeral_profile is True
+    assert policy.virtual_display is True
+
+
 def test_indeed_search_url_respects_region_domain(app_settings: AppSettings) -> None:
     app_settings.target.indeed_domain = "ca.indeed.com"
     scraper = IndeedScraper(MagicMock(), app_settings)

@@ -196,6 +196,51 @@ def test_virtual_display_raises_when_no_display(monkeypatch: pytest.MonkeyPatch)
         manager._enter_virtual_display()
 
 
+def test_profile_dir_and_ephemeral_are_mutually_exclusive(tmp_path: Path) -> None:
+    """Setting both is a programming error and fails fast (no silent profile_dir drop)."""
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        BrowserManager(BrowserConfig(), profile_dir=tmp_path, ephemeral_profile=True)
+
+
+def test_headless_property_reflects_config() -> None:
+    assert BrowserManager(BrowserConfig(headless=True)).headless is True
+    assert BrowserManager(BrowserConfig(headless=False)).headless is False
+
+
+@pytest.mark.asyncio
+async def test_stop_cleans_display_and_tmp_even_if_context_close_raises() -> None:
+    """A failing context.close() must NOT skip display.stop()/tmp cleanup (no leak)."""
+    manager = BrowserManager(BrowserConfig(), ephemeral_profile=True, virtual_display=True)
+
+    class BoomContext:
+        async def close(self) -> None:
+            raise RuntimeError("context refused to close")
+
+    display_stopped = {"v": False}
+
+    class FakeDisplay:
+        def stop(self) -> None:
+            display_stopped["v"] = True
+
+    class FakeTmp:
+        def __init__(self) -> None:
+            self.cleaned = False
+
+        def cleanup(self) -> None:
+            self.cleaned = True
+
+    fake_tmp = FakeTmp()
+    manager._persistent_context = BoomContext()  # type: ignore[assignment]
+    manager._display = FakeDisplay()  # type: ignore[assignment]
+    manager._tmp_profile = fake_tmp  # type: ignore[assignment]
+
+    await manager.stop()  # must not raise despite the close() error
+
+    assert display_stopped["v"] is True  # display still torn down
+    assert fake_tmp.cleaned is True  # temp profile still cleaned up
+    assert manager._persistent_context is None
+
+
 @pytest.mark.asyncio
 async def test_apply_returns_failed_when_context_entry_raises(
     app_settings: AppSettings, sample_job: object

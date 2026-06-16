@@ -128,6 +128,10 @@ def test_timezone_country_maps_via_zone_tab() -> None:
         ("GB", "uk.indeed.com"),  # Indeed uses uk, not gb
         ("DE", "de.indeed.com"),
         ("", "www.indeed.com"),  # unknown → US default
+        # Countries with NO Indeed site must NOT produce a dead <cc>.indeed.com —
+        # they fall back to www.indeed.com (which always resolves).
+        ("BS", "www.indeed.com"),  # Bahamas: bs.indeed.com does not exist
+        ("IS", "www.indeed.com"),  # Iceland: is.indeed.com does not exist
     ],
 )
 def test_detect_indeed_domain_from_country(

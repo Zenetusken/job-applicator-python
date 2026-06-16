@@ -49,6 +49,8 @@ class BrowserManager:
         display (Xvfb) — Indeed's managed challenge fails headless, so it must run
         headed, and a virtual display keeps that off-screen and server-capable.
         """
+        if ephemeral_profile and profile_dir is not None:
+            raise ValueError("ephemeral_profile and profile_dir are mutually exclusive")
         self._config = config
         self._profile_dir = profile_dir
         self._ephemeral_profile = ephemeral_profile
@@ -59,6 +61,12 @@ class BrowserManager:
         self._stealth = Stealth()
         self._display: Display | None = None
         self._tmp_profile: tempfile.TemporaryDirectory[str] | None = None
+        self._active_profile_dir: Path | None = None  # the dir actually launched with
+
+    @property
+    def headless(self) -> bool:
+        """Whether this manager launches Chrome headless (board policy checks this)."""
+        return self._config.headless
 
     def _enter_virtual_display(self) -> Display | None:
         """Start an Xvfb virtual display for a headed browser; graceful fallback.
@@ -101,10 +109,12 @@ class BrowserManager:
         """Return the user-data dir to launch with (ephemeral temp dir if requested)."""
         if self._ephemeral_profile:
             self._tmp_profile = tempfile.TemporaryDirectory(prefix="ja-profile-")
-            return Path(self._tmp_profile.name)  # mkdtemp already creates this 0700
+            self._active_profile_dir = Path(self._tmp_profile.name)  # mkdtemp is 0700
+            return self._active_profile_dir
         profile = self._profile_dir or PROFILE_DIR
         profile.mkdir(parents=True, exist_ok=True)
         profile.chmod(0o700)  # profile holds the live authenticated session
+        self._active_profile_dir = profile
         return profile
 
     async def start(self) -> None:
@@ -155,23 +165,46 @@ class BrowserManager:
             # inside __aenter__, so stop() would otherwise never run.
             with suppress(Exception):
                 await self.stop()
+            # A BrowserError from a helper (e.g. _enter_virtual_display's
+            # missing-display guidance) is already actionable — don't bury it in a
+            # generic "another instance may be using the profile" message.
+            if isinstance(exc, BrowserError):
+                raise
+            # Reference the profile actually launched with (Indeed uses a temp dir),
+            # and only mention SingletonLock for a real (persistent) profile — a
+            # fresh ephemeral dir can never have a stale lock.
+            active = self._active_profile_dir or self._profile_dir or PROFILE_DIR
+            lock_hint = (
+                ""
+                if self._ephemeral_profile
+                else (
+                    " Another job-applicator instance may be using the profile, or a "
+                    f"previous run left a lock (remove {active / 'SingletonLock'} and retry)."
+                )
+            )
             raise BrowserError(
-                f"Failed to launch browser: {exc}. Another job-applicator instance "
-                f"may be using the browser profile, or a previous run left a lock "
-                f"(remove {PROFILE_DIR / 'SingletonLock'} and retry if so).",
-                context={"headless": self._config.headless, "profile": str(PROFILE_DIR)},
+                f"Failed to launch browser: {exc}.{lock_hint}",
+                context={"headless": self._config.headless, "profile": str(active)},
             ) from exc
 
     async def stop(self) -> None:
-        """Close the Playwright browser."""
+        """Close the Playwright browser.
+
+        Best-effort: each teardown step is isolated so one failure (e.g. a context
+        that won't close) can't skip the rest — otherwise a hung close() would leak
+        the Xvfb virtual display and the ephemeral temp profile.
+        """
         if self._persistent_context:
-            await self._persistent_context.close()
+            with suppress(Exception):
+                await self._persistent_context.close()
             self._persistent_context = None
         if self._browser:
-            await self._browser.close()
+            with suppress(Exception):
+                await self._browser.close()
             self._browser = None
         if self._playwright:
-            await self._playwright.stop()
+            with suppress(Exception):
+                await self._playwright.stop()
             self._playwright = None
         if self._display is not None:
             with suppress(Exception):
@@ -181,6 +214,7 @@ class BrowserManager:
             with suppress(Exception):
                 self._tmp_profile.cleanup()
             self._tmp_profile = None
+        self._active_profile_dir = None
         logger.info("Browser closed")
 
     async def persistent_context(self) -> BrowserContext:

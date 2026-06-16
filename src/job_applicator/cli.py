@@ -2709,37 +2709,51 @@ def _get_settings(headed: bool = False) -> AppSettings:
     return settings
 
 
-def _make_browser(site: str, settings: AppSettings) -> BrowserManager:
-    """Build a browser configured for a board's anti-bot needs.
+def _scraper_class(site: str) -> type[BaseScraper]:
+    """Resolve a board's scraper class, or exit if unsupported.
 
-    Indeed sits behind a Cloudflare *managed challenge* that blocks headless Chrome,
-    so it must run HEADED — on a fresh (ephemeral) profile, which empirically clears
-    the challenge — and is kept windowless via a virtual display (Xvfb). If the user
-    explicitly passed --headed, show a real window instead so they can watch.
-    LinkedIn authenticates with a session token and runs headless on the shared
-    persistent profile, unchanged.
+    Site validation lives here so it happens BEFORE any browser is launched.
+    """
+    if site == "linkedin":
+        from job_applicator.scrapers.linkedin import LinkedInScraper
+
+        return LinkedInScraper
+    if site == "indeed":
+        from job_applicator.scrapers.indeed import IndeedScraper
+
+        return IndeedScraper
+    console.print(f"[yellow]{site} scraper not yet implemented[/yellow]")
+    raise typer.Exit(1)
+
+
+def _make_browser(site: str, settings: AppSettings) -> BrowserManager:
+    """Build a browser per the board's declared ``BrowserPolicy``.
+
+    The policy lives on the scraper class (not here), so a board's anti-bot needs
+    can't drift from the CLI and every caller building a browser gets them right.
+    Indeed declares headed + ephemeral-profile + virtual-display (its Cloudflare
+    managed challenge fails headless); LinkedIn keeps the default headless shared
+    profile. ``--headed`` (config headless=False) shows a real window instead of a
+    virtual one. Validates the site before constructing anything (so an unknown
+    board never launches a browser).
     """
     from job_applicator.browser.manager import BrowserManager
 
-    if site == "indeed":
-        wants_window = not settings.browser.headless  # user passed --headed
-        indeed_cfg = settings.browser.model_copy(update={"headless": False})
-        return BrowserManager(indeed_cfg, ephemeral_profile=True, virtual_display=not wants_window)
-    return BrowserManager(settings.browser)
+    policy = _scraper_class(site).browser_policy()
+    cfg = settings.browser
+    if policy.headed:
+        cfg = cfg.model_copy(update={"headless": False})
+    # Use a virtual display only when forcing headed AND the user didn't ask to
+    # watch (--headed leaves config headless=False → show a real window).
+    use_virtual = policy.virtual_display and settings.browser.headless
+    return BrowserManager(
+        cfg, ephemeral_profile=policy.ephemeral_profile, virtual_display=use_virtual
+    )
 
 
 def _make_scraper(site: str, browser: BrowserManager, settings: AppSettings) -> BaseScraper:
     """Construct the scraper for a job board, or exit if unsupported."""
-    if site == "linkedin":
-        from job_applicator.scrapers.linkedin import LinkedInScraper
-
-        return LinkedInScraper(browser, settings)
-    if site == "indeed":
-        from job_applicator.scrapers.indeed import IndeedScraper
-
-        return IndeedScraper(browser, settings)
-    console.print(f"[yellow]{site} scraper not yet implemented[/yellow]")
-    raise typer.Exit(1)
+    return _scraper_class(site)(browser, settings)
 
 
 def _make_applicator(site: str, browser: BrowserManager, settings: AppSettings) -> BaseApplicator:

@@ -6,6 +6,7 @@ rather than silenced with an ignore.
 """
 
 from types import TracebackType
+from typing import Any
 
 class Display:
     def __init__(
@@ -14,7 +15,12 @@ class Display:
         visible: bool = ...,
         size: tuple[int, int] = ...,
         color_depth: int = ...,
+        bgcolor: str = ...,
         use_xauth: bool = ...,
+        retries: int = ...,
+        extra_args: list[str] = ...,
+        manage_global_env: bool = ...,
+        **kwargs: Any,
     ) -> None: ...
     def start(self) -> Display: ...
     def stop(self) -> Display: ...
