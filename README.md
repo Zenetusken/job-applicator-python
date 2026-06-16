@@ -44,6 +44,41 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+## LLM backend (required for the AI features)
+
+The AI features — cover letters, résumé tailoring, style analysis — call an
+**OpenAI-compatible chat endpoint**. job-applicator is a *client*: it does **not**
+start one. (Embeddings for job matching run in-process via `sentence-transformers`,
+so they need no separate service — just the `[embeddings]` extra.)
+
+Pick one:
+
+**1. Point at an existing endpoint (recommended).** Set `api_base` + `model` under
+`[llm]` in `config.toml`. It uses litellm, so any provider works — a shared local
+vLLM, cloud OpenAI/Anthropic, Ollama, LM Studio, etc.
+
+```toml
+[llm]
+api_base = "http://localhost:8000/v1"   # the endpoint you point at
+model = "cyankiwi/Qwen3.5-4B-AWQ-4bit"
+```
+
+**2. Self-host a local vLLM.** For a standalone box with no shared/remote LLM
+(needs a CUDA GPU):
+
+```bash
+pip install -e ".[serve]"
+scripts/serve-vllm.sh        # serves :8000 — MODEL/HOST/PORT/GPU_MEM are env-overridable
+```
+
+The first launch **auto-downloads the model** from Hugging Face Hub (~4 GB for the
+default; cached to `~/.cache/huggingface`) — no separate step. Needs network on first
+run; gated models also need `HF_TOKEN`. (Embeddings likewise fetch
+`mxbai-embed-large-v1`, ~640 MB, on first use.)
+
+Leave it running in its own terminal (or wrap it in a process manager / systemd unit
+for always-on), then run job-applicator against it as usual.
+
 ## Usage
 
 ```bash

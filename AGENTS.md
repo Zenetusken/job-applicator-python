@@ -159,6 +159,7 @@ Score >= 60% = compatible. Returns warnings and actionable suggestions.
 - `scripts/detailed_match_report.py` — rich per-skill match breakdown
 - `scripts/tailor_cgi.py` — resume tailoring for CGI job (needs vLLM)
 - `scripts/test_e2e.py` — full pipeline (needs vLLM running)
+- `scripts/serve-vllm.sh` — optionally self-host the OpenAI-compatible LLM endpoint (`[serve]` extra + GPU)
 
 ## Files Not to Commit
 

@@ -57,6 +57,10 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
 
 - Headless browser by default, `--headed` flag for debugging
 - AI-powered cover letters via litellm (works with local vLLM or cloud APIs)
+- **LLM endpoint is external by default.** The generation features are a *client* of an
+  OpenAI-compatible endpoint (`[llm] api_base`, default `localhost:8000`); the app never starts
+  one. Embeddings run in-process. Optional `[serve]` extra + `scripts/serve-vllm.sh` self-host a
+  local vLLM for standalone boxes.
 - Instructor for structured LLM outputs (Pydantic models)
 - mxbai-embed-large-v1 for semantic job matching (~1.5 GB VRAM)
 - Style analyzer with persistent cache and multi-document support
