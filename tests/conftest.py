@@ -1,11 +1,37 @@
-"""Shared test fixtures."""
+"""Shared test fixtures and the location-based marker hook."""
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 
 from job_applicator.config import AppSettings, BrowserConfig, LLMConfig, TargetConfig
 from job_applicator.models import JobBoard, JobListing, ResumeData, UserProfile
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Auto-mark tests by location so marker selection works without decorating
+    every test:
+
+      tests/unit/**        -> ``unit``         (fast, no infra; the green gate)
+      tests/integration/** -> ``integration``  (reserved; empty today)
+      tests/*.py (root)    -> ``live``         (need vLLM @ localhost:8000 + GPU)
+
+    Markers are registered in pyproject.toml; ``--strict-markers`` requires that.
+    """
+    tests_root = Path(__file__).parent
+    for item in items:
+        try:
+            rel = item.path.relative_to(tests_root)
+        except ValueError:
+            continue  # not under tests/ — leave unmarked
+        if rel.parts[0] == "unit":
+            item.add_marker(pytest.mark.unit)
+        elif rel.parts[0] == "integration":
+            item.add_marker(pytest.mark.integration)
+        elif len(rel.parts) == 1:  # a test file directly under tests/ root
+            item.add_marker(pytest.mark.live)
 
 
 @pytest.fixture

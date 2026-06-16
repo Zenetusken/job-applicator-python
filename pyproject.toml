@@ -117,4 +117,5 @@ addopts = ["-ra", "--strict-markers", "--strict-config"]
 markers = [
     "unit: fast, isolated unit tests",
     "integration: tests that exercise browser automation",
+    "live: end-to-end tests needing live infra (vLLM at localhost:8000 + GPU); excluded from the fast gate",
 ]
