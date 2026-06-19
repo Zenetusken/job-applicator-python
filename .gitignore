@@ -84,6 +84,7 @@ screenshots/
 
 # Local harness / tooling config — personal, not part of the public project
 .mimocode/
+.kimi-code/
 
 # Generated output
 output/
