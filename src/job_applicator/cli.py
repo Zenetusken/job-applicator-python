@@ -2714,13 +2714,40 @@ delay_between_applications_s = 2.0
             reporter.render(console, log_file=log_file)
 
 
+@app.command("check-session")
+def check_session(
+    ctx: typer.Context,
+    site: str = typer.Argument("linkedin", help="Job board to check (linkedin, indeed)."),
+    headed: bool = typer.Option(False, "--headed", help="Show the browser window."),
+    verbose: bool = _verbose_option(),
+    log_file: str | None = _log_file_option(),
+) -> None:
+    """Verify that an authenticated board session is ready (or not required)."""
+    _merge_verbose_ctx(ctx, verbose, log_file)
+    settings = _get_settings(headed=headed)
+    setup_logging(settings.log_level)
+
+    async def _run() -> None:
+        async with _make_browser(site, settings) as browser:
+            scraper = _make_scraper(site, browser, settings)
+            health = await scraper.check_session()
+
+        if health.healthy:
+            console.print(f"[green]✓ {health.board.value}:[/green] {health.details}")
+        else:
+            console.print(f"[red]✗ {health.board.value}:[/red] {health.details}")
+            raise typer.Exit(1)
+
+    asyncio.run(_run())
+
+
 @app.command()
 def doctor(
     ctx: typer.Context,
     verbose: bool = _verbose_option(),
     log_file: str | None = _log_file_option(),
 ) -> None:
-    """Check the AI backend: LLM endpoint reachability, embeddings, self-host prereqs."""
+    """Check the AI backend, browser, system binaries, and config."""
     _merge_verbose_ctx(ctx, verbose, log_file)
     from job_applicator.diagnostics import run_diagnostics
 
@@ -2790,6 +2817,47 @@ def _render_doctor(report: DoctorReport) -> None:
     vllm_part = f"{good} vllm" if sh.vllm_installed else f"{warn} vllm not installed"
     token_part = f"{good} HF token" if sh.hf_token_present else f"{warn} no HF token"
     console.print(f"  Self-host      {vllm_part} · {token_part}  [dim](only if self-hosting)[/dim]")
+
+    browser = report.browser
+    if browser.playwright_installed and browser.chromium_executable:
+        console.print(
+            f"  Browser        {good} Playwright + Chromium  "
+            f"[dim]{escape(str(browser.chromium_executable))}[/dim]"
+        )
+    elif browser.playwright_installed:
+        console.print(f"  Browser        {warn} Playwright installed, Chromium not found")
+        if browser.error:
+            console.print(f"                 [dim]{escape(browser.error)}[/dim]")
+    else:
+        console.print(f"  Browser        {warn} Playwright not installed")
+        if browser.error:
+            console.print(f"                 [dim]{escape(browser.error)}[/dim]")
+        console.print("                 → run: [cyan]playwright install chromium[/cyan]")
+
+    sys = report.system
+    pdf_part = f"{good} pdftotext" if sys.pdftotext_available else f"{warn} pdftotext"
+    xvfb_part = f"{good} Xvfb" if sys.xvfb_available else f"{warn} Xvfb"
+    console.print(f"  System bins    {pdf_part} · {xvfb_part}  [dim](optional)[/dim]")
+
+    cfg = report.config
+    if cfg.config_file_found and cfg.config_file_parseable:
+        console.print(f"  Config         {good} {escape(str(cfg.config_file_path))}")
+    elif cfg.config_file_found:
+        console.print(f"  Config         {bad} parse error  {escape(str(cfg.config_file_path))}")
+        if cfg.error:
+            console.print(f"                 [dim]{escape(cfg.error)}[/dim]")
+    else:
+        console.print(f"  Config         {warn} not found  {escape(str(cfg.config_file_path))}")
+        console.print("                 → run: [cyan]job-applicator config-init[/cyan]")
+    if cfg.plaintext_credentials:
+        console.print(
+            f"                 {warn} [yellow]plaintext board credentials in config file — "
+            "consider removing them (login is headed)[/yellow]"
+        )
+    if cfg.resume_path_set and not cfg.resume_path_exists:
+        console.print(
+            f"                 {warn} [yellow]configured resume_path does not exist[/yellow]"
+        )
 
     console.print()
     if report.ok and llm.model_available:

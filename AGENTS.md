@@ -26,7 +26,7 @@ pytest -m unit -v -k test_name  # single test
 
 # CLI
 job-applicator --help
-job-applicator doctor                       # AI-backend health check (LLM endpoint, embeddings)
+job-applicator doctor                       # Health check: LLM, embeddings, browser, system bins, config
 job-applicator match --resume resume.pdf
 ```
 

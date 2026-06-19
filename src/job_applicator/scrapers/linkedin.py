@@ -19,7 +19,7 @@ from job_applicator.browser.actions import (
 from job_applicator.browser.manager import BrowserManager
 from job_applicator.config import AppSettings
 from job_applicator.exceptions import LoginRequiredError, NavigationError
-from job_applicator.models import JobBoard, JobListing
+from job_applicator.models import JobBoard, JobListing, SessionHealth
 from job_applicator.scrapers.base import BaseScraper, SearchParams
 from job_applicator.utils.cookies import load_cookies, save_cookies
 from job_applicator.utils.logging import get_logger
@@ -164,6 +164,36 @@ class LinkedInScraper(BaseScraper):
             logger.warning("Session check could not load the feed; treating as no session.")
             return False
 
+    async def check_session(self) -> SessionHealth:
+        """Best-effort health check for the LinkedIn session.
+
+        Returns healthy when the feed loads while authenticated. Transient
+        network failures are captured in ``details`` rather than raised.
+        """
+        try:
+            healthy = await self._ensure_session(await self._get_context())
+        except NavigationError as exc:
+            return SessionHealth(
+                board=JobBoard.LINKEDIN,
+                healthy=False,
+                details=f"Could not reach LinkedIn to verify the session: {exc}",
+            )
+
+        if healthy:
+            return SessionHealth(
+                board=JobBoard.LINKEDIN,
+                healthy=True,
+                details="Authenticated LinkedIn session is active.",
+            )
+        return SessionHealth(
+            board=JobBoard.LINKEDIN,
+            healthy=False,
+            details=(
+                "No authenticated LinkedIn session found. "
+                "Run `job-applicator login` to sign in once in a real browser window."
+            ),
+        )
+
     async def interactive_login(self, timeout_s: int = 300) -> bool:
         """Open LinkedIn's login page for a one-time, human-driven sign-in.
 
@@ -273,6 +303,7 @@ class LinkedInScraper(BaseScraper):
             if not found or not cards:
                 logger.warning("No job cards found on page")
                 return jobs
+            failures = 0
             for card in cards[: params.max_results]:
                 try:
                     job = await self._extract_job(card, params.board)
@@ -281,7 +312,7 @@ class LinkedInScraper(BaseScraper):
                         # LinkedIn auto-selects the first card on page load,
                         # so we need to wait for content to update.
                         prev_desc = await self._get_desc_text(page)
-                        await card.click()
+                        await card.click(timeout=5_000)
                         # Wait for description content to change
                         for _ in range(10):
                             await random_delay(0.3, 0.5)
@@ -293,8 +324,16 @@ class LinkedInScraper(BaseScraper):
                             job = job.model_copy(update={"description": desc})
                         jobs.append(job)
                 except Exception as exc:
+                    failures += 1
                     logger.warning("Failed to extract job card: %s", exc)
 
+            if failures:
+                logger.warning(
+                    "Scraped %d/%d LinkedIn job cards (%d failed)",
+                    len(jobs),
+                    min(len(cards), params.max_results),
+                    failures,
+                )
             logger.info("Scraped %d jobs from LinkedIn", len(jobs))
             return jobs
         finally:

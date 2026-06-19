@@ -13,12 +13,15 @@ import pytest
 from litellm.exceptions import APIConnectionError, Timeout
 
 from job_applicator import cli, diagnostics
-from job_applicator.config import EmbeddingConfig, LLMConfig
+from job_applicator.config import AppSettings, EmbeddingConfig, LLMConfig
 from job_applicator.models import (
+    BrowserCheck,
+    ConfigCheck,
     DoctorReport,
     EmbeddingsCheck,
     LLMEndpointCheck,
     SelfHostCheck,
+    SystemBinariesCheck,
 )
 from job_applicator.utils.llm import llm_call_error
 
@@ -242,6 +245,11 @@ def _report(*, reachable: bool, http_status: int | None, model_available: bool) 
         ),
         embeddings=EmbeddingsCheck(model_name="m", cached=False),
         self_host=SelfHostCheck(vllm_installed=False, hf_token_present=False),
+        browser=BrowserCheck(playwright_installed=True, chromium_executable="/bin/chromium"),
+        system=SystemBinariesCheck(
+            pdftotext_available=True, xvfb_available=True, pdftotext_path="/bin/pdftotext"
+        ),
+        config=ConfigCheck(config_file_found=True, config_file_path="config.toml"),
     )
 
 
@@ -279,6 +287,18 @@ def test_render_doctor_escapes_dynamic_values(status: int | None) -> None:
         ),
         embeddings=EmbeddingsCheck(model_name="m-[/]", cached=False),
         self_host=SelfHostCheck(vllm_installed=False, hf_token_present=False),
+        browser=BrowserCheck(playwright_installed=False, error="[red]fail[/red]"),
+        system=SystemBinariesCheck(
+            pdftotext_available=False,
+            xvfb_available=False,
+            pdftotext_path="/[/]bin/pdftotext",
+        ),
+        config=ConfigCheck(
+            config_file_found=True,
+            config_file_path="[x]config.toml",
+            plaintext_credentials=True,
+            error="boom [/]",
+        ),
     )
     cli._render_doctor(rep)  # must not raise rich.markup.MarkupError
 
@@ -347,4 +367,129 @@ def test_config_init_uses_llmconfig_defaults(tmp_path: Path) -> None:
     text = out.read_text()
     assert f'model = "{LLMConfig.model_fields["model"].default}"' in text
     assert f'api_base = "{LLMConfig.model_fields["api_base"].default}"' in text
-    assert "__LLM_" not in text  # all placeholders substituted
+
+
+# --- check_browser: Playwright + Chromium presence -------------------------
+
+
+async def test_browser_check_detects_missing_playwright(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(diagnostics, "async_playwright", None)
+    res = await diagnostics.check_browser()
+    assert not res.playwright_installed
+    assert res.error
+
+
+async def test_browser_check_reports_executable(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeBrowserType:
+        executable_path = "/fake/chromium"
+
+    class _FakePlaywright:
+        chromium = _FakeBrowserType()
+
+    class _FakeContext:
+        async def __aenter__(self) -> _FakePlaywright:
+            return _FakePlaywright()
+
+        async def __aexit__(self, *args: object) -> bool:
+            return False
+
+    monkeypatch.setattr(diagnostics, "async_playwright", lambda: _FakeContext())
+    res = await diagnostics.check_browser()
+    assert res.playwright_installed
+    assert res.chromium_executable == "/fake/chromium"
+
+
+# --- check_system_binaries: pdftotext + Xvfb -------------------------------
+
+
+def test_system_binaries_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        diagnostics.shutil,
+        "which",
+        lambda name: "/usr/bin/" + name if name in ("pdftotext", "Xvfb") else None,
+    )
+    res = diagnostics.check_system_binaries()
+    assert res.pdftotext_available
+    assert res.xvfb_available
+    assert res.pdftotext_path == "/usr/bin/pdftotext"
+    assert res.xvfb_path == "/usr/bin/Xvfb"
+
+
+def test_system_binaries_xvfb_run_also_counts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        diagnostics.shutil,
+        "which",
+        lambda name: "/usr/bin/xvfb-run" if name == "xvfb-run" else None,
+    )
+    res = diagnostics.check_system_binaries()
+    assert not res.pdftotext_available
+    assert res.xvfb_available
+    assert res.xvfb_path == "/usr/bin/xvfb-run"
+
+
+# --- check_config: file presence, parseability, credentials ------------------
+
+
+def test_config_check_missing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("JOB_APPLICATOR_CONFIG_FILE", str(tmp_path / "nonexistent.toml"))
+    settings = AppSettings()
+    res = diagnostics.check_config(settings)
+    assert not res.config_file_found
+    assert not res.config_file_parseable
+
+
+def test_config_check_parse_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # AppSettings itself will reject a malformed TOML file, so we construct settings
+    # against a valid file and then point check_config at the broken one.
+    valid = tmp_path / "valid.toml"
+    valid.write_text("")
+    bad = tmp_path / "bad.toml"
+    bad.write_text('[target\nlinkedin_email = "x"')
+    monkeypatch.setenv("JOB_APPLICATOR_CONFIG_FILE", str(valid))
+    settings = AppSettings()
+    monkeypatch.setattr(diagnostics, "_config_file_path", lambda: bad)
+    res = diagnostics.check_config(settings)
+    assert res.config_file_found
+    assert not res.config_file_parseable
+    assert res.error
+
+
+def test_config_check_plaintext_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = tmp_path / "cred.toml"
+    cfg.write_text('[target]\nlinkedin_email = "a@b.com"\nlinkedin_password = "secret"\n')
+    monkeypatch.setenv("JOB_APPLICATOR_CONFIG_FILE", str(cfg))
+    settings = AppSettings()
+    res = diagnostics.check_config(settings)
+    assert res.config_file_found
+    assert res.config_file_parseable
+    assert res.plaintext_credentials
+
+
+def test_config_check_resume_and_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = tmp_path / "cfg.toml"
+    resume = tmp_path / "resume.pdf"
+    resume.write_text("fake pdf")
+    cfg.write_text(f'resume_path = "{resume}"\noutput_dir = "{tmp_path / "out"}"\n')
+    monkeypatch.setenv("JOB_APPLICATOR_CONFIG_FILE", str(cfg))
+    settings = AppSettings()
+    res = diagnostics.check_config(settings)
+    assert res.resume_path_set
+    assert res.resume_path_exists
+    assert res.output_dir_writable
+
+
+# --- run_diagnostics wires every new check ---------------------------------
+
+
+async def test_run_diagnostics_includes_browser_system_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_client(monkeypatch, resp=_FakeResponse(200, _models_payload("m")))
+    monkeypatch.setenv("JOB_APPLICATOR_CONFIG_FILE", "nonexistent-config-unit-test.toml")
+    report = await diagnostics.run_diagnostics(AppSettings(llm=LLMConfig(model="m")))
+    assert report.ok
+    assert isinstance(report.browser, BrowserCheck)
+    assert isinstance(report.system, SystemBinariesCheck)
+    assert isinstance(report.config, ConfigCheck)

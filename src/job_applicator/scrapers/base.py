@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from job_applicator.models import JobBoard, JobListing
+from job_applicator.models import JobBoard, JobListing, SessionHealth
 
 if TYPE_CHECKING:
     from job_applicator.browser.manager import BrowserManager
@@ -64,3 +64,13 @@ class BaseScraper(ABC):
     @abstractmethod
     async def login(self, email: str, password: str) -> bool:
         """Authenticate with the job board. Returns True on success."""
+
+    @abstractmethod
+    async def check_session(self) -> SessionHealth:
+        """Best-effort check that a usable session exists for this board.
+
+        For authenticated boards this should verify the session (e.g., load the
+        feed). For public boards it may simply report that no login is required.
+        Transient network failures should be surfaced in ``details`` rather than
+        raised, so callers can decide whether to block or warn.
+        """

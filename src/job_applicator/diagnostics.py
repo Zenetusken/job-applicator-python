@@ -10,24 +10,49 @@ reachability (an HTTP 200 from /models) is blocking; auth failures (401/403) are
 surfaced distinctly — the endpoint is up, so the fix is the key, not starting a
 server. Model-in-list and the embeddings cache are advisory: cloud/Ollama endpoints
 name models differently than a local vLLM, and a fresh box downloads on first use.
+
+Browser, system-binary, and config checks are also advisory: a headless server may
+use only the match/tailor pipeline and intentionally skip browser features.
 """
 
 from __future__ import annotations
 
 import os
 import shutil
+import tomllib
 from pathlib import Path
+from typing import Any
 
 import httpx
 
-from job_applicator.config import AppSettings, EmbeddingConfig, LLMConfig
+from job_applicator.config import (
+    CONFIG_FILE_ENV_VAR,
+    DEFAULT_CONFIG_FILE,
+    AppSettings,
+    EmbeddingConfig,
+    LLMConfig,
+)
 from job_applicator.models import (
+    BrowserCheck,
+    ConfigCheck,
     DoctorReport,
     EmbeddingsCheck,
     LLMEndpointCheck,
     SelfHostCheck,
+    SystemBinariesCheck,
 )
 from job_applicator.utils.logging import get_logger
+
+
+def _get_async_playwright() -> Any:
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:  # pragma: no cover — core dep, but keep doctor robust.
+        return None
+    return async_playwright
+
+
+async_playwright = _get_async_playwright()
 
 logger = get_logger("diagnostics")
 
@@ -156,10 +181,104 @@ def _hf_get_token_via_lib() -> str | None:
     return token if isinstance(token, str) and token else None
 
 
+async def check_browser() -> BrowserCheck:
+    """Check that Playwright is installed and can locate a Chromium executable."""
+    if async_playwright is None:
+        return BrowserCheck(
+            playwright_installed=False,
+            error="Playwright not installed; run: playwright install chromium",
+        )
+
+    try:
+        async with async_playwright() as p:
+            executable = p.chromium.executable_path
+            return BrowserCheck(
+                playwright_installed=True,
+                chromium_executable=str(executable) if executable else None,
+            )
+    except Exception as exc:  # broad by design for install-state probing
+        logger.debug("Browser check failed: %s", exc)
+        return BrowserCheck(playwright_installed=True, error=str(exc))
+
+
+def check_system_binaries() -> SystemBinariesCheck:
+    """Check for optional system binaries used by resume parsing and Indeed display."""
+    pdftotext = shutil.which("pdftotext")
+    # Xvfb is the display server; xvfb-run is a convenience wrapper. Either satisfies
+    # the " headed windowless" requirement for the Indeed scraper.
+    xvfb = shutil.which("Xvfb") or shutil.which("xvfb-run")
+    return SystemBinariesCheck(
+        pdftotext_available=pdftotext is not None,
+        xvfb_available=xvfb is not None,
+        pdftotext_path=pdftotext,
+        xvfb_path=xvfb,
+    )
+
+
+def _config_file_path() -> Path:
+    return Path(os.environ.get(CONFIG_FILE_ENV_VAR, DEFAULT_CONFIG_FILE))
+
+
+def _has_plaintext_credentials(config_file: Path) -> bool:
+    """Return True if the TOML config file sets board credentials directly.
+
+    We inspect the raw file (not the merged settings) so env-var overrides are not
+    falsely flagged. The goal is to warn users who still have passwords in
+    ``config.toml`` even though the auth model is headed/manual.
+    """
+    if not config_file.is_file():
+        return False
+    try:
+        with config_file.open("rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError):
+        return False
+
+    target = data.get("target", {})
+    credential_keys = ("linkedin_email", "linkedin_password", "indeed_email", "indeed_password")
+    return any(target.get(key) for key in credential_keys)
+
+
+def check_config(settings: AppSettings) -> ConfigCheck:
+    """Check config file presence, parseability, and a few security/path hints."""
+    config_file = _config_file_path()
+    result = ConfigCheck(
+        config_file_found=config_file.is_file(),
+        config_file_path=str(config_file.resolve()) if config_file.is_file() else str(config_file),
+    )
+
+    if not result.config_file_found:
+        result.config_file_parseable = False
+        return result
+
+    try:
+        with config_file.open("rb") as fh:
+            tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        result.config_file_parseable = False
+        result.error = str(exc)
+        return result
+
+    result.plaintext_credentials = _has_plaintext_credentials(config_file)
+    result.resume_path_set = bool(settings.resume_path)
+    if result.resume_path_set:
+        result.resume_path_exists = Path(settings.resume_path).is_file()
+    try:
+        output_dir = settings.ensure_output_dir()
+        result.output_dir_writable = os.access(output_dir, os.W_OK)
+    except OSError as exc:
+        result.error = f"output dir not writable: {exc}"
+
+    return result
+
+
 async def run_diagnostics(settings: AppSettings) -> DoctorReport:
     """Run every check and assemble the report (only an HTTP-200 /models is blocking)."""
     return DoctorReport(
         llm=await check_llm_endpoint(settings.llm),
         embeddings=check_embeddings(settings.embedding),
         self_host=check_self_host(),
+        browser=await check_browser(),
+        system=check_system_binaries(),
+        config=check_config(settings),
     )

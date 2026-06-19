@@ -29,7 +29,7 @@ from job_applicator.browser.actions import navigate, random_delay, wait_for_sele
 from job_applicator.browser.manager import BrowserManager
 from job_applicator.config import AppSettings
 from job_applicator.exceptions import NavigationError, ScraperError
-from job_applicator.models import JobBoard, JobListing
+from job_applicator.models import JobBoard, JobListing, SessionHealth
 from job_applicator.scrapers.base import BaseScraper, BrowserPolicy, SearchParams
 from job_applicator.utils.cookies import load_cookies
 from job_applicator.utils.logging import get_logger
@@ -98,6 +98,19 @@ class IndeedScraper(BaseScraper):
     async def _new_stealth_page(self, context: BrowserContext) -> Page:
         """Open a page in the (context-level stealthed) persistent context."""
         return await context.new_page()
+
+    async def check_session(self) -> SessionHealth:
+        """Indeed job search is public and requires no login.
+
+        The real gate is whether the headed browser can clear Cloudflare; that
+        is verified per-scrape, so this check simply reports that no session is
+        required.
+        """
+        return SessionHealth(
+            board=JobBoard.INDEED,
+            healthy=True,
+            details="Indeed search is public; no login session required.",
+        )
 
     def _build_search_url(self, params: SearchParams) -> str:
         """Build an Indeed job-search URL."""

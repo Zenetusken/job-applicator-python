@@ -460,12 +460,61 @@ class SelfHostCheck(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class BrowserCheck(BaseModel):
+    """Playwright + Chromium availability for browser-based boards."""
+
+    playwright_installed: bool
+    chromium_executable: str | None = None
+    error: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+class SystemBinariesCheck(BaseModel):
+    """Optional system binaries the tool can use."""
+
+    pdftotext_available: bool
+    xvfb_available: bool
+    pdftotext_path: str | None = None
+    xvfb_path: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+class ConfigCheck(BaseModel):
+    """config.toml presence, parseability, and security hints."""
+
+    config_file_found: bool
+    config_file_path: str | None = None
+    config_file_parseable: bool = True
+    plaintext_credentials: bool = False
+    resume_path_set: bool = False
+    resume_path_exists: bool = False
+    output_dir_writable: bool = False
+    error: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+class SessionHealth(BaseModel):
+    """Best-effort health of an authenticated board session."""
+
+    board: JobBoard
+    healthy: bool
+    details: str
+
+    model_config = {"extra": "forbid"}
+
+
 class DoctorReport(BaseModel):
     """Aggregate AI-backend health check rendered by `job-applicator doctor`."""
 
     llm: LLMEndpointCheck
     embeddings: EmbeddingsCheck
     self_host: SelfHostCheck
+    browser: BrowserCheck
+    system: SystemBinariesCheck
+    config: ConfigCheck
 
     @property
     def ok(self) -> bool:
@@ -473,6 +522,9 @@ class DoctorReport(BaseModel):
         failures and auth failures (401/403) are both not-ok but rendered differently.
         Model-presence and the embeddings cache are advisory only (cloud/Ollama name
         models differently; a fresh box downloads the embedder on first use).
+
+        Browser/system/config checks are advisory: a headless server may use only the
+        match/tailor pipeline and intentionally skip browser features.
 
         A plain property, not a computed_field, so the model still round-trips through
         model_dump()/model_validate() under extra='forbid'."""

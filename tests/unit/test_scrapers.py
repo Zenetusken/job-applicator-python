@@ -201,3 +201,44 @@ async def test_load_cookies_skips_invalid_cookie(
     context.add_cookies = add_cookies
 
     assert await scraper._load_cookies(context) is True  # the good cookie still loaded
+
+
+@pytest.mark.asyncio
+async def test_check_session_healthy(app_settings: AppSettings) -> None:
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    scraper._get_context = AsyncMock(return_value=MagicMock())
+    scraper._ensure_session = AsyncMock(return_value=True)
+
+    health = await scraper.check_session()
+
+    assert health.healthy
+    assert health.board.value == "linkedin"
+    assert "active" in health.details.lower()
+
+
+@pytest.mark.asyncio
+async def test_check_session_unhealthy_directs_to_login(app_settings: AppSettings) -> None:
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    scraper._get_context = AsyncMock(return_value=MagicMock())
+    scraper._ensure_session = AsyncMock(return_value=False)
+
+    health = await scraper.check_session()
+
+    assert not health.healthy
+    assert "job-applicator login" in health.details
+
+
+@pytest.mark.asyncio
+async def test_check_session_graceful_on_navigation_error(
+    app_settings: AppSettings,
+) -> None:
+    from job_applicator.exceptions import NavigationError
+
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    scraper._get_context = AsyncMock(return_value=MagicMock())
+    scraper._ensure_session = AsyncMock(side_effect=NavigationError("timeout"))
+
+    health = await scraper.check_session()
+
+    assert not health.healthy
+    assert "Could not reach LinkedIn" in health.details
