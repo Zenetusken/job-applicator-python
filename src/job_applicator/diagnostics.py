@@ -32,7 +32,8 @@ from job_applicator.utils.logging import get_logger
 logger = get_logger("diagnostics")
 
 _PROBE_TIMEOUT_S = 5.0
-_LOCAL_API_KEY_PLACEHOLDER = "not-needed-for-local"
+# Use the same default that LLMConfig uses, so the two can never drift apart.
+_LOCAL_API_KEY_PLACEHOLDER: str = LLMConfig.model_fields["api_key"].default
 
 
 async def check_llm_endpoint(llm: LLMConfig) -> LLMEndpointCheck:
