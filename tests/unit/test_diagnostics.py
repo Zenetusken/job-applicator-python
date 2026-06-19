@@ -1,0 +1,350 @@
+"""Unit tests for the AI-backend diagnostics (`job-applicator doctor`).
+
+The HTTP probe and huggingface_hub lookups are mocked, so these stay fast unit
+tests (no network, no GPU, no model loads).
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import httpx
+import pytest
+from litellm.exceptions import APIConnectionError, Timeout
+
+from job_applicator import cli, diagnostics
+from job_applicator.config import EmbeddingConfig, LLMConfig
+from job_applicator.models import (
+    DoctorReport,
+    EmbeddingsCheck,
+    LLMEndpointCheck,
+    SelfHostCheck,
+)
+from job_applicator.utils.llm import llm_call_error
+
+
+class _FakeResponse:
+    def __init__(self, status_code: int, payload: dict | None = None) -> None:
+        self.status_code = status_code
+        self._payload = payload if payload is not None else {}
+
+    def json(self) -> dict:
+        return self._payload
+
+
+class _FakeClient:
+    """httpx.AsyncClient stand-in that returns a canned response or raises, and
+    records the request headers into a caller-owned dict (no shared class state)."""
+
+    def __init__(
+        self, *, resp: _FakeResponse | None, exc: Exception | None, captured: dict
+    ) -> None:
+        self._resp = resp
+        self._exc = exc
+        self._captured = captured
+
+    async def __aenter__(self) -> _FakeClient:
+        return self
+
+    async def __aexit__(self, *args: object) -> bool:
+        return False
+
+    async def get(self, url: str, headers: dict | None = None) -> _FakeResponse:
+        self._captured["headers"] = headers or {}
+        if self._exc is not None:
+            raise self._exc
+        assert self._resp is not None
+        return self._resp
+
+
+def _patch_client(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    resp: _FakeResponse | None = None,
+    exc: Exception | None = None,
+) -> dict:
+    """Patch httpx.AsyncClient; return a dict that captures the request headers."""
+    captured: dict = {}
+
+    def factory(*_args: object, **_kwargs: object) -> _FakeClient:
+        return _FakeClient(resp=resp, exc=exc, captured=captured)
+
+    monkeypatch.setattr(diagnostics.httpx, "AsyncClient", factory)
+    return captured
+
+
+def _models_payload(*ids: str) -> dict:
+    return {"object": "list", "data": [{"id": i, "object": "model"} for i in ids]}
+
+
+# --- check_llm_endpoint: reachability semantics ----------------------------
+
+
+async def test_endpoint_200_model_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_client(monkeypatch, resp=_FakeResponse(200, _models_payload("my-model")))
+    res = await diagnostics.check_llm_endpoint(LLMConfig(model="my-model"))
+    assert res.reachable
+    assert res.http_status == 200
+    assert res.model_available
+    assert res.error is None
+
+
+async def test_endpoint_200_model_absent_is_advisory(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_client(monkeypatch, resp=_FakeResponse(200, _models_payload("other")))
+    res = await diagnostics.check_llm_endpoint(LLMConfig(model="my-model"))
+    assert res.reachable
+    assert not res.model_available
+    assert res.models_seen == ["other"]
+
+
+async def test_endpoint_strips_openai_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Config may carry the litellm 'openai/' prefix; /models lists the bare id.
+    _patch_client(monkeypatch, resp=_FakeResponse(200, _models_payload("my-model")))
+    res = await diagnostics.check_llm_endpoint(LLMConfig(model="openai/my-model"))
+    assert res.model_available
+
+
+async def test_endpoint_401_is_reachable_not_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Auth failure: the server is UP (reachable), but not usable → distinct from "down".
+    _patch_client(monkeypatch, resp=_FakeResponse(401))
+    res = await diagnostics.check_llm_endpoint(LLMConfig())
+    assert res.reachable
+    assert res.http_status == 401
+    assert res.error == "HTTP 401"
+
+
+async def test_endpoint_503_is_reachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_client(monkeypatch, resp=_FakeResponse(503))
+    res = await diagnostics.check_llm_endpoint(LLMConfig())
+    assert res.reachable  # an HTTP response came back
+    assert res.http_status == 503
+    assert res.error == "HTTP 503"
+
+
+async def test_endpoint_connection_error_not_reachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_client(monkeypatch, exc=httpx.ConnectError("connection refused"))
+    res = await diagnostics.check_llm_endpoint(LLMConfig())
+    assert not res.reachable
+    assert res.http_status is None
+    assert res.error
+
+
+async def test_endpoint_invalid_url_is_caught(monkeypatch: pytest.MonkeyPatch) -> None:
+    # httpx.InvalidURL is NOT a subclass of httpx.HTTPError — must be caught explicitly.
+    _patch_client(monkeypatch, exc=httpx.InvalidURL("malformed"))
+    res = await diagnostics.check_llm_endpoint(LLMConfig())
+    assert not res.reachable
+    assert res.error
+
+
+async def test_endpoint_auth_header_only_with_real_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _patch_client(monkeypatch, resp=_FakeResponse(200, _models_payload()))
+    await diagnostics.check_llm_endpoint(LLMConfig(api_key="not-needed-for-local"))
+    assert "Authorization" not in cap["headers"]
+
+    cap = _patch_client(monkeypatch, resp=_FakeResponse(200, _models_payload()))
+    await diagnostics.check_llm_endpoint(LLMConfig(api_key="real-key"))
+    assert cap["headers"].get("Authorization") == "Bearer real-key"
+
+
+# --- check_embeddings: huggingface_hub resolution + fallback ---------------
+
+
+def test_embeddings_via_hub_hit(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = "/cache/hub/models--org--name/snapshots/abc/config.json"
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: cfg)
+    res = diagnostics.check_embeddings(EmbeddingConfig(model_name="org/name"))
+    assert res.cached
+    assert res.cache_path == "/cache/hub/models--org--name"
+
+
+def test_embeddings_via_hub_miss(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
+    res = diagnostics.check_embeddings(EmbeddingConfig(model_name="org/name"))
+    assert not res.cached
+    assert res.cache_path is None
+
+
+def test_embeddings_fallback_honors_hf_hub_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Fallback path (library absent): must honor HF_HUB_CACHE and require a real snapshot.
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+    snap = tmp_path / "models--org--name" / "snapshots" / "rev"
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    cached, path = diagnostics._embedding_cache_fallback("org/name")
+    assert cached
+    assert path is not None
+
+
+def test_embeddings_fallback_empty_snapshots_is_not_cached(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A partial/interrupted download (no snapshot contents) must NOT read as cached.
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+    (tmp_path / "models--org--name" / "snapshots").mkdir(parents=True)
+    cached, path = diagnostics._embedding_cache_fallback("org/name")
+    assert not cached
+    assert path is None
+
+
+# --- check_self_host: token via library + fallback -------------------------
+
+
+def test_self_host_token_via_lib(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(diagnostics.shutil, "which", lambda _: "/usr/bin/vllm")
+    monkeypatch.setattr("huggingface_hub.get_token", lambda: "tok")
+    res = diagnostics.check_self_host()
+    assert res.vllm_installed
+    assert res.hf_token_present
+
+
+def test_self_host_token_fallback_honors_hf_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(diagnostics.shutil, "which", lambda _: None)
+    monkeypatch.setattr("huggingface_hub.get_token", lambda: None)
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+    empty_home = tmp_path / "home"  # isolate from the real ~/.cache/huggingface/token
+    empty_home.mkdir()
+    monkeypatch.setenv("HOME", str(empty_home))
+    monkeypatch.setenv("HF_HOME", str(tmp_path))
+    (tmp_path / "token").write_text("secret")
+    res = diagnostics.check_self_host()
+    assert not res.vllm_installed
+    assert res.hf_token_present  # found $HF_HOME/token, not a real one
+
+
+def test_self_host_absent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(diagnostics.shutil, "which", lambda _: None)
+    monkeypatch.setattr("huggingface_hub.get_token", lambda: None)
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+    monkeypatch.delenv("HF_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))  # empty home → no token files anywhere
+    res = diagnostics.check_self_host()
+    assert not res.hf_token_present
+
+
+# --- DoctorReport.ok (HTTP 200 is the only blocking signal) ----------------
+
+
+def _report(*, reachable: bool, http_status: int | None, model_available: bool) -> DoctorReport:
+    return DoctorReport(
+        llm=LLMEndpointCheck(
+            api_base="x",
+            reachable=reachable,
+            model_configured="m",
+            http_status=http_status,
+            model_available=model_available,
+        ),
+        embeddings=EmbeddingsCheck(model_name="m", cached=False),
+        self_host=SelfHostCheck(vllm_installed=False, hf_token_present=False),
+    )
+
+
+def test_ok_requires_http_200() -> None:
+    assert _report(reachable=True, http_status=200, model_available=True).ok
+    # model mismatch is advisory — still ok (green) for cloud/Ollama.
+    assert _report(reachable=True, http_status=200, model_available=False).ok
+    # reachable but auth-rejected → NOT ok.
+    assert not _report(reachable=True, http_status=401, model_available=True).ok
+    # unreachable → NOT ok.
+    assert not _report(reachable=False, http_status=None, model_available=True).ok
+
+
+def test_doctor_report_round_trips() -> None:
+    # computed-free `ok` + extra='forbid' must survive dump → validate.
+    rep = _report(reachable=True, http_status=401, model_available=False)
+    again = DoctorReport.model_validate(rep.model_dump())
+    assert again.ok == rep.ok
+
+
+# --- _render_doctor never crashes on markup-shaped dynamic values ----------
+
+
+@pytest.mark.parametrize("status", [200, 401, 503, None])
+def test_render_doctor_escapes_dynamic_values(status: int | None) -> None:
+    rep = DoctorReport(
+        llm=LLMEndpointCheck(
+            api_base="http://[x]/v1",
+            reachable=status is not None,
+            model_configured="bad-[red]-id",
+            http_status=status,
+            model_available=False,
+            models_seen=["a [/] b"],
+            error="boom [/] [red] boom" if status != 200 else None,
+        ),
+        embeddings=EmbeddingsCheck(model_name="m-[/]", cached=False),
+        self_host=SelfHostCheck(vllm_installed=False, hf_token_present=False),
+    )
+    cli._render_doctor(rep)  # must not raise rich.markup.MarkupError
+
+
+# --- llm_call_error: typed classification (REAL litellm exceptions) --------
+
+
+def test_llm_call_error_timeout_is_reachable_but_slow() -> None:
+    exc = Timeout(message="read timed out", model="m", llm_provider="openai")
+    msg = str(llm_call_error(exc, "http://x/v1"))
+    assert "timed out" in msg
+    assert "Start one" not in msg  # a timeout must NOT say "start a server"
+
+
+def test_llm_call_error_connection_is_unreachable() -> None:
+    exc = APIConnectionError(message="refused", llm_provider="openai", model="m")
+    msg = str(llm_call_error(exc, "http://x/v1"))
+    assert "Can't reach the LLM endpoint at http://x/v1" in msg
+    assert "doctor" in msg
+
+
+def test_llm_call_error_string_fallback_for_untyped_connection() -> None:
+    msg = str(llm_call_error(OSError("Connection refused"), "http://x/v1"))
+    assert "Can't reach" in msg
+
+
+def test_llm_call_error_other_errors_verbatim() -> None:
+    msg = str(llm_call_error(ValueError("bad prompt"), "http://x/v1"))
+    assert "LLM call failed" in msg
+    assert "doctor" not in msg
+
+
+async def test_llm_call_error_classifies_real_litellm_failure() -> None:
+    """The wiring that runs in production: a real litellm call to a dead endpoint must
+    classify as unreachable. Locks in _CONNECTION_MARKERS against future edits — litellm
+    wraps a refused connection as InternalServerError, which only the string fallback
+    catches (a typed-only check would silently miss it). Offline + fast (refused port)."""
+    import litellm
+
+    try:
+        await litellm.acompletion(
+            model="openai/m",
+            api_base="http://127.0.0.1:9999/v1",
+            api_key="x",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=5,
+            num_retries=0,
+        )
+    except Exception as exc:
+        assert "Can't reach the LLM endpoint" in str(
+            llm_call_error(exc, "http://127.0.0.1:9999/v1")
+        )
+    else:
+        pytest.fail("expected a connection failure from the dead endpoint")
+
+
+# --- config-init sources the model from LLMConfig (no drift) ---------------
+
+
+def test_config_init_uses_llmconfig_defaults(tmp_path: Path) -> None:
+    from typer.testing import CliRunner
+
+    out = tmp_path / "config.toml"
+    result = CliRunner().invoke(cli.app, ["config-init", "-o", str(out)])
+    assert result.exit_code == 0
+    text = out.read_text()
+    assert f'model = "{LLMConfig.model_fields["model"].default}"' in text
+    assert f'api_base = "{LLMConfig.model_fields["api_base"].default}"' in text
+    assert "__LLM_" not in text  # all placeholders substituted

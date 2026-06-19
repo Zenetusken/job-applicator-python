@@ -73,17 +73,27 @@ scripts/serve-vllm.sh        # serves :8000 — MODEL/HOST/PORT/GPU_MEM are env-
 
 The first launch **auto-downloads the model** from Hugging Face Hub (~4 GB for the
 default; cached to `~/.cache/huggingface`) — no separate step. Needs network on first
-run; gated models also need `HF_TOKEN`. (Embeddings likewise fetch
-`mxbai-embed-large-v1`, ~640 MB, on first use.)
+run. (Embeddings likewise fetch `mxbai-embed-large-v1`, ~640 MB, on first use.)
+
+The default model is **public**. A *gated* model additionally needs a Hugging Face
+token — run **`huggingface-cli login`** once (it validates the token and persists it;
+vLLM and the embedder then pick it up automatically — no app config needed).
 
 Leave it running in its own terminal (or wrap it in a process manager / systemd unit
 for always-on), then run job-applicator against it as usual.
+
+**Verify the connection:** `job-applicator doctor` probes the endpoint and reports
+what's ready — and exactly what to fix if it isn't. Run it any time the AI features
+misbehave.
 
 ## Usage
 
 ```bash
 # Initialize config
 job-applicator config-init
+
+# Check the AI backend is reachable (LLM endpoint, embeddings, self-host prereqs)
+job-applicator doctor
 
 # Search for jobs
 job-applicator search --site linkedin --query "python developer"

@@ -1104,7 +1104,9 @@ class ResumeTailor:
             return content.strip()
 
         except Exception as exc:
-            raise LLMError(f"LLM call failed: {exc}") from exc
+            from job_applicator.utils.llm import llm_call_error
+
+            raise llm_call_error(exc, self._config.api_base) from exc
 
     async def _summarize_changes(self, original: str, tailored: str) -> str:
         """Generate a summary of changes between original and tailored."""

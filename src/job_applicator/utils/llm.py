@@ -4,6 +4,65 @@ from __future__ import annotations
 
 import re
 
+from job_applicator.exceptions import LLMError
+
+# Single source of truth for the "bring up a local endpoint" pointer — also rendered
+# by `job-applicator doctor`, so the hint and the diagnostic never drift.
+SERVE_SCRIPT = "scripts/serve-vllm.sh"
+
+# Narrow fallback markers for a *connection* failure, used only when the exception
+# isn't one of litellm's typed errors. Timeout wording is deliberately excluded: a
+# timeout means the endpoint is reachable but slow, not down — classifying it as
+# "unreachable" (and telling the user to start an already-running server) was a bug.
+_CONNECTION_MARKERS = (
+    "connection refused",
+    "connection error",
+    "failed to establish",
+    "max retries exceeded",
+    "errno 111",
+    "name or service not known",
+    "nodename nor servname",
+)
+
+
+def _connection_and_timeout_types() -> tuple[tuple[type, ...], tuple[type, ...]]:
+    """litellm's own connection/timeout exception types, as (connection, timeout).
+
+    They are siblings — ``litellm.Timeout`` descends from OpenAI's
+    ``APIConnectionError``, not litellm's, so ``isinstance`` order doesn't matter.
+    Returns empty tuples if litellm is unavailable (it is a core dependency)."""
+    try:
+        from litellm.exceptions import APIConnectionError, Timeout
+    except ImportError:
+        return (), ()
+    return (APIConnectionError,), (Timeout,)
+
+
+def llm_call_error(exc: Exception, api_base: str) -> LLMError:
+    """Wrap a failed LLM call in an ``LLMError`` with an actionable hint.
+
+    Classifies by litellm's typed exceptions first (robust), with a narrow
+    connection-only string fallback. A timeout is reported as reachable-but-slow
+    (never "start a server"); a genuine connection failure says how to bring one up.
+    """
+    conn_types, timeout_types = _connection_and_timeout_types()
+    lowered = str(exc).lower()
+    if timeout_types and isinstance(exc, timeout_types):
+        return LLMError(
+            f"The LLM endpoint at {api_base} timed out — reachable but slow or "
+            f"overloaded. Check it with `job-applicator doctor`; a smaller model "
+            f"responds faster. (cause: {exc})"
+        )
+    if (conn_types and isinstance(exc, conn_types)) or any(
+        m in lowered for m in _CONNECTION_MARKERS
+    ):
+        return LLMError(
+            f"Can't reach the LLM endpoint at {api_base}. Start one ({SERVE_SCRIPT}) "
+            f"or point your llm.api_base at a running provider, then verify with "
+            f"`job-applicator doctor`. (cause: {exc})"
+        )
+    return LLMError(f"LLM call failed: {exc}")
+
 
 def strip_thinking_process(text: str) -> str:
     """Remove thinking process blocks from LLM output.

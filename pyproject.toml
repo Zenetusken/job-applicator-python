@@ -113,6 +113,9 @@ module = [
     "fitz.*",
     "playwright_stealth.*",
     "browser_cookie3.*",
+    # Optional transitive dep (via the embeddings stack); imported lazily in
+    # diagnostics.py and may be absent in a minimal/type-check environment.
+    "huggingface_hub.*",
 ]
 ignore_missing_imports = true
 
