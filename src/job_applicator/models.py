@@ -146,6 +146,10 @@ class ResumeData(BaseModel):
     experience: list[ExperienceEntry] = Field(default_factory=list)
     education: list[EducationEntry] = Field(default_factory=list)
     embedding: list[float] = Field(default_factory=list, description="Cached embedding vector")
+    parse_confidence: float = Field(
+        default=0.0, ge=0.0, le=1.0, description="Heuristic confidence of the parse"
+    )
+    parse_method: str = Field(default="", description="Parser that produced raw_text")
 
     model_config = {"extra": "forbid"}
 

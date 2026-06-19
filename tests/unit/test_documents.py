@@ -258,6 +258,63 @@ def test_force_ocr_failure_raises(tmp_path: Path) -> None:
             loader._load_pdf(pdf_path, ocr_mode="on")
 
 
+def test_parse_text_records_confidence_and_method() -> None:
+    loader = ResumeLoader()
+    text = "John Doe\njohn@example.com\n555-0123\nSkills: Python\nExperience\nEducation"
+    resume = loader.parse_text(text, method="text")
+    assert resume.parse_method == "text"
+    assert resume.parse_confidence > 0.0
+    assert resume.parse_confidence <= 1.0
+
+
+def test_compute_confidence_empty_text() -> None:
+    loader = ResumeLoader()
+    assert loader._compute_confidence("") == 0.0
+    assert loader._compute_confidence("   ") == 0.0
+
+
+def test_compute_confidence_increases_with_signals() -> None:
+    loader = ResumeLoader()
+    base = loader._compute_confidence("John Doe\n")
+    with_contact = loader._compute_confidence("John Doe\njohn@example.com\n555-0123\n")
+    with_sections = loader._compute_confidence(
+        "John Doe\njohn@example.com\n555-0123\nSkills: Python\nExperience\nEducation\n"
+    )
+    assert with_contact > base
+    assert with_sections > with_contact
+
+
+def test_pdf_consensus_selects_best_parser(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "resume.pdf"
+    pdf_path.write_bytes(b"fake pdf bytes")
+
+    loader = ResumeLoader()
+    good_text = "A" * 200 + "\njohn@example.com\nSkills: Python\nExperience\nEducation"
+    bad_text = "garbled"
+    with (
+        patch.object(loader, "_run_pdftotext", return_value=bad_text),
+        patch.object(loader, "_run_pymupdf", return_value=good_text),
+    ):
+        result = loader._load_pdf(pdf_path, ocr_mode="off")
+
+    assert result.raw_text == good_text
+    assert result.parse_method == "pymupdf"
+    assert result.parse_confidence > 0.5
+
+
+def test_password_protected_pdf_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pdf_path = tmp_path / "locked.pdf"
+    pdf_path.write_bytes(b"fake pdf bytes")
+
+    def locked(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("Document is password protected")
+
+    monkeypatch.setattr("fitz.open", locked)
+    loader = ResumeLoader()
+    with pytest.raises(DocumentError, match="password-protected"):
+        loader._load_pdf(pdf_path, ocr_mode="off")
+
+
 def test_cover_letter_generator_template() -> None:
     config = LLMConfig()
     generator = CoverLetterGenerator(config)
