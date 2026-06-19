@@ -10,7 +10,7 @@ import pytest
 from job_applicator.config import LLMConfig
 from job_applicator.documents.cover_letter import CoverLetterGenerator
 from job_applicator.documents.resume import ResumeLoader
-from job_applicator.exceptions import DocumentError, ResumeNotFoundError
+from job_applicator.exceptions import DocumentError, LLMError, ResumeNotFoundError
 from job_applicator.models import JobBoard, JobListing, ResumeData, UserProfile
 
 
@@ -313,6 +313,20 @@ def test_password_protected_pdf_raises(tmp_path: Path, monkeypatch: pytest.Monke
     loader = ResumeLoader()
     with pytest.raises(DocumentError, match="password-protected"):
         loader._load_pdf(pdf_path, ocr_mode="off")
+
+
+def test_cover_letter_validation_rejects_empty() -> None:
+    config = LLMConfig()
+    generator = CoverLetterGenerator(config)
+    with pytest.raises(LLMError, match="empty"):
+        generator._validate_cover_letter("   ")
+
+
+def test_cover_letter_validation_rejects_placeholders() -> None:
+    config = LLMConfig()
+    generator = CoverLetterGenerator(config)
+    with pytest.raises(LLMError, match="placeholder"):
+        generator._validate_cover_letter("Dear [Hiring Manager],")
 
 
 def test_cover_letter_generator_template() -> None:

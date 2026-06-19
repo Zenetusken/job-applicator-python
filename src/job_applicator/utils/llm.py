@@ -1,10 +1,18 @@
-"""Shared helpers for post-processing raw LLM output."""
+"""Shared helpers for post-processing raw LLM output and hardening LLM calls."""
 
 from __future__ import annotations
 
 import re
+import time
+from collections.abc import Awaitable, Callable
+from typing import TypeVar
 
 from job_applicator.exceptions import LLMError
+from job_applicator.utils.logging import get_logger
+
+logger = get_logger("utils.llm")
+
+T = TypeVar("T")
 
 # Single source of truth for the "bring up a local endpoint" pointer — also rendered
 # by `job-applicator doctor`, so the hint and the diagnostic never drift.
@@ -185,3 +193,102 @@ def strip_thinking_process(text: str) -> str:
     text = text.strip()
 
     return text
+
+
+class CircuitBreaker:
+    """Simple in-memory circuit breaker for LLM calls.
+
+    Opens after ``failure_threshold`` failures within ``window_seconds`` and
+    stays open for ``recovery_timeout_seconds``. Successes reset the failure
+    window. This is intentionally lightweight (in-memory, per-process); it
+    guards against hammering a down endpoint, not across distributed workers.
+    """
+
+    def __init__(
+        self,
+        failure_threshold: int = 3,
+        window_seconds: float = 60.0,
+        recovery_timeout_seconds: float = 30.0,
+        name: str = "llm",
+    ) -> None:
+        self.failure_threshold = failure_threshold
+        self.window_seconds = window_seconds
+        self.recovery_timeout_seconds = recovery_timeout_seconds
+        self.name = name
+        self._failures: list[float] = []
+        self._open_until: float | None = None
+
+    def _now(self) -> float:
+        return time.monotonic()
+
+    def _is_open(self) -> bool:
+        if self._open_until is None:
+            return False
+        if self._now() < self._open_until:
+            return True
+        self._open_until = None
+        self._failures.clear()
+        return False
+
+    def _record_failure(self) -> None:
+        now = self._now()
+        cutoff = now - self.window_seconds
+        self._failures = [t for t in self._failures if t > cutoff]
+        self._failures.append(now)
+        if len(self._failures) >= self.failure_threshold:
+            self._open_until = now + self.recovery_timeout_seconds
+            logger.warning(
+                "Circuit breaker '%s' opened after %d failures in %.0fs",
+                self.name,
+                len(self._failures),
+                self.window_seconds,
+            )
+
+    def _record_success(self) -> None:
+        if self._failures:
+            self._failures.clear()
+
+    async def call(self, func: Callable[[], Awaitable[T]]) -> T:
+        """Invoke ``func`` unless the circuit is open."""
+        if self._is_open():
+            remaining = int((self._open_until or 0) - self._now())
+            raise LLMError(
+                f"LLM circuit breaker '{self.name}' is open — too many recent failures. "
+                f"Wait {remaining}s or check the endpoint with `job-applicator doctor`."
+            )
+        try:
+            result = await func()
+        except Exception:
+            self._record_failure()
+            raise
+        self._record_success()
+        return result
+
+
+class ValidatedOutput:
+    """Retry an LLM call when its output fails a validator.
+
+    This catches *content* problems (empty text, placeholders, malformed JSON)
+    rather than transport errors. Transport errors should be handled by a retry
+    decorator or circuit breaker.
+    """
+
+    def __init__(self, max_retries: int = 1) -> None:
+        self.max_retries = max_retries
+
+    async def call(
+        self,
+        func: Callable[[], Awaitable[T]],
+        validator: Callable[[T], None],
+    ) -> T:
+        """Call ``func`` and validate the result; retry on validation failure."""
+        last_error: LLMError | None = None
+        for attempt in range(self.max_retries + 1):
+            result = await func()
+            try:
+                validator(result)
+                return result
+            except LLMError as exc:
+                last_error = exc
+                logger.warning("Output validation failed (attempt %d): %s", attempt + 1, exc)
+        raise last_error or LLMError("LLM output validation failed after retries")

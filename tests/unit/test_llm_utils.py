@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from job_applicator.utils.llm import strip_thinking_process
 
 
@@ -94,3 +96,87 @@ def test_strip_thinking_process_am_writing() -> None:
     result = strip_thinking_process(text)
     assert "I am writing" in result
     assert "Thank you" in result
+
+
+async def test_circuit_breaker_passes_success() -> None:
+    from job_applicator.utils.llm import CircuitBreaker
+
+    breaker = CircuitBreaker(failure_threshold=2)
+
+    async def ok() -> str:
+        return "ok"
+
+    result = await breaker.call(ok)
+    assert result == "ok"
+
+
+async def test_circuit_breaker_opens_after_failures() -> None:
+    from job_applicator.exceptions import LLMError
+    from job_applicator.utils.llm import CircuitBreaker
+
+    breaker = CircuitBreaker(failure_threshold=2, recovery_timeout_seconds=60.0)
+
+    async def fail() -> str:
+        raise LLMError("boom")
+
+    with pytest.raises(LLMError, match="boom"):
+        await breaker.call(fail)
+    with pytest.raises(LLMError, match="boom"):
+        await breaker.call(fail)
+    with pytest.raises(LLMError, match="circuit breaker"):
+        await breaker.call(fail)
+
+
+async def test_circuit_breaker_success_resets_failures() -> None:
+    from job_applicator.exceptions import LLMError
+    from job_applicator.utils.llm import CircuitBreaker
+
+    breaker = CircuitBreaker(failure_threshold=2, recovery_timeout_seconds=60.0)
+
+    async def fail() -> str:
+        raise LLMError("boom")
+
+    async def ok() -> str:
+        return "ok"
+
+    with pytest.raises(LLMError):
+        await breaker.call(fail)
+    assert await breaker.call(ok) == "ok"
+    with pytest.raises(LLMError):
+        await breaker.call(fail)
+    # A single failure after success should NOT open the breaker.
+    assert await breaker.call(ok) == "ok"
+
+
+async def test_validated_output_retries_on_validation_failure() -> None:
+    from job_applicator.exceptions import LLMError
+    from job_applicator.utils.llm import ValidatedOutput
+
+    calls = 0
+
+    async def producer() -> str:
+        nonlocal calls
+        calls += 1
+        return "bad" if calls == 1 else "good"
+
+    def validator(value: str) -> None:
+        if value != "good":
+            raise LLMError("not good")
+
+    result = await ValidatedOutput(max_retries=1).call(producer, validator)
+    assert result == "good"
+    assert calls == 2
+
+
+async def test_validated_output_gives_up_after_retries() -> None:
+    from job_applicator.exceptions import LLMError
+    from job_applicator.utils.llm import ValidatedOutput
+
+    async def producer() -> str:
+        return "bad"
+
+    def validator(value: str) -> None:
+        raise LLMError("always bad")
+
+    with pytest.raises(LLMError, match="always bad"):
+        await ValidatedOutput(max_retries=1).call(producer, validator)

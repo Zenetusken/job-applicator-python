@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -10,11 +11,19 @@ from pydantic import BaseModel, Field
 from job_applicator.config import LLMConfig
 from job_applicator.exceptions import LLMError
 from job_applicator.models import JobListing, ResumeData, StyleGuide, UserProfile
-from job_applicator.utils.llm import llm_call_error, strip_thinking_process
+from job_applicator.utils.llm import (
+    CircuitBreaker,
+    ValidatedOutput,
+    llm_call_error,
+    strip_thinking_process,
+)
 from job_applicator.utils.logging import get_logger
 from job_applicator.utils.retry import async_retry
 
 logger = get_logger("documents.cover_letter")
+
+# Shared circuit breaker across all cover-letter LLM calls in this process.
+_CIRCUIT_BREAKER = CircuitBreaker(name="cover-letter")
 
 
 class CoverLetterOutput(BaseModel):
@@ -114,6 +123,84 @@ class CoverLetterGenerator:
         logger.info("Loaded style guide from %s: tone=%s", path.name, style.tone)
         return style
 
+    def _validate_cover_letter(self, text: str) -> None:
+        """Validate a generated cover letter. Raises LLMError if unusable."""
+        if not text.strip():
+            raise LLMError("Generated cover letter is empty")
+        placeholders = r"company\s*name|hiring\s*manager|position\s*title|your\s*name|date|address"
+        placeholder_pattern = rf"\[\s*(?:{placeholders})\s*\]"
+        if re.search(placeholder_pattern, text, re.IGNORECASE):
+            raise LLMError("Generated cover letter contains placeholder text")
+
+    @async_retry(max_attempts=2, base_delay=1.0, exceptions=(LLMError,))
+    async def _generate_raw(
+        self,
+        job: JobListing,
+        user: UserProfile,
+        resume: ResumeData,
+        style_guide: StyleGuide | None,
+        tone_section: str,
+        tailored_resume_text: str,
+    ) -> str:
+        """Raw LLM call for cover-letter generation, protected by circuit breaker."""
+        user_message = self._build_prompt(
+            job,
+            user,
+            resume,
+            style_guide,
+            tone_section=tone_section,
+            tailored_resume_text=tailored_resume_text,
+        )
+
+        # For local vLLM, need "openai/" prefix
+        model = f"openai/{self._config.model}" if self._config.api_base else self._config.model
+
+        async def _call() -> str:
+            # Try instructor first (structured output)
+            try:
+                client = self._get_client()
+                response = await client.create(
+                    model=model,
+                    api_base=self._config.api_base,
+                    api_key=self._config.api_key,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": user_message},
+                    ],
+                    response_model=CoverLetterOutput,
+                    max_retries=1,
+                    max_tokens=self._config.max_tokens,
+                    extra_body={
+                        "chat_template_kwargs": {"enable_thinking": False},
+                    },
+                )
+                return strip_thinking_process(response.cover_letter)
+            except Exception:
+                # Fallback to direct litellm call
+                logger.info("Instructor failed, falling back to direct litellm call")
+                try:
+                    from litellm import acompletion
+
+                    response = await acompletion(
+                        model=model,
+                        api_base=self._config.api_base,
+                        api_key=self._config.api_key,
+                        messages=[
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user", "content": user_message},
+                        ],
+                        max_tokens=self._config.max_tokens,
+                        temperature=self._config.temperature,
+                        extra_body={
+                            "chat_template_kwargs": {"enable_thinking": False},
+                        },
+                    )
+                    return strip_thinking_process(response.choices[0].message.content)
+                except Exception as exc:
+                    raise llm_call_error(exc, self._config.api_base) from exc
+
+        return await _CIRCUIT_BREAKER.call(_call)
+
     @async_retry(max_attempts=2, base_delay=1.0, exceptions=(LLMError,))
     async def generate(
         self,
@@ -134,60 +221,18 @@ class CoverLetterGenerator:
             tone_section: Optional tone profile section to inject into the prompt
             tailored_resume_text: Optional tailored resume text as primary content source
         """
-        user_message = self._build_prompt(
-            job,
-            user,
-            resume,
-            style_guide,
-            tone_section=tone_section,
-            tailored_resume_text=tailored_resume_text,
-        )
 
-        # For local vLLM, need "openai/" prefix
-        model = f"openai/{self._config.model}" if self._config.api_base else self._config.model
-
-        # Try instructor first (structured output)
-        try:
-            client = self._get_client()
-            response = await client.create(
-                model=model,
-                api_base=self._config.api_base,
-                api_key=self._config.api_key,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_message},
-                ],
-                response_model=CoverLetterOutput,
-                max_retries=1,
-                max_tokens=self._config.max_tokens,
-                extra_body={
-                    "chat_template_kwargs": {"enable_thinking": False},
-                },
+        async def _call() -> str:
+            return await self._generate_raw(
+                job,
+                user,
+                resume,
+                style_guide,
+                tone_section,
+                tailored_resume_text,
             )
-            letter = strip_thinking_process(response.cover_letter)
-        except Exception:
-            # Fallback to direct litellm call
-            logger.info("Instructor failed, falling back to direct litellm call")
-            try:
-                from litellm import acompletion
 
-                response = await acompletion(
-                    model=model,
-                    api_base=self._config.api_base,
-                    api_key=self._config.api_key,
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": user_message},
-                    ],
-                    max_tokens=self._config.max_tokens,
-                    temperature=self._config.temperature,
-                    extra_body={
-                        "chat_template_kwargs": {"enable_thinking": False},
-                    },
-                )
-                letter = strip_thinking_process(response.choices[0].message.content)
-            except Exception as exc:
-                raise llm_call_error(exc, self._config.api_base) from exc
+        letter = await ValidatedOutput(max_retries=1).call(_call, self._validate_cover_letter)
 
         logger.info(
             "Generated cover letter for %s at %s (%d chars)",
