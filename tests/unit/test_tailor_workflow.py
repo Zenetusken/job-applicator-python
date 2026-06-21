@@ -38,6 +38,7 @@ def _drive(
     inputs: list[str],
     *,
     sections: list[object] | None = None,
+    yes: bool = False,
 ):
     """Drive the `tailor` command through its interactive loop.
 
@@ -81,9 +82,12 @@ def _drive(
         patch.object(cli, "_detect_tone", return_value=tone),
         patch("job_applicator.workflows.tailor._cover_letter_workflow", cl_workflow),
     ):
+        args = ["tailor", "-t", "Dev", "-c", "Acme", "--resume", "r.pdf", "--min-score", "0"]
+        if yes:
+            args.append("--yes")
         result = CliRunner().invoke(
             cli.app,
-            ["tailor", "-t", "Dev", "-c", "Acme", "--resume", "r.pdf", "--min-score", "0"],
+            args,
             env={"JOB_APPLICATOR_OUTPUT_DIR": str(tmp_path)},
         )
     return result, engine, cl_workflow
@@ -141,6 +145,24 @@ def test_tailor_input_refines_with_instructions(
     assert result.exit_code == 0, result.output
     engine.refine.assert_awaited_once()
     assert "emphasize customer service" in engine.refine.await_args.args
+
+
+def test_tailor_yes_is_non_interactive(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """`--yes` runs the whole flow with NO prompts: auto-accept the tailored résumé AND
+    skip the (interactive) cover-letter offer. Regression guard — the flag was not threaded
+    into _tailor_workflow, so `tailor --yes` blocked on the action menu (hung in CI/non-tty).
+    """
+    import job_applicator.cli as cli
+
+    # inputs=[] → if ANY prompt fires it raises StopIteration and the command fails.
+    result, engine, cl = _drive(monkeypatch, tmp_path, [], yes=True)
+    assert result.exit_code == 0, result.output
+    cli.console.input.assert_not_called()  # type: ignore[attr-defined]  # zero prompts
+    txts = list(tmp_path.glob("tailored_*.txt"))
+    assert len(txts) == 1 and txts[0].read_text(encoding="utf-8") == "INITIAL"  # accepted + saved
+    assert list(tmp_path.glob("tailored_*.meta.json"))  # meta written
+    cl.assert_not_awaited()  # cover-letter offer skipped, not dragged into a 2nd interactive loop
+    engine.tailor.assert_awaited_once()
 
 
 def test_tailor_section_edit_refines_target_section(

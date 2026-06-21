@@ -72,7 +72,6 @@ Running this today reproduces — deterministically — the findings from the ma
 **XFAIL** (real bugs; each is asserted at its *correct* behavior, so it flips to `XPASS`
 when fixed — then delete its name from `KNOWN_FAIL` in `qa.py`):
 
-- `tailor --yes` hangs on the action menu (flag not threaded into `_tailor_workflow`).
 - `ats-check` tracebacks on bad résumé input (missing / empty / corrupt / directory) — its `except` re-raises.
 - `ats-check` "Resume path required" prints to **stdout**, not stderr.
 - `config-init -o <unwritable>` tracebacks instead of a clean error.
@@ -98,5 +97,6 @@ account-touching commands to `--help` probes only.
   it won't catch config-specific issues — those need a separate, non-isolated check.
 - **Don't "fix" a red XFAIL by changing the assertion to match the bug.** The check asserts
   what *should* happen on purpose; that's what makes XPASS a fix signal.
-- A currently-hanging check (`tailor --yes`) spends its full timeout (~200s) until the bug is
-  fixed — expected, not a hang in the harness itself.
+- A check that drives a command expecting it to be **non-interactive** spends its full timeout
+  if that command regresses to blocking on input — a timeout (exit 124) is a FAIL, not a hang
+  in the harness itself. (This is how the `tailor --yes` hang was caught before it was fixed.)

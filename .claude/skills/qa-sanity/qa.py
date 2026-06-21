@@ -61,7 +61,7 @@ KNOWN_FAIL = {
     "global: --json --verbose → still valid JSON",
     "match: React job reports React/TypeScript as missing skills",
     "generate-cover-letter: output free of litellm framework noise",
-    "tailor: --yes is non-interactive (exits, writes artifact)",
+    # FIXED 2026-06-21 (tailor --yes threaded into _tailor_workflow) — promoted XPASS→PASS.
 }
 
 # ---------------------------------------------------------------- isolation
