@@ -701,7 +701,7 @@ def apply(
                             cover_letters[url] = letter
 
             # Apply to jobs
-            from job_applicator.models import ApplicationStatus
+            from job_applicator.models import ApplicationResult, ApplicationStatus
 
             applicator = _make_applicator(site, browser, settings)
             state = ApplicationState()
