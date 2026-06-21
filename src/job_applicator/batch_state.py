@@ -14,7 +14,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from job_applicator.exceptions import JobApplicatorError
-from job_applicator.models import JobBoard, JobListing
+from job_applicator.models import BatchRunSpec, JobBoard, JobListing
 from job_applicator.utils.logging import get_logger
 
 logger = get_logger("batch_state")
@@ -117,19 +117,7 @@ class BatchState:
         except sqlite3.Error as exc:
             raise BatchStateError(f"Cannot initialize batch schema: {exc}") from exc
 
-    def start_run(
-        self,
-        *,
-        run_id: str,
-        site: str,
-        query: str | None,
-        jobs_file: str | None,
-        resume_path: str,
-        top_k: int,
-        min_score: float,
-        cover_letter: bool,
-        reset: bool = True,
-    ) -> str:
+    def start_run(self, spec: BatchRunSpec, *, run_id: str, reset: bool = True) -> str:
         """Create or reset a batch run record. Returns the run_id."""
         now = datetime.now(UTC).isoformat()
         try:
@@ -149,13 +137,13 @@ class BatchState:
                     """,
                     (
                         run_id,
-                        site,
-                        query,
-                        jobs_file,
-                        resume_path,
-                        top_k,
-                        min_score,
-                        cover_letter,
+                        spec.site,
+                        spec.query,
+                        spec.jobs_file,
+                        spec.resume_path,
+                        spec.top_k,
+                        spec.min_score,
+                        spec.cover_letter,
                         BatchRunStatus.RUNNING,
                         now,
                         now,
@@ -167,23 +155,12 @@ class BatchState:
             raise BatchStateError(f"Cannot start batch run: {exc}") from exc
         return run_id
 
-    def find_existing_run(
-        self,
-        *,
-        site: str,
-        query: str | None,
-        jobs_file: str | None,
-        resume_path: str,
-        top_k: int,
-        min_score: float,
-        cover_letter: bool,
-    ) -> str | None:
-        """Return the most recent incomplete run_id matching ALL parameters.
+    def find_existing_run(self, spec: BatchRunSpec) -> str | None:
+        """Return the most recent incomplete run_id matching the spec.
 
-        Matches the same fields the caller folds into the auto ``run_id`` hash
-        (incl. top_k/min_score/cover_letter), so the two notions of "the same run"
-        agree — a resume can't bind a run created with different processing params
-        and then silently adopt the new ones.
+        Matches every spec identity field — the same source as ``BatchRunSpec.run_id()`` —
+        so a resume can't bind a run created with different processing params and then
+        silently adopt the new ones.
         """
         try:
             with self._connect() as conn:
@@ -197,13 +174,13 @@ class BatchState:
                     LIMIT 1
                     """,
                     (
-                        site,
-                        query,
-                        jobs_file,
-                        resume_path,
-                        top_k,
-                        min_score,
-                        cover_letter,
+                        spec.site,
+                        spec.query,
+                        spec.jobs_file,
+                        spec.resume_path,
+                        spec.top_k,
+                        spec.min_score,
+                        spec.cover_letter,
                         BatchRunStatus.RUNNING,
                     ),
                 ).fetchone()

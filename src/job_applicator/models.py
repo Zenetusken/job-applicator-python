@@ -212,6 +212,34 @@ class ApplicationResult(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class BatchRunSpec(BaseModel):
+    """Identity + parameters of a batch run — one validated payload (not loose
+    scalars) across the batch-state boundary. ``run_id()`` derives the run's
+    deterministic id from its identity fields, so the id and the resume-match key
+    share one source and cannot drift apart.
+    """
+
+    site: str
+    query: str | None = None
+    jobs_file: str | None = None
+    resume_path: str
+    top_k: int
+    min_score: float
+    cover_letter: bool
+
+    model_config = {"extra": "forbid"}
+
+    def run_id(self) -> str:
+        """Deterministic 16-char run id from the identity fields."""
+        import hashlib
+
+        key = (
+            f"{self.site}|{self.query or ''}|{self.jobs_file or ''}|"
+            f"{self.resume_path}|{self.top_k}|{self.min_score}|{self.cover_letter}"
+        )
+        return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
 class TailoredResume(BaseModel):
     """A resume tailored for a specific job, with full metadata."""
 

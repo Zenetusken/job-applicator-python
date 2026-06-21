@@ -20,7 +20,7 @@ from rich.table import Table
 from job_applicator import __version__
 from job_applicator.config import AppSettings, LLMConfig
 from job_applicator.exceptions import JobApplicatorError
-from job_applicator.models import DoctorReport, UserProfile
+from job_applicator.models import BatchRunSpec, DoctorReport, UserProfile
 from job_applicator.state import ApplicationState
 from job_applicator.utils.cookies import save_cookies
 from job_applicator.utils.diff import render_diff
@@ -1512,27 +1512,21 @@ def batch(
             return
 
         batch_state = BatchState()
-        effective_run_id = run_id
-        if not effective_run_id:
-            import hashlib
-
-            run_key = (
-                f"{site}|{query or ''}|{jobs_file or ''}|{settings.resume_path}|"
-                f"{top_k}|{min_score}|{cover_letter}"
-            )
-            effective_run_id = hashlib.sha256(run_key.encode()).hexdigest()[:16]
+        run_spec = BatchRunSpec(
+            site=site,
+            query=query or None,
+            jobs_file=jobs_file or None,
+            resume_path=settings.resume_path,
+            top_k=top_k,
+            min_score=min_score,
+            cover_letter=cover_letter,
+        )
+        # One spec is the single source for the run id AND the resume-match key.
+        effective_run_id = run_id or run_spec.run_id()
 
         resuming = False
         if resume_run:
-            existing = batch_state.find_existing_run(
-                site=site,
-                query=query or None,
-                jobs_file=jobs_file or None,
-                resume_path=settings.resume_path,
-                top_k=top_k,
-                min_score=min_score,
-                cover_letter=cover_letter,
-            )
+            existing = batch_state.find_existing_run(run_spec)
             if existing:
                 effective_run_id = existing
                 resuming = True
@@ -1545,16 +1539,7 @@ def batch(
                     )
 
         if not resuming:
-            batch_state.start_run(
-                run_id=effective_run_id,
-                site=site,
-                query=query or None,
-                jobs_file=jobs_file or None,
-                resume_path=settings.resume_path,
-                top_k=top_k,
-                min_score=min_score,
-                cover_letter=cover_letter,
-            )
+            batch_state.start_run(run_spec, run_id=effective_run_id)
         completed_urls = set(batch_state.list_completed_jobs(effective_run_id))
 
         pending_matches = [m for m in matches if str(m.job.url) not in completed_urls]
