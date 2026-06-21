@@ -495,3 +495,59 @@ class TestCoverLetterWithTone:
             )
 
         assert mock_client.create.call_args.kwargs["max_tokens"] == 1234
+
+
+def test_password_protected_pdf_detected_via_needs_pass(tmp_path: Path) -> None:
+    """M3: PyMuPDF opens an encrypted PDF without raising; needs_pass is the gate."""
+    pdf_path = tmp_path / "locked.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+    loader = ResumeLoader()
+    fake_doc = MagicMock()
+    fake_doc.needs_pass = True
+    fake_fitz = MagicMock()
+    fake_fitz.open.return_value = fake_doc
+    with patch.dict("sys.modules", {"fitz": fake_fitz}):
+        assert loader._is_password_protected(pdf_path) is True
+    fake_doc.close.assert_called_once()
+
+
+def test_unprotected_pdf_not_flagged_as_password_protected(tmp_path: Path) -> None:
+    """M3: a normal PDF (needs_pass False) is not flagged as protected."""
+    pdf_path = tmp_path / "ok.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+    loader = ResumeLoader()
+    fake_doc = MagicMock()
+    fake_doc.needs_pass = False
+    fake_fitz = MagicMock()
+    fake_fitz.open.return_value = fake_doc
+    with patch.dict("sys.modules", {"fitz": fake_fitz}):
+        assert loader._is_password_protected(pdf_path) is False
+
+
+def test_confidence_counts_headers_not_midline_mentions() -> None:
+    """Confidence counts line-anchored section HEADERS, not bare substrings."""
+    loader = ResumeLoader()
+    headers = "Experience\nEducation\nSkills\nProjects\nCertifications"
+    prose = "my experience education skills projects certifications summary blah"
+    assert loader._compute_confidence(headers) > loader._compute_confidence(prose)
+
+
+def test_confidence_vocab_aligns_with_skills_extractor() -> None:
+    """Confidence credits 'Core Competencies' (aligned with _extract_skills_section)."""
+    loader = ResumeLoader()
+    with_header = "Jane Doe\n\nCore Competencies\nPython, SQL"
+    without = "Jane Doe\n\nrandom prose mentioning competencies in a sentence"
+    assert loader._compute_confidence(with_header) > loader._compute_confidence(without)
+
+
+def test_phone_extraction_rejects_year_runs() -> None:
+    """Phone: a run of years must not be mistaken for a phone number."""
+    loader = ResumeLoader()
+    assert loader._extract_phone("Worked 2019 2020 2021 2022 2023 at Acme") == ""
+
+
+def test_phone_extraction_accepts_real_phone() -> None:
+    """Phone: normally-formatted numbers are still extracted."""
+    loader = ResumeLoader()
+    assert "555" in loader._extract_phone("Call me at 555-123-4567")
+    assert loader._extract_phone("Reach me: +1 (555) 123-4567").strip() != ""

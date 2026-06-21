@@ -31,7 +31,9 @@ _KNOWN_SECTIONS = frozenset(
     )
 )
 _SECTION_HEADER_RE = re.compile(
-    r"(?im)^\s*\*{0,2}\s*(" + "|".join(sorted(_KNOWN_SECTIONS)) + r")\b"
+    r"(?im)^\s*\*{0,2}\s*"
+    r"(?:(?:technical|core|key|professional|relevant|soft)\s+)?"  # match "Core Competencies"
+    r"(" + "|".join(sorted(_KNOWN_SECTIONS)) + r")\b"
 )
 
 
