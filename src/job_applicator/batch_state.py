@@ -248,6 +248,24 @@ class BatchState:
         except sqlite3.Error as exc:
             raise BatchStateError(f"Cannot read batch job status: {exc}") from exc
 
+    def get_job(self, run_id: str, url: str) -> tuple[BatchJobStatus, str | None] | None:
+        """Return (status, resume_path) for a persisted job, or None if not recorded.
+
+        Used by mid-job resume to find a TAILORED job whose tailored artifact can be
+        reused instead of re-tailoring.
+        """
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT status, resume_path FROM batch_jobs WHERE run_id = ? AND job_url = ?",
+                    (run_id, str(url)),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise BatchStateError(f"Cannot read batch job: {exc}") from exc
+        if row is None:
+            return None
+        return BatchJobStatus(row[0]), row[1]
+
     def list_completed_jobs(self, run_id: str) -> list[str]:
         """Return job URLs that are fully completed or explicitly skipped.
 

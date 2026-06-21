@@ -31,6 +31,7 @@ from job_applicator.utils.verbose import VerboseReporter
 
 if TYPE_CHECKING:
     from job_applicator.applicators.base import BaseApplicator
+    from job_applicator.batch_state import BatchState
     from job_applicator.browser.manager import BrowserManager
     from job_applicator.documents.tone_detector import ToneProfile
     from job_applicator.models import (
@@ -1341,6 +1342,31 @@ def match(
             reporter.render(console, log_file)
 
 
+def _resume_tailored_resume(
+    batch_state: BatchState, run_id: str, job_url: str
+) -> tuple[TailoredResume, str, str] | None:
+    """Mid-job resume: if a job is persisted TAILORED with a readable meta.json,
+    reconstruct its TailoredResume so the batch can skip re-tailoring and go straight
+    to the cover letter. Returns (tailored, resume_path, meta_path), or None when the
+    job isn't reusably tailored or the artifact is missing/corrupt (→ caller re-tailors).
+    """
+    from job_applicator.batch_state import BatchJobStatus
+    from job_applicator.models import TailoredResume
+
+    persisted = batch_state.get_job(run_id, job_url)
+    if not persisted or persisted[0] != BatchJobStatus.TAILORED or not persisted[1]:
+        return None
+    resume_path = persisted[1]
+    meta_path = str(Path(resume_path).with_suffix(".meta.json"))
+    if not Path(meta_path).exists():
+        return None
+    try:
+        tailored = TailoredResume.model_validate_json(Path(meta_path).read_text())
+    except Exception:
+        return None
+    return tailored, resume_path, meta_path
+
+
 @app.command()
 def batch(
     ctx: typer.Context,
@@ -1597,78 +1623,95 @@ def batch(
                     "url": str(job.url),
                 }
 
-                try:
-                    tone_profile = _detect_tone(job)
-                    if reporter:
-                        reporter.record_llm_call(
-                            model=settings.llm.model,
-                            endpoint=settings.llm.api_base,
-                            temperature=settings.llm.temperature,
-                            details={
-                                "job_title": job.title,
-                                "company": job.company,
-                                "type": "tailor",
-                            },
-                        )
-                    tailored = await tailor_engine.tailor(
-                        resume=resume_data,
-                        job=job,
-                        user_instructions=user_instructions,
-                        style_guide=style,
-                        tone_profile=tone_profile,
-                        matcher=matcher,
-                    )
+                # Mid-job resume: reuse a persisted TAILORED résumé instead of
+                # re-tailoring (a TAILORED job is re-processed on resume so its cover
+                # letter gets generated). Missing/corrupt artifact → re-tailor below.
+                reused = await asyncio.to_thread(
+                    _resume_tailored_resume, batch_state, effective_run_id, str(job.url)
+                )
+                if reused is not None:
+                    tailored, resume_path_out, meta_path = reused
                     result["match_score"] = round(tailored.match_score, 4)
                     result["semantic_score"] = round(tailored.semantic_score, 4)
                     result["skill_score"] = round(tailored.skill_score, 4)
-                    post_ats = _run_ats_post_tailor(resume_data.raw_text, tailored.tailored_text)
-                    ats_score = post_ats.score if post_ats else 1.0
-                    tailoring_scores.append((tailored.match_score, ats_score))
-                    batch_reports.append(
-                        TailoringReport(
-                            job_title=job.title,
-                            company=job.company,
-                            tone=tone_profile.primary,
-                            tone_confidence=tone_profile.confidence,
-                            attempts=1,
-                            ats_before=ats_result.score if ats_result else 0.0,
-                            ats_after=ats_score,
-                            changes_summary=tailored.changes_summary or "",
-                        )
-                    )
-
-                    resume_filename = f"tailored_{safe_company}_{safe_title}_{timestamp}.txt"
-                    resume_path_out = str(Path(output_dir) / resume_filename)
-                    await asyncio.to_thread(
-                        Path(resume_path_out).write_text, tailored.tailored_text
-                    )
-                    written_paths.append(resume_path_out)
-
-                    meta_filename = f"{resume_filename.rsplit('.', 1)[0]}.meta.json"
-                    meta_path = str(Path(output_dir) / meta_filename)
-                    tailored.output_path = resume_path_out
-                    await asyncio.to_thread(
-                        Path(meta_path).write_text, tailored.model_dump_json(indent=2)
-                    )
-                    written_paths.append(meta_path)
                     result["resume_path"] = resume_path_out
                     result["tailored"] = True
-                    batch_state.record_job(
-                        effective_run_id,
-                        job,
-                        BatchJobStatus.TAILORED,
-                        resume_path=resume_path_out,
-                    )
-                except Exception as exc:
-                    result["tailored"] = False
-                    result["error"] = str(exc)
-                    batch_state.record_job(
-                        effective_run_id,
-                        job,
-                        BatchJobStatus.FAILED,
-                        error_message=str(exc),
-                    )
-                    return result
+                    result["resumed"] = True
+                else:
+                    try:
+                        tone_profile = _detect_tone(job)
+                        if reporter:
+                            reporter.record_llm_call(
+                                model=settings.llm.model,
+                                endpoint=settings.llm.api_base,
+                                temperature=settings.llm.temperature,
+                                details={
+                                    "job_title": job.title,
+                                    "company": job.company,
+                                    "type": "tailor",
+                                },
+                            )
+                        tailored = await tailor_engine.tailor(
+                            resume=resume_data,
+                            job=job,
+                            user_instructions=user_instructions,
+                            style_guide=style,
+                            tone_profile=tone_profile,
+                            matcher=matcher,
+                        )
+                        result["match_score"] = round(tailored.match_score, 4)
+                        result["semantic_score"] = round(tailored.semantic_score, 4)
+                        result["skill_score"] = round(tailored.skill_score, 4)
+                        post_ats = _run_ats_post_tailor(
+                            resume_data.raw_text, tailored.tailored_text
+                        )
+                        ats_score = post_ats.score if post_ats else 1.0
+                        tailoring_scores.append((tailored.match_score, ats_score))
+                        batch_reports.append(
+                            TailoringReport(
+                                job_title=job.title,
+                                company=job.company,
+                                tone=tone_profile.primary,
+                                tone_confidence=tone_profile.confidence,
+                                attempts=1,
+                                ats_before=ats_result.score if ats_result else 0.0,
+                                ats_after=ats_score,
+                                changes_summary=tailored.changes_summary or "",
+                            )
+                        )
+
+                        resume_filename = f"tailored_{safe_company}_{safe_title}_{timestamp}.txt"
+                        resume_path_out = str(Path(output_dir) / resume_filename)
+                        await asyncio.to_thread(
+                            Path(resume_path_out).write_text, tailored.tailored_text
+                        )
+                        written_paths.append(resume_path_out)
+
+                        meta_filename = f"{resume_filename.rsplit('.', 1)[0]}.meta.json"
+                        meta_path = str(Path(output_dir) / meta_filename)
+                        tailored.output_path = resume_path_out
+                        await asyncio.to_thread(
+                            Path(meta_path).write_text, tailored.model_dump_json(indent=2)
+                        )
+                        written_paths.append(meta_path)
+                        result["resume_path"] = resume_path_out
+                        result["tailored"] = True
+                        batch_state.record_job(
+                            effective_run_id,
+                            job,
+                            BatchJobStatus.TAILORED,
+                            resume_path=resume_path_out,
+                        )
+                    except Exception as exc:
+                        result["tailored"] = False
+                        result["error"] = str(exc)
+                        batch_state.record_job(
+                            effective_run_id,
+                            job,
+                            BatchJobStatus.FAILED,
+                            error_message=str(exc),
+                        )
+                        return result
 
                 if cl_generator is not None:
                     try:

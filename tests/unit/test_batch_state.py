@@ -109,3 +109,78 @@ def test_batch_run_spec_run_id_deterministic_and_param_sensitive() -> None:
     assert _spec().run_id() != _spec(top_k=10).run_id()
     assert _spec().run_id() != _spec(query="rust").run_id()
     assert len(_spec().run_id()) == 16
+
+
+def _write_tailored(tmp_path: Path, text: str = "TAILORED RESUME TEXT") -> tuple[Path, Path]:
+    from job_applicator.models import TailoredResume
+
+    resume_path = tmp_path / "tailored_x.txt"
+    resume_path.write_text(text)
+    tailored = TailoredResume(
+        original_path="",
+        tailored_text=text,
+        job_title="Python Dev",
+        job_company="Acme",
+        match_score=0.8,
+        semantic_score=0.7,
+        skill_score=0.9,
+        changes_summary="reordered skills",
+        output_path=str(resume_path),
+    )
+    meta_path = resume_path.with_suffix(".meta.json")
+    meta_path.write_text(tailored.model_dump_json())
+    return resume_path, meta_path
+
+
+def test_resume_tailored_resume_reconstructs_from_meta(tmp_path: Path) -> None:
+    """Cycle 3b: a persisted TAILORED job with a readable meta.json reconstructs its
+    TailoredResume — validates the model_dump_json → model_validate_json round-trip
+    (incl. the datetime field) that the mid-job-resume reuse path depends on."""
+    from job_applicator.cli import _resume_tailored_resume
+
+    state = BatchState(db_path=tmp_path / "batch.db")
+    run_id = state.start_run(_spec(), run_id="run-r")
+    job = _make_job()
+    resume_path, meta_path = _write_tailored(tmp_path)
+    state.record_job(run_id, job, BatchJobStatus.TAILORED, resume_path=str(resume_path))
+
+    reused = _resume_tailored_resume(state, run_id, str(job.url))
+    assert reused is not None
+    got, got_resume, got_meta = reused
+    assert got.tailored_text == "TAILORED RESUME TEXT"
+    assert got.match_score == 0.8
+    assert got_resume == str(resume_path)
+    assert got_meta == str(meta_path)
+
+
+def test_resume_tailored_resume_none_when_not_reusable(tmp_path: Path) -> None:
+    """Not reused unless the job is TAILORED with an artifact: absent → None;
+    COMPLETED → None (it's already in list_completed_jobs and won't be re-processed)."""
+    from job_applicator.cli import _resume_tailored_resume
+
+    state = BatchState(db_path=tmp_path / "batch.db")
+    run_id = state.start_run(_spec(), run_id="run-r2")
+    job = _make_job()
+    assert _resume_tailored_resume(state, run_id, str(job.url)) is None  # no record
+
+    _write_tailored(tmp_path)
+    state.record_job(run_id, job, BatchJobStatus.COMPLETED, resume_path="/tmp/whatever.txt")
+    assert _resume_tailored_resume(state, run_id, str(job.url)) is None  # not TAILORED
+
+
+def test_resume_tailored_resume_none_when_meta_missing_or_corrupt(tmp_path: Path) -> None:
+    """TAILORED but meta.json missing or corrupt → None, so the caller re-tailors
+    rather than reusing a stale/broken artifact."""
+    from job_applicator.cli import _resume_tailored_resume
+
+    state = BatchState(db_path=tmp_path / "batch.db")
+    run_id = state.start_run(_spec(), run_id="run-r3")
+    job = _make_job()
+    resume_path = tmp_path / "tailored_y.txt"
+    resume_path.write_text("text")
+
+    state.record_job(run_id, job, BatchJobStatus.TAILORED, resume_path=str(resume_path))
+    assert _resume_tailored_resume(state, run_id, str(job.url)) is None  # no meta.json
+
+    resume_path.with_suffix(".meta.json").write_text("{not valid json")
+    assert _resume_tailored_resume(state, run_id, str(job.url)) is None  # corrupt meta.json
