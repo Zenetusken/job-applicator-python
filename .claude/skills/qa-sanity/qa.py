@@ -52,9 +52,8 @@ VLLM_URL = "http://localhost:8000/v1/models"
 # --- to FAIL today (-> XFAIL). When one flips to XPASS, the bug is fixed: delete it here.
 KNOWN_FAIL = {
     "config-init: bad output path → clean error (no traceback)",
-    # FIXED 2026-06-21 (ResumeLoader.load typed-error wrapper + ats-check JobApplicatorError
-    # handler): ats-check missing/corrupt/empty/directory → clean error, promoted XPASS→PASS.
-    "ats-check: no-resume error goes to stderr (not stdout)",  # deferred to the errors→stderr PR
+    # FIXED 2026-06-21: ats-check missing/corrupt/empty/directory → clean error (loader
+    # typed-error wrapper + handler); runtime errors → stderr (shared err_console). Promoted.
     "import-cookies: --help shows the [browser] extra name (markup not eaten)",
     "global: --json --verbose → still valid JSON",
     "match: React job reports React/TypeScript as missing skills",
@@ -295,6 +294,15 @@ def core_checks(fx: dict[str, Path]) -> None:
     except Exception:
         pass
     record("global: --json --verbose → still valid JSON", t, ok_jv, f"exit={cp.returncode}")
+
+    # Runtime errors → stderr is fleet-wide (shared err_console); gate a sibling too, not
+    # just ats-check. `batch` with no jobs source errors before any vLLM/scrape (offline).
+    cp = run("batch", "--resume", str(fx["resume"]), "--no-cover-letter")
+    record("batch: error message goes to stderr (not stdout)", t,
+           cp.returncode != 0
+           and "Provide --jobs-file" in cp.stderr
+           and "Provide --jobs-file" not in cp.stdout,
+           f"exit={cp.returncode}")
 
     for cmd in ("apply", "login", "import-cookies"):
         cp = run(cmd, "--help")
