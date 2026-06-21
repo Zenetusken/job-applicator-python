@@ -253,7 +253,7 @@ class TestGenerateCoverLetter:
 
     @pytest.mark.asyncio
     async def test_success_returns_cover_letter_result(self) -> None:
-        from job_applicator.cli import _generate_cover_letter
+        from job_applicator.workflows.cover_letter import _generate_cover_letter
 
         console = self._mock_console()
         settings = MagicMock()
@@ -291,7 +291,7 @@ class TestGenerateCoverLetter:
 
     @pytest.mark.asyncio
     async def test_llm_failure_returns_none(self) -> None:
-        from job_applicator.cli import _generate_cover_letter
+        from job_applicator.workflows.cover_letter import _generate_cover_letter
 
         console = self._mock_console()
         settings = MagicMock()
@@ -327,7 +327,7 @@ class TestGenerateCoverLetter:
 
     @pytest.mark.asyncio
     async def test_passes_tone_and_tailored_resume(self) -> None:
-        from job_applicator.cli import _generate_cover_letter
+        from job_applicator.workflows.cover_letter import _generate_cover_letter
 
         console = self._mock_console()
         settings = MagicMock()
@@ -375,7 +375,7 @@ class TestGenerateCoverLetter:
 
 class TestSaveCoverLetter:
     async def test_correct_file_path(self, tmp_path: Path) -> None:
-        from job_applicator.cli import _save_cover_letter
+        from job_applicator.workflows.cover_letter import _save_cover_letter
 
         console = MagicMock(spec=Console)
         settings = MagicMock()
@@ -395,7 +395,7 @@ class TestSaveCoverLetter:
         assert path.read_text(encoding="utf-8") == "My cover letter"
 
     async def test_meta_json_alongside(self, tmp_path: Path) -> None:
-        from job_applicator.cli import _save_cover_letter
+        from job_applicator.workflows.cover_letter import _save_cover_letter
 
         console = MagicMock(spec=Console)
         settings = MagicMock()
@@ -412,7 +412,7 @@ class TestSaveCoverLetter:
         assert meta_path.exists()
 
     async def test_meta_json_fields(self, tmp_path: Path) -> None:
-        from job_applicator.cli import _save_cover_letter
+        from job_applicator.workflows.cover_letter import _save_cover_letter
 
         console = MagicMock(spec=Console)
         settings = MagicMock()
@@ -434,7 +434,7 @@ class TestSaveCoverLetter:
         assert "created_at" in meta
 
     async def test_output_path_set_on_result(self, tmp_path: Path) -> None:
-        from job_applicator.cli import _save_cover_letter
+        from job_applicator.workflows.cover_letter import _save_cover_letter
 
         console = MagicMock(spec=Console)
         settings = MagicMock()
@@ -464,7 +464,7 @@ class TestRefineCoverLetter:
 
     @pytest.mark.asyncio
     async def test_success_increments_attempt(self) -> None:
-        from job_applicator.cli import _refine_cover_letter
+        from job_applicator.workflows.cover_letter import _refine_cover_letter
 
         console = self._mock_console()
         settings = MagicMock()
@@ -501,7 +501,7 @@ class TestRefineCoverLetter:
 
     @pytest.mark.asyncio
     async def test_failure_returns_none(self) -> None:
-        from job_applicator.cli import _refine_cover_letter
+        from job_applicator.workflows.cover_letter import _refine_cover_letter
 
         console = self._mock_console()
         settings = MagicMock()
@@ -647,7 +647,7 @@ class TestCoverLetterFailureHandling:
         This is a known bug: if generation fails during retry, the loop continues
         silently showing the old letter instead of showing an error.
         """
-        from job_applicator.cli import _cover_letter_workflow
+        from job_applicator.workflows.cover_letter import _cover_letter_workflow
 
         success_result = CoverLetterResult(
             job_title="Dev",
@@ -692,8 +692,10 @@ class TestCoverLetterFailureHandling:
         resume_data = MagicMock()
 
         with (
-            patch("job_applicator.cli._generate_cover_letter", side_effect=fake_gen),
-            patch("job_applicator.cli._save_cover_letter", mock_save),
+            patch(
+                "job_applicator.workflows.cover_letter._generate_cover_letter", side_effect=fake_gen
+            ),
+            patch("job_applicator.workflows.cover_letter._save_cover_letter", mock_save),
         ):
             result = await _cover_letter_workflow(
                 console, settings, job, resume_data, None, None, "tailored text"
@@ -707,7 +709,7 @@ class TestCoverLetterFailureHandling:
     @pytest.mark.asyncio
     async def test_input_in_loop_shows_error_on_failure(self) -> None:
         """[I] Input should show error when _refine_cover_letter returns None."""
-        from job_applicator.cli import _cover_letter_workflow
+        from job_applicator.workflows.cover_letter import _cover_letter_workflow
 
         success_result = CoverLetterResult(
             job_title="Dev",
@@ -747,9 +749,11 @@ class TestCoverLetterFailureHandling:
         resume_data = MagicMock()
 
         with (
-            patch("job_applicator.cli._generate_cover_letter", side_effect=fake_gen),
-            patch("job_applicator.cli._refine_cover_letter", mock_refine),
-            patch("job_applicator.cli._save_cover_letter", mock_save),
+            patch(
+                "job_applicator.workflows.cover_letter._generate_cover_letter", side_effect=fake_gen
+            ),
+            patch("job_applicator.workflows.cover_letter._refine_cover_letter", mock_refine),
+            patch("job_applicator.workflows.cover_letter._save_cover_letter", mock_save),
         ):
             result = await _cover_letter_workflow(
                 console, settings, job, resume_data, None, None, "tailored text"
@@ -823,7 +827,7 @@ async def test_workflow_threads_one_shared_runtime_across_attempts() -> None:
     call would reset the breaker's failure window so it never trips — and no other
     gate catches that (happy-path live never trips it). Patches the generator class
     to capture the runtime threaded into each construction."""
-    from job_applicator.cli import _cover_letter_workflow
+    from job_applicator.workflows.cover_letter import _cover_letter_workflow
 
     captured: list[object] = []
 
