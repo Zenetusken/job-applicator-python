@@ -7,7 +7,7 @@ _Last synced: 2026-06-15_
 
 ## Snapshot
 
-- **Stats:** 31 source modules (`src/job_applicator/`), 461 fast unit tests (`pytest -m unit` — the green gate, no browser/GPU); 482 total, the extra 21 are live tests (`-m live`) needing vLLM (`localhost:8000`) + GPU. Tests auto-marked by location in `tests/conftest.py`.
+- **Stats:** 31 source modules (`src/job_applicator/`), 518 fast unit tests (`pytest -m unit` — the green gate, no browser/GPU); 539 total, the extra 21 are live tests (`-m live`) needing vLLM (`localhost:8000`) + GPU. Tests auto-marked by location in `tests/conftest.py`.
 - **Python:** 3.12+ (dev box 3.12.8). Mypy strict; ruff (100-char lines, double quotes).
 - **Quality gates (all must pass, in order):**
   `ruff check src/ tests/` → `ruff format --check src/ tests/` →

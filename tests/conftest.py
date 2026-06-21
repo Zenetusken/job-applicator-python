@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import socket
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 
@@ -32,6 +34,29 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             item.add_marker(pytest.mark.integration)
         elif len(rel.parts) == 1:  # a test file directly under tests/ root
             item.add_marker(pytest.mark.live)
+
+
+def _vllm_endpoint_reachable() -> bool:
+    """Best-effort probe of the configured LLM endpoint (default localhost:8000).
+
+    Used to skip live tests when the external vLLM service is not running.
+    """
+    settings = AppSettings()
+    url = urlparse(settings.llm.api_base or "http://localhost:8000/v1")
+    host = url.hostname or "localhost"
+    port = url.port or 8000
+    try:
+        with socket.create_connection((host, port), timeout=2.0):
+            return True
+    except OSError:
+        return False
+
+
+@pytest.fixture(autouse=True)
+def skip_live_if_no_vllm(request: pytest.FixtureRequest) -> None:
+    """Live tests require the external vLLM endpoint; skip cleanly if absent."""
+    if request.node.get_closest_marker("live") and not _vllm_endpoint_reachable():
+        pytest.skip("vLLM endpoint not reachable; start it or run `pytest -m unit`")
 
 
 @pytest.fixture
