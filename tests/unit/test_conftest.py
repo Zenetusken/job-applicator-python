@@ -14,7 +14,7 @@ def test_vllm_endpoint_reachable_detects_closed_port() -> None:
 
 def test_vllm_endpoint_reachable_detects_open_port() -> None:
     class _DummyConn:
-        def __enter__(self) -> "_DummyConn":
+        def __enter__(self) -> _DummyConn:
             return self
 
         def __exit__(self, *args: object) -> None:

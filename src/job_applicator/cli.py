@@ -1345,6 +1345,12 @@ def batch(
         "--force-ocr",
         help="Force OCR; equivalent to --ocr-mode on.",
     ),
+    run_id: str = typer.Option("", "--run-id", help="Unique ID for this batch run."),
+    resume_run: bool = typer.Option(
+        False,
+        "--resume-run",
+        help="Resume an existing incomplete batch run with matching parameters.",
+    ),
     verbose: bool = _verbose_option(),
     log_file: str | None = _log_file_option(),
 ) -> None:
@@ -1362,11 +1368,13 @@ def batch(
         ctx=ctx,
         command="batch",
         args={
-            "resume": settings.resume_path,
+            "resume_path": settings.resume_path,
             "jobs_file": jobs_file,
             "query": query,
             "top_k": top_k,
             "cover_letter": cover_letter,
+            "run_id": run_id or "auto",
+            "resume_run": resume_run,
         },
         config=_sanitize_config(settings),
     )
@@ -1377,6 +1385,7 @@ def batch(
         from datetime import datetime as dt
         from pathlib import Path
 
+        from job_applicator.batch_state import BatchJobStatus, BatchState
         from job_applicator.documents.resume import ResumeLoader
         from job_applicator.documents.resume_tailor import ResumeTailor
         from job_applicator.embeddings.matching import JobMatcher, MatchResult
@@ -1479,6 +1488,60 @@ def batch(
             console.print("[yellow]No jobs above minimum score threshold.[/yellow]")
             return
 
+        batch_state = BatchState()
+        effective_run_id = run_id
+        if not effective_run_id:
+            import hashlib
+
+            run_key = (
+                f"{site}|{query or ''}|{jobs_file or ''}|{settings.resume_path}|"
+                f"{top_k}|{min_score}|{cover_letter}"
+            )
+            effective_run_id = hashlib.sha256(run_key.encode()).hexdigest()[:16]
+
+        if resume_run:
+            existing = batch_state.find_existing_run(
+                site=site,
+                query=query or None,
+                jobs_file=jobs_file or None,
+                resume_path=settings.resume_path,
+            )
+            if existing:
+                effective_run_id = existing
+                if not as_json:
+                    console.print(f"[cyan]Resuming batch run {effective_run_id}...[/cyan]")
+            else:
+                if not as_json:
+                    console.print(
+                        "[yellow]No incomplete batch run found; starting a new run.[/yellow]"
+                    )
+
+        batch_state.start_run(
+            run_id=effective_run_id,
+            site=site,
+            query=query or None,
+            jobs_file=jobs_file or None,
+            resume_path=settings.resume_path,
+            top_k=top_k,
+            min_score=min_score,
+            cover_letter=cover_letter,
+        )
+        completed_urls = set(batch_state.list_completed_jobs(effective_run_id))
+
+        pending_matches = [m for m in matches if str(m.job.url) not in completed_urls]
+        skipped_already = len(matches) - len(pending_matches)
+        if skipped_already and not as_json:
+            console.print(
+                f"[cyan]Skipping {skipped_already} already-completed jobs from previous run.[/cyan]"
+            )
+
+        if not pending_matches:
+            batch_state.complete_run(effective_run_id)
+            if not as_json:
+                console.print("[green]All jobs already completed.[/green]")
+            return
+
+        matches = pending_matches
         if not as_json:
             console.print(f"[cyan]Tailoring {len(matches)} jobs...[/cyan]")
 
@@ -1573,9 +1636,21 @@ def batch(
                     written_paths.append(meta_path)
                     result["resume_path"] = resume_path_out
                     result["tailored"] = True
+                    batch_state.record_job(
+                        effective_run_id,
+                        job,
+                        BatchJobStatus.TAILORED,
+                        resume_path=resume_path_out,
+                    )
                 except Exception as exc:
                     result["tailored"] = False
                     result["error"] = str(exc)
+                    batch_state.record_job(
+                        effective_run_id,
+                        job,
+                        BatchJobStatus.FAILED,
+                        error_message=str(exc),
+                    )
                     return result
 
                 if cl_generator is not None:
@@ -1609,14 +1684,37 @@ def batch(
                         await asyncio.to_thread(
                             Path(meta_path).write_text, tailored.model_dump_json(indent=2)
                         )
+                        batch_state.record_job(
+                            effective_run_id,
+                            job,
+                            BatchJobStatus.COMPLETED,
+                            resume_path=resume_path_out,
+                            cover_letter_path=cl_path,
+                        )
                     except Exception as exc:
                         result["cover_letter"] = False
                         result["cl_error"] = str(exc)
+                        batch_state.record_job(
+                            effective_run_id,
+                            job,
+                            BatchJobStatus.FAILED,
+                            resume_path=resume_path_out,
+                            error_message=str(exc),
+                        )
+                else:
+                    batch_state.record_job(
+                        effective_run_id,
+                        job,
+                        BatchJobStatus.COMPLETED,
+                        resume_path=resume_path_out,
+                    )
 
                 return result
 
         with console.status("Processing jobs in parallel..."):
             batch_results = await asyncio.gather(*(_process_one(m) for m in matches))
+
+        batch_state.complete_run(effective_run_id)
 
         if reporter and batch_reports:
             reporter.record_batch_tailoring(batch_reports)

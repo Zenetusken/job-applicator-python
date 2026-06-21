@@ -61,6 +61,18 @@ class TestBatchCommand:
         result = runner.invoke(app, ["--help"])
         assert "batch" in result.output
 
+    def test_batch_help_includes_resume_flags(self) -> None:
+        """Batch help advertises --run-id and --resume-run."""
+        from typer.testing import CliRunner
+
+        from job_applicator.cli import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["batch", "--help"])
+        assert result.exit_code == 0
+        assert "--run-id" in result.output
+        assert "--resume-run" in result.output
+
     def test_batch_loads_jobs_from_file(self, sample_jobs_file: Path) -> None:
         """Jobs from --jobs-file deserialize into JobListing correctly."""
         data = json.loads(sample_jobs_file.read_text())
