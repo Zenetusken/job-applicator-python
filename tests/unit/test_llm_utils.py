@@ -180,3 +180,84 @@ async def test_validated_output_gives_up_after_retries() -> None:
 
     with pytest.raises(LLMError, match="always bad"):
         await ValidatedOutput(max_retries=1).call(producer, validator)
+
+
+def test_strip_thinking_process_none_returns_empty() -> None:
+    """H3: litellm ``message.content`` is Optional[str]; None must not crash."""
+    assert strip_thinking_process(None) == ""
+
+
+def test_circuit_open_error_is_llmerror_subclass() -> None:
+    """M4: CircuitOpenError is an LLMError so existing handlers still catch it."""
+    from job_applicator.exceptions import LLMError
+    from job_applicator.utils.llm import CircuitOpenError
+
+    assert issubclass(CircuitOpenError, LLMError)
+
+
+async def test_breaker_open_raises_circuit_open_error() -> None:
+    """M4: an open breaker raises the distinct CircuitOpenError, not a bare LLMError."""
+    from job_applicator.exceptions import LLMError
+    from job_applicator.utils.llm import CircuitBreaker, CircuitOpenError
+
+    breaker = CircuitBreaker(failure_threshold=1, recovery_timeout_seconds=60.0)
+
+    async def fail() -> str:
+        raise LLMError("boom")
+
+    with pytest.raises(LLMError, match="boom"):
+        await breaker.call(fail)
+    with pytest.raises(CircuitOpenError, match="circuit breaker"):
+        await breaker.call(fail)
+
+
+async def test_async_retry_does_not_retry_excluded() -> None:
+    """M4: a CircuitOpenError must fail fast — never retried against the open breaker."""
+    from job_applicator.exceptions import LLMError
+    from job_applicator.utils.llm import CircuitOpenError
+    from job_applicator.utils.retry import async_retry
+
+    calls = 0
+
+    @async_retry(
+        max_attempts=3, base_delay=0.0, exceptions=(LLMError,), exclude=(CircuitOpenError,)
+    )
+    async def open_fast() -> str:
+        nonlocal calls
+        calls += 1
+        raise CircuitOpenError("open")
+
+    with pytest.raises(CircuitOpenError):
+        await open_fast()
+    assert calls == 1
+
+
+async def test_async_retry_retries_transport_error() -> None:
+    """A transport LLMError IS retried up to max_attempts (initial + retries)."""
+    from job_applicator.exceptions import LLMError
+    from job_applicator.utils.retry import async_retry
+
+    calls = 0
+
+    @async_retry(max_attempts=2, base_delay=0.0, exceptions=(LLMError,))
+    async def flaky() -> str:
+        nonlocal calls
+        calls += 1
+        raise LLMError("transport")
+
+    with pytest.raises(LLMError, match="transport"):
+        await flaky()
+    assert calls == 2
+
+
+def test_cover_letter_generator_breaker_is_injectable() -> None:
+    """M1: breaker is injectable for tests; defaults to the process-shared instance."""
+    from job_applicator.config import LLMConfig
+    from job_applicator.documents import cover_letter
+    from job_applicator.documents.cover_letter import CoverLetterGenerator
+    from job_applicator.utils.llm import CircuitBreaker
+
+    injected = CircuitBreaker(name="test")
+    assert CoverLetterGenerator(LLMConfig(), breaker=injected)._breaker is injected
+    # Default is the shared module-level breaker (must span jobs in a batch run).
+    assert CoverLetterGenerator(LLMConfig())._breaker is cover_letter._CIRCUIT_BREAKER

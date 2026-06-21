@@ -13,6 +13,7 @@ from job_applicator.exceptions import LLMError
 from job_applicator.models import JobListing, ResumeData, StyleGuide, UserProfile
 from job_applicator.utils.llm import (
     CircuitBreaker,
+    CircuitOpenError,
     ValidatedOutput,
     llm_call_error,
     strip_thinking_process,
@@ -71,10 +72,14 @@ from you." """
 class CoverLetterGenerator:
     """Generate AI-powered cover letters via litellm + instructor."""
 
-    def __init__(self, config: LLMConfig) -> None:
+    def __init__(self, config: LLMConfig, breaker: CircuitBreaker | None = None) -> None:
         self._config = config
         self._client: Any = None
         self._style_cache: StyleGuide | None = None
+        # Process-shared by default: the breaker must span jobs within a batch run
+        # to guard a down endpoint (a fresh per-instance breaker would reset every
+        # job and never trip). Injectable for tests / explicit DI.
+        self._breaker = breaker or _CIRCUIT_BREAKER
 
     def _get_client(self) -> Any:
         """Lazy-load instructor client."""
@@ -132,31 +137,20 @@ class CoverLetterGenerator:
         if re.search(placeholder_pattern, text, re.IGNORECASE):
             raise LLMError("Generated cover letter contains placeholder text")
 
-    @async_retry(max_attempts=2, base_delay=1.0, exceptions=(LLMError,))
-    async def _generate_raw(
-        self,
-        job: JobListing,
-        user: UserProfile,
-        resume: ResumeData,
-        style_guide: StyleGuide | None,
-        tone_section: str,
-        tailored_resume_text: str,
-    ) -> str:
-        """Raw LLM call for cover-letter generation, protected by circuit breaker."""
-        user_message = self._build_prompt(
-            job,
-            user,
-            resume,
-            style_guide,
-            tone_section=tone_section,
-            tailored_resume_text=tailored_resume_text,
-        )
+    async def _complete(self, user_message: str) -> str:
+        """Run ONE cover-letter completion, hardened in a single place.
 
+        Instructor (structured) with a direct-litellm fallback, wrapped by the
+        circuit breaker and a single transport-retry tier. A circuit-open
+        rejection (``CircuitOpenError``) is NOT retried — retrying only re-hits
+        the same open breaker. Content validation is the caller's concern
+        (``ValidatedOutput``), so transport and content retries never multiply.
+        """
         # For local vLLM, need "openai/" prefix
         model = f"openai/{self._config.model}" if self._config.api_base else self._config.model
 
-        async def _call() -> str:
-            # Try instructor first (structured output)
+        async def _one_call() -> str:
+            # Try instructor first (structured output); fall back to direct litellm.
             try:
                 client = self._get_client()
                 response = await client.create(
@@ -170,14 +164,12 @@ class CoverLetterGenerator:
                     response_model=CoverLetterOutput,
                     max_retries=1,
                     max_tokens=self._config.max_tokens,
-                    extra_body={
-                        "chat_template_kwargs": {"enable_thinking": False},
-                    },
+                    temperature=self._config.temperature,
+                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                 )
                 return strip_thinking_process(response.cover_letter)
-            except Exception:
-                # Fallback to direct litellm call
-                logger.info("Instructor failed, falling back to direct litellm call")
+            except Exception as exc:
+                logger.info("Instructor failed (%s), falling back to direct litellm", exc)
                 try:
                     from litellm import acompletion
 
@@ -191,17 +183,43 @@ class CoverLetterGenerator:
                         ],
                         max_tokens=self._config.max_tokens,
                         temperature=self._config.temperature,
-                        extra_body={
-                            "chat_template_kwargs": {"enable_thinking": False},
-                        },
+                        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                     )
                     return strip_thinking_process(response.choices[0].message.content)
-                except Exception as exc:
-                    raise llm_call_error(exc, self._config.api_base) from exc
+                except Exception as exc2:
+                    raise llm_call_error(exc2, self._config.api_base) from exc2
 
-        return await _CIRCUIT_BREAKER.call(_call)
+        @async_retry(
+            max_attempts=2,
+            base_delay=1.0,
+            exceptions=(LLMError,),
+            exclude=(CircuitOpenError,),
+        )
+        async def _guarded() -> str:
+            return await self._breaker.call(_one_call)
 
-    @async_retry(max_attempts=2, base_delay=1.0, exceptions=(LLMError,))
+        return await _guarded()
+
+    async def _generate_raw(
+        self,
+        job: JobListing,
+        user: UserProfile,
+        resume: ResumeData,
+        style_guide: StyleGuide | None,
+        tone_section: str,
+        tailored_resume_text: str,
+    ) -> str:
+        """Build the generation prompt and run one completion (validated by caller)."""
+        user_message = self._build_prompt(
+            job,
+            user,
+            resume,
+            style_guide,
+            tone_section=tone_section,
+            tailored_resume_text=tailored_resume_text,
+        )
+        return await self._complete(user_message)
+
     async def generate(
         self,
         job: JobListing,
@@ -242,7 +260,6 @@ class CoverLetterGenerator:
         )
         return letter
 
-    @async_retry(max_attempts=2, base_delay=1.0, exceptions=(LLMError,))
     async def refine(
         self,
         job: JobListing,
@@ -254,8 +271,8 @@ class CoverLetterGenerator:
     ) -> str:
         """Refine a cover letter based on user feedback.
 
-        Uses the same structured generation pipeline as generate() —
-        system prompt, style guide, tone section, instructor fallback.
+        Routes through the SAME hardened pipeline as generate() — circuit
+        breaker, transport retry, and output validation — via ``_complete``.
         """
         parts = [
             f"Job: {job.title} at {job.company}",
@@ -285,44 +302,10 @@ class CoverLetterGenerator:
         )
         user_message = "\n".join(parts)
 
-        model = f"openai/{self._config.model}" if self._config.api_base else self._config.model
+        async def _call() -> str:
+            return await self._complete(user_message)
 
-        try:
-            client = self._get_client()
-            response = await client.create(
-                model=model,
-                api_base=self._config.api_base,
-                api_key=self._config.api_key,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_message},
-                ],
-                response_model=CoverLetterOutput,
-                max_retries=1,
-                max_tokens=self._config.max_tokens,
-                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-            )
-            return strip_thinking_process(response.cover_letter)
-        except Exception:
-            logger.info("Instructor failed for refine, falling back to direct litellm")
-            from litellm import acompletion
-
-            try:
-                response = await acompletion(
-                    model=model,
-                    api_base=self._config.api_base,
-                    api_key=self._config.api_key,
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": user_message},
-                    ],
-                    max_tokens=self._config.max_tokens,
-                    temperature=self._config.temperature,
-                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-                )
-                return strip_thinking_process(response.choices[0].message.content)
-            except Exception as exc:
-                raise llm_call_error(exc, self._config.api_base) from exc
+        return await ValidatedOutput(max_retries=1).call(_call, self._validate_cover_letter)
 
     def _build_prompt(
         self,
