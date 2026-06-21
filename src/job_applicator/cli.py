@@ -1574,20 +1574,23 @@ def batch(
         if not as_json:
             console.print(f"[cyan]Tailoring {len(matches)} jobs...[/cyan]")
 
+        # One breaker shared across cover-letter generation + résumé tailoring for
+        # this whole batch run (every job goes through the same circuit breaker).
+        runtime = _make_runtime(settings)
         style = None
         cl_generator = None
         if settings.style_guide_path:
             from job_applicator.documents.cover_letter import CoverLetterGenerator
 
-            cl_generator = CoverLetterGenerator(settings.llm, runtime=_make_runtime(settings))
+            cl_generator = CoverLetterGenerator(settings.llm, runtime=runtime)
             with console.status("Loading style guide..."):
                 style = await cl_generator.load_style_guide(settings.style_guide_path)
         elif cover_letter:
             from job_applicator.documents.cover_letter import CoverLetterGenerator
 
-            cl_generator = CoverLetterGenerator(settings.llm, runtime=_make_runtime(settings))
+            cl_generator = CoverLetterGenerator(settings.llm, runtime=runtime)
 
-        tailor_engine = ResumeTailor(settings.llm)
+        tailor_engine = ResumeTailor(settings.llm, runtime=runtime)
         user_profile = _load_user_profile(settings)
         sem = asyncio.Semaphore(3)
         timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
@@ -2238,16 +2241,18 @@ def tailor(
             f"(confidence: {tone_profile.confidence:.0%})[/dim]"
         )
 
+        # One breaker shared across style-loading + résumé tailoring for this command.
+        runtime = _make_runtime(settings)
         style = None
         if settings.style_guide_path:
             from job_applicator.documents.cover_letter import CoverLetterGenerator
 
-            generator = CoverLetterGenerator(settings.llm, runtime=_make_runtime(settings))
+            generator = CoverLetterGenerator(settings.llm, runtime=runtime)
             with console.status("Analyzing writing style..."):
                 style = await generator.load_style_guide(settings.style_guide_path)
             console.print(f"[green]Style loaded: {style.tone}[/green]")
 
-        tailor_engine = ResumeTailor(settings.llm)
+        tailor_engine = ResumeTailor(settings.llm, runtime=runtime)
         attempt = 0
         user_instructions = ""
 
@@ -3134,10 +3139,11 @@ def _make_applicator(site: str, browser: BrowserManager, settings: AppSettings) 
     raise typer.Exit(1)
 
 
-def _make_runtime(settings: AppSettings, name: str = "cover-letter") -> LLMRuntime:
+def _make_runtime(settings: AppSettings, name: str = "llm") -> LLMRuntime:
     """Build the per-command LLM resilience runtime (shared circuit breaker +
-    validation-retry policy) from settings — constructed once at each generator
-    site so the breaker spans the whole run (e.g. every job in a batch)."""
+    validation-retry policy) from settings — constructed once per command and shared
+    across its LLM consumers (cover-letter + résumé tailoring), so the breaker spans
+    the whole run. Named "llm" (neutral) since one breaker now guards both."""
     return LLMRuntime.from_config(settings.llm_resilience, name=name)
 
 
