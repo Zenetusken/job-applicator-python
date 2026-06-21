@@ -7,8 +7,8 @@ board declares its browser needs via ``browser_policy()`` and the CLI factory bu
 
 from __future__ import annotations
 
-from job_applicator.cli import _make_browser, _make_scraper
 from job_applicator.config import AppSettings, BrowserConfig
+from job_applicator.factories import _make_browser, _make_scraper
 from job_applicator.scrapers.base import BaseScraper
 
 
