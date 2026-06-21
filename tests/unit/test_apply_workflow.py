@@ -67,7 +67,7 @@ def _drive(
         patch.object(cli, "_make_browser", return_value=browser_cm),
         patch.object(cli, "_make_scraper", return_value=scraper),
         patch.object(cli, "_make_applicator", return_value=applicator),
-        patch.object(cli, "ApplicationState", return_value=st),
+        patch("job_applicator.workflows.apply.ApplicationState", return_value=st),
     ):
         result = CliRunner().invoke(cli.app, ["apply", *args])
     return result, applicator, st
