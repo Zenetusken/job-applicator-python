@@ -854,15 +854,19 @@ class ResumeTailor:
         """Strip skills from tailored text that aren't in the original resume.
 
         Parses the skills section, compares each skill against the original
-        list using fuzzy matching, and removes hallucinated skills.
+        list using fuzzy matching, and removes hallucinated skills. Skill-name
+        normalization lets "Python 3" match an original "Python" entry, while
+        the hard-negative list drops generic traits such as "team player".
         """
         import re
+
+        from job_applicator.skills import is_hard_negative, normalize_skill
 
         if not original_skills:
             return text
 
         # Normalize original skills for matching
-        norm_skills = [s.lower().strip() for s in original_skills if s.strip()]
+        norm_skills = [normalize_skill(s).lower() for s in original_skills if s.strip()]
 
         lines = text.split("\n")
         result_lines = []
@@ -902,13 +906,15 @@ class ResumeTailor:
                     result_lines.append(line)
                     continue
 
+                skill_norm = normalize_skill(skill_text).lower()
+
+                # Drop generic traits unless they were literally in the original resume.
+                if is_hard_negative(skill_norm) and skill_norm not in norm_skills:
+                    logger.info("Stripped hard-negative skill: %s", skill_text)
+                    continue
+
                 # Check if this skill matches any original skill
-                skill_lower = skill_text.lower()
-                is_original = False
-                for orig in norm_skills:
-                    if _skills_match(skill_lower, orig):
-                        is_original = True
-                        break
+                is_original = any(_skills_match(skill_norm, orig) for orig in norm_skills)
 
                 if is_original:
                     result_lines.append(line)

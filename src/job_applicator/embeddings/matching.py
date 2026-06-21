@@ -285,36 +285,59 @@ class JobMatcher:
         Returns:
             Tuple of (matched_skills, missing_requirements)
         """
+        from job_applicator.skills import is_hard_negative, normalize_skill
+
         if not job_requirements:
             return [], []
 
-        # Filter out invalid skills (single chars, bullets, etc.)
-        valid_skills = [s for s in resume_skills if len(s.strip()) > 2 and s.strip() != "•"]
+        # Normalize and drop generic traits/hard negatives.
+        norm_skills = [normalize_skill(s) for s in resume_skills]
+        valid_skills = [
+            s
+            for s in norm_skills
+            if len(s.strip()) > 2 and s.strip() != "•" and not is_hard_negative(s)
+        ]
+
+        # Preserve original requirement text for reporting while matching on
+        # normalized forms.
+        norm_reqs = [normalize_skill(r) for r in job_requirements]
+        req_lookup = {n: r for n, r in zip(norm_reqs, job_requirements, strict=False) if n}
+        valid_reqs = [
+            (n, r)
+            for n, r in zip(norm_reqs, job_requirements, strict=False)
+            if n and not is_hard_negative(n)
+        ]
 
         # If no valid skills, use resume text lines as skills
         if not valid_skills and resume_text:
             # Extract potential skills from resume text
             lines = resume_text.split("\n")
             valid_skills = [
-                line.strip()
+                normalize_skill(line.strip())
                 for line in lines
-                if 10 < len(line.strip()) < 80 and not line.strip().startswith(("•", "·", "-"))
+                if 10 < len(line.strip()) < 80
+                and not line.strip().startswith(("•", "·", "-"))
+                and not is_hard_negative(line.strip())
             ]
 
-        if not valid_skills:
-            return [], list(job_requirements)
+        if not valid_skills or not valid_reqs:
+            fallback_missing = [
+                req_lookup.get(n, r) for n, r in zip(norm_reqs, job_requirements, strict=False) if n
+            ]
+            return [], fallback_missing
 
-        # Compute embeddings
+        # Compute embeddings on normalized texts
         skill_embs = self._service.embed_batch(valid_skills)
-        req_embs = self._service.embed_batch(job_requirements)
+        req_texts = [n for n, _ in valid_reqs]
+        req_embs = self._service.embed_batch(req_texts)
 
         # Find matches using similarity threshold
-        matched = []
-        missing = []
+        matched: list[str] = []
+        missing: list[str] = []
         threshold = 0.55  # Lower threshold for semantic matching
 
         used_skills: set[str] = set()
-        for i, req in enumerate(job_requirements):
+        for i, (_norm_req, original_req) in enumerate(valid_reqs):
             best_score = 0.0
             best_skill = ""
 
@@ -333,7 +356,7 @@ class JobMatcher:
                 matched.append(best_skill)
                 used_skills.add(best_skill)
             else:
-                missing.append(req)
+                missing.append(original_req)
 
         return matched, missing
 

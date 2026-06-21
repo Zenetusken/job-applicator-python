@@ -253,8 +253,8 @@ class TestJobMatcher:
         matcher._service.embed_batch = lambda texts: list(texts)  # type: ignore[method-assign]
 
         sim_table = {
-            ("Python programming", "Python"): 0.90,
-            ("Python programming", "Java"): 0.20,
+            ("Python", "Python"): 0.90,
+            ("Python", "Java"): 0.20,
             ("Python development", "Python"): 0.80,
             ("Python development", "Java"): 0.60,
         }
