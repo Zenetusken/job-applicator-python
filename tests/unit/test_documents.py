@@ -142,11 +142,14 @@ def test_ocr_fallback_triggers_on_short_text(tmp_path: Path) -> None:
         patch.object(loader, "_run_pymupdf", return_value="  "),
         patch.object(loader, "_ocr_service", MagicMock()) as mock_ocr,
     ):
+        # OCR fallback is triggered, but if both extractors AND OCR yield less
+        # than OCR_THRESHOLD chars the loader now raises rather than silently
+        # returning an unusable ResumeData.
         mock_ocr.extract_text_from_pdf.return_value = "John Doe\nSkills: Python"
-        result = loader._load_pdf(pdf_path, ocr_mode="auto")
+        with pytest.raises(DocumentError, match="insufficient extractable text"):
+            loader._load_pdf(pdf_path, ocr_mode="auto")
 
     mock_ocr.extract_text_from_pdf.assert_called_once_with(pdf_path)
-    assert "John Doe" in result.raw_text
 
 
 def test_force_ocr_skips_text_extraction(tmp_path: Path) -> None:
@@ -205,16 +208,17 @@ def test_ocr_failure_falls_back_to_extracted_text(tmp_path: Path) -> None:
     pdf_path = tmp_path / "scanned.pdf"
     pdf_path.write_bytes(b"fake pdf bytes")
 
+    long_text = "A" * 150
     loader = ResumeLoader()
     with (
         patch.object(loader, "_run_pdftotext", return_value="short"),
-        patch.object(loader, "_run_pymupdf", return_value="Some extracted text"),
+        patch.object(loader, "_run_pymupdf", return_value=long_text),
         patch.object(loader, "_ocr_service", MagicMock()) as mock_ocr,
     ):
         mock_ocr.extract_text_from_pdf.side_effect = DocumentError("OCR failed")
         result = loader._load_pdf(pdf_path, ocr_mode="auto")
 
-    assert "Some extracted text" in result.raw_text
+    assert long_text in result.raw_text
 
 
 def test_ocr_failure_with_no_text_raises(tmp_path: Path) -> None:

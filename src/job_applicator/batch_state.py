@@ -244,11 +244,15 @@ class BatchState:
             raise BatchStateError(f"Cannot read batch job status: {exc}") from exc
 
     def list_completed_jobs(self, run_id: str) -> list[str]:
-        """Return job URLs that are already completed/cover_letter/tailored."""
+        """Return job URLs that are fully completed or explicitly skipped.
+
+        TAILORED is intentionally excluded: a crash after tailoring but before
+        the cover letter would leave the job half-done, and resuming must
+        re-process it so the cover letter is generated.
+        """
         completed = {
             BatchJobStatus.COMPLETED,
-            BatchJobStatus.COVER_LETTER,
-            BatchJobStatus.TAILORED,
+            BatchJobStatus.SKIPPED,
         }
         placeholders = ", ".join(["?"] * len(completed))
         try:

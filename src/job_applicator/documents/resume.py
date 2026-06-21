@@ -14,9 +14,24 @@ logger = get_logger("documents.resume")
 
 OCR_THRESHOLD = 100
 
-# Section headers used for confidence scoring and skills-section boundaries.
+# Section headers used for confidence scoring. Vocabulary aligned with
+# _extract_skills_section so a "Core Competencies"/"Proficiencies" resume earns
+# section credit too. Matched as line-anchored HEADERS (see _SECTION_HEADER_RE),
+# never as bare substrings.
 _KNOWN_SECTIONS = frozenset(
-    ("experience", "education", "skills", "certifications", "languages", "projects")
+    (
+        "experience",
+        "education",
+        "skills",
+        "competencies",
+        "proficiencies",
+        "certifications",
+        "languages",
+        "projects",
+    )
+)
+_SECTION_HEADER_RE = re.compile(
+    r"(?im)^\s*\*{0,2}\s*(" + "|".join(sorted(_KNOWN_SECTIONS)) + r")\b"
 )
 
 
@@ -86,7 +101,6 @@ class ResumeLoader:
             return result
 
         # ocr_mode == "auto": run text extractors, fall back to OCR if they are short.
-        # ocr_mode == "auto": run text extractors, fall back to OCR if they are short.
         try:
             auto_result = self._pdf_consensus(path, methods=("pdftotext", "pymupdf"))
             if len(auto_result.raw_text.strip()) >= OCR_THRESHOLD:
@@ -107,14 +121,26 @@ class ResumeLoader:
                     path,
                     ocr_result.parse_confidence,
                 )
-                return ocr_result
-            logger.info("OCR did not improve confidence for %s; keeping text extractor", path)
-            return fallback_result
+                best = ocr_result
+            else:
+                logger.info("OCR did not improve confidence for %s; keeping text extractor", path)
+                best = fallback_result
         except DocumentError:
-            if fallback_result is not None:
-                logger.warning("OCR failed for %s; using best text extractor", path)
-                return fallback_result
-            raise
+            if fallback_result is None:
+                raise
+            logger.warning("OCR failed for %s; using best text extractor", path)
+            best = fallback_result
+
+        # Guard against a silently-empty/short parse: if every text extractor
+        # AND OCR yielded less than the OCR_THRESHOLD, fail loudly rather than
+        # return a ResumeData with too little text for downstream match/tailor.
+        if len(best.raw_text.strip()) < OCR_THRESHOLD:
+            raise DocumentError(
+                f"PDF {path} contains insufficient extractable text "
+                f"({len(best.raw_text.strip())} chars); "
+                "enable OCR with --ocr-mode on or --force-ocr"
+            )
+        return best
 
     def _run_pdftotext(self, path: Path) -> str:
         """Extract text using pdftotext; return empty string on failure."""
@@ -145,11 +171,10 @@ class ResumeLoader:
             return ""
         try:
             doc = fitz.open(str(path))
-            text = ""
-            for page in doc:
-                text += page.get_text()
-            doc.close()
-            return text
+            try:
+                return "".join(page.get_text() for page in doc)
+            finally:
+                doc.close()
         except Exception:
             return ""
 
@@ -193,18 +218,47 @@ class ResumeLoader:
         raise DocumentError(f"Unknown PDF extraction method: {method}")
 
     def _is_password_protected(self, path: Path) -> bool:
-        """Best-effort detection of password-protected PDFs."""
+        """Best-effort detection of password-protected PDFs.
+
+        PyMuPDF OPENS an encrypted PDF without raising and sets ``needs_pass`` —
+        so check that flag rather than only whether ``fitz.open`` raised (which it
+        usually doesn't). Falls back to sniffing the exception message for the
+        rarer open-time failure.
+        """
         try:
             import fitz
         except ImportError:
             return False
         try:
             doc = fitz.open(str(path))
-            doc.close()
-            return False
+            try:
+                # needs_pass: encrypted AND not yet authenticated (the real gate).
+                return bool(getattr(doc, "needs_pass", False))
+            finally:
+                doc.close()
         except Exception as exc:
             message = str(exc).lower()
             return "password" in message or "encrypted" in message or "crypt" in message
+
+    @staticmethod
+    def _extract_phone(text: str) -> str:
+        """First phone-like run (10-15 digits), or "".
+
+        Rejects numeric tables / year lists like "2019 2020 2021 2022 2023"
+        (3+ space-separated 4-digit groups), which the old ``{10,}``-char pattern
+        false-matched as a phone — polluting the ``phone`` field and inflating
+        parse confidence.
+        """
+        for match in re.finditer(r"[\+]?\d[\d\s\-\(\)]{8,}\d", text):
+            candidate = match.group(0).strip()
+            digits = sum(c.isdigit() for c in candidate)
+            if not 10 <= digits <= 15:
+                continue
+            groups = candidate.split()
+            if len(groups) >= 3 and all(g.isdigit() and len(g) == 4 for g in groups):
+                continue
+            return candidate
+        return ""
 
     def _compute_confidence(self, text: str) -> float:
         """Heuristic confidence based on length, contact info, and section coverage."""
@@ -219,17 +273,13 @@ class ResumeLoader:
         # Contact signals.
         if re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", stripped):
             score += 0.2
-        if any(
-            sum(c.isdigit() for c in m.group(0)) >= 10
-            for m in re.finditer(r"[\+]?[\d\s\-\(\)]{10,}", stripped)
-        ):
+        if self._extract_phone(stripped):
             score += 0.2
 
-        # Section coverage.
-        lower = stripped.lower()
-        for section in _KNOWN_SECTIONS:
-            if section in lower:
-                score += 0.1
+        # Section coverage — count DISTINCT section headers anchored at line
+        # starts (a bare "skills" inside "no skills listed" must not inflate it).
+        found = {w.lower() for w in _SECTION_HEADER_RE.findall(stripped)}
+        score += 0.1 * len(found)
 
         return min(round(score, 2), 1.0)
 
@@ -253,15 +303,8 @@ class ResumeLoader:
         email_match = re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", text)
         email = email_match.group(0) if email_match else ""
 
-        # Extract phone — find sequences with at least 10 actual digits
-        phone_pattern = r"[\+]?[\d\s\-\(\)]{10,}"
-        phone = ""
-        for match in re.finditer(phone_pattern, text):
-            candidate = match.group(0)
-            digit_count = sum(c.isdigit() for c in candidate)
-            if digit_count >= 10:
-                phone = candidate.strip()
-                break
+        # Extract phone (rejects numeric tables / year lists — see _extract_phone).
+        phone = self._extract_phone(text)
 
         # Extract skills section
         skills: list[str] = []
@@ -295,11 +338,8 @@ class ResumeLoader:
                 # All skills on one line, comma-separated
                 raw = clean_lines[0].split(",")
                 skills = [s.strip() for s in raw if s.strip() and len(s.strip()) > 2]
-            elif len(clean_lines) > 1:
-                # One skill per line
-                skills = [s.strip() for s in clean_lines if len(s.strip()) > 2]
             else:
-                # Single skill or empty
+                # One-per-line (also covers a single non-comma skill / empty)
                 skills = [s.strip() for s in clean_lines if len(s.strip()) > 2]
 
         # Extract summary/objective
@@ -371,8 +411,6 @@ class ResumeLoader:
         Returns None if no standalone Skills section header is found.
         Handles markdown bold headers ("**Skills**") and optional colon.
         """
-        import re
-
         # Match a standalone Skills header (optional markdown bold, optional
         # colon, optional leading whitespace). Also allow inline skills after
         # the colon on the same line, e.g. "Skills: Python, Java". Recognizes
