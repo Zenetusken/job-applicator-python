@@ -340,7 +340,7 @@ def test_c3_async_file_io():
     )
 
 
-# ── TIER 2 ITEM E2: Batch Mode (NOT IMPLEMENTED) ────────────────────────────
+# ── TIER 2 ITEM E2: Batch Mode ──────────────────────────────────────────────
 
 
 def test_e2_batch_mode():
@@ -377,10 +377,19 @@ def test_e2_batch_mode():
     )
     report("E2", "match has --jobs-file for batch input", "--jobs-file" in result2.stdout)
 
-    skip("E2", "full pipeline batch mode", "Not implemented — only match supports --jobs-file")
+    # batch IS the full pipeline (tailor + optional cover letter), not just match.
+    result3 = subprocess.run(
+        ["job-applicator", "batch", "--help"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env=env,
+    )
+    full_pipeline = "--cover-letter" in result3.stdout and "--jobs-file" in result3.stdout
+    report("E2", "batch full pipeline (tailor + optional cover letter)", full_pipeline)
 
 
-# ── TIER 2 ITEM D2: OCR Fallback (NOT IMPLEMENTED) ──────────────────────────
+# ── TIER 2 ITEM D2: OCR Fallback ────────────────────────────────────────────
 
 
 def test_d2_ocr_fallback():
@@ -400,10 +409,13 @@ def test_d2_ocr_fallback():
     has_fitz = "fitz" in source
     report("D2", "PyMuPDF fallback exists", has_fitz)
 
-    skip("D2", "scanned PDF OCR", "Not implemented — only text extraction via pdftotext + PyMuPDF")
+    # OCR fallback IS implemented: auto-mode falls back to OCR when text extraction
+    # yields too little (ResumeLoader auto path → ocr_service.extract_text_from_pdf).
+    auto_ocr_fallback = "ocr_service.extract_text_from_pdf" in source
+    report("D2", "auto-mode OCR fallback for scanned PDFs", auto_ocr_fallback)
 
 
-# ── TIER 2 ITEM D4: ATS Compatibility Checking (NOT IMPLEMENTED) ────────────
+# ── TIER 2 ITEM D4: ATS Compatibility Checking ──────────────────────────────
 
 
 def test_d4_ats_compatibility():
@@ -419,7 +431,19 @@ def test_d4_ats_compatibility():
     has_ats = "ats" in cli_source.lower() and "applicant" in cli_source.lower()
     report("D4", "ATS checking in CLI", has_ats, "NOT FOUND" if not has_ats else "found")
 
-    skip("D4", "ATS compatibility scoring", "Not implemented — no ATS-related code")
+    # ATS scoring IS implemented (documents/ats_checker.py) — exercise it functionally.
+    from job_applicator.documents.ats_checker import ATSChecker
+    from job_applicator.models import ResumeData
+
+    ats_result = ATSChecker().check(
+        ResumeData(raw_text="Jane Doe\njane@example.com\nSkills: Python, SQL\nEngineer at Acme")
+    )
+    report(
+        "D4",
+        "ATS scoring functional",
+        isinstance(ats_result.score, int | float),
+        f"score={ats_result.score}",
+    )
 
 
 # ── LIVE INTEGRATION: Full Pipeline with Tier 2 Features ────────────────────
