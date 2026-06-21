@@ -12,6 +12,16 @@ implement → gate (`ruff` · `ruff format --check` · `mypy src/` · `pytest -m
   policy, `ValidatedOutput` error-feedback, `StyleAnalyzer.format` staticmethod,
   `resume_tailor` folded onto the shared breaker, `BatchRunSpec`, batch mid-job resume.
   Gate at merge: unit 576 · live 21.
+- **CLI decomposition** (PRs #26–#28, #30, #31, #33): extracted six layers from the
+  ~3,200-line `cli.py` — board/browser/runtime factories + shared console (`factories.py`,
+  `utils/console.py`), all cookie logic (`utils/cookies.py`), and the three orchestration
+  loops (`workflows/{cover_letter,tailor,apply}.py`). `cli.py` ~3,200 → 2,303 (−~900).
+  Each loop extracted tests-first: characterization tests pin behavior → guarded/verbatim
+  move → zero drift.
+- **Cover-letter + apply `NameError` fixes** (PRs #29, #32): two latent production crashes
+  — `CoverLetterResult` / `ApplicationResult` constructed at runtime but imported only
+  under `TYPE_CHECKING` — surfaced by the tests-first decomposition work and fixed via lazy
+  imports.
 
 ## In progress / next (gated cycles — PR #25 + follow-ups)
 
@@ -22,9 +32,9 @@ implement → gate (`ruff` · `ruff format --check` · `mypy src/` · `pytest -m
 - **C — integration smoke tests** *(done)*: first `tests/integration/` tests — board
   `browser_policy()` → `_make_browser` wiring, construction-only (no real launch).
 - **D — Indeed search-only** *(done)*: see Out of scope.
-- **E — CLI decomposition (incremental)** *(next)*: extract ONE low-risk layer from the
-  ~3,100-line `cli.py` per gated cycle (e.g. browser/scraper factories, then cookie
-  handling), validating green between each. Deliberately incremental to bound regression risk.
+- **E — CLI decomposition (incremental)** *(done — see Shipped)*: six gated increments
+  extracted factories/console, cookie logic, and the cover-letter/tailor/apply loops, each
+  validated green between. Only `batch`'s `_process_one` remains (banked — see Out of scope).
 
 ## Out of scope / accepted
 
@@ -35,6 +45,14 @@ implement → gate (`ruff` · `ruff format --check` · `mypy src/` · `pytest -m
   automate login; reuse a human-seeded session" account-safety policy (see `CLAUDE.md`).
 - **Browser selectors**: hardcoded against live DOM snapshots; inherent ongoing
   maintenance, not a discrete deliverable.
+- **Batch `_process_one` extraction**: banked — the last orchestration loop, but not a
+  clean lift like cover-letter/tailor/apply. It's a ~160-line closure in `batch`'s `_run`
+  capturing ~18 locals incl. three shared mutable lists (`tailoring_scores`,
+  `batch_reports`, `written_paths`) appended by concurrent workers under `Semaphore(3)`; a
+  clean extraction needs a context-object refactor (not a verbatim move) plus careful
+  handling of the concurrent-append seam — diminishing returns vs risk. Revisit only if
+  `_run` needs changes the entanglement obstructs, and do it tests-first (characterization
+  tests driving `batch` through `_process_one`) if so.
 
 ## Operational
 
