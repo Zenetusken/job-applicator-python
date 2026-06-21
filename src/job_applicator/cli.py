@@ -25,7 +25,7 @@ from job_applicator.factories import (
     _make_scraper,
 )
 from job_applicator.models import BatchRunSpec, DoctorReport, UserProfile
-from job_applicator.utils.console import console
+from job_applicator.utils.console import console, err_console
 from job_applicator.utils.cookies import (
     _cookies_from_browser,
     _normalize_cookie,
@@ -90,7 +90,7 @@ async def _llm_with_retry(  # noqa: UP047 — mypy doesn't support PEP 695 yet
             with console.status(status_message):
                 return await operation()
         except Exception as exc:
-            console.print(f"[red]LLM error: {escape(str(exc))}[/red]")
+            err_console.print(f"[red]LLM error: {escape(str(exc))}[/red]")
             choice = console.input(f"[bold cyan]{on_fail_choices}? [/bold cyan]").strip().upper()
             if choice == "Q":
                 return None
@@ -262,7 +262,7 @@ def search(
 
         board_map = {"linkedin": JobBoard.LINKEDIN, "indeed": JobBoard.INDEED}
         if site not in board_map:
-            console.print(f"[red]Unsupported site: {site}[/red]")
+            err_console.print(f"[red]Unsupported site: {site}[/red]")
             raise typer.Exit(1)
 
         params = SearchParams(
@@ -322,7 +322,7 @@ def search(
         # — show the message cleanly instead of a raw Python traceback.
         if reporter:
             reporter.record_error(str(exc))
-        console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
+        err_console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
         raise typer.Exit(1) from exc
     except Exception as exc:
         if reporter:
@@ -362,7 +362,7 @@ def login(
     setup_logging(settings.log_level)
 
     if site != "linkedin":
-        console.print(f"[yellow]{site} login not yet implemented[/yellow]")
+        err_console.print(f"[yellow]{site} login not yet implemented[/yellow]")
         raise typer.Exit(1)
 
     async def _run() -> bool:
@@ -387,7 +387,7 @@ def login(
             "[green]✓ Signed in. Session saved — `search`/`apply` will reuse it headlessly.[/green]"
         )
     else:
-        console.print("[red]✗ Sign-in not detected. Re-run `job-applicator login`.[/red]")
+        err_console.print("[red]✗ Sign-in not detected. Re-run `job-applicator login`.[/red]")
         raise typer.Exit(1)
 
 
@@ -449,11 +449,11 @@ def import_cookies(
 
     specs = _site_specs()
     if site not in specs:
-        console.print(f"[red]Unsupported site '{site}'. Choose: {', '.join(specs)}.[/red]")
+        err_console.print(f"[red]Unsupported site '{site}'. Choose: {', '.join(specs)}.[/red]")
         raise typer.Exit(1)
     spec = specs[site]
     if (li_at or jsessionid) and not spec.session_flags:
-        console.print(
+        err_console.print(
             "[red]--li-at/--jsessionid are LinkedIn-only; "
             f"use --from-browser/--file for {site}.[/red]"
         )
@@ -464,25 +464,25 @@ def import_cookies(
         try:
             cookies = _cookies_from_browser(from_browser, spec.base_domain)
         except CookieError as exc:
-            console.print(f"[red]{escape(str(exc))}[/red]")
+            err_console.print(f"[red]{escape(str(exc))}[/red]")
             raise typer.Exit(1) from exc
         console.print(f"[green]Read {len(cookies)} {site} cookie(s) from {from_browser}.[/green]")
     elif file:
         try:
             raw = json.loads(Path(file).read_text())
         except (OSError, ValueError) as exc:
-            console.print(f"[red]Could not read cookie file: {escape(str(exc))}[/red]")
+            err_console.print(f"[red]Could not read cookie file: {escape(str(exc))}[/red]")
             raise typer.Exit(1) from exc
         entries = raw.get("cookies", raw) if isinstance(raw, dict) else raw
         if not isinstance(entries, list):
-            console.print('[red]Cookie file must be a JSON list or {"cookies": [...]}.[/red]')
+            err_console.print('[red]Cookie file must be a JSON list or {"cookies": [...]}.[/red]')
             raise typer.Exit(1)
         cookies = [c for c in (_normalize_cookie(e) for e in entries) if c]
     elif li_at:
         if li_at == "-":  # read from stdin to keep the token out of shell history
             li_at = sys.stdin.readline().strip()
         if not li_at:
-            console.print("[red]No token provided on stdin.[/red]")
+            err_console.print("[red]No token provided on stdin.[/red]")
             raise typer.Exit(1)
         seed = _normalize_cookie(
             {
@@ -511,17 +511,17 @@ def import_cookies(
             if js:
                 cookies.append(js)
     else:
-        console.print(
+        err_console.print(
             "[red]Provide --from-browser <name>, --li-at <value>, or --file <path>.[/red]"
         )
         raise typer.Exit(1)
 
     if not cookies:
-        console.print("[red]No usable cookies found in the input.[/red]")
+        err_console.print("[red]No usable cookies found in the input.[/red]")
         raise typer.Exit(1)
     names = {c.get("name") for c in cookies}
     if spec.required_cookie and spec.required_cookie not in names:
-        console.print(
+        err_console.print(
             f"[red]No `{spec.required_cookie}` cookie in the import — it would not authenticate. "
             f"Are you logged into {site} in that browser / export?[/red]"
         )
@@ -562,7 +562,7 @@ def import_cookies(
     if ok:
         console.print("[green]✓ Session valid — `search` will reuse it headlessly.[/green]")
     else:
-        console.print(
+        err_console.print(
             "[yellow]Imported, but the feed did not load as logged-in. The li_at value may be "
             "stale — re-copy it from a freshly logged-in browser and try again.[/yellow]"
         )
@@ -649,7 +649,7 @@ def apply(
                 with console.status(f"Searching {site}..."):
                     jobs = await scraper.scrape(params)
             else:
-                console.print("[yellow]No query provided. Use --query to search.[/yellow]")
+                err_console.print("[yellow]No query provided. Use --query to search.[/yellow]")
                 raise typer.Exit(1)
 
             if not jobs:
@@ -723,7 +723,7 @@ def apply(
         # — show the message cleanly instead of a raw Python traceback.
         if reporter:
             reporter.record_error(str(exc))
-        console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
+        err_console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
         raise typer.Exit(1) from exc
     except Exception as exc:
         if reporter:
@@ -790,7 +790,7 @@ def generate_cover_letter(
         from job_applicator.models import JobBoard, JobListing
 
         if not settings.resume_path:
-            console.print("[red]Resume path required. Use --resume or set RESUME_PATH.[/red]")
+            err_console.print("[red]Resume path required. Use --resume or set RESUME_PATH.[/red]")
             raise typer.Exit(1)
 
         loader = ResumeLoader()
@@ -883,7 +883,7 @@ def generate_cover_letter(
         # — show the message cleanly instead of a raw Python traceback.
         if reporter:
             reporter.record_error(str(exc))
-        console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
+        err_console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
         raise typer.Exit(1) from exc
     except Exception as exc:
         if reporter:
@@ -937,7 +937,7 @@ def match(
         from job_applicator.models import JobBoard, JobListing
 
         if not settings.resume_path:
-            console.print("[red]Resume path required. Use --resume.[/red]")
+            err_console.print("[red]Resume path required. Use --resume.[/red]")
             raise typer.Exit(1)
 
         # Load resume
@@ -1087,7 +1087,7 @@ def match(
         # — show the message cleanly instead of a raw Python traceback.
         if reporter:
             reporter.record_error(str(exc))
-        console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
+        err_console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
         raise typer.Exit(1) from exc
     except Exception as exc:
         if reporter:
@@ -1198,7 +1198,7 @@ def batch(
         from job_applicator.models import JobBoard, JobListing, TailoringReport
 
         if not settings.resume_path:
-            console.print("[red]Resume path required. Use --resume.[/red]")
+            err_console.print("[red]Resume path required. Use --resume.[/red]")
             raise typer.Exit(1)
 
         loader = ResumeLoader()
@@ -1233,10 +1233,10 @@ def batch(
                     for item in data:
                         jobs.append(JobListing(**item))
             except FileNotFoundError:
-                console.print(f"[red]Jobs file not found: {jobs_file}[/red]")
+                err_console.print(f"[red]Jobs file not found: {jobs_file}[/red]")
                 raise typer.Exit(1) from None
             except Exception as exc:
-                console.print(f"[red]Error reading jobs file: {escape(str(exc))}[/red]")
+                err_console.print(f"[red]Error reading jobs file: {escape(str(exc))}[/red]")
                 raise typer.Exit(1) from exc
         elif query:
             from job_applicator.scrapers.base import SearchParams
@@ -1247,7 +1247,7 @@ def batch(
                 with console.status(f"Searching {site}..."):
                     jobs = await scraper.scrape(params)
         else:
-            console.print("[red]Provide --jobs-file or --query.[/red]")
+            err_console.print("[red]Provide --jobs-file or --query.[/red]")
             raise typer.Exit(1)
 
         if not jobs:
@@ -1599,7 +1599,7 @@ def batch(
         # — show the message cleanly instead of a raw Python traceback.
         if reporter:
             reporter.record_error(str(exc))
-        console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
+        err_console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
         raise typer.Exit(1) from exc
     except Exception as exc:
         if reporter:
@@ -1674,7 +1674,7 @@ def tailor(
         from job_applicator.models import JobBoard, JobListing
 
         if not settings.resume_path:
-            console.print("[red]Resume path required. Use --resume.[/red]")
+            err_console.print("[red]Resume path required. Use --resume.[/red]")
             raise typer.Exit(1)
 
         loader = ResumeLoader()
@@ -1849,8 +1849,8 @@ def tailor(
                     changes_summary=result.changes_summary or "",
                 )
         except Exception as exc:
-            console.print(f"[red]LLM error: {escape(str(exc))}[/red]")
-            console.print("[yellow]Could not generate tailored resume.[/yellow]")
+            err_console.print(f"[red]LLM error: {escape(str(exc))}[/red]")
+            err_console.print("[yellow]Could not generate tailored resume.[/yellow]")
             if reporter:
                 reporter.record_error(str(exc))
             raise typer.Exit(1) from exc
@@ -1876,7 +1876,7 @@ def tailor(
         # — show the message cleanly instead of a raw Python traceback.
         if reporter:
             reporter.record_error(str(exc))
-        console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
+        err_console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
         raise typer.Exit(1) from exc
     except Exception as exc:
         if reporter:
@@ -1950,7 +1950,7 @@ def ats_check(
         if reporter:
             reporter.record_error("Resume path required. Use --resume.")
             reporter.render(console, log_file=None)
-        console.print("[red]Resume path required. Use --resume.[/red]")
+        err_console.print("[red]Resume path required. Use --resume.[/red]")
         raise typer.Exit(1)
 
     reporter = _get_reporter(
@@ -2037,7 +2037,7 @@ def ats_check(
         # message + exit 1 — matching the sibling commands, not a raw traceback.
         if reporter:
             reporter.record_error(str(exc))
-        console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
+        err_console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
         raise typer.Exit(1) from exc
     except Exception as exc:
         if reporter:
