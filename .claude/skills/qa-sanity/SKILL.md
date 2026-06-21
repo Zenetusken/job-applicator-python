@@ -1,0 +1,102 @@
+---
+name: qa-sanity
+description: Deterministic end-to-end QA / critical-paths sanity check for the job-applicator CLI. Drives every SAFE critical path (doctor, ats-check, match, generate-cover-letter, tailor, batch + crash-recovery) through the real CLI in FULL ISOLATION from real user state, and emits a PASS/FAIL/XFAIL report. Use at the END OF EVERY implementation arc, before opening/merging a PR, after any change to the CLI / commands / workflows / documents / batch / state, or whenever asked to sanity-check, regression-check, smoke-test, QA, or "make sure nothing broke" in job-applicator. Prefer this over ad-hoc manual CLI testing — it is isolated and account-safe by construction.
+---
+
+A single deterministic harness, **`.claude/skills/qa-sanity/qa.py`**, that exercises the
+job-applicator CLI the way a user would and grades the result. It is the automated form of
+a manual end-to-end QA pass: run it at the end of an arc or as a general sanity check.
+Paths below are relative to the repo root.
+
+> **Two guarantees that make this safe to run anytime:**
+> 1. **Isolation.** Every CLI call runs with `HOME` redirected to a throwaway temp dir, so
+>    the tool's real state — `~/.job-applicator/` (dedupe DB, batch progress, cookies, the
+>    authenticated browser-profile) — is **never touched**. (Read-only caches — the
+>    embedding model, the Playwright browser — are shared so the run stays fast.) The
+>    harness aborts if isolation isn't in effect and fingerprints the real DB before/after
+>    as proof. *This exists because a non-isolated manual QA run once deleted that DB —
+>    don't undo the isolation.*
+> 2. **Account safety.** It NEVER runs `login` / `import-cookies` / `search` / `apply` /
+>    `check-session` (they touch the real LinkedIn account or launch a real browser+session).
+>    Those are probed for `--help` only. Cover letters use inline `--description` (no scraping).
+
+## Prerequisites
+
+The repo set up per `.claude/skills/run-job-applicator/SKILL.md` (venv + deps). The **LIVE**
+tier additionally needs vLLM at `http://localhost:8000/v1` and the embedding model cached
+(both already true on the dev box); LIVE auto-SKIPs if vLLM is down.
+
+## Run (agent path)
+
+```bash
+.venv/bin/python .claude/skills/qa-sanity/qa.py            # CORE + LIVE (LIVE skips if vLLM down)
+.venv/bin/python .claude/skills/qa-sanity/qa.py --core     # offline only (fast, no GPU/LLM)
+.venv/bin/python .claude/skills/qa-sanity/qa.py --live     # live only
+```
+
+It prints a markdown report to stdout and writes a copy to `/tmp/job-applicator-qa-report.md`.
+**Exit 0** = no regressions; **exit 1** = a real regression (a FAIL) or an isolation breach.
+A full run is slow (LLM paths are GPU-serial, and a currently-hanging check spends its
+timeout); `--core` is seconds.
+
+### Reading the report
+
+| status | meaning | action |
+|---|---|---|
+| **PASS** | expected-pass check passed | none |
+| **FAIL** | expected-pass check FAILED → **regression** | investigate; exit code is 1 |
+| **XFAIL** | a known open bug, still failing (expected) | not a regression; see KNOWN_FAIL in `qa.py` |
+| **XPASS** | a known bug now PASSES → **it's fixed!** | remove its name from `KNOWN_FAIL` in `qa.py` so it becomes a guarded PASS |
+| **WARN** | non-gating signal (e.g. voice-tells elevated) | judgment call |
+| **SKIP** | tier/condition unavailable (vLLM down, partial state not observed) | informational |
+
+This is a **living gate**: known bugs are asserted at their *correct* behavior and tagged
+`XFAIL`. When you fix one, the harness flips it to `XPASS` and tells you to promote it. New
+breakage in a previously-green check surfaces as `FAIL`.
+
+## What it checks
+
+CORE (offline): `--version`, `--help`, unknown-command exit code, `--log-file` requires
+`--verbose`, `config-init` (good + bad path), `ats-check` (valid docx, `--json` validity,
+bad-input clean-error), `--json --verbose` JSON validity, and that the account-touching
+commands expose `--help` (without running them).
+
+LIVE (vLLM): `doctor`, `match --jobs-file` (ranking + JSON + no-scrape), `generate-cover-letter`
+(inline; voice-tells as a metric), `tailor --yes` (non-interactive + abort path), `batch`
+(multi-job + malformed-input + crash-recovery via deterministic DB-state simulation).
+
+## Known issues this currently flags (the regression baseline)
+
+Running this today reproduces — deterministically — the findings from the manual QA pass.
+
+**XFAIL** (real bugs; each is asserted at its *correct* behavior, so it flips to `XPASS`
+when fixed — then delete its name from `KNOWN_FAIL` in `qa.py`):
+
+- `tailor --yes` hangs on the action menu (flag not threaded into `_tailor_workflow`).
+- `ats-check` tracebacks on bad résumé input (missing / empty / corrupt / directory) — its `except` re-raises.
+- `ats-check` "Resume path required" prints to **stdout**, not stderr.
+- `config-init -o <unwritable>` tracebacks instead of a clean error.
+- `import-cookies --help` eats `[browser]` (Rich parses it as markup) → "the  extra".
+- `--json --verbose` appends the verbose report to stdout → invalid JSON.
+- `match` reports `missing_skills: []` for a React/TypeScript job against a Python résumé (0.55 threshold too loose).
+- `generate-cover-letter` leaks litellm framework noise ("BadRequestError", "Give Feedback") to stdout on success.
+
+**WARN** (UX, non-gating): `ats-check` exits 0 on an incompatible résumé (no `--strict`);
+`doctor`/`generate-cover-letter`/`tailor` lack `--json`; `--log-file` to an unwritable path
+exits 0 silently.
+
+## Extending it
+
+Add a check by calling `record(name, tier, ok_bool, detail)` (asserting *correct* behavior)
+inside `core_checks`/`live_checks`. Assert STABLE signals (exit code, no-traceback, valid
+JSON, artifact existence, DB rows) — never exact LLM text, which varies run to run. Keep
+account-touching commands to `--help` probes only.
+
+## Gotchas
+
+- **Isolated run uses CONFIG DEFAULTS** (no real `config.toml` is loaded). Reproducible, but
+  it won't catch config-specific issues — those need a separate, non-isolated check.
+- **Don't "fix" a red XFAIL by changing the assertion to match the bug.** The check asserts
+  what *should* happen on purpose; that's what makes XPASS a fix signal.
+- A currently-hanging check (`tailor --yes`) spends its full timeout (~200s) until the bug is
+  fixed — expected, not a hang in the harness itself.
