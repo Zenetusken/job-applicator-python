@@ -21,6 +21,7 @@ from job_applicator import __version__
 from job_applicator.config import AppSettings, LLMConfig
 from job_applicator.exceptions import JobApplicatorError
 from job_applicator.models import DoctorReport, UserProfile
+from job_applicator.state import ApplicationState
 from job_applicator.utils.cookies import save_cookies
 from job_applicator.utils.diff import render_diff
 from job_applicator.utils.llm import SERVE_SCRIPT
@@ -835,14 +836,57 @@ def apply(
                             cover_letters[url] = letter
 
             # Apply to jobs
+            from job_applicator.models import ApplicationStatus
+
             applicator = _make_applicator(site, browser, settings)
+            state = ApplicationState()
+
+            if submit:
+                today_count = state.count_today(board=site)
+                daily_cap = settings.target.max_applications_per_day
+                if today_count >= daily_cap:
+                    console.print(
+                        f"[yellow]Daily application cap reached ({today_count}/{daily_cap}). "
+                        "Skipping apply loop.[/yellow]"
+                    )
+                    return
 
             app_results: list[ApplicationResult] = []
             for job in jobs[:limit]:
+                job_url = str(job.url)
+                if submit and state.has_applied(
+                    job_url,
+                    statuses={ApplicationStatus.SUBMITTED, ApplicationStatus.ALREADY_APPLIED},
+                ):
+                    console.print(
+                        f"[dim]Skipping {job.title} at {job.company} — already applied.[/dim]"
+                    )
+                    app_results.append(
+                        ApplicationResult(
+                            job=job,
+                            status=ApplicationStatus.ALREADY_APPLIED,
+                            notes=(
+                                "Skipped by local state store "
+                                "(previous submitted/already-applied record)."
+                            ),
+                        )
+                    )
+                    continue
+
+                if submit:
+                    today_count = state.count_today(board=site)
+                    if today_count >= daily_cap:
+                        console.print(
+                            f"[yellow]Daily application cap reached ({today_count}/{daily_cap}). "
+                            "Stopping.[/yellow]"
+                        )
+                        break
+
                 with console.status(f"Applying to {job.title} at {job.company}..."):
-                    job_letter = cover_letters.get(str(job.url))
+                    job_letter = cover_letters.get(job_url)
                     ar: ApplicationResult = await applicator.apply(job, job_letter, submit=submit)
                     app_results.append(ar)
+                    state.record(ar)
 
             if reporter and app_results:
                 reporter.record_io(files_written=[])

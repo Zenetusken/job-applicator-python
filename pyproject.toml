@@ -90,6 +90,9 @@ select = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["S101", "S105", "S108", "S607", "ASYNC221"]
 "scripts/**/*.py" = ["S101", "S603"]
+# SQL query fragments in this file are assembled from hardcoded literals and "?"
+# placeholders derived from the ApplicationStatus enum; no user input reaches SQL.
+"src/job_applicator/state.py" = ["S608"]
 
 [tool.ruff.format]
 quote-style = "double"
