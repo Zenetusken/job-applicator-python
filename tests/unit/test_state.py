@@ -79,6 +79,42 @@ def test_count_today(tmp_path: Path) -> None:
     assert state.count_today(board="indeed") == 0
 
 
+def test_count_today_ignores_skipped_and_failed(tmp_path: Path) -> None:
+    """Only real submissions count toward the daily cap."""
+    state = ApplicationState(db_path=tmp_path / "apps.db")
+    state.record(
+        ApplicationResult(
+            job=_make_job("https://linkedin.com/jobs/view/1"),
+            status=ApplicationStatus.SUBMITTED,
+        )
+    )
+    state.record(
+        ApplicationResult(
+            job=_make_job("https://linkedin.com/jobs/view/2"),
+            status=ApplicationStatus.SKIPPED,
+        )
+    )
+    state.record(
+        ApplicationResult(
+            job=_make_job("https://linkedin.com/jobs/view/3"),
+            status=ApplicationStatus.FAILED,
+        )
+    )
+
+    assert state.count_today() == 1
+
+
+def test_result_timestamp_is_utc_aware(tmp_path: Path) -> None:
+    state = ApplicationState(db_path=tmp_path / "apps.db")
+    result = ApplicationResult(job=_make_job(), status=ApplicationStatus.SUBMITTED)
+
+    assert result.timestamp.tzinfo is not None
+    state.record(result)
+
+    # Should still be countable today with a UTC-aware bound.
+    assert state.count_today() == 1
+
+
 def test_list_recent(tmp_path: Path) -> None:
     state = ApplicationState(db_path=tmp_path / "apps.db")
     state.record(

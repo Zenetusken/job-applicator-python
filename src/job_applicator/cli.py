@@ -892,7 +892,8 @@ def apply(
                     job_letter = cover_letters.get(job_url)
                     ar: ApplicationResult = await applicator.apply(job, job_letter, submit=submit)
                     app_results.append(ar)
-                    state.record(ar)
+                    if submit:
+                        state.record(ar)
 
             if reporter and app_results:
                 reporter.record_io(files_written=[])
@@ -1521,6 +1522,7 @@ def batch(
             )
             effective_run_id = hashlib.sha256(run_key.encode()).hexdigest()[:16]
 
+        resuming = False
         if resume_run:
             existing = batch_state.find_existing_run(
                 site=site,
@@ -1530,6 +1532,7 @@ def batch(
             )
             if existing:
                 effective_run_id = existing
+                resuming = True
                 if not as_json:
                     console.print(f"[cyan]Resuming batch run {effective_run_id}...[/cyan]")
             else:
@@ -1538,16 +1541,17 @@ def batch(
                         "[yellow]No incomplete batch run found; starting a new run.[/yellow]"
                     )
 
-        batch_state.start_run(
-            run_id=effective_run_id,
-            site=site,
-            query=query or None,
-            jobs_file=jobs_file or None,
-            resume_path=settings.resume_path,
-            top_k=top_k,
-            min_score=min_score,
-            cover_letter=cover_letter,
-        )
+        if not resuming:
+            batch_state.start_run(
+                run_id=effective_run_id,
+                site=site,
+                query=query or None,
+                jobs_file=jobs_file or None,
+                resume_path=settings.resume_path,
+                top_k=top_k,
+                min_score=min_score,
+                cover_letter=cover_letter,
+            )
         completed_urls = set(batch_state.list_completed_jobs(effective_run_id))
 
         pending_matches = [m for m in matches if str(m.job.url) not in completed_urls]

@@ -3,8 +3,10 @@
 **Scope:** the un-PR'd hardening arc on top of merged PR #23 — ~1,286 LoC across
 `state.py` (new), `batch_state.py` (new), `utils/llm.py`, `cli.py`, `documents/resume.py`,
 `documents/cover_letter.py`, `diagnostics.py`, `models.py`, `scrapers/*`.
-**Pinned at SHA `1e68dfe`** (HEAD moved 3× during review; pinned to avoid drift).
-Green gate: 518 unit tests passed at the prior SHA.
+**Pinned at SHA `1e68dfe`** (HEAD moved 5× during review; pinned to avoid drift). Line numbers
+are as-of `1e68dfe`. **C1–C3 re-verified still live at HEAD `90dae9e`** (two newer commits —
+skill-normalization + LinkedIn dry-run validation — don't touch the buggy paths; at HEAD
+`start_run` is cli.py:1541). Green gate: 518 unit tests passed at the pinned SHA.
 
 Method: 7 subsystem review subagents + self-verification of every High/Critical against the
 live code. Findings split **CONFIRMED** (verified against code) vs **SUSPECTED**.

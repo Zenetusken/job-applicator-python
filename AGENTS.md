@@ -20,7 +20,7 @@ mypy src/   # untyped third-party imports are silenced via per-module overrides 
 ruff check --fix src/ tests/
 ruff format src/ tests/
 
-# Tests — 544 fast unit tests (the green gate); 565 total, the extra 21 are live (need vLLM/GPU)
+# Tests — 547 fast unit tests (the green gate); 568 total, the extra 21 are live (need vLLM/GPU)
 pytest -m unit -v               # or: pytest tests/unit/ -v   (auto-marked by location)
 pytest -m unit -v -k test_name  # single test
 
@@ -105,7 +105,7 @@ Default model: `cyankiwi/Qwen3.5-4B-AWQ-4bit`. Override via `JOB_APPLICATOR_LLM_
 
 ## Testing
 
-- Tests are auto-marked by location (`tests/conftest.py`): `pytest -m unit` / `-m live` / `-m integration` all work. Unit suite (`pytest -m unit`, 544) is fast — no browser/GPU; the green gate.
+- Tests are auto-marked by location (`tests/conftest.py`): `pytest -m unit` / `-m live` / `-m integration` all work. Unit suite (`pytest -m unit`, 547) is fast — no browser/GPU; the green gate.
 - The 21 live tests at `tests/` root carry `-m live`; they need vLLM (`localhost:8000`) + GPU; run them manually.
 - Tests use fixtures from `tests/conftest.py`.
 - Embedding tests mock the model (CPU fallback).

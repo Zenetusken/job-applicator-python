@@ -135,14 +135,16 @@ class ApplicationState:
             raise StateError(f"Cannot read application state: {exc}") from exc
 
     def count_today(self, board: str | None = None) -> int:
-        """Count applications recorded since local midnight."""
+        """Count real applications submitted since local midnight."""
         today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-        params: list[Any] = [today.isoformat()]
         board_clause = ""
+        params: list[Any] = [today.isoformat(), ApplicationStatus.SUBMITTED.value]
         if board:
             board_clause = " AND board = ?"
             params.append(board)
-        sql = "SELECT COUNT(*) FROM applications WHERE applied_at >= ?" + board_clause
+        sql = (
+            "SELECT COUNT(*) FROM applications WHERE applied_at >= ? AND status = ?" + board_clause
+        )
         try:
             with self._connect() as conn:
                 row = conn.execute(sql, params).fetchone()

@@ -111,3 +111,33 @@ def test_complete_run(tmp_path: Path) -> None:
         resume_path="/tmp/resume.pdf",
     )
     assert found is None
+
+
+def test_start_run_with_reset_false_preserves_jobs(tmp_path: Path) -> None:
+    state = BatchState(db_path=tmp_path / "batch.db")
+    run_id = state.start_run(
+        run_id="run-5",
+        site="linkedin",
+        query=None,
+        jobs_file=None,
+        resume_path="/tmp/resume.pdf",
+        top_k=5,
+        min_score=0.0,
+        cover_letter=False,
+    )
+    job = _make_job("https://linkedin.com/jobs/view/9")
+    state.record_job(run_id, job, BatchJobStatus.TAILORED)
+
+    # Re-starting without reset must keep the recorded job.
+    state.start_run(
+        run_id=run_id,
+        site="linkedin",
+        query=None,
+        jobs_file=None,
+        resume_path="/tmp/resume.pdf",
+        top_k=5,
+        min_score=0.0,
+        cover_letter=False,
+        reset=False,
+    )
+    assert state.get_job_status(run_id, str(job.url)) == BatchJobStatus.TAILORED

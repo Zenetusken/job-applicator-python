@@ -7,7 +7,7 @@ _Last synced: 2026-06-19_
 
 ## Snapshot
 
-- **Stats:** 44 source modules (`src/job_applicator/`), 544 fast unit tests (`pytest -m unit` — the green gate, no browser/GPU); 565 total, the extra 21 are live tests (`-m live`) needing vLLM (`localhost:8000`) + GPU. Tests auto-marked by location in `tests/conftest.py`. Live tests now skip cleanly when the configured LLM endpoint is unreachable.
+- **Stats:** 44 source modules (`src/job_applicator/`), 547 fast unit tests (`pytest -m unit` — the green gate, no browser/GPU); 568 total, the extra 21 are live tests (`-m live`) needing vLLM (`localhost:8000`) + GPU. Tests auto-marked by location in `tests/conftest.py`. Live tests now skip cleanly when the configured LLM endpoint is unreachable.
 - **Python:** 3.12+ (dev box 3.12.8). Mypy strict; ruff (100-char lines, double quotes).
 - **Quality gates (all must pass, in order):**
   `ruff check src/ tests/` → `ruff format --check src/ tests/` →
@@ -108,6 +108,12 @@ Completed a second systematic hardening pass with baseline capture and unit test
 - **Batch crash recovery** — `BatchState` in `batch_state.py` persists per-job progress in `~/.job-applicator/applications.db`. `job-applicator batch --resume-run` skips already-tailored jobs after an interruption; `--run-id` pins/resumes a specific run.
 - **Skill normalization + hard negatives** — `skills/normalization.py` canonicalizes aliases (`Python 3` → `Python`, `reactjs` → `React`) and drops generic traits (`team player`, `communication`) from skill coverage scoring and tailored skill sections.
 - **LinkedIn Easy Apply dry-run validation** — `DryRunValidation` reports whether the Easy Apply flow reached the Submit button, which fields were filled, resume upload status, and cover-letter field presence. `job-applicator apply --validate` exits non-zero if any dry run fails to reach Submit.
+
+### Code-review follow-ups (fixed same pass)
+
+- **Batch resume no longer wipes progress** — `BatchState.start_run()` gained a `reset` parameter; the CLI only calls it when not resuming an existing run, so `--resume-run` keeps completed jobs.
+- **Daily cap is accurate** — `ApplicationResult.timestamp` is now UTC-aware; `count_today()` filters to `status='submitted'` and uses correct parameter ordering so dry runs / failures don't consume the cap.
+- **Dry runs don't pollute application state** — the `apply` command only records to `ApplicationState` when `submit=True`.
 
 ## Workflow
 

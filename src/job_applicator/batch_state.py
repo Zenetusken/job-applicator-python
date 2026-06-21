@@ -113,6 +113,7 @@ class BatchState:
         top_k: int,
         min_score: float,
         cover_letter: bool,
+        reset: bool = True,
     ) -> str:
         """Create or reset a batch run record. Returns the run_id."""
         now = datetime.now(UTC).isoformat()
@@ -145,9 +146,8 @@ class BatchState:
                         now,
                     ),
                 )
-                # Reset any stale job records for this run so a restart starts fresh
-                # unless the caller is explicitly resuming.
-                conn.execute("DELETE FROM batch_jobs WHERE run_id = ?", (run_id,))
+                if reset:
+                    conn.execute("DELETE FROM batch_jobs WHERE run_id = ?", (run_id,))
         except sqlite3.Error as exc:
             raise BatchStateError(f"Cannot start batch run: {exc}") from exc
         return run_id
