@@ -20,7 +20,7 @@ mypy src/   # untyped third-party imports are silenced via per-module overrides 
 ruff check --fix src/ tests/
 ruff format src/ tests/
 
-# Tests — 547 fast unit tests (the green gate); 568 total, the extra 21 are live (need vLLM/GPU)
+# Tests — 596 fast unit tests (the green gate); 622 total = 596 unit + 5 integration + 21 live (need vLLM/GPU)
 pytest -m unit -v               # or: pytest tests/unit/ -v   (auto-marked by location)
 pytest -m unit -v -k test_name  # single test
 
@@ -36,10 +36,13 @@ job-applicator batch --jobs-file jobs.json --resume-run      # Resume an interru
 
 ```
 src/job_applicator/
-├── cli.py              # Typer CLI entry points
-├── config.py           # AppSettings + sub-configs
+├── cli.py              # Typer CLI commands (interactive loops live in workflows/)
+├── factories.py        # board/browser/scraper/applicator/runtime factories
+├── workflows/          # interactive orchestration: cover_letter, tailor, apply
+├── config.py           # AppSettings + sub-configs (incl. LLMResilienceConfig)
 ├── models.py           # Shared Pydantic models
-├── exceptions.py       # JobApplicatorError hierarchy
+├── exceptions.py       # JobApplicatorError hierarchy (incl. CookieError)
+├── diagnostics.py      # doctor health checks
 ├── state.py            # SQLite application-history store (duplicate-app prevention)
 ├── batch_state.py      # SQLite batch-progress store (crash recovery)
 ├── skills/             # Skill-name normalization + hard-negative filtering
@@ -48,7 +51,7 @@ src/job_applicator/
 ├── applicators/        # base.py → linkedin.py (Easy Apply, dry-run gated), indeed.py
 ├── documents/          # cover letter, resume parsing/tailoring, style/tone/ATS/OCR
 ├── embeddings/         # embedding service + job matching
-└── utils/              # logging, retry, cookies, region, URL matching, secure store
+└── utils/              # logging, LLM retry/breaker, cookies, console, diff, region, URL, secure store
 ```
 
 ## Conventions
@@ -81,7 +84,7 @@ src/job_applicator/
 - **Browser context is shared.** `BrowserManager.persistent_context()` gives one authenticated context for scraper + applicator; use `persistent_page()` for authenticated flows.
 - **Indeed requires a headed, ephemeral browser.** It is fronted by a Cloudflare managed challenge; the fix is `BrowserPolicy(headed=True, ephemeral_profile=True, virtual_display=True)`. Region is auto-detected from timezone. See `docs/compose/reports/2026-06-15-indeed-cloudflare-research.md`.
 - **Region/UA/timezone are auto-detected at launch** (`utils/region.py`). Pin `browser.timezone` if detection fails.
-- **`import-cookies` uses a per-site spec** (`cli.py`). Each board declares required/preferred cookies, session flags, and a post-import check.
+- **`import-cookies` uses a per-site spec** (`utils/cookies.py`). Each board declares required/preferred cookies, session flags, and a post-import check.
 - **One host matcher: `utils/url.host_matches(host, base)`.** Use it instead of ad-hoc domain suffix checks.
 - **LinkedIn description extraction clicks cards.** Scraper clicks each card, waits for content change, clicks "show more", then extracts.
 - **`--verbose` and `--log-file` work both before and after the command.** `job-applicator --verbose match` and `job-applicator match --verbose` both work.
@@ -105,7 +108,7 @@ Default model: `cyankiwi/Qwen3.5-4B-AWQ-4bit`. Override via `JOB_APPLICATOR_LLM_
 
 ## Testing
 
-- Tests are auto-marked by location (`tests/conftest.py`): `pytest -m unit` / `-m live` / `-m integration` all work. Unit suite (`pytest -m unit`, 547) is fast — no browser/GPU; the green gate.
+- Tests are auto-marked by location (`tests/conftest.py`): `pytest -m unit` / `-m live` / `-m integration` all work. Unit suite (`pytest -m unit`, 596) is fast — no browser/GPU; the green gate.
 - The 21 live tests at `tests/` root carry `-m live`; they need vLLM (`localhost:8000`) + GPU; run them manually.
 - Tests use fixtures from `tests/conftest.py`.
 - Embedding tests mock the model (CPU fallback).

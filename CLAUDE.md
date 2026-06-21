@@ -38,12 +38,13 @@ AI-powered job application tool using Playwright browser automation with modern 
 
 Tests are auto-marked by location in `tests/conftest.py`, so marker selection works:
 
-- `pytest -m unit` — fast, isolated unit suite (461 tests; no browser/GPU/vLLM). The green gate.
+- `pytest -m unit` — fast, isolated unit suite (596 tests; no browser/GPU/vLLM). The green gate.
   (`pytest tests/unit/` is equivalent.)
 - `pytest -m live` — the 21 live tests at `tests/` root that need vLLM (`localhost:8000`) + GPU;
   kept out of the gate (full suite is green when vLLM is up).
-- `pytest -m integration` — reserved (`tests/integration/` is empty today).
-- `pytest` — everything (482).
+- `pytest -m integration` — the 5 integration tests (`tests/integration/`): board
+  `browser_policy()` → `_make_browser` wiring (construction-only, no real launch).
+- `pytest` — everything (622).
 
 ## Target Boards
 
@@ -75,7 +76,7 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
   (`utils/region.py`) unless pinned in `[browser]` config, so geo-aware boards serve the real region.
 - **A board declares its browser needs.** `BaseScraper.browser_policy()` (headed / ephemeral
   profile / virtual display) lives on the scraper, not the CLI, so anti-bot requirements can't drift
-  and any caller builds the right browser. `cli._make_browser` reads it.
+  and any caller builds the right browser. `_make_browser` (in `factories.py`) reads it.
 - **Easy Apply is dry-run by default;** real submission requires `apply --submit`.
 
 ## GPU Memory Layout
