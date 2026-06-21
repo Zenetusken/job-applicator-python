@@ -3,11 +3,11 @@
 Project memory for job-applicator-python. Consolidated facts about the codebase,
 decisions, and current state. Keep under ~200 lines; prune stale entries when adding.
 
-_Last synced: 2026-06-15_
+_Last synced: 2026-06-19_
 
 ## Snapshot
 
-- **Stats:** 31 source modules (`src/job_applicator/`), 518 fast unit tests (`pytest -m unit` — the green gate, no browser/GPU); 539 total, the extra 21 are live tests (`-m live`) needing vLLM (`localhost:8000`) + GPU. Tests auto-marked by location in `tests/conftest.py`.
+- **Stats:** 44 source modules (`src/job_applicator/`), 544 fast unit tests (`pytest -m unit` — the green gate, no browser/GPU); 565 total, the extra 21 are live tests (`-m live`) needing vLLM (`localhost:8000`) + GPU. Tests auto-marked by location in `tests/conftest.py`. Live tests now skip cleanly when the configured LLM endpoint is unreachable.
 - **Python:** 3.12+ (dev box 3.12.8). Mypy strict; ruff (100-char lines, double quotes).
 - **Quality gates (all must pass, in order):**
   `ruff check src/ tests/` → `ruff format --check src/ tests/` →
@@ -28,13 +28,17 @@ _Last synced: 2026-06-15_
 - `documents/` — resume parsing, tailoring, cover letters, style/tone, ats_checker, ocr.
 - `browser/` `scrapers/` `applicators/` — Playwright lifecycle + LinkedIn (session) / Indeed (public, Cloudflare). Both scrapers/applicators live.
 - `embeddings/` — mxbai-embed-large-v1 service + job matching.
-- `utils/` — logging, retry, diff, verbose, **llm (strip_thinking_process), text (contains_word), cookies (save/load/read), region (locale/tz/UA detect), url (host_matches), secure_store (atomic 0600)**.
+- `utils/` — logging, retry, diff, verbose, **llm (strip_thinking_process + CircuitBreaker + ValidatedOutput), text (contains_word), cookies (save/load/read), region (locale/tz/UA detect), url (host_matches), secure_store (atomic 0600)**.
+- `state.py` / `batch_state.py` — SQLite stores for application history and batch-run progress (crash recovery).
+- `skills/` — skill-name normalization and hard-negative filtering for matching/validation.
 
 ## Key Decisions / Invariants
 
 - Pydantic models cross module boundaries, never dicts. All exceptions subclass `JobApplicatorError`.
 - Async for I/O, sync for CPU. Config centralized in `AppSettings`; no global mutable state.
 - Combined match score = 60% semantic + 40% skill coverage. Skill semantic threshold 0.55.
+- Skills are normalized before matching/validation (`Python 3` → `Python`, `reactjs` → `React`); generic traits (`team player`, `communication`) are hard-negative filtered so they don't distort skill scores.
+- Apply is dry-run by default; `--submit` opt-in required. `--validate` exits non-zero if a dry run doesn't reach the Submit button. `DryRunValidation` records reachability, fields filled, resume upload, and cover-letter field presence.
 - LLM via litellm + instructor; **client of an external** OpenAI-compatible endpoint (`[llm] api_base`,
   default `http://localhost:8000/v1`, model `cyankiwi/Qwen3.5-4B-AWQ-4bit`) — the app never starts one
   (optional `[serve]` extra + `scripts/serve-vllm.sh` self-host a local vLLM). `openai/` prefix for local.
@@ -96,6 +100,14 @@ Full audit produced 4 HIGH, 7 MEDIUM, 10 LOW findings. All fixed across three st
 - LinkedIn login uses Playwright locator API (`input[type="email"]`), not removed `name=` attributes.
 - Authenticated browser work must use `persistent_context()`/`persistent_page()`, never `new_page()`.
 - `config.toml` holds credentials — do not commit it (`.gitignore`d).
+
+## Round 2 Hardening (2026-06-19)
+
+Completed a second systematic hardening pass with baseline capture and unit tests; live tests skip cleanly because vLLM is unavailable on the dev box.
+
+- **Batch crash recovery** — `BatchState` in `batch_state.py` persists per-job progress in `~/.job-applicator/applications.db`. `job-applicator batch --resume-run` skips already-tailored jobs after an interruption; `--run-id` pins/resumes a specific run.
+- **Skill normalization + hard negatives** — `skills/normalization.py` canonicalizes aliases (`Python 3` → `Python`, `reactjs` → `React`) and drops generic traits (`team player`, `communication`) from skill coverage scoring and tailored skill sections.
+- **LinkedIn Easy Apply dry-run validation** — `DryRunValidation` reports whether the Easy Apply flow reached the Submit button, which fields were filled, resume upload status, and cover-letter field presence. `job-applicator apply --validate` exits non-zero if any dry run fails to reach Submit.
 
 ## Workflow
 
