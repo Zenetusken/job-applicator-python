@@ -127,3 +127,10 @@ def test_list_recent(tmp_path: Path) -> None:
     recent = state.list_recent(limit=10)
     assert len(recent) == 1
     assert recent[0].status == ApplicationStatus.SUBMITTED
+
+
+def test_has_applied_empty_statuses_returns_false(tmp_path: Path) -> None:
+    """C6: an explicit empty statuses set returns False, not an `IN ()` SQL error."""
+    state = ApplicationState(db_path=tmp_path / "apps.db")
+    state.record(ApplicationResult(job=_make_job(), status=ApplicationStatus.SUBMITTED))
+    assert state.has_applied("https://linkedin.com/jobs/view/1", statuses=set()) is False

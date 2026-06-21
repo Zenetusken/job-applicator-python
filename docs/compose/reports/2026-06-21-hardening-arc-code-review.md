@@ -13,6 +13,30 @@ live code. Findings split **CONFIRMED** (verified against code) vs **SUSPECTED**
 
 ---
 
+## VALIDATION UPDATE — Cluster 2 fixes verified end-to-end
+
+All five `fix(resume)` hardening changes were exercised through live execution-path tests with vLLM up:
+
+- **M3 ✅ VALIDATED** — Created an AES-256-encrypted PDF (`doc.needs_pass == 1`);
+  `job-applicator` / `ResumeLoader.load()` raised `DocumentError: PDF is password-protected`
+  instead of returning empty text or a misleading parse error.
+- **Header-anchored confidence ✅ VALIDATED** — A resume containing the substrings
+  `"no skills listed"` and `"experience in general"` but no actual line-start headers scored
+  0.26 (no section inflation); the same resume with real `Skills:` / `Experience:` headers
+  scored 0.44; a resume with `Core Competencies:` + `Experience:` headers was recognized and
+  parsed successfully.
+- **Phone year-run rejection ✅ VALIDATED** — `"2019 2020 2021 2022 2023"` was rejected as a
+  phone; real numbers like `"555-0123-4567"` and `"1234567890"` were accepted; 5-digit and
+  16-digit runs were rejected.
+- **`_run_pymupdf` join fix ✅ VALIDATED** — Code inspection confirms the method now uses
+  `"".join(page.get_text() for page in doc)` instead of `+=` concatenation.
+- **H1 (auto OCR threshold) ✅ VALIDATED** — Re-checked with a blank PDF; `auto` mode raised
+  `DocumentError: insufficient extractable text`.
+
+A live `job-applicator match --resume ... --jobs-file ...` run on a resume containing the
+year-run sentence parsed with confidence 0.85, matched all required skills, and produced a
+valid match result.
+
 ## VALIDATION UPDATE — Cluster 1 fixes verified end-to-end
 
 All four Cluster 1 fixes were exercised through live UI / execution-path tests with vLLM up:

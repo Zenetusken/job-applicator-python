@@ -1529,6 +1529,9 @@ def batch(
                 query=query or None,
                 jobs_file=jobs_file or None,
                 resume_path=settings.resume_path,
+                top_k=top_k,
+                min_score=min_score,
+                cover_letter=cover_letter,
             )
             if existing:
                 effective_run_id = existing
