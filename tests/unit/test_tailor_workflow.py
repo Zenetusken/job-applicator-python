@@ -79,7 +79,7 @@ def _drive(
             return_value=(sections if sections is not None else []),
         ),
         patch.object(cli, "_detect_tone", return_value=tone),
-        patch.object(cli, "_cover_letter_workflow", cl_workflow),
+        patch("job_applicator.workflows.tailor._cover_letter_workflow", cl_workflow),
     ):
         result = CliRunner().invoke(
             cli.app,
