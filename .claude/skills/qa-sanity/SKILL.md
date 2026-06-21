@@ -72,8 +72,7 @@ Running this today reproduces — deterministically — the findings from the ma
 **XFAIL** (real bugs; each is asserted at its *correct* behavior, so it flips to `XPASS`
 when fixed — then delete its name from `KNOWN_FAIL` in `qa.py`):
 
-- `ats-check` tracebacks on bad résumé input (missing / empty / corrupt / directory) — its `except` re-raises.
-- `ats-check` "Resume path required" prints to **stdout**, not stderr.
+- `ats-check` "Resume path required" prints to **stdout**, not stderr (part of the fleet-wide errors→stderr concern).
 - `config-init -o <unwritable>` tracebacks instead of a clean error.
 - `import-cookies --help` eats `[browser]` (Rich parses it as markup) → "the  extra".
 - `--json --verbose` appends the verbose report to stdout → invalid JSON.

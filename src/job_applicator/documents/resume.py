@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 from job_applicator.documents.ocr import OCRService
-from job_applicator.exceptions import DocumentError, ResumeNotFoundError
+from job_applicator.exceptions import DocumentError, JobApplicatorError, ResumeNotFoundError
 from job_applicator.models import ResumeData
 from job_applicator.utils.logging import get_logger
 
@@ -50,22 +50,35 @@ class ResumeLoader:
         return self._ocr_service
 
     def load(self, path: str | Path, ocr_mode: str = "auto") -> ResumeData:
-        """Load a resume from file. Supports PDF, DOCX, plain text, and images."""
+        """Load a resume from file. Supports PDF, DOCX, plain text, and images.
+
+        Guarantees a TYPED failure: any underlying parser error (python-docx,
+        PyMuPDF, OCR, ...) is wrapped as ``DocumentError`` so callers only ever see a
+        ``JobApplicatorError`` — never a raw third-party traceback.
+        """
         file_path = Path(path)
         if not file_path.exists():
             raise ResumeNotFoundError(f"Resume not found: {file_path}")
 
         suffix = file_path.suffix.lower()
-        if suffix == ".pdf":
-            return self._load_pdf(file_path, ocr_mode=ocr_mode)
-        elif suffix == ".docx":
-            return self._load_docx(file_path)
-        elif suffix in (".txt", ".md"):
-            return self._load_text(file_path)
-        elif suffix in (".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp"):
-            return self._load_image(file_path, ocr_mode=ocr_mode)
-        else:
-            raise DocumentError(f"Unsupported resume format: {suffix}")
+        try:
+            if suffix == ".pdf":
+                return self._load_pdf(file_path, ocr_mode=ocr_mode)
+            elif suffix == ".docx":
+                return self._load_docx(file_path)
+            elif suffix in (".txt", ".md"):
+                return self._load_text(file_path)
+            elif suffix in (".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp"):
+                return self._load_image(file_path, ocr_mode=ocr_mode)
+            else:
+                fmt = suffix or "(no file extension)"
+                raise DocumentError(f"Unsupported resume format: {fmt} ({file_path.name})")
+        except JobApplicatorError:
+            raise
+        except Exception as exc:
+            raise DocumentError(
+                f"Could not parse resume {file_path.name}: {type(exc).__name__}: {exc}"
+            ) from exc
 
     def _load_docx(self, path: Path) -> ResumeData:
         """Load a DOCX resume."""

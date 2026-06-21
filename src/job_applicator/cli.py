@@ -2032,6 +2032,13 @@ def ats_check(
             console.print("\n[bold cyan]Suggestions:[/bold cyan]")
             for suggestion in result.suggestions:
                 console.print(f"  [cyan]*[/cyan] {suggestion}")
+    except JobApplicatorError as exc:
+        # Typed, expected failures (unreadable / unsupported / missing résumé) get a clean
+        # message + exit 1 — matching the sibling commands, not a raw traceback.
+        if reporter:
+            reporter.record_error(str(exc))
+        console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
+        raise typer.Exit(1) from exc
     except Exception as exc:
         if reporter:
             reporter.record_error(str(exc))
