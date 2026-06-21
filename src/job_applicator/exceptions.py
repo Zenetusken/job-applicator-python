@@ -15,6 +15,11 @@ class ConfigError(JobApplicatorError):
     """Configuration loading or validation error."""
 
 
+class CookieError(JobApplicatorError):
+    """Cookie import/read error — unsupported browser, missing optional dependency,
+    or an unreadable on-disk browser cookie store."""
+
+
 class BrowserError(JobApplicatorError):
     """Browser automation error."""
 

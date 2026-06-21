@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from job_applicator.utils.cookies import _cookiejar_to_playwright, _normalize_cookie
 
 
@@ -94,3 +96,15 @@ def test_cookiejar_to_playwright_propagates_httponly() -> None:
     out = _cookiejar_to_playwright(ck)
     assert out is not None
     assert out["httpOnly"] is True
+
+
+def test_cookies_from_browser_raises_typed_cookieerror() -> None:
+    """Increment 3: the browser-store reader raises a typed CookieError (a
+    JobApplicatorError) instead of typer.Exit/console — so cli stays the only
+    typer/console layer and the reader is unit-testable."""
+    from job_applicator.exceptions import CookieError, JobApplicatorError
+    from job_applicator.utils.cookies import _cookies_from_browser
+
+    with pytest.raises(CookieError) as excinfo:
+        _cookies_from_browser("definitely-not-a-browser", "linkedin.com")
+    assert isinstance(excinfo.value, JobApplicatorError)
