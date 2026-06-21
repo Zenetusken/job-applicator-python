@@ -52,11 +52,9 @@ VLLM_URL = "http://localhost:8000/v1/models"
 # --- to FAIL today (-> XFAIL). When one flips to XPASS, the bug is fixed: delete it here.
 KNOWN_FAIL = {
     "config-init: bad output path → clean error (no traceback)",
-    "ats-check: missing file → clean error (no traceback)",
-    "ats-check: corrupt pdf → clean error (no traceback)",
-    "ats-check: empty file → clean error (no traceback)",
-    "ats-check: directory path → clean error (no traceback)",
-    "ats-check: no-resume error goes to stderr (not stdout)",
+    # FIXED 2026-06-21 (ResumeLoader.load typed-error wrapper + ats-check JobApplicatorError
+    # handler): ats-check missing/corrupt/empty/directory → clean error, promoted XPASS→PASS.
+    "ats-check: no-resume error goes to stderr (not stdout)",  # deferred to the errors→stderr PR
     "import-cookies: --help shows the [browser] extra name (markup not eaten)",
     "global: --json --verbose → still valid JSON",
     "match: React job reports React/TypeScript as missing skills",

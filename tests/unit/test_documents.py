@@ -325,6 +325,36 @@ def test_password_protected_pdf_raises(tmp_path: Path, monkeypatch: pytest.Monke
         loader._load_pdf(pdf_path, ocr_mode="off")
 
 
+def test_resume_loader_wraps_unreadable_docx_as_document_error(tmp_path: Path) -> None:
+    """A corrupt/empty .docx surfaces as a typed DocumentError via load() — python-docx's
+    PackageNotFoundError must not leak as a traceback (the loader's contract is
+    JobApplicatorError-only)."""
+    bad = tmp_path / "empty.docx"
+    bad.write_bytes(b"")
+    with pytest.raises(DocumentError):
+        ResumeLoader().load(bad)
+
+
+def test_resume_loader_corrupt_pdf_is_document_error(tmp_path: Path) -> None:
+    """A corrupt .pdf surfaces as a typed DocumentError — here via the PDF consensus
+    'insufficient extractable text' path (ocr off). Guards the user-facing contract that
+    load() raises only JobApplicatorError; the load() try/except wrapper itself is
+    exercised by the corrupt-.docx test above (python-docx PackageNotFoundError → DocumentError).
+    """
+    bad = tmp_path / "corrupt.pdf"
+    bad.write_bytes(b"not a real pdf %%\x00\x01garbage")
+    with pytest.raises(DocumentError):
+        ResumeLoader().load(bad, ocr_mode="off")
+
+
+def test_resume_loader_directory_path_names_the_target(tmp_path: Path) -> None:
+    """A directory (no extension) → DocumentError that NAMES the path, not an empty
+    'Unsupported resume format: ' message."""
+    with pytest.raises(DocumentError) as ei:
+        ResumeLoader().load(tmp_path)
+    assert tmp_path.name in str(ei.value)
+
+
 def test_cover_letter_validation_rejects_empty() -> None:
     config = LLMConfig()
     generator = CoverLetterGenerator(config)
