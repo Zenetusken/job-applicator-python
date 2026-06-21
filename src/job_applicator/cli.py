@@ -32,6 +32,7 @@ from job_applicator.utils.console import console
 from job_applicator.utils.cookies import (
     _cookies_from_browser,
     _normalize_cookie,
+    _site_specs,
     save_cookies,
 )
 from job_applicator.utils.diff import render_diff
@@ -394,52 +395,6 @@ def login(
     else:
         console.print("[red]✗ Sign-in not detected. Re-run `job-applicator login`.[/red]")
         raise typer.Exit(1)
-
-
-@dataclass(frozen=True)
-class _SiteSpec:
-    """Per-board rules for ``import-cookies``, so the command body stays board-agnostic.
-
-    ``required_cookie`` is a hard gate (absent => refuse, since the session can't
-    work without it). ``preferred_cookie`` is a soft signal (absent => warn but
-    save). ``session_flags`` enables the LinkedIn ``--li-at``/``--jsessionid``
-    seed inputs. ``feed_verify`` runs the post-import logged-in feed check.
-    """
-
-    cookie_path: Path
-    base_domain: str
-    required_cookie: str | None
-    preferred_cookie: str | None
-    session_flags: bool
-    feed_verify: bool
-
-
-def _site_specs() -> dict[str, _SiteSpec]:
-    from job_applicator.scrapers.indeed import IndeedScraper
-    from job_applicator.scrapers.linkedin import LinkedInScraper
-
-    return {
-        # li_at is the LinkedIn session token: nothing authenticates without it.
-        "linkedin": _SiteSpec(
-            cookie_path=LinkedInScraper.COOKIE_PATH,
-            base_domain="linkedin.com",
-            required_cookie="li_at",
-            preferred_cookie=None,
-            session_flags=True,
-            feed_verify=True,
-        ),
-        # Indeed search is public — no cookie is strictly required. cf_clearance
-        # (Cloudflare) is what actually helps a warm session avoid challenges, so
-        # it's preferred-not-required; CTK and friends are mere tracking cookies.
-        "indeed": _SiteSpec(
-            cookie_path=IndeedScraper.COOKIE_PATH,
-            base_domain="indeed.com",
-            required_cookie=None,
-            preferred_cookie="cf_clearance",
-            session_flags=False,
-            feed_verify=False,
-        ),
-    }
 
 
 @app.command(name="import-cookies")

@@ -108,3 +108,18 @@ def test_cookies_from_browser_raises_typed_cookieerror() -> None:
     with pytest.raises(CookieError) as excinfo:
         _cookies_from_browser("definitely-not-a-browser", "linkedin.com")
     assert isinstance(excinfo.value, JobApplicatorError)
+
+
+def test_site_specs_board_rules() -> None:
+    """Increment 4: per-board cookie-import policy lives in utils.cookies. LinkedIn
+    requires li_at (+ session flags + feed verify); Indeed requires nothing but
+    prefers cf_clearance."""
+    from job_applicator.utils.cookies import _site_specs
+
+    specs = _site_specs()
+    assert specs["linkedin"].required_cookie == "li_at"
+    assert specs["linkedin"].session_flags is True
+    assert specs["linkedin"].feed_verify is True
+    assert specs["indeed"].required_cookie is None
+    assert specs["indeed"].preferred_cookie == "cf_clearance"
+    assert specs["indeed"].session_flags is False
