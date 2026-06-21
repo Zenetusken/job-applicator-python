@@ -480,6 +480,21 @@ def test_config_check_resume_and_output(tmp_path: Path, monkeypatch: pytest.Monk
     assert res.output_dir_writable
 
 
+def test_config_check_does_not_create_output_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """check_config is a diagnostic — it must NOT create the output dir (no mkdir
+    side-effect); writability is reported via the nearest existing ancestor."""
+    cfg = tmp_path / "cfg.toml"
+    out = tmp_path / "nested" / "out"
+    cfg.write_text(f'output_dir = "{out}"\n')
+    monkeypatch.setenv("JOB_APPLICATOR_CONFIG_FILE", str(cfg))
+    settings = AppSettings()
+    res = diagnostics.check_config(settings)
+    assert not out.exists()  # the diagnostic created nothing
+    assert res.output_dir_writable  # the existing ancestor (tmp_path) is writable
+
+
 # --- run_diagnostics wires every new check ---------------------------------
 
 

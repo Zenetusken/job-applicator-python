@@ -59,12 +59,16 @@ class IndeedApplicator(BaseApplicator):
                     )
 
                 async def _do_submit() -> ApplicationResult:
-                    # The multi-step Indeed apply form is not validated; refuse
-                    # rather than guess and risk a malformed real submission.
+                    # Indeed is scoped to search/match only — automated apply is
+                    # intentionally unsupported (Cloudflare anti-bot + ToS risk), not a
+                    # pending feature. Return a clean SKIPPED result; never auto-submit.
                     return ApplicationResult(
                         job=job,
-                        status=ApplicationStatus.FAILED,
-                        error_message="Indeed live submission is not yet implemented/validated",
+                        status=ApplicationStatus.SKIPPED,
+                        notes=(
+                            "Indeed automated apply is unsupported (search-only by design) — "
+                            "apply manually on indeed.com."
+                        ),
                     )
 
                 # Route through the same base-class dry-run gate as LinkedIn.
@@ -73,7 +77,8 @@ class IndeedApplicator(BaseApplicator):
                     job=job,
                     cover_letter=cover_letter,
                     do_submit=_do_submit,
-                    dry_run_note="DRY RUN: Easily-apply detected but not submitted. Use --submit.",
+                    dry_run_note="Indeed is search-only — automated apply is unsupported; "
+                    "apply manually on indeed.com.",
                 )
         except Exception as exc:
             logger.error("Failed to apply to %s at %s: %s", job.title, job.company, exc)

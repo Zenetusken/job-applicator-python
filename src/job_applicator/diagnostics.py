@@ -263,11 +263,13 @@ def check_config(settings: AppSettings) -> ConfigCheck:
     result.resume_path_set = bool(settings.resume_path)
     if result.resume_path_set:
         result.resume_path_exists = Path(settings.resume_path).is_file()
-    try:
-        output_dir = settings.ensure_output_dir()
-        result.output_dir_writable = os.access(output_dir, os.W_OK)
-    except OSError as exc:
-        result.error = f"output dir not writable: {exc}"
+    # A diagnostic must not create directories: probe the writability of the output
+    # dir (or the nearest existing ancestor it would be created in) WITHOUT
+    # ensure_output_dir()'s mkdir side-effect.
+    probe = Path(settings.output_dir)
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    result.output_dir_writable = probe.is_dir() and os.access(probe, os.W_OK)
 
     return result
 
