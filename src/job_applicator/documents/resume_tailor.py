@@ -679,8 +679,7 @@ class ResumeTailor:
         if style_guide:
             from job_applicator.documents.style_analyzer import StyleAnalyzer
 
-            analyzer = StyleAnalyzer(self._config)
-            style_section = analyzer.format_style_for_prompt(style_guide)
+            style_section = StyleAnalyzer.format_style_for_prompt(style_guide)
             prompt += f"\n\n{style_section}"
 
         tailored_text = await self._call_llm(prompt)

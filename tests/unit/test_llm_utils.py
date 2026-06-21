@@ -154,7 +154,7 @@ async def test_validated_output_retries_on_validation_failure() -> None:
 
     calls = 0
 
-    async def producer() -> str:
+    async def producer(prev: object) -> str:
         nonlocal calls
         calls += 1
         return "bad" if calls == 1 else "good"
@@ -172,7 +172,7 @@ async def test_validated_output_gives_up_after_retries() -> None:
     from job_applicator.exceptions import LLMError
     from job_applicator.utils.llm import ValidatedOutput
 
-    async def producer() -> str:
+    async def producer(prev: object) -> str:
         return "bad"
 
     def validator(value: str) -> None:
@@ -180,6 +180,27 @@ async def test_validated_output_gives_up_after_retries() -> None:
 
     with pytest.raises(LLMError, match="always bad"):
         await ValidatedOutput(max_retries=1).call(producer, validator)
+
+
+async def test_validated_output_feeds_prior_error_to_retry() -> None:
+    """Cycle 2a: the retry receives the prior validation error so it can re-prompt."""
+    from job_applicator.exceptions import LLMError
+    from job_applicator.utils.llm import ValidatedOutput
+
+    seen: list[object] = []
+
+    async def producer(prev: object) -> str:
+        seen.append(prev)
+        return "bad" if len(seen) == 1 else "good"
+
+    def validator(value: str) -> None:
+        if value != "good":
+            raise LLMError("placeholder text")
+
+    result = await ValidatedOutput(max_retries=1).call(producer, validator)
+    assert result == "good"
+    assert seen[0] is None  # first attempt: no prior error
+    assert isinstance(seen[1], LLMError)  # retry: fed the validation error
 
 
 def test_strip_thinking_process_none_returns_empty() -> None:

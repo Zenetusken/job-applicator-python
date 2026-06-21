@@ -391,8 +391,13 @@ class StyleAnalyzer:
 
         return asyncio.run(self.analyze(text))
 
-    def format_style_for_prompt(self, style: StyleGuide) -> str:
-        """Format style guide into a prompt section for cover letter generation."""
+    @staticmethod
+    def format_style_for_prompt(style: StyleGuide) -> str:
+        """Format style guide into a prompt section for cover letter generation.
+
+        Pure (no instance state) — a ``@staticmethod`` so callers needn't construct a
+        StyleAnalyzer (whose __init__ touches the styles cache dir) merely to format.
+        """
         parts = [
             "Writing Style Guide (mimic this style):",
             f"- Tone: {style.tone}",

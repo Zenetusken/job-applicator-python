@@ -371,13 +371,19 @@ class ValidatedOutput:
 
     async def call(
         self,
-        func: Callable[[], Awaitable[T]],
+        func: Callable[[LLMError | None], Awaitable[T]],
         validator: Callable[[T], None],
     ) -> T:
-        """Call ``func`` and validate the result; retry on validation failure."""
+        """Call ``func`` and validate; retry on validation failure, feeding the prior
+        error back so the closure can re-prompt with the rejection.
+
+        ``func`` receives the previous validation error (None on the first attempt).
+        ``await func(...)`` stays OUTSIDE the try — only the validator is wrapped — so
+        transport/circuit errors propagate un-fed-back (content vs transport stay split).
+        """
         last_error: LLMError | None = None
         for attempt in range(self.max_retries + 1):
-            result = await func()
+            result = await func(last_error)
             try:
                 validator(result)
                 return result
