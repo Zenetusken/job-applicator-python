@@ -182,6 +182,22 @@ class StyleGuide(BaseModel):
     sample_paragraph: str = Field(description="A sample paragraph showing the style")
 
 
+class DryRunValidation(BaseModel):
+    """Details captured during a dry-run application (submit=False).
+
+    Lets users verify that the automation reached the submit step and filled
+    the expected fields without sending a real application.
+    """
+
+    reached_submit: bool = False
+    easy_apply_button_found: bool = False
+    fields_filled: list[str] = Field(default_factory=list)
+    resume_uploaded: bool = False
+    cover_letter_field_found: bool = False
+
+    model_config = {"extra": "forbid"}
+
+
 class ApplicationResult(BaseModel):
     """Outcome of an application attempt."""
 
@@ -191,6 +207,7 @@ class ApplicationResult(BaseModel):
     cover_letter: str | None = None
     error_message: str | None = None
     notes: str = ""
+    dry_run: DryRunValidation | None = None
 
     model_config = {"extra": "forbid"}
 

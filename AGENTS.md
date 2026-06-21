@@ -20,7 +20,7 @@ mypy src/   # untyped third-party imports are silenced via per-module overrides 
 ruff check --fix src/ tests/
 ruff format src/ tests/
 
-# Tests — 542 fast unit tests (the green gate); 563 total, the extra 21 are live (need vLLM/GPU)
+# Tests — 544 fast unit tests (the green gate); 565 total, the extra 21 are live (need vLLM/GPU)
 pytest -m unit -v               # or: pytest tests/unit/ -v   (auto-marked by location)
 pytest -m unit -v -k test_name  # single test
 
@@ -28,6 +28,7 @@ pytest -m unit -v -k test_name  # single test
 job-applicator --help
 job-applicator doctor                       # Health check: LLM, embeddings, browser, system bins, config
 job-applicator match --resume resume.pdf
+job-applicator apply --query "python" --validate            # Dry-run Easy Apply and validate it reaches Submit
 job-applicator batch --jobs-file jobs.json --resume-run      # Resume an interrupted batch run
 ```
 
@@ -87,6 +88,7 @@ src/job_applicator/
 - **JSON output goes to stdout, logs go to stderr.** Enables `job-applicator match --json | jq .` without Rich wrapping corruption.
 - **Batch runs persist progress for crash recovery.** State lives in `~/.job-applicator/applications.db` (tables `batch_runs`, `batch_jobs`). Re-run with the same `--resume` / `--jobs-file` / `--query` and `--resume-run` to skip already-tailored jobs. Use `--run-id` to pin or resume a specific run.
 - **Skills are normalized before matching/validation.** `src/job_applicator/skills/normalization.py` canonicalizes aliases like `Python 3` → `Python` and `reactjs` → `React`. A hard-negative list drops generic traits (`team player`, `communication skills`) from skill coverage scoring and tailored skill sections.
+- **Apply dry-run is validated.** `LinkedInApplicator` returns a `DryRunValidation` object showing whether the Easy Apply button, form fields, resume upload, cover-letter field, and final Submit step were reached. `job-applicator apply --validate` exits non-zero if any dry run fails to reach Submit.
 
 ## LLM Setup
 
@@ -103,7 +105,7 @@ Default model: `cyankiwi/Qwen3.5-4B-AWQ-4bit`. Override via `JOB_APPLICATOR_LLM_
 
 ## Testing
 
-- Tests are auto-marked by location (`tests/conftest.py`): `pytest -m unit` / `-m live` / `-m integration` all work. Unit suite (`pytest -m unit`, 542) is fast — no browser/GPU; the green gate.
+- Tests are auto-marked by location (`tests/conftest.py`): `pytest -m unit` / `-m live` / `-m integration` all work. Unit suite (`pytest -m unit`, 544) is fast — no browser/GPU; the green gate.
 - The 21 live tests at `tests/` root carry `-m live`; they need vLLM (`localhost:8000`) + GPU; run them manually.
 - Tests use fixtures from `tests/conftest.py`.
 - Embedding tests mock the model (CPU fallback).

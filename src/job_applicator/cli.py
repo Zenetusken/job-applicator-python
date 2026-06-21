@@ -738,6 +738,11 @@ def apply(
         "--submit/--no-submit",
         help="Actually submit applications (default: dry run — fills forms, never submits).",
     ),
+    validate: bool = typer.Option(
+        False,
+        "--validate",
+        help="Exit non-zero if a dry run does not reach the Submit button.",
+    ),
     verbose: bool = _verbose_option(),
     log_file: str | None = _log_file_option(),
 ) -> None:
@@ -745,6 +750,7 @@ def apply(
 
     By default this is a DRY RUN: each job's Easy Apply form is opened and
     filled, but never submitted. Pass --submit to send real applications.
+    Pass --validate to treat an unreached Submit step as a failure.
     """
     _merge_verbose_ctx(ctx, verbose, log_file)
     if submit:
@@ -892,6 +898,10 @@ def apply(
                 reporter.record_io(files_written=[])
 
             # Display results
+            validation_failed = any(
+                r.dry_run is not None and not r.dry_run.reached_submit for r in app_results
+            )
+
             if as_json:
                 import json
 
@@ -902,6 +912,7 @@ def apply(
                         "status": r.status.value,
                         "error": r.error_message,
                         "notes": r.notes,
+                        "dry_run": r.dry_run.model_dump() if r.dry_run else None,
                     }
                     for r in app_results
                 ]
@@ -921,11 +932,15 @@ def apply(
                         "already_applied": "magenta",
                         "pending": "blue",
                     }.get(r.status.value, "white")
+                    notes = r.error_message or r.notes or ""
+                    if r.dry_run:
+                        reached = "✓" if r.dry_run.reached_submit else "✗"
+                        notes = f"[submit {reached}] {notes}".strip()
                     table.add_row(
                         r.job.title,
                         r.job.company,
                         f"[{status_style}]{r.status.value}[/{status_style}]",
-                        r.error_message or r.notes or "",
+                        notes,
                     )
 
                 console.print(table)
@@ -934,6 +949,13 @@ def apply(
                 counts = Counter(r.status.value for r in app_results)
                 summary = ", ".join(f"{n} {status}" for status, n in sorted(counts.items()))
                 console.print(f"\n{summary}")
+
+            if validate and validation_failed:
+                console.print(
+                    "[red]Validation failed: one or more dry runs did not reach "
+                    "the Submit step.[/red]"
+                )
+                raise typer.Exit(1)
 
     try:
         asyncio.run(_run())

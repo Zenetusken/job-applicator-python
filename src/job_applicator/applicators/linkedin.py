@@ -16,7 +16,12 @@ from job_applicator.browser.actions import (
 )
 from job_applicator.browser.manager import BrowserManager
 from job_applicator.config import AppSettings
-from job_applicator.models import ApplicationResult, ApplicationStatus, JobListing
+from job_applicator.models import (
+    ApplicationResult,
+    ApplicationStatus,
+    DryRunValidation,
+    JobListing,
+)
 from job_applicator.utils.logging import get_logger
 
 logger = get_logger("applicators.linkedin")
@@ -93,16 +98,20 @@ class LinkedInApplicator(BaseApplicator):
         final "Submit application" step. The submit click only happens when
         ``submit`` is True; otherwise this is a dry run that submits nothing.
         """
+        validation = DryRunValidation(easy_apply_button_found=True)
+
         await click(page, 'button:has-text("Easy Apply")')
         await random_delay(1.0, 2.0)
 
         # Fill contact info if present
-        await self._fill_form_fields(page)
+        fields_filled = await self._fill_form_fields(page)
+        validation.fields_filled = fields_filled
 
         # Upload resume if file input exists
         resume_input = await page.query_selector('input[type="file"]')
         if resume_input and self._config.resume_path:
             await resume_input.set_input_files(self._config.resume_path)
+            validation.resume_uploaded = True
             await random_delay(1.0, 2.0)
 
         # Fill cover letter if provided and field exists
@@ -110,6 +119,7 @@ class LinkedInApplicator(BaseApplicator):
             cl_field = await page.query_selector('textarea[aria-label*="cover" i]')
             if cl_field:
                 await cl_field.fill(cover_letter)
+                validation.cover_letter_field_found = True
 
         # Advance through multi-step forms (Next / Review) — never Submit here.
         for _ in range(6):
@@ -120,7 +130,8 @@ class LinkedInApplicator(BaseApplicator):
                 break
             await advance.click()
             await random_delay(0.5, 1.0)
-            await self._fill_form_fields(page)
+            fields_filled.extend(await self._fill_form_fields(page))
+            validation.fields_filled = fields_filled
 
         # Match the final submit by either label ("Submit application" is the
         # usual text; fall back to a bare "Submit") so a label change/locale
@@ -133,7 +144,10 @@ class LinkedInApplicator(BaseApplicator):
                 job=job,
                 status=ApplicationStatus.FAILED,
                 error_message="Could not reach the Submit step of the Easy Apply flow",
+                dry_run=validation,
             )
+
+        validation.reached_submit = True
 
         if not submit:
             logger.info(
@@ -152,22 +166,28 @@ class LinkedInApplicator(BaseApplicator):
             if confirmed:
                 logger.info("Successfully applied to %s at %s", job.title, job.company)
                 return ApplicationResult(
-                    job=job, status=ApplicationStatus.SUBMITTED, cover_letter=cover_letter
+                    job=job,
+                    status=ApplicationStatus.SUBMITTED,
+                    cover_letter=cover_letter,
+                    dry_run=validation,
                 )
             return ApplicationResult(
                 job=job,
                 status=ApplicationStatus.FAILED,
                 error_message="Submit clicked but no confirmation was detected",
+                dry_run=validation,
             )
 
         # The dry-run gate lives in the base class so it cannot be bypassed.
-        return await self._gated_submit(
+        result = await self._gated_submit(
             submit=submit,
             job=job,
             cover_letter=cover_letter,
             do_submit=_do_submit,
             dry_run_note="DRY RUN: form prepared but not submitted. Use --submit to apply.",
         )
+        result.dry_run = validation
+        return result
 
     async def _external_apply(self, page: Page, job: JobListing) -> ApplicationResult:
         """Handle external application redirect."""
@@ -188,29 +208,35 @@ class LinkedInApplicator(BaseApplicator):
             notes="No apply button found",
         )
 
-    async def _fill_form_fields(self, page: Page) -> None:
-        """Auto-fill common form fields from profile."""
+    async def _fill_form_fields(self, page: Page) -> list[str]:
+        """Auto-fill common form fields from profile.
+
+        Returns the list of field selectors that were actually filled.
+        """
         profile = self._config
+        filled: list[str] = []
 
         name_parts = profile.profile_name.split() if profile.profile_name else []
         first_name = name_parts[0] if name_parts else ""
         last_name = name_parts[-1] if len(name_parts) > 1 else ""
 
         field_mappings = {
-            'input[name*="first" i]': first_name,
-            'input[name*="last" i]': last_name,
-            'input[name*="email" i]': profile.target.linkedin_email,
-            'input[name*="phone" i]': "",
+            'input[name*="first" i]': (first_name, "firstName"),
+            'input[name*="last" i]': (last_name, "lastName"),
+            'input[name*="email" i]': (profile.target.linkedin_email, "email"),
+            'input[name*="phone" i]': ("", "phone"),
         }
 
-        for selector, value in field_mappings.items():
+        for selector, (value, label) in field_mappings.items():
             if value:
                 el = await page.query_selector(selector)
                 if el:
                     try:
                         await el.fill(value)
+                        filled.append(label)
                     except Exception as e:
                         logger.debug("Could not fill %s: %s", selector, e)
+        return filled
 
     async def check_already_applied(self, job: JobListing) -> bool:
         """Check if already applied to this job."""
