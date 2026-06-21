@@ -53,6 +53,13 @@ class LLMConfig(BaseSettings):
     max_tokens: int = 4096
     temperature: float = 0.7
 
+    # Resilience (consumed by utils.llm): circuit breaker + output-validation retry.
+    # Defaults preserve prior hardcoded behavior.
+    breaker_failure_threshold: int = 3
+    breaker_window_seconds: float = 60.0
+    breaker_recovery_seconds: float = 30.0
+    validation_max_retries: int = 1
+
 
 class EmbeddingConfig(BaseSettings):
     """Embedding model configuration for semantic matching."""

@@ -250,14 +250,86 @@ async def test_async_retry_retries_transport_error() -> None:
     assert calls == 2
 
 
-def test_cover_letter_generator_breaker_is_injectable() -> None:
-    """M1: breaker is injectable for tests; defaults to the process-shared instance."""
+def test_cover_letter_generator_runtime_is_injectable() -> None:
+    """Cycle 1: breaker is injected via an LLMRuntime context object; the default is
+    built from config — no module-global remains."""
     from job_applicator.config import LLMConfig
     from job_applicator.documents import cover_letter
     from job_applicator.documents.cover_letter import CoverLetterGenerator
+    from job_applicator.utils.llm import CircuitBreaker, LLMRuntime
+
+    runtime = LLMRuntime(breaker=CircuitBreaker(name="test"))
+    assert CoverLetterGenerator(LLMConfig(), runtime=runtime)._breaker is runtime.breaker
+    # No shared module-global; the default generator builds its own from config.
+    assert not hasattr(cover_letter, "_CIRCUIT_BREAKER")
+    gen = CoverLetterGenerator(LLMConfig())
+    assert gen._breaker is gen._runtime.breaker
+
+
+def test_circuit_breaker_from_config_uses_thresholds() -> None:
+    """Cycle 1 (item 3): breaker thresholds come from LLMConfig."""
+    from job_applicator.config import LLMConfig
     from job_applicator.utils.llm import CircuitBreaker
 
-    injected = CircuitBreaker(name="test")
-    assert CoverLetterGenerator(LLMConfig(), breaker=injected)._breaker is injected
-    # Default is the shared module-level breaker (must span jobs in a batch run).
-    assert CoverLetterGenerator(LLMConfig())._breaker is cover_letter._CIRCUIT_BREAKER
+    config = LLMConfig(
+        breaker_failure_threshold=5,
+        breaker_window_seconds=10.0,
+        breaker_recovery_seconds=7.0,
+    )
+    breaker = CircuitBreaker.from_config(config, name="x")
+    assert breaker.failure_threshold == 5
+    assert breaker.window_seconds == 10.0
+    assert breaker.recovery_timeout_seconds == 7.0
+    assert breaker.name == "x"
+
+
+async def test_breaker_half_open_admits_one_probe_and_closes_on_success() -> None:
+    """Cycle 1 (item 2): after cooldown the breaker admits a probe; success closes it."""
+    from job_applicator.exceptions import LLMError
+    from job_applicator.utils.llm import CircuitBreaker
+
+    breaker = CircuitBreaker(failure_threshold=1, recovery_timeout_seconds=0.0)
+
+    async def fail() -> str:
+        raise LLMError("boom")
+
+    async def ok() -> str:
+        return "ok"
+
+    with pytest.raises(LLMError, match="boom"):
+        await breaker.call(fail)  # trips OPEN; recovery 0 → HALF_OPEN immediately
+    assert await breaker.call(ok) == "ok"  # the half-open probe succeeds → CLOSED
+    assert await breaker.call(ok) == "ok"  # closed: normal calls flow
+
+
+async def test_breaker_half_open_probe_failure_reopens() -> None:
+    """Cycle 1 (item 2): a failed half-open probe re-opens the breaker (fail fast)."""
+    from job_applicator.exceptions import LLMError
+    from job_applicator.utils.llm import CircuitBreaker, CircuitOpenError
+
+    breaker = CircuitBreaker(failure_threshold=1, recovery_timeout_seconds=0.0)
+
+    async def fail() -> str:
+        raise LLMError("boom")
+
+    with pytest.raises(LLMError, match="boom"):
+        await breaker.call(fail)  # OPEN; recovery 0 → HALF_OPEN next
+    breaker.recovery_timeout_seconds = 60.0  # make the re-open observable as OPEN
+    with pytest.raises(LLMError, match="boom"):
+        await breaker.call(fail)  # the half-open probe; fails → re-OPEN for 60s
+    with pytest.raises(CircuitOpenError):
+        await breaker.call(fail)  # OPEN → rejected fast
+
+
+def test_breaker_stray_success_during_open_does_not_reopen() -> None:
+    """Cycle 1 (concurrency): a success from a call admitted while CLOSED must NOT
+    reopen a breaker that OPENed while that call was in flight — only a half-open
+    probe closes. Guards the batch Semaphore(3) interleaving."""
+    from job_applicator.utils.llm import CircuitBreaker
+
+    breaker = CircuitBreaker(failure_threshold=1, recovery_timeout_seconds=60.0)
+    assert breaker._admit() is True  # admitted while CLOSED (in flight, not a probe)
+    breaker._record_failure()  # concurrent traffic trips the breaker OPEN
+    assert breaker._open_until is not None
+    breaker._record_success()  # the stray in-flight call now returns successfully
+    assert breaker._open_until is not None  # must STAY open for the cooldown

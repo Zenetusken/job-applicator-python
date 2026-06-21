@@ -12,8 +12,8 @@ from job_applicator.config import LLMConfig
 from job_applicator.exceptions import LLMError
 from job_applicator.models import JobListing, ResumeData, StyleGuide, UserProfile
 from job_applicator.utils.llm import (
-    CircuitBreaker,
     CircuitOpenError,
+    LLMRuntime,
     ValidatedOutput,
     llm_call_error,
     strip_thinking_process,
@@ -22,9 +22,6 @@ from job_applicator.utils.logging import get_logger
 from job_applicator.utils.retry import async_retry
 
 logger = get_logger("documents.cover_letter")
-
-# Shared circuit breaker across all cover-letter LLM calls in this process.
-_CIRCUIT_BREAKER = CircuitBreaker(name="cover-letter")
 
 
 class CoverLetterOutput(BaseModel):
@@ -72,14 +69,15 @@ from you." """
 class CoverLetterGenerator:
     """Generate AI-powered cover letters via litellm + instructor."""
 
-    def __init__(self, config: LLMConfig, breaker: CircuitBreaker | None = None) -> None:
+    def __init__(self, config: LLMConfig, runtime: LLMRuntime | None = None) -> None:
         self._config = config
         self._client: Any = None
         self._style_cache: StyleGuide | None = None
-        # Process-shared by default: the breaker must span jobs within a batch run
-        # to guard a down endpoint (a fresh per-instance breaker would reset every
-        # job and never trip). Injectable for tests / explicit DI.
-        self._breaker = breaker or _CIRCUIT_BREAKER
+        # The breaker lives on a per-command runtime (built from config when not
+        # injected) — shared across all cover-letter calls in this command (e.g.
+        # every job in a batch run), with no module-global mutable state.
+        self._runtime = runtime or LLMRuntime.from_config(config, name="cover-letter")
+        self._breaker = self._runtime.breaker
 
     def _get_client(self) -> Any:
         """Lazy-load instructor client."""
@@ -250,7 +248,9 @@ class CoverLetterGenerator:
                 tailored_resume_text,
             )
 
-        letter = await ValidatedOutput(max_retries=1).call(_call, self._validate_cover_letter)
+        letter = await ValidatedOutput(max_retries=self._config.validation_max_retries).call(
+            _call, self._validate_cover_letter
+        )
 
         logger.info(
             "Generated cover letter for %s at %s (%d chars)",
@@ -305,7 +305,9 @@ class CoverLetterGenerator:
         async def _call() -> str:
             return await self._complete(user_message)
 
-        return await ValidatedOutput(max_retries=1).call(_call, self._validate_cover_letter)
+        return await ValidatedOutput(max_retries=self._config.validation_max_retries).call(
+            _call, self._validate_cover_letter
+        )
 
     def _build_prompt(
         self,
