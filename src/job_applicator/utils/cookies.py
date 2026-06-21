@@ -53,3 +53,62 @@ async def load_cookies(context: BrowserContext, path: Path) -> int:
             except (ValueError, PlaywrightError) as exc:
                 logger.warning("Skipping invalid cookie %r: %s", cookie.get("name", "?"), exc)
         return added
+
+
+def _normalize_cookie(entry: Any) -> dict[str, Any] | None:
+    """Best-effort conversion of an exported cookie dict to Playwright format.
+
+    Handles common browser-extension exports (e.g. `expirationDate` instead of
+    `expires`, `sameSite: "no_restriction"`). Returns None for unusable entries.
+    """
+    if not isinstance(entry, dict):
+        return None
+    name = entry.get("name")
+    value = entry.get("value")
+    if not name or value is None:
+        return None
+    out: dict[str, Any] = {"name": str(name), "value": str(value)}
+    domain = entry.get("domain")
+    if domain:
+        out["domain"] = str(domain)
+        out["path"] = str(entry.get("path", "/"))
+    else:
+        out["url"] = str(entry.get("url", "https://www.linkedin.com"))
+    exp = entry.get("expires", entry.get("expirationDate"))
+    if isinstance(exp, int | float) and not isinstance(exp, bool) and exp > 0:
+        out["expires"] = float(exp)
+    for key in ("httpOnly", "secure"):
+        if key in entry:
+            out[key] = bool(entry[key])
+    same = entry.get("sameSite")
+    if isinstance(same, str):
+        mapped = {"no_restriction": "None", "none": "None", "lax": "Lax", "strict": "Strict"}.get(
+            same.lower()
+        )
+        if mapped:
+            out["sameSite"] = mapped
+    # Chromium rejects a SameSite=None cookie that is not Secure, so an export
+    # that omits `secure` would otherwise yield a silently-dropped session cookie.
+    if out.get("sameSite") == "None":
+        out["secure"] = True
+    return out
+
+
+def _cookiejar_to_playwright(cookie: Any) -> dict[str, Any] | None:
+    """Convert a stdlib cookiejar cookie (from browser_cookie3) to Playwright form."""
+    raw: dict[str, Any] = {
+        "name": cookie.name,
+        "value": cookie.value,
+        "domain": cookie.domain,
+        "path": cookie.path or "/",
+        "secure": bool(getattr(cookie, "secure", False)),
+    }
+    expires = getattr(cookie, "expires", None)
+    if expires:
+        raw["expires"] = expires
+    # cookiejar keeps httpOnly as a nonstandard attr (browser_cookie3 sets it);
+    # propagate it so the imported cookie matches the real browser cookie.
+    rest = getattr(cookie, "_rest", None) or {}
+    if any(str(key).lower() == "httponly" for key in rest):
+        raw["httpOnly"] = True
+    return _normalize_cookie(raw)
