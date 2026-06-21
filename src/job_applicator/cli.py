@@ -19,7 +19,7 @@ from rich.table import Table
 
 from job_applicator import __version__
 from job_applicator.config import AppSettings, LLMConfig
-from job_applicator.exceptions import JobApplicatorError
+from job_applicator.exceptions import CookieError, JobApplicatorError
 from job_applicator.factories import (
     _make_applicator,
     _make_browser,
@@ -30,14 +30,14 @@ from job_applicator.models import BatchRunSpec, DoctorReport, UserProfile
 from job_applicator.state import ApplicationState
 from job_applicator.utils.console import console
 from job_applicator.utils.cookies import (
-    _cookiejar_to_playwright,
+    _cookies_from_browser,
     _normalize_cookie,
+    _site_specs,
     save_cookies,
 )
 from job_applicator.utils.diff import render_diff
 from job_applicator.utils.llm import SERVE_SCRIPT, LLMRuntime
 from job_applicator.utils.logging import setup_logging
-from job_applicator.utils.url import host_matches
 from job_applicator.utils.verbose import VerboseReporter
 
 if TYPE_CHECKING:
@@ -397,96 +397,6 @@ def login(
         raise typer.Exit(1)
 
 
-def _cookies_from_browser(browser: str, base_domain: str) -> list[dict[str, Any]]:
-    """Read a site's cookies directly from a local browser's cookie store.
-
-    Uses browser_cookie3, which decrypts the browser's on-disk cookie database —
-    this reaches httpOnly cookies (like LinkedIn `li_at` or Cloudflare
-    `cf_clearance`) that page scripts cannot. Only invoked via `--from-browser`.
-    """
-    try:
-        import browser_cookie3
-    except ImportError as exc:
-        console.print(
-            "[red]--from-browser needs the optional dependency: "
-            'pip install "job-applicator[browser]"[/red]'
-        )
-        raise typer.Exit(1) from exc
-
-    loaders = {
-        "chrome": browser_cookie3.chrome,
-        "chromium": browser_cookie3.chromium,
-        "brave": browser_cookie3.brave,
-        "edge": browser_cookie3.edge,
-        "firefox": browser_cookie3.firefox,
-    }
-    loader = loaders.get(browser.lower())
-    if loader is None:
-        console.print(f"[red]Unsupported browser '{browser}'. Choose: {', '.join(loaders)}.[/red]")
-        raise typer.Exit(1)
-    try:
-        jar = loader(domain_name=base_domain)
-    except Exception as exc:  # browser_cookie3 raises various OS/keyring/db errors
-        console.print(
-            f"[red]Could not read {browser} cookies: {exc}. Is {browser} installed and your "
-            "login keyring unlocked?[/red]"
-        )
-        raise typer.Exit(1) from exc
-    # browser_cookie3's domain filter is a SUBSTRING match, so it can sweep in
-    # look-alike hosts (e.g. notlinkedin.com); keep only genuine site cookies.
-    return [
-        c
-        for c in (_cookiejar_to_playwright(ck) for ck in jar)
-        if c and host_matches(str(c.get("domain", "")), base_domain)
-    ]
-
-
-@dataclass(frozen=True)
-class _SiteSpec:
-    """Per-board rules for ``import-cookies``, so the command body stays board-agnostic.
-
-    ``required_cookie`` is a hard gate (absent => refuse, since the session can't
-    work without it). ``preferred_cookie`` is a soft signal (absent => warn but
-    save). ``session_flags`` enables the LinkedIn ``--li-at``/``--jsessionid``
-    seed inputs. ``feed_verify`` runs the post-import logged-in feed check.
-    """
-
-    cookie_path: Path
-    base_domain: str
-    required_cookie: str | None
-    preferred_cookie: str | None
-    session_flags: bool
-    feed_verify: bool
-
-
-def _site_specs() -> dict[str, _SiteSpec]:
-    from job_applicator.scrapers.indeed import IndeedScraper
-    from job_applicator.scrapers.linkedin import LinkedInScraper
-
-    return {
-        # li_at is the LinkedIn session token: nothing authenticates without it.
-        "linkedin": _SiteSpec(
-            cookie_path=LinkedInScraper.COOKIE_PATH,
-            base_domain="linkedin.com",
-            required_cookie="li_at",
-            preferred_cookie=None,
-            session_flags=True,
-            feed_verify=True,
-        ),
-        # Indeed search is public — no cookie is strictly required. cf_clearance
-        # (Cloudflare) is what actually helps a warm session avoid challenges, so
-        # it's preferred-not-required; CTK and friends are mere tracking cookies.
-        "indeed": _SiteSpec(
-            cookie_path=IndeedScraper.COOKIE_PATH,
-            base_domain="indeed.com",
-            required_cookie=None,
-            preferred_cookie="cf_clearance",
-            session_flags=False,
-            feed_verify=False,
-        ),
-    }
-
-
 @app.command(name="import-cookies")
 def import_cookies(
     ctx: typer.Context,
@@ -557,7 +467,11 @@ def import_cookies(
 
     cookies: list[dict[str, Any]] = []
     if from_browser:
-        cookies = _cookies_from_browser(from_browser, spec.base_domain)
+        try:
+            cookies = _cookies_from_browser(from_browser, spec.base_domain)
+        except CookieError as exc:
+            console.print(f"[red]{escape(str(exc))}[/red]")
+            raise typer.Exit(1) from exc
         console.print(f"[green]Read {len(cookies)} {site} cookie(s) from {from_browser}.[/green]")
     elif file:
         try:

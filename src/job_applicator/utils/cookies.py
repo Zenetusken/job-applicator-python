@@ -1,16 +1,20 @@
-"""Shared cookie persistence + resilient loading for board scrapers."""
+"""Shared cookie logic for board scrapers: persistence, resilient loading, format
+conversion, browser-store import, and per-board import policy."""
 
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from playwright.async_api import BrowserContext
 from playwright.async_api import Error as PlaywrightError
 
+from job_applicator.exceptions import CookieError
 from job_applicator.utils.logging import get_logger
 from job_applicator.utils.secure_store import write_secret_json
+from job_applicator.utils.url import host_matches
 
 logger = get_logger("cookies")
 
@@ -112,3 +116,93 @@ def _cookiejar_to_playwright(cookie: Any) -> dict[str, Any] | None:
     if any(str(key).lower() == "httponly" for key in rest):
         raw["httpOnly"] = True
     return _normalize_cookie(raw)
+
+
+def _cookies_from_browser(browser: str, base_domain: str) -> list[dict[str, Any]]:
+    """Read a site's cookies directly from a local browser's cookie store.
+
+    Uses browser_cookie3, which decrypts the browser's on-disk cookie database —
+    this reaches httpOnly cookies (like LinkedIn ``li_at`` or Cloudflare
+    ``cf_clearance``) that page scripts cannot. Only invoked via ``--from-browser``.
+
+    Raises ``CookieError`` (with a user-facing message) on a missing optional
+    dependency, an unsupported browser, or an unreadable cookie store — the CLI
+    catches it and renders the message; pure utils stay free of typer/console.
+    """
+    try:
+        import browser_cookie3
+    except ImportError as exc:
+        raise CookieError(
+            '--from-browser needs the optional dependency: pip install "job-applicator[browser]"'
+        ) from exc
+
+    loaders = {
+        "chrome": browser_cookie3.chrome,
+        "chromium": browser_cookie3.chromium,
+        "brave": browser_cookie3.brave,
+        "edge": browser_cookie3.edge,
+        "firefox": browser_cookie3.firefox,
+    }
+    loader = loaders.get(browser.lower())
+    if loader is None:
+        raise CookieError(f"Unsupported browser '{browser}'. Choose: {', '.join(loaders)}.")
+    try:
+        jar = loader(domain_name=base_domain)
+    except Exception as exc:  # browser_cookie3 raises various OS/keyring/db errors
+        raise CookieError(
+            f"Could not read {browser} cookies: {exc}. Is {browser} installed and your "
+            "login keyring unlocked?"
+        ) from exc
+    # browser_cookie3's domain filter is a SUBSTRING match, so it can sweep in
+    # look-alike hosts (e.g. notlinkedin.com); keep only genuine site cookies.
+    return [
+        c
+        for c in (_cookiejar_to_playwright(ck) for ck in jar)
+        if c and host_matches(str(c.get("domain", "")), base_domain)
+    ]
+
+
+@dataclass(frozen=True)
+class _SiteSpec:
+    """Per-board rules for ``import-cookies``, so the command body stays board-agnostic.
+
+    ``required_cookie`` is a hard gate (absent => refuse, since the session can't
+    work without it). ``preferred_cookie`` is a soft signal (absent => warn but
+    save). ``session_flags`` enables the LinkedIn ``--li-at``/``--jsessionid``
+    seed inputs. ``feed_verify`` runs the post-import logged-in feed check.
+    """
+
+    cookie_path: Path
+    base_domain: str
+    required_cookie: str | None
+    preferred_cookie: str | None
+    session_flags: bool
+    feed_verify: bool
+
+
+def _site_specs() -> dict[str, _SiteSpec]:
+    from job_applicator.scrapers.indeed import IndeedScraper
+    from job_applicator.scrapers.linkedin import LinkedInScraper
+
+    return {
+        # li_at is the LinkedIn session token: nothing authenticates without it.
+        "linkedin": _SiteSpec(
+            cookie_path=LinkedInScraper.COOKIE_PATH,
+            base_domain="linkedin.com",
+            required_cookie="li_at",
+            preferred_cookie=None,
+            session_flags=True,
+            feed_verify=True,
+        ),
+        # Indeed search is public — no cookie is strictly required. cf_clearance
+        # (Cloudflare) is what actually helps a warm session avoid challenges, so
+        # it's preferred-not-required; CTK and friends are mere tracking cookies.
+        "indeed": _SiteSpec(
+            cookie_path=IndeedScraper.COOKIE_PATH,
+            base_domain="indeed.com",
+            required_cookie=None,
+            preferred_cookie="cf_clearance",
+            session_flags=False,
+            feed_verify=False,
+        ),
+    }
