@@ -45,8 +45,14 @@ async def _tailor_workflow(
     session: TailorSession,
     result: TailoredResume,
     reporter: VerboseReporter | None,
+    yes: bool = False,
 ) -> None:
-    """Run the interactive tailor loop until the user accepts ([A]) or quits ([Q])."""
+    """Run the interactive tailor loop until the user accepts ([A]) or quits ([Q]).
+
+    ``yes`` (the ``--yes`` flag) makes it non-interactive: auto-accept the first tailored
+    version ([A]) and skip the cover-letter offer (whose own workflow is interactive) —
+    so the command never blocks on input in CI / non-tty.
+    """
     from job_applicator.cli import _llm_with_retry
 
     attempt = 0
@@ -107,9 +113,15 @@ async def _tailor_workflow(
         action_table.add_row("[Q] Quit", "Discard and exit")
         console.print(action_table)
 
-        choice = (
-            console.input("\n[bold cyan]Your choice (A/R/I/D/V/S/Q): [/bold cyan]").strip().upper()
-        )
+        if yes:
+            console.print("\n[dim]--yes: accepting this version automatically.[/dim]")
+            choice = "A"
+        else:
+            choice = (
+                console.input("\n[bold cyan]Your choice (A/R/I/D/V/S/Q): [/bold cyan]")
+                .strip()
+                .upper()
+            )
 
         if choice == "A":
             from datetime import datetime as dt
@@ -133,14 +145,20 @@ async def _tailor_workflow(
 
             # Offer cover letter generation
             cover_letter_path = None
-            cl_choice = (
-                console.input(
-                    f"\n[bold cyan]Generate a matching cover letter "
-                    f"for {job.title} at {job.company}? (Y/N): [/bold cyan]"
+            if yes:
+                # Non-interactive: skip the offer — _cover_letter_workflow is itself
+                # interactive. Use `generate-cover-letter` / `batch --cover-letter` for a
+                # non-interactive cover letter.
+                cl_choice = "N"
+            else:
+                cl_choice = (
+                    console.input(
+                        f"\n[bold cyan]Generate a matching cover letter "
+                        f"for {job.title} at {job.company}? (Y/N): [/bold cyan]"
+                    )
+                    .strip()
+                    .upper()
                 )
-                .strip()
-                .upper()
-            )
 
             if cl_choice == "Y":
                 cover_letter_path = await _cover_letter_workflow(

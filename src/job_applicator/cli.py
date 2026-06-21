@@ -1866,6 +1866,7 @@ def tailor(
             session,
             result,
             reporter,
+            yes=yes,
         )
 
     try:
