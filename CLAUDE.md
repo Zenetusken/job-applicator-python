@@ -52,6 +52,9 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
   live DOM (2026-06-15) with region auto-detection. The wall is a Cloudflare *managed JS challenge*
   that blocks headless Chrome (not TLS/JA3, not rate-limit), so Indeed runs **headed** on a clean
   profile (windowless via Xvfb) — declared by `IndeedScraper.browser_policy()`.
+  **Indeed is search/match-only:** automated apply is intentionally unsupported (Cloudflare
+  anti-bot + ToS risk), not a pending feature — the applicator returns a clean SKIPPED result
+  directing the user to apply manually. LinkedIn Easy Apply remains the only automated apply path.
 
 ## Key Design Decisions
 
