@@ -11,7 +11,13 @@ from job_applicator.config import LLMConfig
 from job_applicator.documents.cover_letter import CoverLetterGenerator
 from job_applicator.documents.resume import ResumeLoader
 from job_applicator.exceptions import DocumentError, LLMError, ResumeNotFoundError
-from job_applicator.models import JobBoard, JobListing, ResumeData, UserProfile
+from job_applicator.models import (
+    ExperienceEntry,
+    JobBoard,
+    JobListing,
+    ResumeData,
+    UserProfile,
+)
 
 
 def test_resume_loader_missing_file() -> None:
@@ -366,12 +372,20 @@ def test_cover_letter_output_model() -> None:
     assert len(output.key_points) == 2
 
 
-def test_cover_letter_system_prompt_has_examples() -> None:
-    """System prompt should contain example paragraphs."""
+def test_cover_letter_system_prompt_enforces_human_voice() -> None:
+    """System prompt must carry anti-template voice rules and NOT parroted examples.
+
+    The verbatim few-shot example paragraphs were removed deliberately: the 4B model
+    copied them into output (see the keyfigures-example-hallucination lesson). The
+    contract is now structural voice rules instead.
+    """
     from job_applicator.documents.cover_letter import SYSTEM_PROMPT
 
-    assert "EXAMPLE" in SYSTEM_PROMPT
-    assert "opening paragraph" in SYSTEM_PROMPT.lower() or "I am writing" in SYSTEM_PROMPT
+    low = SYSTEM_PROMPT.lower()
+    assert "example" not in low  # no copy-pasteable few-shot text
+    assert "vary sentence length" in low
+    assert "proven track record" in low  # named as a banned cliché
+    assert "plain prose" in low or "no markdown" in low
 
 
 def test_cover_letter_system_prompt_has_hallucination_guard() -> None:
@@ -551,3 +565,172 @@ def test_phone_extraction_accepts_real_phone() -> None:
     loader = ResumeLoader()
     assert "555" in loader._extract_phone("Call me at 555-123-4567")
     assert loader._extract_phone("Reach me: +1 (555) 123-4567").strip() != ""
+
+
+# --- Cover-letter human-voice helpers (de-AI pass) ----------------------------
+
+# A draft exhibiting the robotic tells observed in real 4B output: parroted
+# clichés, every sentence long, trailing participial clauses, and markdown leak.
+ROBOTIC_LETTER = (
+    "I am excited to apply for the Senior Backend Engineer position at Globex, "
+    "where my expertise aligns directly with your technical requirements. "
+    "At Acme Data, I architected an async ingestion system using `asyncio` that "
+    "handled two billion events daily, demonstrating my ability to design scalable systems. "
+    "I led a migration across forty services, ensuring type safety and reducing runtime errors. "
+    "I automated deployment workflows on AWS, creating a seamless environment "
+    "for high availability. "
+    "I have a proven track record of delivering resilient services, scaling rapidly "
+    "across every region, and I look forward to hearing from you."
+)
+
+# A human-sounding draft: varied cadence (short sentences present), no clichés,
+# no trailing participials, no markdown.
+HUMAN_LETTER = (
+    "I built Globex's billing pipeline three years ago. It still runs. "
+    "Now you want someone to scale it past two billion events a day, and I want that job. "
+    "At Acme I halved ingestion latency by rewriting the consumer in asyncio. "
+    "I know your stack. Let's talk."
+)
+
+
+def test_humanize_strips_inline_code_backticks() -> None:
+    assert CoverLetterGenerator._humanize("I use `asyncio` and `mypy` daily.") == (
+        "I use asyncio and mypy daily."
+    )
+
+
+def test_humanize_strips_markdown_bullets_at_line_start() -> None:
+    assert CoverLetterGenerator._humanize("Skills:\n- Python\n- asyncio") == (
+        "Skills:\nPython\nasyncio"
+    )
+
+
+def test_humanize_leaves_inline_asterisks_untouched() -> None:
+    # Asterisks are ambiguous (multiplication, ratings, footnotes); stripping them
+    # would corrupt prose like "2*3" -> "23". Only line-anchored bullets are removed.
+    text = "I improved throughput 2*3 fold and was rated 5* by clients."
+    assert CoverLetterGenerator._humanize(text) == text
+
+
+def test_humanize_strips_markdown_headings() -> None:
+    assert CoverLetterGenerator._humanize("# Heading\n\nBody text.") == "Heading\n\nBody text."
+
+
+def test_humanize_collapses_excess_blank_lines() -> None:
+    assert CoverLetterGenerator._humanize("Line one.\n\n\n\nLine two.") == "Line one.\n\nLine two."
+
+
+def test_humanize_leaves_plain_prose_untouched() -> None:
+    text = "Dear Hiring Manager, I write to apply for the role."
+    assert CoverLetterGenerator._humanize(text) == text
+
+
+def test_humanize_does_not_touch_snake_case_underscores() -> None:
+    # Underscores inside identifiers must survive (no underscore-italic stripping).
+    assert CoverLetterGenerator._humanize("Call the get_user_id helper.") == (
+        "Call the get_user_id helper."
+    )
+
+
+def test_voice_tells_flags_robotic_letter() -> None:
+    tells = CoverLetterGenerator._voice_tells(ROBOTIC_LETTER)
+    assert "markdown" in tells
+    assert any(t.startswith("cliche:") for t in tells)
+    assert "participial_tails" in tells
+    assert "no_short_sentences" in tells
+
+
+def test_voice_tells_clears_human_letter() -> None:
+    assert CoverLetterGenerator._voice_tells(HUMAN_LETTER) == []
+
+
+def test_voice_tells_ignores_trivial_text() -> None:
+    # Short/mocked text must not false-positive (keeps unit mocks from re-prompting).
+    assert CoverLetterGenerator._voice_tells("Dear Hiring Manager,\n\nCover letter text.") == []
+
+
+def test_company_in_resume_matches_structured_employer() -> None:
+    resume = ResumeData(raw_text="...", experience=[ExperienceEntry(company="Globex")])
+    assert CoverLetterGenerator._company_in_resume("Globex", resume) is True
+
+
+def test_company_in_resume_normalizes_legal_suffixes() -> None:
+    resume = ResumeData(raw_text="...", experience=[ExperienceEntry(company="Globex")])
+    assert CoverLetterGenerator._company_in_resume("globex inc.", resume) is True
+
+
+def test_company_in_resume_falls_back_to_raw_text() -> None:
+    resume = ResumeData(raw_text="Backend Engineer, Globex (2017-2021)")
+    assert CoverLetterGenerator._company_in_resume("Globex", resume) is True
+
+
+def test_company_in_resume_returns_false_when_absent() -> None:
+    resume = ResumeData(raw_text="Backend Engineer, Acme (2017-2021)")
+    assert CoverLetterGenerator._company_in_resume("Globex", resume) is False
+
+
+def test_company_in_resume_empty_company_is_false() -> None:
+    resume = ResumeData(raw_text="Backend Engineer, Globex (2017-2021)")
+    assert CoverLetterGenerator._company_in_resume("", resume) is False
+
+
+def _cl_inputs() -> tuple[JobListing, UserProfile, ResumeData]:
+    job = JobListing(title="Dev", company="Co", url="https://e.com", board=JobBoard.INDEED)
+    user = UserProfile(first_name="J", last_name="D", email="j@e.com", phone="1")
+    resume = ResumeData(raw_text="resume", skills=["Python"])
+    return job, user, resume
+
+
+@pytest.mark.asyncio
+async def test_generate_revoices_when_first_draft_is_robotic() -> None:
+    """A robotic first draft triggers ONE voice re-prompt; the cleaner retry wins."""
+    config = LLMConfig(api_base="http://localhost:8000/v1", model="m")
+    generator = CoverLetterGenerator(config)
+    generator._complete = AsyncMock(side_effect=[ROBOTIC_LETTER, HUMAN_LETTER])  # type: ignore[method-assign]
+    letter = await generator.generate(*_cl_inputs())
+    assert generator._complete.await_count == 2
+    assert CoverLetterGenerator._voice_tells(letter) == []  # cleaner retry kept
+
+
+# Two DISTINCT robotic drafts with EQUAL tell counts (one cliché each) — needed to
+# prove _devoice keeps the FIRST draft on a tie (its rule is strict `<`, not `<=`);
+# identical drafts would make the kept-draft assertion vacuous.
+_TIE_FIRST = "I have a proven track record. I ship fast. Hire me today."
+_TIE_RETRY = "I am a perfect fit for this. I work hard. Pick me now."
+
+
+@pytest.mark.asyncio
+async def test_generate_keeps_first_draft_on_tell_count_tie() -> None:
+    """On an equal tell count the FIRST draft is kept (strict `<`, never `<=`)."""
+    assert len(CoverLetterGenerator._voice_tells(_TIE_FIRST)) == 1
+    assert len(CoverLetterGenerator._voice_tells(_TIE_RETRY)) == 1
+    config = LLMConfig(api_base="http://localhost:8000/v1", model="m")
+    generator = CoverLetterGenerator(config)
+    generator._complete = AsyncMock(side_effect=[_TIE_FIRST, _TIE_RETRY])  # type: ignore[method-assign]
+    letter = await generator.generate(*_cl_inputs())
+    assert generator._complete.await_count == 2
+    assert letter == _TIE_FIRST  # the equal-tell retry must NOT replace the first draft
+
+
+@pytest.mark.asyncio
+async def test_generate_skips_revoice_when_first_draft_is_clean() -> None:
+    """A clean first draft does NOT trigger a re-prompt (no wasted LLM call)."""
+    config = LLMConfig(api_base="http://localhost:8000/v1", model="m")
+    generator = CoverLetterGenerator(config)
+    generator._complete = AsyncMock(side_effect=[HUMAN_LETTER])  # type: ignore[method-assign]
+    letter = await generator.generate(*_cl_inputs())
+    assert generator._complete.await_count == 1
+    assert letter.strip()
+
+
+@pytest.mark.asyncio
+async def test_generate_revoice_is_graceful_on_error() -> None:
+    """If the voice re-prompt errors, return the first usable draft (no raise)."""
+    config = LLMConfig(api_base="http://localhost:8000/v1", model="m")
+    generator = CoverLetterGenerator(config)
+    generator._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[ROBOTIC_LETTER, LLMError("transport blip")]
+    )
+    letter = await generator.generate(*_cl_inputs())
+    assert generator._complete.await_count == 2
+    assert letter == CoverLetterGenerator._humanize(ROBOTIC_LETTER)  # first usable draft preserved
