@@ -150,3 +150,43 @@ def test_start_run_with_reset_false_preserves_jobs(tmp_path: Path) -> None:
         reset=False,
     )
     assert state.get_job_status(run_id, str(job.url)) == BatchJobStatus.TAILORED
+
+
+def test_find_existing_run_requires_matching_params(tmp_path: Path) -> None:
+    """run_id alignment: a run with a different top_k is NOT matched, so a resume
+    can't bind a run created with different processing params and adopt new ones."""
+    state = BatchState(db_path=tmp_path / "batch.db")
+    state.start_run(
+        run_id="run-6",
+        site="linkedin",
+        query="python",
+        jobs_file=None,
+        resume_path="/tmp/resume.pdf",
+        top_k=5,
+        min_score=0.0,
+        cover_letter=True,
+    )
+    assert (
+        state.find_existing_run(
+            site="linkedin",
+            query="python",
+            jobs_file=None,
+            resume_path="/tmp/resume.pdf",
+            top_k=10,
+            min_score=0.0,
+            cover_letter=True,
+        )
+        is None
+    )
+    assert (
+        state.find_existing_run(
+            site="linkedin",
+            query="python",
+            jobs_file=None,
+            resume_path="/tmp/resume.pdf",
+            top_k=5,
+            min_score=0.0,
+            cover_letter=True,
+        )
+        == "run-6"
+    )
