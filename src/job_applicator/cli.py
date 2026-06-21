@@ -20,8 +20,15 @@ from rich.table import Table
 from job_applicator import __version__
 from job_applicator.config import AppSettings, LLMConfig
 from job_applicator.exceptions import JobApplicatorError
+from job_applicator.factories import (
+    _make_applicator,
+    _make_browser,
+    _make_runtime,
+    _make_scraper,
+)
 from job_applicator.models import BatchRunSpec, DoctorReport, UserProfile
 from job_applicator.state import ApplicationState
+from job_applicator.utils.console import console
 from job_applicator.utils.cookies import save_cookies
 from job_applicator.utils.diff import render_diff
 from job_applicator.utils.llm import SERVE_SCRIPT, LLMRuntime
@@ -30,9 +37,7 @@ from job_applicator.utils.url import host_matches
 from job_applicator.utils.verbose import VerboseReporter
 
 if TYPE_CHECKING:
-    from job_applicator.applicators.base import BaseApplicator
     from job_applicator.batch_state import BatchState
-    from job_applicator.browser.manager import BrowserManager
     from job_applicator.documents.tone_detector import ToneProfile
     from job_applicator.models import (
         ApplicationResult,
@@ -44,14 +49,12 @@ if TYPE_CHECKING:
         StyleGuide,
         TailoredResume,
     )
-    from job_applicator.scrapers.base import BaseScraper
 
 app = typer.Typer(
     name="job-applicator",
     help="Automated job application tool with AI-powered cover letters.",
     add_completion=False,
 )
-console = Console()
 
 T = TypeVar("T")
 
@@ -3104,75 +3107,6 @@ def _get_settings(headed: bool = False) -> AppSettings:
     if headed:
         settings.browser.headless = False
     return settings
-
-
-def _scraper_class(site: str) -> type[BaseScraper]:
-    """Resolve a board's scraper class, or exit if unsupported.
-
-    Site validation lives here so it happens BEFORE any browser is launched.
-    """
-    if site == "linkedin":
-        from job_applicator.scrapers.linkedin import LinkedInScraper
-
-        return LinkedInScraper
-    if site == "indeed":
-        from job_applicator.scrapers.indeed import IndeedScraper
-
-        return IndeedScraper
-    console.print(f"[yellow]{site} scraper not yet implemented[/yellow]")
-    raise typer.Exit(1)
-
-
-def _make_browser(site: str, settings: AppSettings) -> BrowserManager:
-    """Build a browser per the board's declared ``BrowserPolicy``.
-
-    The policy lives on the scraper class (not here), so a board's anti-bot needs
-    can't drift from the CLI and every caller building a browser gets them right.
-    Indeed declares headed + ephemeral-profile + virtual-display (its Cloudflare
-    managed challenge fails headless); LinkedIn keeps the default headless shared
-    profile. ``--headed`` (config headless=False) shows a real window instead of a
-    virtual one. Validates the site before constructing anything (so an unknown
-    board never launches a browser).
-    """
-    from job_applicator.browser.manager import BrowserManager
-
-    policy = _scraper_class(site).browser_policy()
-    cfg = settings.browser
-    if policy.headed:
-        cfg = cfg.model_copy(update={"headless": False})
-    # Use a virtual display only when forcing headed AND the user didn't ask to
-    # watch (--headed leaves config headless=False → show a real window).
-    use_virtual = policy.virtual_display and settings.browser.headless
-    return BrowserManager(
-        cfg, ephemeral_profile=policy.ephemeral_profile, virtual_display=use_virtual
-    )
-
-
-def _make_scraper(site: str, browser: BrowserManager, settings: AppSettings) -> BaseScraper:
-    """Construct the scraper for a job board, or exit if unsupported."""
-    return _scraper_class(site)(browser, settings)
-
-
-def _make_applicator(site: str, browser: BrowserManager, settings: AppSettings) -> BaseApplicator:
-    """Construct the applicator for a job board, or exit if unsupported."""
-    if site == "linkedin":
-        from job_applicator.applicators.linkedin import LinkedInApplicator
-
-        return LinkedInApplicator(browser, settings)
-    if site == "indeed":
-        from job_applicator.applicators.indeed import IndeedApplicator
-
-        return IndeedApplicator(browser, settings)
-    console.print(f"[yellow]{site} applicator not yet implemented[/yellow]")
-    raise typer.Exit(1)
-
-
-def _make_runtime(settings: AppSettings, name: str = "llm") -> LLMRuntime:
-    """Build the per-command LLM resilience runtime (shared circuit breaker +
-    validation-retry policy) from settings — constructed once per command and shared
-    across its LLM consumers (cover-letter + résumé tailoring), so the breaker spans
-    the whole run. Named "llm" (neutral) since one breaker now guards both."""
-    return LLMRuntime.from_config(settings.llm_resilience, name=name)
 
 
 def _load_user_profile(settings: AppSettings) -> UserProfile:

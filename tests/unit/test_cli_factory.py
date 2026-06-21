@@ -9,8 +9,8 @@ from __future__ import annotations
 import pytest
 import typer
 
-from job_applicator.cli import _make_browser, _scraper_class
 from job_applicator.config import AppSettings
+from job_applicator.factories import _make_browser, _scraper_class
 from job_applicator.scrapers.linkedin import LinkedInScraper
 
 
