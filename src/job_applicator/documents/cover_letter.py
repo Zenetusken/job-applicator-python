@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -20,6 +21,7 @@ from job_applicator.utils.llm import (
 )
 from job_applicator.utils.logging import get_logger
 from job_applicator.utils.retry import async_retry
+from job_applicator.utils.text import contains_word
 
 logger = get_logger("documents.cover_letter")
 
@@ -33,37 +35,54 @@ class CoverLetterOutput(BaseModel):
     )
 
 
-SYSTEM_PROMPT = """You are a professional cover letter writer. Generate a tailored cover letter.
+# Curated, high-precision AI clichés. Kept narrow on purpose: a blocklist that
+# over-reaches just flags ordinary prose. SINGLE SOURCE OF TRUTH — the SYSTEM_PROMPT
+# ban list is derived from this, and _voice_tells scores against it, so the
+# instruction the model gets and the detector that grades it can never drift apart.
+_CLICHES = (
+    "proven track record",
+    "i am excited to apply",
+    "i am writing to express my interest",
+    "drive your",
+    "more than just",
+    "wealth of experience",
+    "passionate about",
+    "team player",
+    "hit the ground running",
+    "look forward to hearing from you",
+    "fast-paced environment",
+    "do not hesitate",
+    "perfect fit",
+)
+_BANNED_PHRASES = "; ".join(f'"{c}"' for c in _CLICHES)
 
-Guidelines:
-- Be specific to the job and company
-- Highlight relevant experience and skills from the resume
-- Keep it concise (3-4 paragraphs, 300-400 words)
-- Do not use placeholder text like [Company Name]
-- Do not repeat the entire resume
-- Do not invent experience, skills, or qualifications not in the resume
-- Mirror the job posting's language and terminology
-- End with a clear call to action
-- Write in first person ("I am excited to apply...")
-- When a TONE directive is provided, follow it precisely:
-  - Use the specified action verbs naturally in your writing
-  - Emphasize the listed themes where relevant
-  - Avoid the listed patterns entirely
-  - Match the vocabulary and sentence style of the tone
-- When no tone directive is provided, use a professional but personable tone
+SYSTEM_PROMPT = f"""You are a cover letter writer. Write a tailored cover letter that reads \
+like a specific person wrote it for this specific role — not like AI-generated boilerplate.
 
-EXAMPLE — strong opening paragraph:
-"I am writing to express my interest in the Help Desk Analyst position at
-Acme Corp. With over five years of experience in IT support and a proven
-track record of resolving complex technical issues, I am confident in my
-ability to contribute to your team's commitment to exceptional customer
-service."
+Content rules:
+- Use only experience, skills, and facts present in the resume and job description. Do not \
+invent metrics, employers, problem domains, or qualifications not in the resume.
+- Highlight the most relevant experience; do not restate the whole resume.
+- Include exactly ONE concrete, specific detail that ties this applicant to THIS company or role.
+- Keep it to 3-4 paragraphs (250-350 words), first person.
+- Do not use placeholder text like [Company Name] or [Date]; use the real values provided.
+- End with a brief, direct call to action.
 
-EXAMPLE — strong closing paragraph:
-"I would welcome the opportunity to discuss how my technical support
-experience and ServiceNow expertise align with Acme Corp's needs. I am
-available for an interview at your convenience and look forward to hearing
-from you." """
+Voice rules — these are what separate human writing from AI writing, follow them strictly:
+- Vary sentence length. Include at least one short sentence (under eight words). Never write \
+paragraph after paragraph of uniform ~30-word sentences.
+- Write plain prose only. No markdown, no bullet points, no bold, and no backticks around \
+terms like asyncio or mypy.
+- State accomplishments directly. Do NOT stack trailing "-ing" clauses such as \
+"..., demonstrating my ability to..." or "..., ensuring...".
+- Avoid cliché filler. Do NOT use any of these phrases: {_BANNED_PHRASES}.
+- Be specific instead of grand: one real detail beats three superlatives.
+
+Tone directive:
+- When a TONE directive is provided, follow it precisely: use the specified action verbs \
+naturally, emphasize the listed themes, avoid the listed patterns, and match its vocabulary \
+and sentence style.
+- When no tone directive is provided, use a professional but personable tone."""
 
 
 class CoverLetterGenerator:
@@ -134,6 +153,119 @@ class CoverLetterGenerator:
         placeholder_pattern = rf"\[\s*(?:{placeholders})\s*\]"
         if re.search(placeholder_pattern, text, re.IGNORECASE):
             raise LLMError("Generated cover letter contains placeholder text")
+
+    @staticmethod
+    def _humanize(text: str) -> str:
+        """Deterministically strip markdown the LLM leaks into prose.
+
+        Conservative on purpose. Removes only formatting an applicant would never
+        type in a letter: code backticks, and markdown headings/bullets anchored at
+        the start of a line. Inline ``*``/``**`` are left ALONE — stripping them
+        would mis-pair on a literal asterisk (``2*3`` -> ``23``) and silently
+        corrupt real prose; stray emphasis is handled by the ``markdown`` voice-tell
+        and re-prompt instead. Underscores survive so identifiers like
+        ``get_user_id`` are untouched.
+
+        May return an empty string for all-markdown input; callers keep the
+        validated original in that case.
+        """
+        text = text.replace("`", "")
+        text = re.sub(r"(?m)^[ \t]*#{1,6}[ \t]*", "", text)  # markdown headings
+        text = re.sub(r"(?m)^[ \t]*[-*+][ \t]+", "", text)  # markdown bullets (line-anchored)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+    @staticmethod
+    def _voice_tells(text: str) -> list[str]:
+        """Detect robotic-writing tells. A measurement instrument (and re-prompt
+        signal): the more tells, the more the draft reads as AI-generated.
+
+        High-precision by design — conservative thresholds so short or mocked text
+        does not false-positive.
+        """
+        tells: list[str] = []
+        if "`" in text or "**" in text:
+            tells.append("markdown")
+        low = text.lower()
+        tells.extend(f"cliche:{c}" for c in _CLICHES if c in low)
+        # Split on sentence-ending punctuation followed by whitespace or end-of-text,
+        # so a decimal ("3.5 years", "99.9%") is NOT treated as a sentence boundary —
+        # which would inject a phantom short fragment and suppress no_short_sentences.
+        sentences = [s for s in re.split(r"[.!?]+(?:\s|$)", text) if s.strip()]
+        if len(sentences) >= 4 and not any(len(s.split()) < 8 for s in sentences):
+            tells.append("no_short_sentences")
+        if len(re.findall(r",\s+\w+ing\b", text)) >= 3:
+            tells.append("participial_tails")
+        return tells
+
+    @staticmethod
+    def _company_in_resume(company: str, resume: ResumeData) -> bool:
+        """True if the target company also appears as an employer on the resume.
+
+        Drives an entity-collision note so the letter doesn't say "my former role
+        at X" while applying to X. Normalizes case and legal suffixes; falls back
+        to a normalized scan of the raw resume text when experience isn't structured.
+        """
+
+        def norm(s: str) -> str:
+            s = re.sub(r"[.,]", "", s.lower())
+            stripped = re.sub(r"\b(inc|llc|ltd|corp|corporation|co|company|gmbh|plc)\b", "", s)
+            stripped = re.sub(r"\s+", " ", stripped).strip()
+            # Keep the un-stripped form if suffix removal emptied it (a company
+            # literally named "Co"/"Inc"/"Company" must not normalize to "").
+            return stripped or re.sub(r"\s+", " ", s).strip()
+
+        target = norm(company)
+        if not target:
+            return False
+        if any(exp.company and norm(exp.company) == target for exp in resume.experience):
+            return True
+        # Whole-token match (utils.text.contains_word), NOT bare substring: "Ace"
+        # must not match inside "marketplace" and inject a false returning-candidate note.
+        return contains_word(norm(resume.raw_text), target)
+
+    @classmethod
+    def _voice_correction(cls, tells: list[str]) -> str:
+        """Targeted re-prompt suffix naming the exact tells to fix.
+
+        Specific corrective feedback ("you did X — fix X") moves a small model more
+        than a general instruction it already ignored on the first pass.
+        """
+        issues: list[str] = []
+        if "no_short_sentences" in tells:
+            issues.append(
+                "vary sentence length — include at least two short sentences (under 8 words)"
+            )
+        if "participial_tails" in tells:
+            issues.append("remove trailing '-ing' clauses; state each point as its own sentence")
+        if "markdown" in tells:
+            issues.append("remove all markdown and backticks")
+        cliches = [t.split(":", 1)[1] for t in tells if t.startswith("cliche:")]
+        if cliches:
+            issues.append("delete these cliché phrases entirely: " + "; ".join(cliches))
+        return (
+            "\n\nRevise the previous draft to fix: "
+            + "; ".join(issues)
+            + ". Keep the same facts and structure; change only the wording."
+        )
+
+    async def _devoice(self, letter: str, regen: Callable[[str], Awaitable[str]]) -> str:
+        """Graceful, single-shot voice backstop.
+
+        If the (already hard-validated, humanized) draft still trips ``_voice_tells``,
+        re-prompt ONCE with targeted feedback and keep whichever draft has fewer
+        tells. Never raises and never returns a worse draft — the original always
+        stands if the retry is unusable, errors, or isn't an improvement.
+        """
+        tells = self._voice_tells(letter)
+        if not tells:
+            return letter
+        try:
+            retry = self._humanize(await regen(self._voice_correction(tells)))
+            self._validate_cover_letter(retry)
+        except (LLMError, CircuitOpenError):
+            return letter
+        return retry if len(self._voice_tells(retry)) < len(tells) else letter
 
     async def _complete(self, user_message: str) -> str:
         """Run ONE cover-letter completion, hardened in a single place.
@@ -262,6 +394,22 @@ class CoverLetterGenerator:
         letter = await ValidatedOutput(max_retries=self._runtime.validation_max_retries).call(
             _call, self._validate_cover_letter
         )
+        # Keep the validated draft if _humanize strips it to nothing (all-markdown
+        # input) — never return empty past the ValidatedOutput empty-letter guard.
+        letter = self._humanize(letter) or letter
+
+        async def _regen(correction: str) -> str:
+            return await self._generate_raw(
+                job,
+                user,
+                resume,
+                style_guide,
+                tone_section,
+                tailored_resume_text,
+                correction=correction,
+            )
+
+        letter = await self._devoice(letter, _regen)
 
         logger.info(
             "Generated cover letter for %s at %s (%d chars)",
@@ -318,9 +466,15 @@ class CoverLetterGenerator:
                 msg += f"\n\nThe previous draft was rejected ({prev}). Return a corrected version."
             return await self._complete(msg)
 
-        return await ValidatedOutput(max_retries=self._runtime.validation_max_retries).call(
+        validated = await ValidatedOutput(max_retries=self._runtime.validation_max_retries).call(
             _call, self._validate_cover_letter
         )
+        letter = self._humanize(validated) or validated
+
+        async def _regen(correction: str) -> str:
+            return await self._complete(user_message + correction)
+
+        return await self._devoice(letter, _regen)
 
     def _build_prompt(
         self,
@@ -342,6 +496,17 @@ class CoverLetterGenerator:
 
         if job.description:
             parts.extend(["", "Job Description:", job.description])
+
+        if self._company_in_resume(job.company, resume):
+            parts.extend(
+                [
+                    "",
+                    f"NOTE: The applicant previously worked at {job.company} (it appears on "
+                    f"their resume). If relevant, acknowledge this naturally as a returning "
+                    f"candidate. Do NOT describe it as 'my former role at {job.company}' as if "
+                    f"it were a different employer.",
+                ]
+            )
 
         parts.extend(
             [
