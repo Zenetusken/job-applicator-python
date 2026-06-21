@@ -373,7 +373,7 @@ def test_config_init_uses_llmconfig_defaults(tmp_path: Path) -> None:
 
 
 async def test_browser_check_detects_missing_playwright(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(diagnostics, "async_playwright", None)
+    monkeypatch.setattr(diagnostics, "_get_async_playwright", lambda: None)
     res = await diagnostics.check_browser()
     assert not res.playwright_installed
     assert res.error
@@ -393,7 +393,7 @@ async def test_browser_check_reports_executable(monkeypatch: pytest.MonkeyPatch)
         async def __aexit__(self, *args: object) -> bool:
             return False
 
-    monkeypatch.setattr(diagnostics, "async_playwright", lambda: _FakeContext())
+    monkeypatch.setattr(diagnostics, "_get_async_playwright", lambda: lambda: _FakeContext())
     res = await diagnostics.check_browser()
     assert res.playwright_installed
     assert res.chromium_executable == "/fake/chromium"

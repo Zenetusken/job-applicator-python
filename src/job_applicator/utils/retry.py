@@ -59,8 +59,14 @@ def async_retry(
     base_delay: float = 1.0,
     max_delay: float = 30.0,
     exceptions: tuple[type[Exception], ...] = (Exception,),
+    exclude: tuple[type[Exception], ...] = (),
 ) -> Callable[[F], F]:
-    """Decorator for retrying async functions with exponential backoff."""
+    """Decorator for retrying async functions with exponential backoff.
+
+    ``exclude`` types are never retried even if they match ``exceptions`` (they
+    are a subset to fail fast on — e.g. a circuit-breaker-open error, which a
+    retry would only re-hit against the same open breaker).
+    """
 
     def decorator(func: F) -> F:
         @functools.wraps(func)
@@ -69,6 +75,8 @@ def async_retry(
             for attempt in range(1, max_attempts + 1):
                 try:
                     return await func(*args, **kwargs)
+                except exclude:
+                    raise
                 except exceptions as exc:
                     last_exc = exc
                     if attempt == max_attempts:

@@ -7,6 +7,8 @@ re-tailoring every job from scratch.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -89,11 +91,24 @@ class BatchState:
                 f"Cannot create state directory {self._path.parent}: {exc}"
             ) from exc
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """Yield a connection inside a transaction, always CLOSING it.
+
+        ``with sqlite3.connect(...) as conn`` commits on exit but never closes the
+        connection (it relies on CPython refcount GC). Wrapping it here closes
+        deterministically while preserving the commit/rollback transaction —
+        important for a store hit many times during a batch run.
+        """
         try:
-            return sqlite3.connect(str(self._path), timeout=5.0)
+            conn = sqlite3.connect(str(self._path), timeout=5.0)
         except sqlite3.Error as exc:
             raise BatchStateError(f"Cannot open state database {self._path}: {exc}") from exc
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _init_schema(self) -> None:
         try:
@@ -159,14 +174,24 @@ class BatchState:
         query: str | None,
         jobs_file: str | None,
         resume_path: str,
+        top_k: int,
+        min_score: float,
+        cover_letter: bool,
     ) -> str | None:
-        """Return the most recent incomplete run_id matching the parameters."""
+        """Return the most recent incomplete run_id matching ALL parameters.
+
+        Matches the same fields the caller folds into the auto ``run_id`` hash
+        (incl. top_k/min_score/cover_letter), so the two notions of "the same run"
+        agree — a resume can't bind a run created with different processing params
+        and then silently adopt the new ones.
+        """
         try:
             with self._connect() as conn:
                 row = conn.execute(
                     """
                     SELECT run_id FROM batch_runs
                     WHERE site = ? AND query IS ? AND jobs_file IS ? AND resume_path = ?
+                      AND top_k = ? AND min_score = ? AND cover_letter = ?
                       AND status = ?
                     ORDER BY updated_at DESC
                     LIMIT 1
@@ -176,6 +201,9 @@ class BatchState:
                         query,
                         jobs_file,
                         resume_path,
+                        top_k,
+                        min_score,
+                        cover_letter,
                         BatchRunStatus.RUNNING,
                     ),
                 ).fetchone()
@@ -244,11 +272,15 @@ class BatchState:
             raise BatchStateError(f"Cannot read batch job status: {exc}") from exc
 
     def list_completed_jobs(self, run_id: str) -> list[str]:
-        """Return job URLs that are already completed/cover_letter/tailored."""
+        """Return job URLs that are fully completed or explicitly skipped.
+
+        TAILORED is intentionally excluded: a crash after tailoring but before
+        the cover letter would leave the job half-done, and resuming must
+        re-process it so the cover letter is generated.
+        """
         completed = {
             BatchJobStatus.COMPLETED,
-            BatchJobStatus.COVER_LETTER,
-            BatchJobStatus.TAILORED,
+            BatchJobStatus.SKIPPED,
         }
         placeholders = ", ".join(["?"] * len(completed))
         try:

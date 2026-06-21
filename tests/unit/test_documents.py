@@ -142,11 +142,14 @@ def test_ocr_fallback_triggers_on_short_text(tmp_path: Path) -> None:
         patch.object(loader, "_run_pymupdf", return_value="  "),
         patch.object(loader, "_ocr_service", MagicMock()) as mock_ocr,
     ):
+        # OCR fallback is triggered, but if both extractors AND OCR yield less
+        # than OCR_THRESHOLD chars the loader now raises rather than silently
+        # returning an unusable ResumeData.
         mock_ocr.extract_text_from_pdf.return_value = "John Doe\nSkills: Python"
-        result = loader._load_pdf(pdf_path, ocr_mode="auto")
+        with pytest.raises(DocumentError, match="insufficient extractable text"):
+            loader._load_pdf(pdf_path, ocr_mode="auto")
 
     mock_ocr.extract_text_from_pdf.assert_called_once_with(pdf_path)
-    assert "John Doe" in result.raw_text
 
 
 def test_force_ocr_skips_text_extraction(tmp_path: Path) -> None:
@@ -205,16 +208,17 @@ def test_ocr_failure_falls_back_to_extracted_text(tmp_path: Path) -> None:
     pdf_path = tmp_path / "scanned.pdf"
     pdf_path.write_bytes(b"fake pdf bytes")
 
+    long_text = "A" * 150
     loader = ResumeLoader()
     with (
         patch.object(loader, "_run_pdftotext", return_value="short"),
-        patch.object(loader, "_run_pymupdf", return_value="Some extracted text"),
+        patch.object(loader, "_run_pymupdf", return_value=long_text),
         patch.object(loader, "_ocr_service", MagicMock()) as mock_ocr,
     ):
         mock_ocr.extract_text_from_pdf.side_effect = DocumentError("OCR failed")
         result = loader._load_pdf(pdf_path, ocr_mode="auto")
 
-    assert "Some extracted text" in result.raw_text
+    assert long_text in result.raw_text
 
 
 def test_ocr_failure_with_no_text_raises(tmp_path: Path) -> None:
@@ -491,3 +495,59 @@ class TestCoverLetterWithTone:
             )
 
         assert mock_client.create.call_args.kwargs["max_tokens"] == 1234
+
+
+def test_password_protected_pdf_detected_via_needs_pass(tmp_path: Path) -> None:
+    """M3: PyMuPDF opens an encrypted PDF without raising; needs_pass is the gate."""
+    pdf_path = tmp_path / "locked.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+    loader = ResumeLoader()
+    fake_doc = MagicMock()
+    fake_doc.needs_pass = True
+    fake_fitz = MagicMock()
+    fake_fitz.open.return_value = fake_doc
+    with patch.dict("sys.modules", {"fitz": fake_fitz}):
+        assert loader._is_password_protected(pdf_path) is True
+    fake_doc.close.assert_called_once()
+
+
+def test_unprotected_pdf_not_flagged_as_password_protected(tmp_path: Path) -> None:
+    """M3: a normal PDF (needs_pass False) is not flagged as protected."""
+    pdf_path = tmp_path / "ok.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+    loader = ResumeLoader()
+    fake_doc = MagicMock()
+    fake_doc.needs_pass = False
+    fake_fitz = MagicMock()
+    fake_fitz.open.return_value = fake_doc
+    with patch.dict("sys.modules", {"fitz": fake_fitz}):
+        assert loader._is_password_protected(pdf_path) is False
+
+
+def test_confidence_counts_headers_not_midline_mentions() -> None:
+    """Confidence counts line-anchored section HEADERS, not bare substrings."""
+    loader = ResumeLoader()
+    headers = "Experience\nEducation\nSkills\nProjects\nCertifications"
+    prose = "my experience education skills projects certifications summary blah"
+    assert loader._compute_confidence(headers) > loader._compute_confidence(prose)
+
+
+def test_confidence_vocab_aligns_with_skills_extractor() -> None:
+    """Confidence credits 'Core Competencies' (aligned with _extract_skills_section)."""
+    loader = ResumeLoader()
+    with_header = "Jane Doe\n\nCore Competencies\nPython, SQL"
+    without = "Jane Doe\n\nrandom prose mentioning competencies in a sentence"
+    assert loader._compute_confidence(with_header) > loader._compute_confidence(without)
+
+
+def test_phone_extraction_rejects_year_runs() -> None:
+    """Phone: a run of years must not be mistaken for a phone number."""
+    loader = ResumeLoader()
+    assert loader._extract_phone("Worked 2019 2020 2021 2022 2023 at Acme") == ""
+
+
+def test_phone_extraction_accepts_real_phone() -> None:
+    """Phone: normally-formatted numbers are still extracted."""
+    loader = ResumeLoader()
+    assert "555" in loader._extract_phone("Call me at 555-123-4567")
+    assert loader._extract_phone("Reach me: +1 (555) 123-4567").strip() != ""

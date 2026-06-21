@@ -72,12 +72,18 @@ def llm_call_error(exc: Exception, api_base: str) -> LLMError:
     return LLMError(f"LLM call failed: {exc}")
 
 
-def strip_thinking_process(text: str) -> str:
+def strip_thinking_process(text: str | None) -> str:
     """Remove thinking process blocks from LLM output.
 
     Some models (like Qwen) output their reasoning before the final answer.
     This function strips that out, leaving only the clean response.
+
+    ``text`` is typed ``str | None`` because litellm's ``message.content`` is
+    optional (None on an empty/all-filtered completion); a falsy value yields ""
+    so callers never hit a ``TypeError`` here.
     """
+    if not text:
+        return ""
     # Strategy: Find where the actual content starts
     # Letters start with "Dear", "Hello", etc.
     # Resumes start with a name (ALL CAPS) or contact info.
@@ -195,6 +201,15 @@ def strip_thinking_process(text: str) -> str:
     return text
 
 
+class CircuitOpenError(LLMError):
+    """Raised when a call is rejected because the circuit breaker is open.
+
+    A distinct subclass so retry layers can fail FAST on it (excluding it from
+    their retryable set) — retrying a circuit-open rejection only re-hits the
+    same open breaker and burns backoff before surfacing the same error.
+    """
+
+
 class CircuitBreaker:
     """Simple in-memory circuit breaker for LLM calls.
 
@@ -252,7 +267,7 @@ class CircuitBreaker:
         """Invoke ``func`` unless the circuit is open."""
         if self._is_open():
             remaining = int((self._open_until or 0) - self._now())
-            raise LLMError(
+            raise CircuitOpenError(
                 f"LLM circuit breaker '{self.name}' is open — too many recent failures. "
                 f"Wait {remaining}s or check the endpoint with `job-applicator doctor`."
             )

@@ -17,6 +17,7 @@ use only the match/tailor pipeline and intentionally skip browser features.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import tomllib
@@ -51,8 +52,6 @@ def _get_async_playwright() -> Any:
         return None
     return async_playwright
 
-
-async_playwright = _get_async_playwright()
 
 logger = get_logger("diagnostics")
 
@@ -183,6 +182,7 @@ def _hf_get_token_via_lib() -> str | None:
 
 async def check_browser() -> BrowserCheck:
     """Check that Playwright is installed and can locate a Chromium executable."""
+    async_playwright = _get_async_playwright()
     if async_playwright is None:
         return BrowserCheck(
             playwright_installed=False,
@@ -273,12 +273,17 @@ def check_config(settings: AppSettings) -> ConfigCheck:
 
 
 async def run_diagnostics(settings: AppSettings) -> DoctorReport:
-    """Run every check and assemble the report (only an HTTP-200 /models is blocking)."""
+    """Run every check and assemble the report (only an HTTP-200 /models is blocking).
+
+    The two independent async probes (LLM endpoint + browser launch) run
+    concurrently; the remaining checks are sync filesystem/shutil lookups.
+    """
+    llm, browser = await asyncio.gather(check_llm_endpoint(settings.llm), check_browser())
     return DoctorReport(
-        llm=await check_llm_endpoint(settings.llm),
+        llm=llm,
         embeddings=check_embeddings(settings.embedding),
         self_host=check_self_host(),
-        browser=await check_browser(),
+        browser=browser,
         system=check_system_binaries(),
         config=check_config(settings),
     )

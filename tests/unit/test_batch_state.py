@@ -55,6 +55,9 @@ def test_find_existing_run(tmp_path: Path) -> None:
         query="python",
         jobs_file=None,
         resume_path="/tmp/resume.pdf",
+        top_k=5,
+        min_score=0.0,
+        cover_letter=True,
     )
     assert found == "run-2"
 
@@ -63,6 +66,9 @@ def test_find_existing_run(tmp_path: Path) -> None:
         query="python",
         jobs_file=None,
         resume_path="/tmp/resume.pdf",
+        top_k=5,
+        min_score=0.0,
+        cover_letter=True,
     )
     assert not_found is None
 
@@ -109,6 +115,9 @@ def test_complete_run(tmp_path: Path) -> None:
         query=None,
         jobs_file=None,
         resume_path="/tmp/resume.pdf",
+        top_k=5,
+        min_score=0.0,
+        cover_letter=False,
     )
     assert found is None
 

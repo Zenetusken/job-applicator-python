@@ -8,6 +8,8 @@ applications.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -57,11 +59,23 @@ class ApplicationState:
         except OSError as exc:
             raise StateError(f"Cannot create state directory {self._path.parent}: {exc}") from exc
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """Yield a connection inside a transaction, always CLOSING it.
+
+        ``with sqlite3.connect(...) as conn`` commits on exit but never closes the
+        connection (it relies on CPython refcount GC). Wrapping it here closes
+        deterministically while preserving the commit/rollback transaction.
+        """
         try:
-            return sqlite3.connect(str(self._path), timeout=5.0)
+            conn = sqlite3.connect(str(self._path), timeout=5.0)
         except sqlite3.Error as exc:
             raise StateError(f"Cannot open state database {self._path}: {exc}") from exc
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _init_schema(self) -> None:
         try:
@@ -112,6 +126,10 @@ class ApplicationState:
         """Return True if an application for ``url`` exists matching the filters."""
         if statuses is None:
             statuses = {ApplicationStatus.SUBMITTED}
+        if not statuses:
+            # An explicit empty set matches no status; avoid emitting `IN ()`,
+            # which is a SQLite syntax error.
+            return False
         status_placeholders = ", ".join(["?"] * len(statuses))
         status_values = [s.value for s in statuses]
         params: list[Any] = [url]
@@ -135,7 +153,12 @@ class ApplicationState:
             raise StateError(f"Cannot read application state: {exc}") from exc
 
     def count_today(self, board: str | None = None) -> int:
-        """Count real applications submitted since local midnight."""
+        """Count real (SUBMITTED) applications since UTC midnight (start of the UTC day).
+
+        Uses UTC consistently with ``ApplicationResult.timestamp`` (also UTC), so the
+        stored ISO strings and this bound compare correctly as TEXT. Only SUBMITTED
+        rows count — dry-run/skipped/failed attempts don't consume the daily cap.
+        """
         today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         board_clause = ""
         params: list[Any] = [today.isoformat(), ApplicationStatus.SUBMITTED.value]
