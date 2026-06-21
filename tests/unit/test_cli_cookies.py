@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from job_applicator.cli import _cookiejar_to_playwright, _normalize_cookie
+from job_applicator.utils.cookies import _cookiejar_to_playwright, _normalize_cookie
 
 
 def test_normalize_extension_format() -> None:
