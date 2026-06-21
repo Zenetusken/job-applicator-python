@@ -154,7 +154,7 @@ async def test_validated_output_retries_on_validation_failure() -> None:
 
     calls = 0
 
-    async def producer() -> str:
+    async def producer(prev: object) -> str:
         nonlocal calls
         calls += 1
         return "bad" if calls == 1 else "good"
@@ -172,7 +172,7 @@ async def test_validated_output_gives_up_after_retries() -> None:
     from job_applicator.exceptions import LLMError
     from job_applicator.utils.llm import ValidatedOutput
 
-    async def producer() -> str:
+    async def producer(prev: object) -> str:
         return "bad"
 
     def validator(value: str) -> None:
@@ -180,6 +180,27 @@ async def test_validated_output_gives_up_after_retries() -> None:
 
     with pytest.raises(LLMError, match="always bad"):
         await ValidatedOutput(max_retries=1).call(producer, validator)
+
+
+async def test_validated_output_feeds_prior_error_to_retry() -> None:
+    """Cycle 2a: the retry receives the prior validation error so it can re-prompt."""
+    from job_applicator.exceptions import LLMError
+    from job_applicator.utils.llm import ValidatedOutput
+
+    seen: list[object] = []
+
+    async def producer(prev: object) -> str:
+        seen.append(prev)
+        return "bad" if len(seen) == 1 else "good"
+
+    def validator(value: str) -> None:
+        if value != "good":
+            raise LLMError("placeholder text")
+
+    result = await ValidatedOutput(max_retries=1).call(producer, validator)
+    assert result == "good"
+    assert seen[0] is None  # first attempt: no prior error
+    assert isinstance(seen[1], LLMError)  # retry: fed the validation error
 
 
 def test_strip_thinking_process_none_returns_empty() -> None:
@@ -250,14 +271,130 @@ async def test_async_retry_retries_transport_error() -> None:
     assert calls == 2
 
 
-def test_cover_letter_generator_breaker_is_injectable() -> None:
-    """M1: breaker is injectable for tests; defaults to the process-shared instance."""
+def test_cover_letter_generator_runtime_is_injectable() -> None:
+    """Cycle 1: breaker is injected via an LLMRuntime context object; the default is
+    built from config — no module-global remains."""
     from job_applicator.config import LLMConfig
     from job_applicator.documents import cover_letter
     from job_applicator.documents.cover_letter import CoverLetterGenerator
+    from job_applicator.utils.llm import CircuitBreaker, LLMRuntime
+
+    runtime = LLMRuntime(breaker=CircuitBreaker(name="test"))
+    assert CoverLetterGenerator(LLMConfig(), runtime=runtime)._breaker is runtime.breaker
+    # No shared module-global; the default generator builds its own from config.
+    assert not hasattr(cover_letter, "_CIRCUIT_BREAKER")
+    gen = CoverLetterGenerator(LLMConfig())
+    assert gen._breaker is gen._runtime.breaker
+
+
+def test_circuit_breaker_from_config_uses_thresholds() -> None:
+    """Cycle 1b (item 3): breaker thresholds come from LLMResilienceConfig."""
+    from job_applicator.config import LLMResilienceConfig
     from job_applicator.utils.llm import CircuitBreaker
 
-    injected = CircuitBreaker(name="test")
-    assert CoverLetterGenerator(LLMConfig(), breaker=injected)._breaker is injected
-    # Default is the shared module-level breaker (must span jobs in a batch run).
-    assert CoverLetterGenerator(LLMConfig())._breaker is cover_letter._CIRCUIT_BREAKER
+    resilience = LLMResilienceConfig(
+        failure_threshold=5,
+        window_seconds=10.0,
+        recovery_timeout_seconds=7.0,
+    )
+    breaker = CircuitBreaker.from_config(resilience, name="x")
+    assert breaker.failure_threshold == 5
+    assert breaker.window_seconds == 10.0
+    assert breaker.recovery_timeout_seconds == 7.0
+    assert breaker.name == "x"
+
+
+def test_llm_runtime_from_config_carries_policy() -> None:
+    """Cycle 1b: LLMRuntime carries the breaker AND validation_max_retries from config."""
+    from job_applicator.config import LLMResilienceConfig
+    from job_applicator.utils.llm import LLMRuntime
+
+    runtime = LLMRuntime.from_config(
+        LLMResilienceConfig(failure_threshold=4, validation_max_retries=3), name="x"
+    )
+    assert runtime.breaker.failure_threshold == 4
+    assert runtime.breaker.name == "x"
+    assert runtime.validation_max_retries == 3
+
+
+async def test_breaker_half_open_admits_one_probe_and_closes_on_success() -> None:
+    """Cycle 1 (item 2): after cooldown the breaker admits a probe; success closes it."""
+    from job_applicator.exceptions import LLMError
+    from job_applicator.utils.llm import CircuitBreaker
+
+    breaker = CircuitBreaker(failure_threshold=1, recovery_timeout_seconds=0.0)
+
+    async def fail() -> str:
+        raise LLMError("boom")
+
+    async def ok() -> str:
+        return "ok"
+
+    with pytest.raises(LLMError, match="boom"):
+        await breaker.call(fail)  # trips OPEN; recovery 0 → HALF_OPEN immediately
+    assert await breaker.call(ok) == "ok"  # the half-open probe succeeds → CLOSED
+    assert await breaker.call(ok) == "ok"  # closed: normal calls flow
+
+
+async def test_breaker_half_open_probe_failure_reopens() -> None:
+    """Cycle 1 (item 2): a failed half-open probe re-opens the breaker (fail fast)."""
+    from job_applicator.exceptions import LLMError
+    from job_applicator.utils.llm import CircuitBreaker, CircuitOpenError
+
+    breaker = CircuitBreaker(failure_threshold=1, recovery_timeout_seconds=0.0)
+
+    async def fail() -> str:
+        raise LLMError("boom")
+
+    with pytest.raises(LLMError, match="boom"):
+        await breaker.call(fail)  # OPEN; recovery 0 → HALF_OPEN next
+    breaker.recovery_timeout_seconds = 60.0  # make the re-open observable as OPEN
+    with pytest.raises(LLMError, match="boom"):
+        await breaker.call(fail)  # the half-open probe; fails → re-OPEN for 60s
+    with pytest.raises(CircuitOpenError):
+        await breaker.call(fail)  # OPEN → rejected fast
+
+
+def test_breaker_stray_success_during_open_does_not_reopen() -> None:
+    """Cycle 1 (concurrency): a success from a call admitted while CLOSED must NOT
+    reopen a breaker that OPENed while that call was in flight — only a half-open
+    probe closes. Guards the batch Semaphore(3) interleaving."""
+    from job_applicator.utils.llm import CircuitBreaker
+
+    breaker = CircuitBreaker(failure_threshold=1, recovery_timeout_seconds=60.0)
+    assert breaker._admit() is True  # admitted while CLOSED (in flight, not a probe)
+    breaker._record_failure()  # concurrent traffic trips the breaker OPEN
+    assert breaker._open_until is not None
+    breaker._record_success()  # the stray in-flight call now returns successfully
+    assert breaker._open_until is not None  # must STAY open for the cooldown
+
+
+async def test_breaker_half_open_admits_exactly_one_concurrent_probe() -> None:
+    """Cycle 1b (item 2, concurrency): after cooldown, N concurrent callers yield
+    EXACTLY ONE probe; the rest fail fast. The check-and-set is synchronous, so a
+    sequential test passes even on a buggy version — this gather test is the guard."""
+    import asyncio
+
+    from job_applicator.exceptions import LLMError
+    from job_applicator.utils.llm import CircuitBreaker, CircuitOpenError
+
+    breaker = CircuitBreaker(failure_threshold=1, recovery_timeout_seconds=0.0)
+
+    async def fail() -> str:
+        raise LLMError("boom")
+
+    with pytest.raises(LLMError, match="boom"):
+        await breaker.call(fail)  # OPEN; recovery 0 → HALF_OPEN
+
+    started = 0
+
+    async def probe() -> str:
+        nonlocal started
+        started += 1
+        await asyncio.sleep(0.02)  # hold the probe in flight while peers arrive
+        return "ok"
+
+    results = await asyncio.gather(*(breaker.call(probe) for _ in range(5)), return_exceptions=True)
+    assert started == 1  # exactly one probe ran
+    assert sum(r == "ok" for r in results) == 1
+    assert sum(isinstance(r, CircuitOpenError) for r in results) == 4

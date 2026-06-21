@@ -12,8 +12,8 @@ from job_applicator.config import LLMConfig
 from job_applicator.exceptions import LLMError
 from job_applicator.models import JobListing, ResumeData, StyleGuide, UserProfile
 from job_applicator.utils.llm import (
-    CircuitBreaker,
     CircuitOpenError,
+    LLMRuntime,
     ValidatedOutput,
     llm_call_error,
     strip_thinking_process,
@@ -22,9 +22,6 @@ from job_applicator.utils.logging import get_logger
 from job_applicator.utils.retry import async_retry
 
 logger = get_logger("documents.cover_letter")
-
-# Shared circuit breaker across all cover-letter LLM calls in this process.
-_CIRCUIT_BREAKER = CircuitBreaker(name="cover-letter")
 
 
 class CoverLetterOutput(BaseModel):
@@ -72,14 +69,15 @@ from you." """
 class CoverLetterGenerator:
     """Generate AI-powered cover letters via litellm + instructor."""
 
-    def __init__(self, config: LLMConfig, breaker: CircuitBreaker | None = None) -> None:
+    def __init__(self, config: LLMConfig, runtime: LLMRuntime | None = None) -> None:
         self._config = config
         self._client: Any = None
         self._style_cache: StyleGuide | None = None
-        # Process-shared by default: the breaker must span jobs within a batch run
-        # to guard a down endpoint (a fresh per-instance breaker would reset every
-        # job and never trip). Injectable for tests / explicit DI.
-        self._breaker = breaker or _CIRCUIT_BREAKER
+        # The breaker lives on a per-command runtime (built from config when not
+        # injected) — shared across all cover-letter calls in this command (e.g.
+        # every job in a batch run), with no module-global mutable state.
+        self._runtime = runtime or LLMRuntime.defaults(name="cover-letter")
+        self._breaker = self._runtime.breaker
 
     def _get_client(self) -> Any:
         """Lazy-load instructor client."""
@@ -208,8 +206,13 @@ class CoverLetterGenerator:
         style_guide: StyleGuide | None,
         tone_section: str,
         tailored_resume_text: str,
+        correction: str = "",
     ) -> str:
-        """Build the generation prompt and run one completion (validated by caller)."""
+        """Build the generation prompt and run one completion (validated by caller).
+
+        ``correction`` is a short suffix derived from a prior validation failure,
+        appended so a retry re-prompts with the rejection.
+        """
         user_message = self._build_prompt(
             job,
             user,
@@ -218,7 +221,7 @@ class CoverLetterGenerator:
             tone_section=tone_section,
             tailored_resume_text=tailored_resume_text,
         )
-        return await self._complete(user_message)
+        return await self._complete(user_message + correction)
 
     async def generate(
         self,
@@ -240,7 +243,12 @@ class CoverLetterGenerator:
             tailored_resume_text: Optional tailored resume text as primary content source
         """
 
-        async def _call() -> str:
+        async def _call(prev: LLMError | None) -> str:
+            correction = (
+                f"\n\nThe previous draft was rejected ({prev}). Return a corrected version."
+                if prev
+                else ""
+            )
             return await self._generate_raw(
                 job,
                 user,
@@ -248,9 +256,12 @@ class CoverLetterGenerator:
                 style_guide,
                 tone_section,
                 tailored_resume_text,
+                correction=correction,
             )
 
-        letter = await ValidatedOutput(max_retries=1).call(_call, self._validate_cover_letter)
+        letter = await ValidatedOutput(max_retries=self._runtime.validation_max_retries).call(
+            _call, self._validate_cover_letter
+        )
 
         logger.info(
             "Generated cover letter for %s at %s (%d chars)",
@@ -287,8 +298,7 @@ class CoverLetterGenerator:
         if style_guide:
             from job_applicator.documents.style_analyzer import StyleAnalyzer
 
-            analyzer = StyleAnalyzer(self._config)
-            parts.extend(["", analyzer.format_style_for_prompt(style_guide)])
+            parts.extend(["", StyleAnalyzer.format_style_for_prompt(style_guide)])
         parts.extend(
             [
                 "",
@@ -302,10 +312,15 @@ class CoverLetterGenerator:
         )
         user_message = "\n".join(parts)
 
-        async def _call() -> str:
-            return await self._complete(user_message)
+        async def _call(prev: LLMError | None) -> str:
+            msg = user_message
+            if prev:
+                msg += f"\n\nThe previous draft was rejected ({prev}). Return a corrected version."
+            return await self._complete(msg)
 
-        return await ValidatedOutput(max_retries=1).call(_call, self._validate_cover_letter)
+        return await ValidatedOutput(max_retries=self._runtime.validation_max_retries).call(
+            _call, self._validate_cover_letter
+        )
 
     def _build_prompt(
         self,
@@ -350,8 +365,7 @@ class CoverLetterGenerator:
         if style_guide:
             from job_applicator.documents.style_analyzer import StyleAnalyzer
 
-            analyzer = StyleAnalyzer(self._config)
-            style_section = analyzer.format_style_for_prompt(style_guide)
+            style_section = StyleAnalyzer.format_style_for_prompt(style_guide)
             parts.extend(["", style_section])
 
         if tailored_resume_text:

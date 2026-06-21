@@ -54,6 +54,22 @@ class LLMConfig(BaseSettings):
     temperature: float = 0.7
 
 
+class LLMResilienceConfig(BaseSettings):
+    """Circuit-breaker + content-retry policy for all LLM consumers.
+
+    Process-wide resilience policy (governs cover-letter generation, résumé
+    tailoring, and style analysis alike) — kept separate from the LLM *connection*
+    config above. Defaults preserve prior hardcoded behavior.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="JOB_APPLICATOR_LLM_RESILIENCE_")
+
+    failure_threshold: int = 3
+    window_seconds: float = 60.0
+    recovery_timeout_seconds: float = 30.0
+    validation_max_retries: int = 1  # feeds ValidatedOutput(max_retries=...)
+
+
 class EmbeddingConfig(BaseSettings):
     """Embedding model configuration for semantic matching."""
 
@@ -102,6 +118,7 @@ class AppSettings(BaseSettings):
 
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    llm_resilience: LLMResilienceConfig = Field(default_factory=LLMResilienceConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     target: TargetConfig = Field(default_factory=TargetConfig)
 

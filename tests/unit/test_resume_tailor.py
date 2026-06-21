@@ -732,3 +732,43 @@ class TestResumeDateValidator:
         result = validator.audit(resume)
         assert len(result.entries) == 1
         assert result.entries[0].section == "Experience"
+
+
+async def test_resume_tailor_call_llm_uses_breaker() -> None:
+    """Cycle 2b: ResumeTailor routes its LLM calls through the injected breaker, so
+    repeated failures open it and a subsequent call fails fast (CircuitOpenError)
+    without hitting the endpoint — the app's largest LLM calls are now protected."""
+    from job_applicator.config import LLMConfig
+    from job_applicator.exceptions import LLMError
+    from job_applicator.utils.llm import CircuitBreaker, CircuitOpenError, LLMRuntime
+
+    runtime = LLMRuntime(breaker=CircuitBreaker(failure_threshold=1, recovery_timeout_seconds=60.0))
+    tailor = ResumeTailor(LLMConfig(), runtime=runtime)
+    assert tailor._breaker is runtime.breaker
+
+    # acompletion fails → _call_llm wraps as LLMError → breaker records the failure.
+    with patch("litellm.acompletion", new_callable=AsyncMock, side_effect=RuntimeError("down")):
+        with pytest.raises(LLMError):
+            await tailor._call_llm("prompt")
+
+    # threshold=1 → breaker now OPEN → next call fails fast, endpoint untouched.
+    with patch("litellm.acompletion", new_callable=AsyncMock) as mock_acomp:
+        with pytest.raises(CircuitOpenError):
+            await tailor._call_llm("prompt")
+        mock_acomp.assert_not_called()
+
+
+def test_cover_letter_and_tailor_share_one_runtime_breaker() -> None:
+    """Cycle 2b: one LLMRuntime passed to both consumers yields ONE shared breaker —
+    the mechanism the batch/tailor commands rely on (they build a single runtime via
+    _make_runtime and pass it to both CoverLetterGenerator and ResumeTailor, so a
+    down endpoint trips one breaker that guards the whole run)."""
+    from job_applicator.config import LLMConfig
+    from job_applicator.documents.cover_letter import CoverLetterGenerator
+    from job_applicator.utils.llm import CircuitBreaker, LLMRuntime
+
+    runtime = LLMRuntime(breaker=CircuitBreaker(name="shared"))
+    gen = CoverLetterGenerator(LLMConfig(), runtime=runtime)
+    tailor = ResumeTailor(LLMConfig(), runtime=runtime)
+    assert gen._breaker is tailor._breaker
+    assert gen._breaker is runtime.breaker

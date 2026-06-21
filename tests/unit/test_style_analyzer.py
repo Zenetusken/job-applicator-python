@@ -230,3 +230,19 @@ class TestStyleAnalyzerInstructor:
                         result = await analyzer.analyze("test text", use_cache=False)
 
         assert result.tone == "professional"
+
+
+def test_format_style_for_prompt_is_static() -> None:
+    """Cycle 2a: format_style_for_prompt is a staticmethod — callable WITHOUT
+    constructing a StyleAnalyzer (whose __init__ would mkdir the styles cache)."""
+    style = StyleGuide(
+        tone="professional",
+        sentence_structure="varied",
+        vocabulary_level="technical",
+        paragraph_style="clear",
+        formatting_notes="",
+        sample_paragraph="",
+    )
+    section = StyleAnalyzer.format_style_for_prompt(style)
+    assert "Writing Style Guide" in section
+    assert "Tone: professional" in section

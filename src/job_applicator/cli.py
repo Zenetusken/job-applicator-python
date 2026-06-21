@@ -20,17 +20,18 @@ from rich.table import Table
 from job_applicator import __version__
 from job_applicator.config import AppSettings, LLMConfig
 from job_applicator.exceptions import JobApplicatorError
-from job_applicator.models import DoctorReport, UserProfile
+from job_applicator.models import BatchRunSpec, DoctorReport, UserProfile
 from job_applicator.state import ApplicationState
 from job_applicator.utils.cookies import save_cookies
 from job_applicator.utils.diff import render_diff
-from job_applicator.utils.llm import SERVE_SCRIPT
+from job_applicator.utils.llm import SERVE_SCRIPT, LLMRuntime
 from job_applicator.utils.logging import setup_logging
 from job_applicator.utils.url import host_matches
 from job_applicator.utils.verbose import VerboseReporter
 
 if TYPE_CHECKING:
     from job_applicator.applicators.base import BaseApplicator
+    from job_applicator.batch_state import BatchState
     from job_applicator.browser.manager import BrowserManager
     from job_applicator.documents.tone_detector import ToneProfile
     from job_applicator.models import (
@@ -819,7 +820,7 @@ def apply(
 
                 user_profile = _load_user_profile(settings)
 
-                generator = CoverLetterGenerator(settings.llm)
+                generator = CoverLetterGenerator(settings.llm, runtime=_make_runtime(settings))
                 sem = asyncio.Semaphore(3)
 
                 async def _gen_one(
@@ -1064,7 +1065,7 @@ def generate_cover_letter(
             f"(confidence: {tone_profile.confidence:.0%})[/dim]"
         )
 
-        generator = CoverLetterGenerator(settings.llm)
+        generator = CoverLetterGenerator(settings.llm, runtime=_make_runtime(settings))
 
         # Load style guide if provided (supports comma-separated paths)
         style = None
@@ -1341,6 +1342,31 @@ def match(
             reporter.render(console, log_file)
 
 
+def _resume_tailored_resume(
+    batch_state: BatchState, run_id: str, job_url: str
+) -> tuple[TailoredResume, str, str] | None:
+    """Mid-job resume: if a job is persisted TAILORED with a readable meta.json,
+    reconstruct its TailoredResume so the batch can skip re-tailoring and go straight
+    to the cover letter. Returns (tailored, resume_path, meta_path), or None when the
+    job isn't reusably tailored or the artifact is missing/corrupt (→ caller re-tailors).
+    """
+    from job_applicator.batch_state import BatchJobStatus
+    from job_applicator.models import TailoredResume
+
+    persisted = batch_state.get_job(run_id, job_url)
+    if not persisted or persisted[0] != BatchJobStatus.TAILORED or not persisted[1]:
+        return None
+    resume_path = persisted[1]
+    meta_path = str(Path(resume_path).with_suffix(".meta.json"))
+    if not Path(meta_path).exists():
+        return None
+    try:
+        tailored = TailoredResume.model_validate_json(Path(meta_path).read_text())
+    except Exception:
+        return None
+    return tailored, resume_path, meta_path
+
+
 @app.command()
 def batch(
     ctx: typer.Context,
@@ -1512,27 +1538,21 @@ def batch(
             return
 
         batch_state = BatchState()
-        effective_run_id = run_id
-        if not effective_run_id:
-            import hashlib
-
-            run_key = (
-                f"{site}|{query or ''}|{jobs_file or ''}|{settings.resume_path}|"
-                f"{top_k}|{min_score}|{cover_letter}"
-            )
-            effective_run_id = hashlib.sha256(run_key.encode()).hexdigest()[:16]
+        run_spec = BatchRunSpec(
+            site=site,
+            query=query or None,
+            jobs_file=jobs_file or None,
+            resume_path=settings.resume_path,
+            top_k=top_k,
+            min_score=min_score,
+            cover_letter=cover_letter,
+        )
+        # One spec is the single source for the run id AND the resume-match key.
+        effective_run_id = run_id or run_spec.run_id()
 
         resuming = False
         if resume_run:
-            existing = batch_state.find_existing_run(
-                site=site,
-                query=query or None,
-                jobs_file=jobs_file or None,
-                resume_path=settings.resume_path,
-                top_k=top_k,
-                min_score=min_score,
-                cover_letter=cover_letter,
-            )
+            existing = batch_state.find_existing_run(run_spec)
             if existing:
                 effective_run_id = existing
                 resuming = True
@@ -1545,16 +1565,7 @@ def batch(
                     )
 
         if not resuming:
-            batch_state.start_run(
-                run_id=effective_run_id,
-                site=site,
-                query=query or None,
-                jobs_file=jobs_file or None,
-                resume_path=settings.resume_path,
-                top_k=top_k,
-                min_score=min_score,
-                cover_letter=cover_letter,
-            )
+            batch_state.start_run(run_spec, run_id=effective_run_id)
         completed_urls = set(batch_state.list_completed_jobs(effective_run_id))
 
         pending_matches = [m for m in matches if str(m.job.url) not in completed_urls]
@@ -1574,20 +1585,23 @@ def batch(
         if not as_json:
             console.print(f"[cyan]Tailoring {len(matches)} jobs...[/cyan]")
 
+        # One breaker shared across cover-letter generation + résumé tailoring for
+        # this whole batch run (every job goes through the same circuit breaker).
+        runtime = _make_runtime(settings)
         style = None
         cl_generator = None
         if settings.style_guide_path:
             from job_applicator.documents.cover_letter import CoverLetterGenerator
 
-            cl_generator = CoverLetterGenerator(settings.llm)
+            cl_generator = CoverLetterGenerator(settings.llm, runtime=runtime)
             with console.status("Loading style guide..."):
                 style = await cl_generator.load_style_guide(settings.style_guide_path)
         elif cover_letter:
             from job_applicator.documents.cover_letter import CoverLetterGenerator
 
-            cl_generator = CoverLetterGenerator(settings.llm)
+            cl_generator = CoverLetterGenerator(settings.llm, runtime=runtime)
 
-        tailor_engine = ResumeTailor(settings.llm)
+        tailor_engine = ResumeTailor(settings.llm, runtime=runtime)
         user_profile = _load_user_profile(settings)
         sem = asyncio.Semaphore(3)
         timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
@@ -1609,78 +1623,95 @@ def batch(
                     "url": str(job.url),
                 }
 
-                try:
-                    tone_profile = _detect_tone(job)
-                    if reporter:
-                        reporter.record_llm_call(
-                            model=settings.llm.model,
-                            endpoint=settings.llm.api_base,
-                            temperature=settings.llm.temperature,
-                            details={
-                                "job_title": job.title,
-                                "company": job.company,
-                                "type": "tailor",
-                            },
-                        )
-                    tailored = await tailor_engine.tailor(
-                        resume=resume_data,
-                        job=job,
-                        user_instructions=user_instructions,
-                        style_guide=style,
-                        tone_profile=tone_profile,
-                        matcher=matcher,
-                    )
+                # Mid-job resume: reuse a persisted TAILORED résumé instead of
+                # re-tailoring (a TAILORED job is re-processed on resume so its cover
+                # letter gets generated). Missing/corrupt artifact → re-tailor below.
+                reused = await asyncio.to_thread(
+                    _resume_tailored_resume, batch_state, effective_run_id, str(job.url)
+                )
+                if reused is not None:
+                    tailored, resume_path_out, meta_path = reused
                     result["match_score"] = round(tailored.match_score, 4)
                     result["semantic_score"] = round(tailored.semantic_score, 4)
                     result["skill_score"] = round(tailored.skill_score, 4)
-                    post_ats = _run_ats_post_tailor(resume_data.raw_text, tailored.tailored_text)
-                    ats_score = post_ats.score if post_ats else 1.0
-                    tailoring_scores.append((tailored.match_score, ats_score))
-                    batch_reports.append(
-                        TailoringReport(
-                            job_title=job.title,
-                            company=job.company,
-                            tone=tone_profile.primary,
-                            tone_confidence=tone_profile.confidence,
-                            attempts=1,
-                            ats_before=ats_result.score if ats_result else 0.0,
-                            ats_after=ats_score,
-                            changes_summary=tailored.changes_summary or "",
-                        )
-                    )
-
-                    resume_filename = f"tailored_{safe_company}_{safe_title}_{timestamp}.txt"
-                    resume_path_out = str(Path(output_dir) / resume_filename)
-                    await asyncio.to_thread(
-                        Path(resume_path_out).write_text, tailored.tailored_text
-                    )
-                    written_paths.append(resume_path_out)
-
-                    meta_filename = f"{resume_filename.rsplit('.', 1)[0]}.meta.json"
-                    meta_path = str(Path(output_dir) / meta_filename)
-                    tailored.output_path = resume_path_out
-                    await asyncio.to_thread(
-                        Path(meta_path).write_text, tailored.model_dump_json(indent=2)
-                    )
-                    written_paths.append(meta_path)
                     result["resume_path"] = resume_path_out
                     result["tailored"] = True
-                    batch_state.record_job(
-                        effective_run_id,
-                        job,
-                        BatchJobStatus.TAILORED,
-                        resume_path=resume_path_out,
-                    )
-                except Exception as exc:
-                    result["tailored"] = False
-                    result["error"] = str(exc)
-                    batch_state.record_job(
-                        effective_run_id,
-                        job,
-                        BatchJobStatus.FAILED,
-                        error_message=str(exc),
-                    )
-                    return result
+                    result["resumed"] = True
+                else:
+                    try:
+                        tone_profile = _detect_tone(job)
+                        if reporter:
+                            reporter.record_llm_call(
+                                model=settings.llm.model,
+                                endpoint=settings.llm.api_base,
+                                temperature=settings.llm.temperature,
+                                details={
+                                    "job_title": job.title,
+                                    "company": job.company,
+                                    "type": "tailor",
+                                },
+                            )
+                        tailored = await tailor_engine.tailor(
+                            resume=resume_data,
+                            job=job,
+                            user_instructions=user_instructions,
+                            style_guide=style,
+                            tone_profile=tone_profile,
+                            matcher=matcher,
+                        )
+                        result["match_score"] = round(tailored.match_score, 4)
+                        result["semantic_score"] = round(tailored.semantic_score, 4)
+                        result["skill_score"] = round(tailored.skill_score, 4)
+                        post_ats = _run_ats_post_tailor(
+                            resume_data.raw_text, tailored.tailored_text
+                        )
+                        ats_score = post_ats.score if post_ats else 1.0
+                        tailoring_scores.append((tailored.match_score, ats_score))
+                        batch_reports.append(
+                            TailoringReport(
+                                job_title=job.title,
+                                company=job.company,
+                                tone=tone_profile.primary,
+                                tone_confidence=tone_profile.confidence,
+                                attempts=1,
+                                ats_before=ats_result.score if ats_result else 0.0,
+                                ats_after=ats_score,
+                                changes_summary=tailored.changes_summary or "",
+                            )
+                        )
+
+                        resume_filename = f"tailored_{safe_company}_{safe_title}_{timestamp}.txt"
+                        resume_path_out = str(Path(output_dir) / resume_filename)
+                        await asyncio.to_thread(
+                            Path(resume_path_out).write_text, tailored.tailored_text
+                        )
+                        written_paths.append(resume_path_out)
+
+                        meta_filename = f"{resume_filename.rsplit('.', 1)[0]}.meta.json"
+                        meta_path = str(Path(output_dir) / meta_filename)
+                        tailored.output_path = resume_path_out
+                        await asyncio.to_thread(
+                            Path(meta_path).write_text, tailored.model_dump_json(indent=2)
+                        )
+                        written_paths.append(meta_path)
+                        result["resume_path"] = resume_path_out
+                        result["tailored"] = True
+                        batch_state.record_job(
+                            effective_run_id,
+                            job,
+                            BatchJobStatus.TAILORED,
+                            resume_path=resume_path_out,
+                        )
+                    except Exception as exc:
+                        result["tailored"] = False
+                        result["error"] = str(exc)
+                        batch_state.record_job(
+                            effective_run_id,
+                            job,
+                            BatchJobStatus.FAILED,
+                            error_message=str(exc),
+                        )
+                        return result
 
                 if cl_generator is not None:
                     try:
@@ -1833,11 +1864,17 @@ async def _generate_cover_letter(
     tailored_resume_text: str,
     session: CoverLetterSession,
     attempt: int = 1,
+    *,
+    runtime: LLMRuntime,
 ) -> CoverLetterResult | None:
-    """Generate a cover letter via LLM. Returns None on failure."""
+    """Generate a cover letter via LLM. Returns None on failure.
+
+    ``runtime`` is REQUIRED so the caller always shares one breaker — a per-call
+    default would reset the breaker across the interactive retry loop.
+    """
     from job_applicator.documents.cover_letter import CoverLetterGenerator
 
-    generator = CoverLetterGenerator(settings.llm)
+    generator = CoverLetterGenerator(settings.llm, runtime=runtime)
     try:
         with console.status("Generating cover letter..."):
             letter = await generator.generate(
@@ -1899,14 +1936,16 @@ async def _refine_cover_letter(
     resume_data: ResumeData | None = None,
     style: StyleGuide | None = None,
     tone_section: str = "",
+    *,
+    runtime: LLMRuntime,
 ) -> bool:
-    """Refine a cover letter with user instructions via LLM."""
+    """Refine a cover letter via LLM (shared ``runtime`` REQUIRED; see _generate_cover_letter)."""
     from job_applicator.documents.cover_letter import CoverLetterGenerator
     from job_applicator.models import CoverLetterResult as CLResult
     from job_applicator.models import ResumeData
 
     try:
-        generator = CoverLetterGenerator(settings.llm)
+        generator = CoverLetterGenerator(settings.llm, runtime=runtime)
         with console.status("Refining cover letter..."):
             refined = await generator.refine(
                 job=job,
@@ -1954,10 +1993,21 @@ async def _cover_letter_workflow(
     tone_section = ToneDetector().format_for_prompt(tone_profile)
 
     session = CoverLetterSession(job_title=job.title, job_company=job.company)
+    # One breaker shared across every attempt of this interactive loop (a fresh
+    # runtime per call would reset the failure counter and never trip the breaker).
+    runtime = _make_runtime(settings)
     attempt = 0
 
     result = await _generate_cover_letter(
-        console, settings, job, resume_data, style, tone_section, tailored_resume_text, session
+        console,
+        settings,
+        job,
+        resume_data,
+        style,
+        tone_section,
+        tailored_resume_text,
+        session,
+        runtime=runtime,
     )
     if result is None:
         retry = console.input("[bold cyan][R] Retry or [Q] Skip? [/bold cyan]").strip().upper()
@@ -1971,6 +2021,7 @@ async def _cover_letter_workflow(
                 tone_section,
                 tailored_resume_text,
                 session,
+                runtime=runtime,
             )
             if result is None:
                 console.print("[red]Cover letter generation failed. Skipping.[/red]")
@@ -2031,6 +2082,7 @@ async def _cover_letter_workflow(
                 tailored_resume_text,
                 session,
                 attempt=attempt + 1,
+                runtime=runtime,
             )
             if new_result is None:
                 console.print("[red]Generation failed. Please try again.[/red]")
@@ -2054,6 +2106,7 @@ async def _cover_letter_workflow(
                 resume_data,
                 style,
                 tone_section,
+                runtime=runtime,
             )
             if not refined_ok:
                 console.print("[red]Refinement failed. Please try again.[/red]")
@@ -2216,16 +2269,18 @@ def tailor(
             f"(confidence: {tone_profile.confidence:.0%})[/dim]"
         )
 
+        # One breaker shared across style-loading + résumé tailoring for this command.
+        runtime = _make_runtime(settings)
         style = None
         if settings.style_guide_path:
             from job_applicator.documents.cover_letter import CoverLetterGenerator
 
-            generator = CoverLetterGenerator(settings.llm)
+            generator = CoverLetterGenerator(settings.llm, runtime=runtime)
             with console.status("Analyzing writing style..."):
                 style = await generator.load_style_guide(settings.style_guide_path)
             console.print(f"[green]Style loaded: {style.tone}[/green]")
 
-        tailor_engine = ResumeTailor(settings.llm)
+        tailor_engine = ResumeTailor(settings.llm, runtime=runtime)
         attempt = 0
         user_instructions = ""
 
@@ -3110,6 +3165,14 @@ def _make_applicator(site: str, browser: BrowserManager, settings: AppSettings) 
         return IndeedApplicator(browser, settings)
     console.print(f"[yellow]{site} applicator not yet implemented[/yellow]")
     raise typer.Exit(1)
+
+
+def _make_runtime(settings: AppSettings, name: str = "llm") -> LLMRuntime:
+    """Build the per-command LLM resilience runtime (shared circuit breaker +
+    validation-retry policy) from settings — constructed once per command and shared
+    across its LLM consumers (cover-letter + résumé tailoring), so the breaker spans
+    the whole run. Named "llm" (neutral) since one breaker now guards both."""
+    return LLMRuntime.from_config(settings.llm_resilience, name=name)
 
 
 def _load_user_profile(settings: AppSettings) -> UserProfile:

@@ -5,10 +5,15 @@ from __future__ import annotations
 import re
 import time
 from collections.abc import Awaitable, Callable
-from typing import TypeVar
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import TYPE_CHECKING, TypeVar
 
 from job_applicator.exceptions import LLMError
 from job_applicator.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from job_applicator.config import LLMResilienceConfig
 
 logger = get_logger("utils.llm")
 
@@ -210,13 +215,22 @@ class CircuitOpenError(LLMError):
     """
 
 
-class CircuitBreaker:
-    """Simple in-memory circuit breaker for LLM calls.
+class _BreakerState(StrEnum):
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"
 
-    Opens after ``failure_threshold`` failures within ``window_seconds`` and
-    stays open for ``recovery_timeout_seconds``. Successes reset the failure
-    window. This is intentionally lightweight (in-memory, per-process); it
-    guards against hammering a down endpoint, not across distributed workers.
+
+class CircuitBreaker:
+    """In-memory circuit breaker for LLM calls, with a half-open probe.
+
+    CLOSED → OPEN after ``failure_threshold`` failures within ``window_seconds``;
+    stays OPEN for ``recovery_timeout_seconds``, then admits exactly ONE probe
+    (HALF_OPEN). The probe succeeding closes the breaker; its failure re-opens it
+    for another cooldown. Callers arriving while OPEN — or while a probe is in
+    flight — get ``CircuitOpenError`` (fail fast), avoiding a thundering herd onto
+    a still-down endpoint. In-memory + per-process; guards a down endpoint, not
+    distributed workers.
     """
 
     def __init__(
@@ -232,21 +246,53 @@ class CircuitBreaker:
         self.name = name
         self._failures: list[float] = []
         self._open_until: float | None = None
+        self._probe_in_flight = False
+
+    @classmethod
+    def from_config(cls, resilience: LLMResilienceConfig, name: str = "llm") -> CircuitBreaker:
+        """Build a breaker from the centralized resilience policy."""
+        return cls(
+            failure_threshold=resilience.failure_threshold,
+            window_seconds=resilience.window_seconds,
+            recovery_timeout_seconds=resilience.recovery_timeout_seconds,
+            name=name,
+        )
 
     def _now(self) -> float:
         return time.monotonic()
 
-    def _is_open(self) -> bool:
+    @property
+    def state(self) -> _BreakerState:
         if self._open_until is None:
-            return False
+            return _BreakerState.CLOSED
         if self._now() < self._open_until:
+            return _BreakerState.OPEN
+        return _BreakerState.HALF_OPEN
+
+    def _admit(self) -> bool:
+        """Decide whether to run this call; reserve the single half-open probe.
+
+        Synchronous (atomic within the asyncio loop): CLOSED admits; OPEN rejects;
+        HALF_OPEN admits exactly one probe and rejects the rest until it resolves.
+        """
+        state = self.state
+        if state is _BreakerState.CLOSED:
             return True
-        self._open_until = None
-        self._failures.clear()
-        return False
+        if state is _BreakerState.OPEN:
+            return False
+        if self._probe_in_flight:
+            return False
+        self._probe_in_flight = True
+        return True
 
     def _record_failure(self) -> None:
         now = self._now()
+        if self._probe_in_flight:
+            # The half-open probe failed → re-open for another cooldown.
+            self._probe_in_flight = False
+            self._open_until = now + self.recovery_timeout_seconds
+            logger.warning("Circuit breaker '%s' probe failed; re-opened", self.name)
+            return
         cutoff = now - self.window_seconds
         self._failures = [t for t in self._failures if t > cutoff]
         self._failures.append(now)
@@ -260,13 +306,19 @@ class CircuitBreaker:
             )
 
     def _record_success(self) -> None:
-        if self._failures:
-            self._failures.clear()
+        # Only a half-open PROBE success closes the breaker. A stray success from a
+        # call admitted while CLOSED that is still in flight when the breaker OPENs
+        # must NOT reopen it (that success predates the open) — clear failures only.
+        if self._probe_in_flight:
+            self._probe_in_flight = False
+            self._open_until = None
+            logger.info("Circuit breaker '%s' probe succeeded; closed", self.name)
+        self._failures.clear()
 
     async def call(self, func: Callable[[], Awaitable[T]]) -> T:
-        """Invoke ``func`` unless the circuit is open."""
-        if self._is_open():
-            remaining = int((self._open_until or 0) - self._now())
+        """Invoke ``func`` unless the circuit is open (or a probe is in flight)."""
+        if not self._admit():
+            remaining = max(int((self._open_until or 0) - self._now()), 0)
             raise CircuitOpenError(
                 f"LLM circuit breaker '{self.name}' is open — too many recent failures. "
                 f"Wait {remaining}s or check the endpoint with `job-applicator doctor`."
@@ -278,6 +330,32 @@ class CircuitBreaker:
             raise
         self._record_success()
         return result
+
+
+@dataclass
+class LLMRuntime:
+    """Per-command runtime carrying the shared LLM resilience policy.
+
+    Created once per CLI command and shared across every LLM consumer in that
+    command (cover-letter generation, résumé tailoring, …) so the circuit breaker
+    spans, e.g., all jobs in a batch run — a passed context object rather than a
+    module-global, per the 'no global mutable state' rule.
+    """
+
+    breaker: CircuitBreaker
+    validation_max_retries: int = 1
+
+    @classmethod
+    def from_config(cls, resilience: LLMResilienceConfig, name: str = "llm") -> LLMRuntime:
+        return cls(
+            breaker=CircuitBreaker.from_config(resilience, name=name),
+            validation_max_retries=resilience.validation_max_retries,
+        )
+
+    @classmethod
+    def defaults(cls, name: str = "llm") -> LLMRuntime:
+        """A runtime with built-in defaults — for standalone/library use without config."""
+        return cls(breaker=CircuitBreaker(name=name))
 
 
 class ValidatedOutput:
@@ -293,13 +371,19 @@ class ValidatedOutput:
 
     async def call(
         self,
-        func: Callable[[], Awaitable[T]],
+        func: Callable[[LLMError | None], Awaitable[T]],
         validator: Callable[[T], None],
     ) -> T:
-        """Call ``func`` and validate the result; retry on validation failure."""
+        """Call ``func`` and validate; retry on validation failure, feeding the prior
+        error back so the closure can re-prompt with the rejection.
+
+        ``func`` receives the previous validation error (None on the first attempt).
+        ``await func(...)`` stays OUTSIDE the try — only the validator is wrapped — so
+        transport/circuit errors propagate un-fed-back (content vs transport stay split).
+        """
         last_error: LLMError | None = None
         for attempt in range(self.max_retries + 1):
-            result = await func()
+            result = await func(last_error)
             try:
                 validator(result)
                 return result

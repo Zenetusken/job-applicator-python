@@ -16,6 +16,7 @@ from job_applicator.models import (
     StyleGuide,
     TailoredResume,
 )
+from job_applicator.utils.llm import CircuitOpenError, LLMRuntime
 from job_applicator.utils.logging import get_logger
 from job_applicator.utils.retry import async_retry
 
@@ -609,10 +610,16 @@ def _skills_match(skill_lower: str, orig: str) -> bool:
 class ResumeTailor:
     """Tailor resumes for specific job listings using LLM."""
 
-    def __init__(self, config: LLMConfig) -> None:
+    def __init__(self, config: LLMConfig, runtime: LLMRuntime | None = None) -> None:
         self._config = config
+        # Shared per-command breaker (passed by the CLI; spans tailoring + cover-letter
+        # so the app's largest LLM calls are finally breaker-protected).
+        self._runtime = runtime or LLMRuntime.defaults(name="resume-tailor")
+        self._breaker = self._runtime.breaker
 
-    @async_retry(max_attempts=2, base_delay=1.0, exceptions=(LLMError,))
+    @async_retry(
+        max_attempts=2, base_delay=1.0, exceptions=(LLMError,), exclude=(CircuitOpenError,)
+    )
     async def tailor(
         self,
         resume: ResumeData,
@@ -679,8 +686,7 @@ class ResumeTailor:
         if style_guide:
             from job_applicator.documents.style_analyzer import StyleAnalyzer
 
-            analyzer = StyleAnalyzer(self._config)
-            style_section = analyzer.format_style_for_prompt(style_guide)
+            style_section = StyleAnalyzer.format_style_for_prompt(style_guide)
             prompt += f"\n\n{style_section}"
 
         tailored_text = await self._call_llm(prompt)
@@ -706,7 +712,9 @@ class ResumeTailor:
             user_modifications=user_instructions,
         )
 
-    @async_retry(max_attempts=2, base_delay=1.0, exceptions=(LLMError,))
+    @async_retry(
+        max_attempts=2, base_delay=1.0, exceptions=(LLMError,), exclude=(CircuitOpenError,)
+    )
     async def refine(
         self,
         original_resume: ResumeData,
@@ -1083,36 +1091,46 @@ class ResumeTailor:
         return "\n".join(result_lines)
 
     async def _call_llm(self, prompt: str, temperature: float = 0.4) -> str:
-        """Call LLM and return response text."""
-        try:
-            from litellm import acompletion
+        """Call the LLM and return response text — circuit-breaker protected.
 
-            model = f"openai/{self._config.model}" if self._config.api_base else self._config.model
+        All résumé-tailoring LLM calls (tailor, refine, change-summary) funnel
+        through here, so one breaker guards them all.
+        """
 
-            response = await acompletion(
-                model=model,
-                api_base=self._config.api_base,
-                api_key=self._config.api_key,
-                messages=[
-                    {"role": "system", "content": TAILOR_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=self._config.max_tokens,
-                temperature=temperature,
-                extra_body={
-                    "chat_template_kwargs": {"enable_thinking": False},
-                },
-            )
+        async def _do() -> str:
+            try:
+                from litellm import acompletion
 
-            from job_applicator.utils.llm import strip_thinking_process
+                model = (
+                    f"openai/{self._config.model}" if self._config.api_base else self._config.model
+                )
 
-            content = strip_thinking_process(response.choices[0].message.content)
-            return content.strip()
+                response = await acompletion(
+                    model=model,
+                    api_base=self._config.api_base,
+                    api_key=self._config.api_key,
+                    messages=[
+                        {"role": "system", "content": TAILOR_SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
+                    max_tokens=self._config.max_tokens,
+                    temperature=temperature,
+                    extra_body={
+                        "chat_template_kwargs": {"enable_thinking": False},
+                    },
+                )
 
-        except Exception as exc:
-            from job_applicator.utils.llm import llm_call_error
+                from job_applicator.utils.llm import strip_thinking_process
 
-            raise llm_call_error(exc, self._config.api_base) from exc
+                content = strip_thinking_process(response.choices[0].message.content)
+                return content.strip()
+
+            except Exception as exc:
+                from job_applicator.utils.llm import llm_call_error
+
+                raise llm_call_error(exc, self._config.api_base) from exc
+
+        return await self._breaker.call(_do)
 
     async def _summarize_changes(self, original: str, tailored: str) -> str:
         """Generate a summary of changes between original and tailored."""
