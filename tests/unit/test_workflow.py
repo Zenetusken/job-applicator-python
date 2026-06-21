@@ -20,6 +20,7 @@ from job_applicator.models import (
     TailoredResume,
     TailorSession,
 )
+from job_applicator.utils.llm import LLMRuntime
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -273,7 +274,15 @@ class TestGenerateCoverLetter:
             mock_gen.generate = AsyncMock(return_value="Dear Hiring Manager")
             mock_profile.return_value = MagicMock()
             result = await _generate_cover_letter(
-                console, settings, job, resume_data, None, "formal", "tailored text", session
+                console,
+                settings,
+                job,
+                resume_data,
+                None,
+                "formal",
+                "tailored text",
+                session,
+                runtime=LLMRuntime.defaults(),
             )
 
         assert result is not None
@@ -304,7 +313,15 @@ class TestGenerateCoverLetter:
             mock_gen.generate = AsyncMock(side_effect=RuntimeError("LLM down"))
             mock_profile.return_value = MagicMock()
             result = await _generate_cover_letter(
-                console, settings, job, resume_data, None, "formal", "tailored text", session
+                console,
+                settings,
+                job,
+                resume_data,
+                None,
+                "formal",
+                "tailored text",
+                session,
+                runtime=LLMRuntime.defaults(),
             )
 
         assert result is None
@@ -334,7 +351,15 @@ class TestGenerateCoverLetter:
             user_profile = MagicMock()
             mock_profile.return_value = user_profile
             await _generate_cover_letter(
-                console, settings, job, resume_data, None, "casual", "my tailored resume", session
+                console,
+                settings,
+                job,
+                resume_data,
+                None,
+                "casual",
+                "my tailored resume",
+                session,
+                runtime=LLMRuntime.defaults(),
             )
             mock_gen.generate.assert_called_once_with(
                 job,
@@ -462,7 +487,14 @@ class TestRefineCoverLetter:
             mock_gen = mock_gen_cls.return_value
             mock_gen.refine = AsyncMock(return_value="refined letter")
             await _refine_cover_letter(
-                console, settings, job, result, "be more formal", session, attempt=1
+                console,
+                settings,
+                job,
+                result,
+                "be more formal",
+                session,
+                attempt=1,
+                runtime=LLMRuntime.defaults(),
             )
 
         assert len(session.attempts) == 2
@@ -492,7 +524,14 @@ class TestRefineCoverLetter:
             mock_gen = mock_gen_cls.return_value
             mock_gen.refine = AsyncMock(side_effect=RuntimeError("fail"))
             await _refine_cover_letter(
-                console, settings, job, result, "be more formal", session, attempt=1
+                console,
+                settings,
+                job,
+                result,
+                "be more formal",
+                session,
+                attempt=1,
+                runtime=LLMRuntime.defaults(),
             )
 
         assert len(session.attempts) == 1
@@ -632,6 +671,8 @@ class TestCoverLetterFailureHandling:
             tailored_resume_text: object,
             session: CoverLetterSession,
             attempt: int = 1,
+            *,
+            runtime: object = None,
         ) -> CoverLetterResult | None:
             nonlocal call_count
             call_count += 1
@@ -688,6 +729,8 @@ class TestCoverLetterFailureHandling:
             tailored_resume_text: object,
             session: CoverLetterSession,
             attempt: int = 1,
+            *,
+            runtime: object = None,
         ) -> CoverLetterResult | None:
             session.add_attempt(success_result)
             return success_result
@@ -774,3 +817,55 @@ class TestRefineStaleScores:
         assert isinstance(result.match_score, float)
         assert isinstance(result.semantic_score, float)
         assert isinstance(result.skill_score, float)
+
+
+@pytest.mark.asyncio
+async def test_workflow_threads_one_shared_runtime_across_attempts() -> None:
+    """Cycle 1b regression: the interactive cover-letter loop must reuse ONE
+    LLMRuntime (shared circuit breaker) across every attempt. A fresh runtime per
+    call would reset the breaker's failure window so it never trips — and no other
+    gate catches that (happy-path live never trips it). Patches the generator class
+    to capture the runtime threaded into each construction."""
+    from job_applicator.cli import _cover_letter_workflow
+
+    captured: list[object] = []
+
+    def capture_gen(config: object, runtime: object = None) -> MagicMock:
+        captured.append(runtime)
+        gen = MagicMock()
+        gen.generate = AsyncMock(return_value="Dear Hiring Manager, a strong letter.")
+        gen.refine = AsyncMock(return_value="refined")
+        return gen
+
+    console = MagicMock(spec=Console)
+    console.input = MagicMock(side_effect=["R", "Q"])  # initial → [R] retry → [Q] quit
+    console.print = MagicMock()
+    console.status = MagicMock()
+    console.status.return_value.__enter__ = MagicMock()
+    console.status.return_value.__exit__ = MagicMock(return_value=False)
+
+    settings = MagicMock()
+    settings.style_guide_path = ""
+    job = MagicMock()
+    job.title = "Dev"
+    job.company = "Corp"
+    job.url = "https://example.com/1"
+    resume_data = MagicMock()
+
+    with (
+        patch(
+            "job_applicator.documents.cover_letter.CoverLetterGenerator",
+            side_effect=capture_gen,
+        ),
+        patch("job_applicator.cli._load_user_profile", return_value=MagicMock()),
+    ):
+        await _cover_letter_workflow(
+            console, settings, job, resume_data, None, None, "tailored text"
+        )
+
+    # EXACTLY initial generate + the one [R] retry (== 2 proves the retry path ran;
+    # >= would pass vacuously if only the initial generate happened), all sharing
+    # ONE runtime object.
+    assert len(captured) == 2
+    assert captured[0] is not None
+    assert all(r is captured[0] for r in captured)

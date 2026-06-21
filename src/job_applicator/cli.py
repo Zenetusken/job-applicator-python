@@ -24,7 +24,7 @@ from job_applicator.models import DoctorReport, UserProfile
 from job_applicator.state import ApplicationState
 from job_applicator.utils.cookies import save_cookies
 from job_applicator.utils.diff import render_diff
-from job_applicator.utils.llm import SERVE_SCRIPT
+from job_applicator.utils.llm import SERVE_SCRIPT, LLMRuntime
 from job_applicator.utils.logging import setup_logging
 from job_applicator.utils.url import host_matches
 from job_applicator.utils.verbose import VerboseReporter
@@ -819,7 +819,7 @@ def apply(
 
                 user_profile = _load_user_profile(settings)
 
-                generator = CoverLetterGenerator(settings.llm)
+                generator = CoverLetterGenerator(settings.llm, runtime=_make_runtime(settings))
                 sem = asyncio.Semaphore(3)
 
                 async def _gen_one(
@@ -1064,7 +1064,7 @@ def generate_cover_letter(
             f"(confidence: {tone_profile.confidence:.0%})[/dim]"
         )
 
-        generator = CoverLetterGenerator(settings.llm)
+        generator = CoverLetterGenerator(settings.llm, runtime=_make_runtime(settings))
 
         # Load style guide if provided (supports comma-separated paths)
         style = None
@@ -1579,13 +1579,13 @@ def batch(
         if settings.style_guide_path:
             from job_applicator.documents.cover_letter import CoverLetterGenerator
 
-            cl_generator = CoverLetterGenerator(settings.llm)
+            cl_generator = CoverLetterGenerator(settings.llm, runtime=_make_runtime(settings))
             with console.status("Loading style guide..."):
                 style = await cl_generator.load_style_guide(settings.style_guide_path)
         elif cover_letter:
             from job_applicator.documents.cover_letter import CoverLetterGenerator
 
-            cl_generator = CoverLetterGenerator(settings.llm)
+            cl_generator = CoverLetterGenerator(settings.llm, runtime=_make_runtime(settings))
 
         tailor_engine = ResumeTailor(settings.llm)
         user_profile = _load_user_profile(settings)
@@ -1833,11 +1833,17 @@ async def _generate_cover_letter(
     tailored_resume_text: str,
     session: CoverLetterSession,
     attempt: int = 1,
+    *,
+    runtime: LLMRuntime,
 ) -> CoverLetterResult | None:
-    """Generate a cover letter via LLM. Returns None on failure."""
+    """Generate a cover letter via LLM. Returns None on failure.
+
+    ``runtime`` is REQUIRED so the caller always shares one breaker — a per-call
+    default would reset the breaker across the interactive retry loop.
+    """
     from job_applicator.documents.cover_letter import CoverLetterGenerator
 
-    generator = CoverLetterGenerator(settings.llm)
+    generator = CoverLetterGenerator(settings.llm, runtime=runtime)
     try:
         with console.status("Generating cover letter..."):
             letter = await generator.generate(
@@ -1899,14 +1905,16 @@ async def _refine_cover_letter(
     resume_data: ResumeData | None = None,
     style: StyleGuide | None = None,
     tone_section: str = "",
+    *,
+    runtime: LLMRuntime,
 ) -> bool:
-    """Refine a cover letter with user instructions via LLM."""
+    """Refine a cover letter via LLM (shared ``runtime`` REQUIRED; see _generate_cover_letter)."""
     from job_applicator.documents.cover_letter import CoverLetterGenerator
     from job_applicator.models import CoverLetterResult as CLResult
     from job_applicator.models import ResumeData
 
     try:
-        generator = CoverLetterGenerator(settings.llm)
+        generator = CoverLetterGenerator(settings.llm, runtime=runtime)
         with console.status("Refining cover letter..."):
             refined = await generator.refine(
                 job=job,
@@ -1954,10 +1962,21 @@ async def _cover_letter_workflow(
     tone_section = ToneDetector().format_for_prompt(tone_profile)
 
     session = CoverLetterSession(job_title=job.title, job_company=job.company)
+    # One breaker shared across every attempt of this interactive loop (a fresh
+    # runtime per call would reset the failure counter and never trip the breaker).
+    runtime = _make_runtime(settings)
     attempt = 0
 
     result = await _generate_cover_letter(
-        console, settings, job, resume_data, style, tone_section, tailored_resume_text, session
+        console,
+        settings,
+        job,
+        resume_data,
+        style,
+        tone_section,
+        tailored_resume_text,
+        session,
+        runtime=runtime,
     )
     if result is None:
         retry = console.input("[bold cyan][R] Retry or [Q] Skip? [/bold cyan]").strip().upper()
@@ -1971,6 +1990,7 @@ async def _cover_letter_workflow(
                 tone_section,
                 tailored_resume_text,
                 session,
+                runtime=runtime,
             )
             if result is None:
                 console.print("[red]Cover letter generation failed. Skipping.[/red]")
@@ -2031,6 +2051,7 @@ async def _cover_letter_workflow(
                 tailored_resume_text,
                 session,
                 attempt=attempt + 1,
+                runtime=runtime,
             )
             if new_result is None:
                 console.print("[red]Generation failed. Please try again.[/red]")
@@ -2054,6 +2075,7 @@ async def _cover_letter_workflow(
                 resume_data,
                 style,
                 tone_section,
+                runtime=runtime,
             )
             if not refined_ok:
                 console.print("[red]Refinement failed. Please try again.[/red]")
@@ -2220,7 +2242,7 @@ def tailor(
         if settings.style_guide_path:
             from job_applicator.documents.cover_letter import CoverLetterGenerator
 
-            generator = CoverLetterGenerator(settings.llm)
+            generator = CoverLetterGenerator(settings.llm, runtime=_make_runtime(settings))
             with console.status("Analyzing writing style..."):
                 style = await generator.load_style_guide(settings.style_guide_path)
             console.print(f"[green]Style loaded: {style.tone}[/green]")
@@ -3110,6 +3132,13 @@ def _make_applicator(site: str, browser: BrowserManager, settings: AppSettings) 
         return IndeedApplicator(browser, settings)
     console.print(f"[yellow]{site} applicator not yet implemented[/yellow]")
     raise typer.Exit(1)
+
+
+def _make_runtime(settings: AppSettings, name: str = "cover-letter") -> LLMRuntime:
+    """Build the per-command LLM resilience runtime (shared circuit breaker +
+    validation-retry policy) from settings — constructed once at each generator
+    site so the breaker spans the whole run (e.g. every job in a batch)."""
+    return LLMRuntime.from_config(settings.llm_resilience, name=name)
 
 
 def _load_user_profile(settings: AppSettings) -> UserProfile:

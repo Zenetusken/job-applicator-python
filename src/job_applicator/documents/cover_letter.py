@@ -76,7 +76,7 @@ class CoverLetterGenerator:
         # The breaker lives on a per-command runtime (built from config when not
         # injected) — shared across all cover-letter calls in this command (e.g.
         # every job in a batch run), with no module-global mutable state.
-        self._runtime = runtime or LLMRuntime.from_config(config, name="cover-letter")
+        self._runtime = runtime or LLMRuntime.defaults(name="cover-letter")
         self._breaker = self._runtime.breaker
 
     def _get_client(self) -> Any:
@@ -248,7 +248,7 @@ class CoverLetterGenerator:
                 tailored_resume_text,
             )
 
-        letter = await ValidatedOutput(max_retries=self._config.validation_max_retries).call(
+        letter = await ValidatedOutput(max_retries=self._runtime.validation_max_retries).call(
             _call, self._validate_cover_letter
         )
 
@@ -305,7 +305,7 @@ class CoverLetterGenerator:
         async def _call() -> str:
             return await self._complete(user_message)
 
-        return await ValidatedOutput(max_retries=self._config.validation_max_retries).call(
+        return await ValidatedOutput(max_retries=self._runtime.validation_max_retries).call(
             _call, self._validate_cover_letter
         )
 

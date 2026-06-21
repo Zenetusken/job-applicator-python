@@ -13,7 +13,7 @@ from job_applicator.exceptions import LLMError
 from job_applicator.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from job_applicator.config import LLMConfig
+    from job_applicator.config import LLMResilienceConfig
 
 logger = get_logger("utils.llm")
 
@@ -249,12 +249,12 @@ class CircuitBreaker:
         self._probe_in_flight = False
 
     @classmethod
-    def from_config(cls, config: LLMConfig, name: str = "llm") -> CircuitBreaker:
-        """Build a breaker from the centralized ``LLMConfig`` thresholds."""
+    def from_config(cls, resilience: LLMResilienceConfig, name: str = "llm") -> CircuitBreaker:
+        """Build a breaker from the centralized resilience policy."""
         return cls(
-            failure_threshold=config.breaker_failure_threshold,
-            window_seconds=config.breaker_window_seconds,
-            recovery_timeout_seconds=config.breaker_recovery_seconds,
+            failure_threshold=resilience.failure_threshold,
+            window_seconds=resilience.window_seconds,
+            recovery_timeout_seconds=resilience.recovery_timeout_seconds,
             name=name,
         )
 
@@ -334,18 +334,28 @@ class CircuitBreaker:
 
 @dataclass
 class LLMRuntime:
-    """Per-command runtime holding shared LLM infrastructure (the circuit breaker).
+    """Per-command runtime carrying the shared LLM resilience policy.
 
-    Created once per CLI command and shared across all LLM calls in that command
-    (so the breaker spans, e.g., every job in a batch run) — a passed context
-    object rather than a module-global, per the 'no global mutable state' rule.
+    Created once per CLI command and shared across every LLM consumer in that
+    command (cover-letter generation, résumé tailoring, …) so the circuit breaker
+    spans, e.g., all jobs in a batch run — a passed context object rather than a
+    module-global, per the 'no global mutable state' rule.
     """
 
     breaker: CircuitBreaker
+    validation_max_retries: int = 1
 
     @classmethod
-    def from_config(cls, config: LLMConfig, name: str = "llm") -> LLMRuntime:
-        return cls(breaker=CircuitBreaker.from_config(config, name=name))
+    def from_config(cls, resilience: LLMResilienceConfig, name: str = "llm") -> LLMRuntime:
+        return cls(
+            breaker=CircuitBreaker.from_config(resilience, name=name),
+            validation_max_retries=resilience.validation_max_retries,
+        )
+
+    @classmethod
+    def defaults(cls, name: str = "llm") -> LLMRuntime:
+        """A runtime with built-in defaults — for standalone/library use without config."""
+        return cls(breaker=CircuitBreaker(name=name))
 
 
 class ValidatedOutput:
