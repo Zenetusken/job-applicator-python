@@ -1821,6 +1821,7 @@ async def _generate_cover_letter(
     default would reset the breaker across the interactive retry loop.
     """
     from job_applicator.documents.cover_letter import CoverLetterGenerator
+    from job_applicator.models import CoverLetterResult
 
     generator = CoverLetterGenerator(settings.llm, runtime=runtime)
     try:
