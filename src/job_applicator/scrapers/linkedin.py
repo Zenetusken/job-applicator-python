@@ -348,7 +348,7 @@ class LinkedInScraper(BaseScraper):
                 logger.warning(
                     "Scraped %d/%d LinkedIn job cards (%d failed)",
                     len(jobs),
-                    min(len(cards), params.max_results),
+                    total,
                     failures,
                 )
             logger.info("Scraped %d jobs from LinkedIn", len(jobs))
