@@ -411,7 +411,7 @@ def import_cookies(
         "",
         "--from-browser",
         help="Read the session straight from a local browser's cookie store "
-        "(chrome/chromium/brave/edge/firefox). Needs the [browser] extra; reads/decrypts "
+        "(chrome/chromium/brave/edge/firefox). Needs the 'browser' extra; reads/decrypts "
         "your browser cookie store, so it only runs when you pass this flag.",
     ),
     verify: bool = typer.Option(
@@ -2120,6 +2120,14 @@ delay_between_applications_s = 2.0
 
         if reporter:
             reporter.record_io(files_written=[str(output_path)])
+    except OSError as exc:
+        # Unwritable path / permission error → clean message + exit 1, not a raw traceback.
+        if reporter:
+            reporter.record_error(str(exc))
+        # escape the user-supplied path too — a path with `[...]` is Rich markup otherwise.
+        msg = f"Could not write config to {escape(output_path)}: {escape(str(exc))}"
+        err_console.print(f"[red]{msg}[/red]")
+        raise typer.Exit(1) from exc
     except Exception as exc:
         if reporter:
             reporter.record_error(str(exc))
