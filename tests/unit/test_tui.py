@@ -717,6 +717,71 @@ async def test_cover_letter_job_uses_tailored_resume_text(tmp_path: Path, monkey
     assert captured["tailored"] == ""  # falls back to the original résumé
 
 
+async def test_ats_check_runs_checker_on_resume(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """ats_check loads the résumé and returns the ATSChecker result (offline)."""
+    from job_applicator.models import ATSCompatibilityResult
+    from job_applicator.tui import actions
+
+    result = ATSCompatibilityResult(score=0.9, warnings=[], suggestions=[])
+    checker = MagicMock()
+    checker.return_value.check.return_value = result
+    monkeypatch.setattr("job_applicator.documents.ats_checker.ATSChecker", checker)
+    monkeypatch.setattr(
+        "job_applicator.documents.resume.ResumeLoader",
+        lambda: MagicMock(load=lambda p: MagicMock(), parse_text=lambda t: MagicMock()),
+    )
+    got = await actions.ats_check(AppSettings(resume_path="/r.pdf"))
+    assert got is result
+    checker.return_value.check.assert_called_once()
+
+
+async def test_tui_ats_check_shows_modal(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """`A` runs the (mocked) ATS check and shows the result modal."""
+    from job_applicator.models import ATSCompatibilityResult
+    from job_applicator.tui import actions
+    from job_applicator.tui.screens import AtsScreen
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))
+    result = ATSCompatibilityResult(score=0.7, warnings=["No phone number."], suggestions=[])
+
+    async def _fake_ats(_settings: object, tailored: str = "") -> ATSCompatibilityResult:
+        return result
+
+    monkeypatch.setattr(actions, "ats_check", _fake_ats)
+    app = JobApplicatorApp(
+        settings=AppSettings(resume_path="/r.pdf"),
+        store=store,
+        app_state=MagicMock(list_recent=lambda **k: []),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("A")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert isinstance(app.screen, AtsScreen)
+
+
+async def test_tui_ats_check_needs_resume(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """`A` with no résumé configured warns and never runs the ATS check."""
+    from job_applicator.tui import actions
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))
+    never = MagicMock()
+    monkeypatch.setattr(actions, "ats_check", never)
+    app = JobApplicatorApp(
+        settings=AppSettings(resume_path=""),
+        store=store,
+        app_state=MagicMock(list_recent=lambda **k: []),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("A")
+        await pilot.pause()
+    never.assert_not_called()
+
+
 async def test_tui_tailor_needs_resume(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """Pressing `t` with no résumé configured warns and never runs the tailor."""
     from job_applicator.models import FunnelStatus

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, ClassVar
 from rich.markup import escape
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Input, Label, Static
 
@@ -20,7 +20,7 @@ from job_applicator.models import JobBoard
 from job_applicator.scrapers.base import SearchParams
 
 if TYPE_CHECKING:
-    from job_applicator.models import JobListing
+    from job_applicator.models import ATSCompatibilityResult, JobListing
 
 
 class SearchScreen(ModalScreen[SearchParams | None]):
@@ -185,3 +185,56 @@ class SetupScreen(ModalScreen[str | None]):
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         self._submit()
+
+
+class AtsScreen(ModalScreen[None]):
+    """Read-only ATS-compatibility result for the selected job's résumé. Esc / Close
+    dismisses; the body scrolls when there are many warnings."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "close", "Close")]
+
+    CSS = """
+    AtsScreen { align: center middle; }
+    #atsbox {
+        width: 80; height: auto; max-height: 80%; padding: 1 2;
+        border: thick $accent; background: $surface;
+    }
+    #atsbody { height: auto; max-height: 20; }
+    #buttons { height: auto; align: right middle; }
+    """
+
+    def __init__(self, result: ATSCompatibilityResult, source: str = "") -> None:
+        super().__init__()
+        self._result = result
+        self._source = source
+
+    def compose(self) -> ComposeResult:
+        r = self._result
+        verdict = (
+            "[green]✓ ATS-compatible[/green]"
+            if r.is_compatible
+            else "[red]✗ not ATS-compatible[/red]"
+        )
+        lines = [f"[bold]ATS check — {r.score:.0%}[/bold]   {verdict}"]
+        if self._source:
+            lines.append(f"[dim]{escape(self._source)}[/dim]")
+        if r.warnings:
+            lines += [
+                "",
+                "[bold]Warnings[/bold]",
+                *(f"[yellow]⚠[/yellow] {escape(w)}" for w in r.warnings),
+            ]
+        if r.suggestions:
+            lines += ["", "[bold]Suggestions[/bold]", *(f"→ {escape(s)}" for s in r.suggestions)]
+        if not r.warnings and not r.suggestions:
+            lines += ["", "[green]No issues found.[/green]"]
+        with Vertical(id="atsbox"):
+            yield VerticalScroll(Static("\n".join(lines)), id="atsbody")
+            with Horizontal(id="buttons"):
+                yield Button("Close", variant="primary", id="close")
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(None)

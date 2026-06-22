@@ -65,6 +65,7 @@ class JobApplicatorApp(App[None]):
         Binding("s", "search", "Search"),
         Binding("a", "apply", "Apply"),
         Binding("e", "set_resume", "Résumé"),
+        Binding("A", "ats_check", "ATS"),
         Binding("o", "open_url", "Open"),
         Binding("y", "copy_url", "Copy URL", show=False),
         Binding("slash", "filter", "Filter"),
@@ -434,6 +435,32 @@ class JobApplicatorApp(App[None]):
         self._store.set_cover_letter(str(job.url), result.output_path)
         self._reload()
         self.notify(f"Cover letter ✓  →  {result.output_path}", timeout=6)
+
+    def action_ats_check(self) -> None:
+        """Check the selected job's résumé (the tailored one if available, else the
+        configured résumé) for ATS compatibility, and show the result. Offline; account-safe."""
+        if self._selected_job_with_resume() is None:
+            return
+        tailored = self._current.tailored_resume_path if self._current else ""
+        self._ats_worker(tailored)
+
+    @work(exclusive=True, group="action")
+    async def _ats_worker(self, tailored_resume_path: str) -> None:
+        from job_applicator.tui import actions
+
+        self._set_busy("Checking ATS compatibility…")
+        try:
+            result = await self._run_action(
+                "ATS check", actions.ats_check(self._settings, tailored_resume_path)
+            )
+        finally:
+            self._set_busy("")
+        if result is None:
+            return
+        from job_applicator.tui.screens import AtsScreen
+
+        source = "tailored résumé" if tailored_resume_path else "configured résumé"
+        self.push_screen(AtsScreen(result, source))
 
     def action_search(self) -> None:
         """Open the search modal. Touches the account only on submit — the modal collects
