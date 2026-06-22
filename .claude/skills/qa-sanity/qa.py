@@ -267,19 +267,26 @@ def core_checks(fx: dict[str, Path]) -> None:
     record("import-cookies: --help shows the [browser] extra name (markup not eaten)", t,
            "the  extra" not in cp.stdout, "double-space gap present" if "the  extra" in cp.stdout else "ok")
 
-    # WARN-tier UX findings (deterministic; self-clear if the behavior improves):
-    cp = run("ats-check", "--resume", str(fx["low"]))
-    if cp.returncode == 0 and "Not Compatible" in cp.stdout:
-        warn("ats-check: incompatible résumé still exits 0 (no --strict CI gate)", t,
-             "Not Compatible but exit=0")
+    # ats-check --strict gates the exit on the verdict; without it, an incompatible résumé is
+    # report-only (exit 0). (PR A — was a WARN.)
+    cp_def = run("ats-check", "--resume", str(fx["low"]))
+    cp_strict = run("ats-check", "--resume", str(fx["low"]), "--strict")
+    record("ats-check: --strict exits non-zero on an incompatible résumé", t,
+           cp_def.returncode == 0 and cp_strict.returncode != 0,
+           f"default={cp_def.returncode} strict={cp_strict.returncode}")
+
+    # --log-file to an unwritable path WARNS (verbose.py guard) and is non-fatal by design — a
+    # failed diagnostic log shouldn't fail an otherwise-successful command. (PR A — was a WARN.)
+    cp = run("--verbose", "--log-file", "/proc/nope/x.log", "ats-check", "--resume", str(fx["resume"]))
+    record("--log-file unwritable → warns (non-fatal, by design)", t,
+           cp.returncode == 0 and "Could not write verbose log" in (cp.stdout + cp.stderr),
+           f"exit={cp.returncode}")
+
+    # WARN-tier (deferred to the --json PR): doctor lacks --json.
     cp = run("doctor", "--json")  # parsed/rejected before doctor runs (no vLLM needed)
     if cp.returncode != 0:
         warn("consistency: doctor lacks --json (match/batch/ats-check have it)", t,
              f"doctor --json exit={cp.returncode}")
-    cp = run("--verbose", "--log-file", "/proc/nope/x.log", "ats-check", "--resume", str(fx["resume"]))
-    if cp.returncode == 0:
-        warn("--log-file to unwritable path exits 0 silently (log not written)", t,
-             f"exit={cp.returncode}")
 
     # KNOWN BUG: --verbose appends a Rich report to stdout → JSON no longer parses.
     cp = run("ats-check", "--resume", str(fx["resume"]), "--json", "--verbose")
