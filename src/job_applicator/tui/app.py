@@ -69,6 +69,7 @@ class JobApplicatorApp(App[None]):
         Binding("o", "open_url", "Open"),
         Binding("y", "copy_url", "Copy URL", show=False),
         Binding("slash", "filter", "Filter"),
+        Binding("question_mark", "help", "Help"),
         Binding("escape", "clear_filter", "Clear filter", show=False),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
@@ -202,8 +203,9 @@ class JobApplicatorApp(App[None]):
             if self._all:
                 return "[dim]No jobs match the filter.[/dim]"
             return (
-                "[dim]No jobs yet.\n\nRun [/dim][cyan]job-applicator search -q '…'[/cyan]"
-                "[dim] to discover jobs, then [/dim][cyan]match[/cyan][dim] to score them.[/dim]"
+                "[dim]No jobs yet.\n\nPress [/dim][cyan]s[/cyan][dim] to search a board · "
+                "[/dim][cyan]e[/cyan][dim] to set your résumé · [/dim][cyan]?[/cyan]"
+                "[dim] for all keys.[/dim]"
             )
         j = s.job
         stage = self._effective_stage(s)
@@ -252,6 +254,12 @@ class JobApplicatorApp(App[None]):
 
     def action_refresh(self) -> None:
         self._reload()
+
+    def action_help(self) -> None:
+        """Show the in-app key reference (read-only modal; touches nothing)."""
+        from job_applicator.tui.screens import HelpScreen
+
+        self.push_screen(HelpScreen())
 
     def _current_url(self) -> str | None:
         """The selected job's posting URL, or None (with a toast) when there isn't one."""

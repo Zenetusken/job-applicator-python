@@ -238,3 +238,64 @@ class AtsScreen(ModalScreen[None]):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(None)
+
+
+class HelpScreen(ModalScreen[None]):
+    """Read-only key reference, grouped by account-safety tier so the safe/local keys read
+    as distinct from the account-touching ones. Esc / Close dismisses."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "close", "Close")]
+
+    CSS = """
+    HelpScreen { align: center middle; }
+    #helpbox {
+        width: 72; height: auto; max-height: 90%; padding: 1 2;
+        border: thick $accent; background: $surface;
+    }
+    #helpbody { height: auto; max-height: 24; }
+    #buttons { height: auto; align: right middle; }
+    """
+
+    # One source of truth for the key reference (the BINDINGS table drives behaviour; this
+    # explains it). Grouped by what each key TOUCHES — local/LLM vs the real account.
+    _HELP = "\n".join(
+        [
+            "[bold]job-applicator — keys[/bold]",
+            "",
+            "[bold]Navigate[/bold]",
+            "  ↑ ↓ · j k   move selection",
+            "  /           filter title/company · Esc clears",
+            "  r           refresh from the store",
+            "  q           quit",
+            "",
+            "[bold]Act on the selected job[/bold]  [dim](LLM + local files — account-safe)[/dim]",
+            "  t           tailor résumé",
+            "  c           cover letter",
+            "  A           ATS-compatibility check",
+            "  e           set résumé path",
+            "",
+            "[bold]Links[/bold]",
+            "  o           open the posting in your browser",
+            "  y           copy the posting URL",
+            "",
+            "[bold]Account-touching[/bold]  "
+            "[yellow](opens a real browser on your account)[/yellow]",
+            "  s           search a board — explicit confirm before any browser opens",
+            "  a           apply — [yellow]dry-run by default[/yellow]; a real submit needs the "
+            "danger checkbox",
+            "",
+            "[dim]search/apply never auto-login; apply respects the daily cap.[/dim]",
+        ]
+    )
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="helpbox"):
+            yield VerticalScroll(Static(self._HELP), id="helpbody")
+            with Horizontal(id="buttons"):
+                yield Button("Close", variant="primary", id="close")
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(None)
