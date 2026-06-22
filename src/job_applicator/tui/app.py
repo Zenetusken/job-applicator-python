@@ -88,6 +88,7 @@ class JobApplicatorApp(App[None]):
         self._by_key: dict[str, StoredJob] = {}
         self._current: StoredJob | None = None  # job shown in the detail pane
         self._applied_urls: set[str] = set()  # URLs with a SUBMITTED record (applied)
+        self._busy = ""  # transient "⏳ working…" status while a worker runs
         self._filter = ""
         self._load_error = ""
 
@@ -166,6 +167,8 @@ class JobApplicatorApp(App[None]):
         # real path, never the sentinel's own markup.
         path = self._settings.resume_path
         resume = f"[cyan]{escape(path)}[/cyan]" if path else "[dim]not set — press 'e' to set[/dim]"
+        if self._busy:  # a worker is running — show live progress instead of static counts
+            return f"Résumé {resume}\n[yellow]⏳ {escape(self._busy)}[/yellow]"
         # Compose by URL (furthest-stage-wins) so an applied job — which stays in the store
         # at its head stage — is counted once as applied, matching the CLI `status`.
         counts: dict[str, int] = {}
@@ -182,6 +185,12 @@ class JobApplicatorApp(App[None]):
             else ""
         )
         return f"Résumé {resume}\n{' · '.join(parts)}{filt}"
+
+    def _set_busy(self, msg: str) -> None:
+        """Show a live '⏳ <msg>' progress line while a worker runs (empty string clears
+        it, restoring the funnel counts) — so latency never looks like a freeze."""
+        self._busy = msg
+        self.query_one("#statusline", Static).update(self._statusline())
 
     def _update_detail(self, job: StoredJob | None) -> None:
         self._current = job
@@ -387,8 +396,11 @@ class JobApplicatorApp(App[None]):
     async def _tailor_worker(self, job: JobListing) -> None:
         from job_applicator.tui import actions
 
-        self.notify(f"Tailoring {job.title}…")
-        tailored = await self._run_action("Tailor", actions.tailor_job(self._settings, job))
+        self._set_busy(f"Tailoring {job.title}…")
+        try:
+            tailored = await self._run_action("Tailor", actions.tailor_job(self._settings, job))
+        finally:
+            self._set_busy("")
         if tailored is None:
             return
         self._store.mark_tailored(job, tailored_resume_path=tailored.output_path)
@@ -405,10 +417,13 @@ class JobApplicatorApp(App[None]):
     async def _cover_letter_worker(self, job: JobListing) -> None:
         from job_applicator.tui import actions
 
-        self.notify(f"Writing a cover letter for {job.title}…")
-        result = await self._run_action(
-            "Cover letter", actions.cover_letter_job(self._settings, job)
-        )
+        self._set_busy(f"Writing a cover letter for {job.title}…")
+        try:
+            result = await self._run_action(
+                "Cover letter", actions.cover_letter_job(self._settings, job)
+            )
+        finally:
+            self._set_busy("")
         if result is None:
             return
         self._store.set_cover_letter(str(job.url), result.output_path)
@@ -436,10 +451,19 @@ class JobApplicatorApp(App[None]):
     async def _search_worker(self, params: SearchParams) -> None:
         from job_applicator.tui import actions
 
-        self.notify(f"Searching for '{params.query}'… a browser window will open.", timeout=8)
-        found = await self._run_action(
-            "Search", actions.search_jobs(self._settings, self._store, params)
-        )
+        table = self.query_one("#joblist", DataTable)
+        table.loading = True  # built-in spinner on the list while the scrape/score runs
+        self._set_busy("Searching…")
+        try:
+            found = await self._run_action(
+                "Search",
+                actions.search_jobs(
+                    self._settings, self._store, params, on_progress=self._set_busy
+                ),
+            )
+        finally:
+            table.loading = False
+            self._set_busy("")
         if found is None:
             return
         self._reload()
@@ -481,10 +505,13 @@ class JobApplicatorApp(App[None]):
         from job_applicator.tui import actions
 
         mode = "Submitting a real application to" if submit else "Dry-run for"
-        self.notify(f"{mode} {job.title}… a browser window will open.", timeout=8)
-        result = await self._run_action(
-            "Apply", actions.apply_job(self._settings, job, submit=submit)
-        )
+        self._set_busy(f"{mode} {job.title} — a browser will open…")
+        try:
+            result = await self._run_action(
+                "Apply", actions.apply_job(self._settings, job, submit=submit)
+            )
+        finally:
+            self._set_busy("")
         if result is None:
             return
         self._reload()

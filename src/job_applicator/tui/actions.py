@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING
 from job_applicator.documents.artifacts import write_cover_letter, write_tailored
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from job_applicator.config import AppSettings
     from job_applicator.embeddings.matching import MatchResult
     from job_applicator.jobs_store import JobStore
@@ -84,9 +86,17 @@ async def cover_letter_job(settings: AppSettings, job: JobListing) -> CoverLette
     return result
 
 
-async def search_jobs(settings: AppSettings, store: JobStore, params: SearchParams) -> int:
+async def search_jobs(
+    settings: AppSettings,
+    store: JobStore,
+    params: SearchParams,
+    on_progress: Callable[[str], None] | None = None,
+) -> int:
     """Scrape ``params``, score against the résumé if one is set (→ matched, with scores;
     else → found), and persist to ``store``; returns the scraped count.
+
+    ``on_progress(msg)`` (optional) is called at each phase boundary so the UI can show
+    live progress instead of looking frozen during the long scrape/score.
 
     ⚠ ACCOUNT-TOUCHING — the only action here that is: it launches a real browser on the
     configured board. The TUI gates it behind an explicit, warned confirm (the search
@@ -94,9 +104,15 @@ async def search_jobs(settings: AppSettings, store: JobStore, params: SearchPara
     """
     from job_applicator.factories import _make_browser, _make_scraper
 
+    def progress(msg: str) -> None:
+        if on_progress is not None:
+            on_progress(msg)
+
     site = params.board.value
+    progress(f"Opening a browser on {site}…")
     async with _make_browser(site, settings) as browser:
         scraper = _make_scraper(site, browser, settings)
+        progress(f"Searching {site} for '{params.query}'…")
         jobs = await scraper.scrape(params)
 
     # Score against the résumé when one is configured, so results arrive ranked with match
@@ -104,6 +120,7 @@ async def search_jobs(settings: AppSettings, store: JobStore, params: SearchPara
     # the scraped jobs — fall back to persisting them unscored (found).
     matches = None
     if settings.resume_path and jobs:
+        progress(f"Scoring {len(jobs)} job(s) against your résumé…")
         try:
             matches = await asyncio.to_thread(_score_jobs, settings, jobs)
         except Exception:

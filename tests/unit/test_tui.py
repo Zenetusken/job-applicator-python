@@ -490,7 +490,9 @@ async def test_account_busy_blocks_a_second_action(tmp_path: Path, monkeypatch) 
 
     gate = asyncio.Event()
 
-    async def _slow_search(settings: object, store: object, params: object) -> int:
+    async def _slow_search(
+        settings: object, store: object, params: object, on_progress=None
+    ) -> int:  # type: ignore[no-untyped-def]
         await gate.wait()  # hold the worker in RUNNING
         return 0
 
@@ -723,7 +725,9 @@ async def test_tui_search_submit_runs_and_persists(tmp_path: Path, monkeypatch) 
     store = JobStore(db_path=tmp_path / "applications.db")  # empty
     captured: dict[str, str] = {}
 
-    async def _fake_search(_settings: object, st: JobStore, params: object) -> int:
+    async def _fake_search(
+        _settings: object, st: JobStore, params: object, on_progress=None
+    ) -> int:  # type: ignore[no-untyped-def]
         captured["query"] = params.query  # type: ignore[attr-defined]
         st.upsert_job(_job(7), source_query=params.query)  # type: ignore[attr-defined]
         return 1
@@ -786,6 +790,69 @@ async def test_search_jobs_found_when_no_resume(monkeypatch) -> None:  # type: i
     assert store.upsert_job.call_count == 2
     store.upsert_match.assert_not_called()
     score.assert_not_called()  # no scoring without a résumé
+
+
+async def test_search_jobs_reports_phase_progress(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """search_jobs calls on_progress at each phase (open browser → search → score)."""
+    import job_applicator.factories as factories
+    from job_applicator.scrapers.base import SearchParams
+    from job_applicator.tui import actions
+
+    jobs = [_job(1), _job(2)]
+    monkeypatch.setattr(factories, "_make_browser", lambda *a, **k: _browser_cm())
+    monkeypatch.setattr(
+        factories, "_make_scraper", lambda *a, **k: MagicMock(scrape=AsyncMock(return_value=jobs))
+    )
+    monkeypatch.setattr(actions, "_score_jobs", lambda settings, j: [_mr(jobs[0]), _mr(jobs[1])])
+    msgs: list[str] = []
+    await actions.search_jobs(
+        AppSettings(resume_path="/cv.pdf"),
+        MagicMock(),
+        SearchParams(query="python", board=JobBoard.LINKEDIN),
+        on_progress=msgs.append,
+    )
+    joined = " | ".join(msgs)
+    assert "Opening a browser" in joined and "Searching" in joined and "Scoring" in joined
+
+
+async def test_tui_busy_indicator_in_statusline(tmp_path: Path) -> None:
+    """_set_busy shows a live '⏳ …' line in the status bar and clears back to counts."""
+    app = _app(tmp_path, seed=1)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._set_busy("Tailoring X…")
+        assert "⏳" in app._statusline() and "Tailoring X" in app._statusline()
+        app._set_busy("")
+        assert "⏳" not in app._statusline()  # restored to the funnel counts
+
+
+async def test_tui_search_clears_busy_and_loading(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """After a search, the list spinner (loading) and the busy line are both cleared."""
+    from textual.widgets import DataTable
+
+    from job_applicator.tui import actions
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+
+    async def _fake(_s: object, _st: object, _p: object, on_progress=None) -> int:  # type: ignore[no-untyped-def]
+        if on_progress is not None:
+            on_progress("Searching…")
+        return 0
+
+    monkeypatch.setattr(actions, "search_jobs", _fake)
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("s")
+        await pilot.pause()
+        await pilot.press("p", "y", "t", "h", "o", "n")
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._busy == ""
+        assert app.query_one("#joblist", DataTable).loading is False
 
 
 async def test_tui_apply_modal_no_account_until_confirm(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
