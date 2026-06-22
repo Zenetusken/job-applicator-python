@@ -638,7 +638,7 @@ def apply(
     cover_letter: bool = typer.Option(True, "--cover-letter/--no-cover-letter", help="AI cover."),
     headed: bool = typer.Option(False, "--headed", help="Run browser in headed mode."),
     resume_path: str = typer.Option("", "--resume", help="Path to resume file."),
-    style_guide: str = typer.Option("", "--style-guide", help="Example to mimic style."),
+    style_guide: str = typer.Option("", "--style-guide", help="Style example file(s) to mimic."),
     as_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
     ocr_mode: OCRMode = typer.Option(
         OCRMode.AUTO,
@@ -806,7 +806,7 @@ def generate_cover_letter(
     job_description: str = typer.Option("", "--description", "-d", help="Job description."),
     as_json: bool = typer.Option(False, "--json", help="Output the cover letter as JSON."),
     resume_path: str = typer.Option("", "--resume", help="Path to resume file."),
-    style_guide: str = typer.Option("", "--style-guide", help="Style examples."),
+    style_guide: str = typer.Option("", "--style-guide", help="Style example file(s) to mimic."),
     headed: bool = typer.Option(False, "--headed", help="Run browser in headed mode."),
     ocr_mode: OCRMode = typer.Option(
         OCRMode.AUTO,
@@ -1191,7 +1191,7 @@ def batch(
     cover_letter: bool = typer.Option(
         True, "--cover-letter/--no-cover-letter", help="Generate cover letters."
     ),
-    style_guide: str = typer.Option("", "--style-guide", help="Style example file."),
+    style_guide: str = typer.Option("", "--style-guide", help="Style example file(s) to mimic."),
     headed: bool = typer.Option(False, "--headed", help="Run browser in headed mode."),
     as_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
     ocr_mode: OCRMode = typer.Option(
@@ -1383,7 +1383,8 @@ def batch(
 
         matches = pending_matches
         if not as_json:
-            console.print(f"[cyan]Tailoring {len(matches)} jobs...[/cyan]")
+            n = len(matches)
+            console.print(f"[cyan]Tailoring {n} job{'s' if n != 1 else ''}...[/cyan]")
 
         # One breaker shared across cover-letter generation + résumé tailoring for
         # this whole batch run (every job goes through the same circuit breaker).
@@ -1666,7 +1667,7 @@ def tailor(
         "", "--requirements", "-r", help="Comma-separated requirements."
     ),
     location: str = typer.Option("", "--location", "-l", help="Job location."),
-    style_guide: str = typer.Option("", "--style-guide", help="Style examples."),
+    style_guide: str = typer.Option("", "--style-guide", help="Style example file(s) to mimic."),
     headed: bool = typer.Option(False, "--headed", help="Run browser in headed mode."),
     min_score: float = typer.Option(
         0.0, "--min-score", min=0.0, max=1.0, help="Abort if below this match threshold (0.0-1.0)."
@@ -2332,10 +2333,8 @@ def _render_doctor(report: DoctorReport) -> None:
 
     browser = report.browser
     if browser.playwright_installed and browser.chromium_executable:
-        console.print(
-            f"  Browser        {good} Playwright + Chromium  "
-            f"[dim]{escape(str(browser.chromium_executable))}[/dim]"
-        )
+        console.print(f"  Browser        {good} Playwright + Chromium")
+        console.print(f"                 [dim]{escape(str(browser.chromium_executable))}[/dim]")
     elif browser.playwright_installed:
         console.print(f"  Browser        {warn} Playwright installed, Chromium not found")
         if browser.error:
