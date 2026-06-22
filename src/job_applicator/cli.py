@@ -1919,6 +1919,9 @@ def ats_check(
     ctx: typer.Context,
     resume_path: str = typer.Option("", "--resume", help="Path to resume file."),
     as_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
+    strict: bool = typer.Option(
+        False, "--strict", help="Exit non-zero if the résumé is not ATS-compatible (for CI gating)."
+    ),
     ocr_mode: str = typer.Option(
         "auto",
         "--ocr-mode",
@@ -2004,6 +2007,8 @@ def ats_check(
                 "suggestions": result.suggestions,
             }
             sys.stdout.write(json.dumps(output, indent=2) + "\n")
+            if strict and not result.is_compatible:
+                raise typer.Exit(1)
             return
 
         # Display results
@@ -2035,6 +2040,11 @@ def ats_check(
             console.print("\n[bold cyan]Suggestions:[/bold cyan]")
             for suggestion in result.suggestions:
                 console.print(f"  [cyan]*[/cyan] {suggestion}")
+
+        if strict and not result.is_compatible:
+            raise typer.Exit(1)
+    except typer.Exit:
+        raise  # --strict gate (an explicit Exit) — propagate, don't record/wrap as an error
     except JobApplicatorError as exc:
         # Typed, expected failures (unreadable / unsupported / missing résumé) get a clean
         # message + exit 1 — matching the sibling commands, not a raw traceback.
