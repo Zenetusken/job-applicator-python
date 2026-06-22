@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from job_applicator.jobs_store import JobStore
     from job_applicator.models import (
         ApplicationResult,
+        ATSCompatibilityResult,
         CoverLetterResult,
         JobListing,
         TailoredResume,
@@ -198,3 +199,32 @@ async def apply_job(settings: AppSettings, job: JobListing, *, submit: bool) -> 
     if submit and result.status == ApplicationStatus.SUBMITTED:
         state.record(result)  # ApplicationState is the authority for "applied"
     return result
+
+
+async def ats_check(
+    settings: AppSettings, tailored_resume_path: str = ""
+) -> ATSCompatibilityResult:
+    """Run the ATS-compatibility check on the relevant résumé — the tailored artifact when
+    ``tailored_resume_path`` points at one, else the configured résumé. Offline (résumé
+    parse + heuristic scoring, run off the event loop); touches no account.
+    """
+    from job_applicator.documents.ats_checker import ATSChecker
+    from job_applicator.documents.resume import ResumeLoader
+
+    def _run() -> ATSCompatibilityResult:
+        loader = ResumeLoader()
+        resume = None
+        if tailored_resume_path and Path(tailored_resume_path).exists():
+            try:
+                text = Path(tailored_resume_path).read_text(encoding="utf-8")
+            except (OSError, ValueError):  # unreadable / non-UTF-8 → use the configured one
+                text = ""
+            if text.strip():
+                resume = loader.parse_text(text)
+        if (
+            resume is None
+        ):  # no usable tailored text → the configured résumé (load enforces non-empty)
+            resume = loader.load(settings.resume_path)
+        return ATSChecker().check(resume)
+
+    return await asyncio.to_thread(_run)
