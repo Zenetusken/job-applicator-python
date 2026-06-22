@@ -167,6 +167,9 @@ class StyleAnalyzer:
     async def _analyze_with_llm(self, text: str) -> StyleGuide:
         """Perform the actual LLM analysis using instructor for structured output."""
         try:
+            from job_applicator.utils.llm import quiet_litellm
+
+            quiet_litellm()
             import instructor
             from litellm import acompletion
 

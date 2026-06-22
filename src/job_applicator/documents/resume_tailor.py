@@ -16,7 +16,7 @@ from job_applicator.models import (
     StyleGuide,
     TailoredResume,
 )
-from job_applicator.utils.llm import CircuitOpenError, LLMRuntime
+from job_applicator.utils.llm import CircuitOpenError, LLMRuntime, quiet_litellm
 from job_applicator.utils.logging import get_logger
 from job_applicator.utils.retry import async_retry
 
@@ -1099,6 +1099,7 @@ class ResumeTailor:
 
         async def _do() -> str:
             try:
+                quiet_litellm()
                 from litellm import acompletion
 
                 model = (

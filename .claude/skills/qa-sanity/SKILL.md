@@ -74,9 +74,7 @@ when fixed — then delete its name from `KNOWN_FAIL` in `qa.py`):
 
 - `config-init -o <unwritable>` tracebacks instead of a clean error.
 - `import-cookies --help` eats `[browser]` (Rich parses it as markup) → "the  extra".
-- `--json --verbose` appends the verbose report to stdout → invalid JSON.
 - `match` reports `missing_skills: []` for a React/TypeScript job against a Python résumé (0.55 threshold too loose).
-- `generate-cover-letter` leaks litellm framework noise ("BadRequestError", "Give Feedback") to stdout on success.
 
 **WARN** (UX, non-gating): `ats-check` exits 0 on an incompatible résumé (no `--strict`);
 `doctor`/`generate-cover-letter`/`tailor` lack `--json`; `--log-file` to an unwritable path

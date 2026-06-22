@@ -17,6 +17,7 @@ from job_applicator.utils.llm import (
     LLMRuntime,
     ValidatedOutput,
     llm_call_error,
+    quiet_litellm,
     strip_thinking_process,
 )
 from job_applicator.utils.logging import get_logger
@@ -102,6 +103,7 @@ class CoverLetterGenerator:
         """Lazy-load instructor client."""
         if self._client is None:
             try:
+                quiet_litellm()
                 import instructor
                 from litellm import acompletion
 

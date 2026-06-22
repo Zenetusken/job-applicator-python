@@ -52,13 +52,11 @@ VLLM_URL = "http://localhost:8000/v1/models"
 # --- to FAIL today (-> XFAIL). When one flips to XPASS, the bug is fixed: delete it here.
 KNOWN_FAIL = {
     "config-init: bad output path → clean error (no traceback)",
-    # FIXED 2026-06-21: ats-check missing/corrupt/empty/directory → clean error (loader
-    # typed-error wrapper + handler); runtime errors → stderr (shared err_console). Promoted.
     "import-cookies: --help shows the [browser] extra name (markup not eaten)",
-    "global: --json --verbose → still valid JSON",
     "match: React job reports React/TypeScript as missing skills",
-    "generate-cover-letter: output free of litellm framework noise",
-    # FIXED 2026-06-21 (tailor --yes threaded into _tailor_workflow) — promoted XPASS→PASS.
+    # FIXED 2026-06-21 (promoted XPASS→PASS): ats-check tracebacks + runtime errors→stderr;
+    # tailor --yes non-interactive; --json --verbose valid JSON (verbose report → err_console)
+    # + generate-cover-letter litellm-noise suppressed (quiet_litellm).
 }
 
 # ---------------------------------------------------------------- isolation

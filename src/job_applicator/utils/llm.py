@@ -391,3 +391,21 @@ class ValidatedOutput:
                 last_error = exc
                 logger.warning("Output validation failed (attempt %d): %s", attempt + 1, exc)
         raise last_error or LLMError("LLM output validation failed after retries")
+
+
+def quiet_litellm() -> None:
+    """Silence litellm's framework chatter so it never pollutes the CLI's output.
+
+    litellm prints a "Give Feedback / Get Help" banner and INFO-level logs — including on
+    the instructor→direct-litellm fallback that always fires on a vLLM without a tool-call
+    parser — and these leak onto stdout/stderr even on a SUCCESSFUL call. Suppress the
+    banner and raise the logger threshold. Every operation is set-to-constant, so this is
+    idempotent and safe to call before each litellm use (no module-global latch needed).
+    """
+    import logging
+
+    import litellm  # core dependency — always installed
+
+    litellm.suppress_debug_info = True
+    for name in ("LiteLLM", "litellm"):
+        logging.getLogger(name).setLevel(logging.WARNING)
