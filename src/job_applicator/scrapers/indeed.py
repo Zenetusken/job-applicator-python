@@ -138,6 +138,7 @@ class IndeedScraper(BaseScraper):
         self,
         params: SearchParams,
         on_progress: Callable[[str], None] | None = None,
+        on_job: Callable[[JobListing], None] | None = None,
     ) -> list[JobListing]:
         """Scrape Indeed job listings for the given search params.
 
@@ -181,6 +182,8 @@ class IndeedScraper(BaseScraper):
                     job = await self._extract_job(card, params.board)
                     if job:
                         jobs.append(job)
+                        if on_job is not None:  # stream the listing as soon as it's parsed
+                            on_job(job)
                 except Exception as exc:
                     logger.warning("Failed to extract Indeed card: %s", exc)
 

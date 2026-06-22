@@ -64,13 +64,18 @@ class BaseScraper(ABC):
         self,
         params: SearchParams,
         on_progress: Callable[[str], None] | None = None,
+        on_job: Callable[[JobListing], None] | None = None,
     ) -> list[JobListing]:
         """Scrape job listings matching search parameters.
 
         ``on_progress(msg)`` (optional) is invoked as each job card is processed
         ("Scraping job 7/25…") so a caller can show live per-item progress instead
-        of a single opaque wait. It is called from the scrape coroutine on the
-        caller's event loop, so a UI sink can update directly.
+        of a single opaque wait.
+
+        ``on_job(job)`` (optional) is invoked with each fully-parsed listing as it is
+        scraped (before the full list is returned), so a caller can persist/show results
+        as they arrive instead of all at once at the end. Both callbacks fire from the
+        scrape coroutine on the caller's event loop, so a UI/store sink can act directly.
         """
 
     @abstractmethod
