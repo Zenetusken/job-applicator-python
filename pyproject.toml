@@ -15,6 +15,7 @@ dependencies = [
     "pydantic-settings>=2.10",
     "typer>=0.16",
     "rich>=14.2",
+    "textual>=8.2",            # full-screen terminal UI (the `tui` command); pure-Python on rich
     "jinja2>=3.1",
     "numpy>=1.26",
     # LLM - Modern stack
@@ -57,6 +58,7 @@ dev = [
     "pytest>=8.4",
     "pytest-asyncio>=0.25",
     "pytest-cov>=6.2",
+    "pytest-textual-snapshot>=1.1",  # snapshot/Pilot testing for the Textual TUI
     "hypothesis>=6.142",
 ]
 

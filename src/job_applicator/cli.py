@@ -248,7 +248,7 @@ def version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
-@app.callback()
+@app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
     version: bool = typer.Option(
@@ -271,10 +271,25 @@ def main(
         help="Write verbose report to file (requires --verbose).",
     ),
 ) -> None:
-    """Automated job application tool with AI-powered cover letters."""
+    """Automated job application tool with AI-powered cover letters.
+
+    Run with no command in a terminal to open the full-screen UI (`tui`).
+    """
     if log_file and not verbose:
         raise typer.BadParameter("--log-file requires --verbose")
     ctx.obj = VerboseContext(verbose=verbose, log_file=log_file)
+
+    if ctx.invoked_subcommand is not None:
+        return
+    # Bare invocation: open the TUI in an interactive terminal; otherwise print help
+    # (so pipes / CI / `job-applicator | cat` get usable output, never a hung UI).
+    if sys.stdout.isatty():
+        from job_applicator.tui import run_tui
+
+        run_tui(_get_settings())
+    else:
+        typer.echo(ctx.get_help())
+        raise typer.Exit(0)
 
 
 def _verbose_option() -> bool:
@@ -1336,6 +1351,22 @@ def status(
         score = f"{r['score']:.0%}" if r["score"] is not None else "—"
         table.add_row(r["stage"].replace("_", " "), score, r["title"], r["company"], r["board"])
     console.print(table)
+
+
+@app.command()
+def tui() -> None:
+    """Open the full-screen terminal UI — a navigable home over your job funnel.
+
+    A read-only browser of your search → match → tailor → apply pipeline. Offline and
+    account-safe (reads local state only). Same as running `job-applicator` with no
+    command in a terminal.
+    """
+    if not sys.stdout.isatty():
+        err_console.print("[yellow]The TUI needs an interactive terminal (a TTY).[/yellow]")
+        raise typer.Exit(1)
+    from job_applicator.tui import run_tui
+
+    run_tui(_get_settings())
 
 
 def _resume_tailored_resume(
