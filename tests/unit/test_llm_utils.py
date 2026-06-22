@@ -398,3 +398,29 @@ async def test_breaker_half_open_admits_exactly_one_concurrent_probe() -> None:
     assert started == 1  # exactly one probe ran
     assert sum(r == "ok" for r in results) == 1
     assert sum(isinstance(r, CircuitOpenError) for r in results) == 4
+
+
+def test_quiet_litellm_suppresses_banner_and_logs_idempotently() -> None:
+    """quiet_litellm silences litellm's framework noise (banner + INFO logs) so it can't
+    pollute the CLI's stdout/stderr on a successful call, and is safe to call repeatedly.
+    Saves/restores the process-global litellm state so the test stays hermetic."""
+    import logging
+
+    import litellm
+
+    from job_applicator.utils.llm import quiet_litellm
+
+    lit_logger = logging.getLogger("LiteLLM")
+    low_logger = logging.getLogger("litellm")  # distinct, case-sensitive logger
+    saved = (litellm.suppress_debug_info, lit_logger.level, low_logger.level)
+    try:
+        quiet_litellm()
+        assert litellm.suppress_debug_info is True
+        assert lit_logger.level == logging.WARNING
+        assert low_logger.level == logging.WARNING
+        quiet_litellm()  # idempotent — must not raise
+        assert litellm.suppress_debug_info is True
+    finally:
+        litellm.suppress_debug_info = saved[0]
+        lit_logger.setLevel(saved[1])
+        low_logger.setLevel(saved[2])

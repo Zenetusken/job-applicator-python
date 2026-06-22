@@ -334,7 +334,7 @@ def search(
             vctx = ctx.obj
             if isinstance(vctx, VerboseContext):
                 log_file = vctx.log_file
-            reporter.render(console, log_file=log_file)
+            reporter.render(err_console, log_file=log_file)
 
 
 @app.command()
@@ -735,7 +735,7 @@ def apply(
             vctx = ctx.obj
             if isinstance(vctx, VerboseContext):
                 log_file = vctx.log_file
-            reporter.render(console, log_file=log_file)
+            reporter.render(err_console, log_file=log_file)
 
 
 @app.command()
@@ -892,7 +892,7 @@ def generate_cover_letter(
     finally:
         if reporter:
             log_file = ctx.obj.log_file if isinstance(ctx.obj, VerboseContext) else None
-            reporter.render(console, log_file)
+            reporter.render(err_console, log_file)
 
 
 @app.command()
@@ -1096,7 +1096,7 @@ def match(
     finally:
         if reporter:
             log_file = ctx.obj.log_file if isinstance(ctx.obj, VerboseContext) else None
-            reporter.render(console, log_file)
+            reporter.render(err_console, log_file)
 
 
 def _resume_tailored_resume(
@@ -1608,7 +1608,7 @@ def batch(
     finally:
         if reporter:
             log_file = ctx.obj.log_file if isinstance(ctx.obj, VerboseContext) else None
-            reporter.render(console, log_file)
+            reporter.render(err_console, log_file)
 
 
 @app.command()
@@ -1885,7 +1885,7 @@ def tailor(
     finally:
         if reporter:
             report_log_file = ctx.obj.log_file if isinstance(ctx.obj, VerboseContext) else None
-            reporter.render(console, report_log_file)
+            reporter.render(err_console, report_log_file)
 
 
 def _sanitize_config(settings: AppSettings) -> dict[str, Any]:
@@ -1949,7 +1949,7 @@ def ats_check(
         )
         if reporter:
             reporter.record_error("Resume path required. Use --resume.")
-            reporter.render(console, log_file=None)
+            reporter.render(err_console, log_file=None)
         err_console.print("[red]Resume path required. Use --resume.[/red]")
         raise typer.Exit(1)
 
@@ -2049,7 +2049,7 @@ def ats_check(
             vctx = ctx.obj
             if isinstance(vctx, VerboseContext):
                 log_file = vctx.log_file
-            reporter.render(console, log_file=log_file)
+            reporter.render(err_console, log_file=log_file)
 
 
 @app.command()
@@ -2130,7 +2130,7 @@ delay_between_applications_s = 2.0
             vctx = ctx.obj
             if isinstance(vctx, VerboseContext):
                 log_file = vctx.log_file
-            reporter.render(console, log_file=log_file)
+            reporter.render(err_console, log_file=log_file)
 
 
 @app.command("check-session")
