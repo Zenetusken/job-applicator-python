@@ -6,6 +6,7 @@ import asyncio
 import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -96,11 +97,19 @@ async def _llm_with_retry(  # noqa: UP047 — mypy doesn't support PEP 695 yet
                 return None
 
 
-def _resolve_ocr_mode(ocr_mode: str, force_ocr: bool) -> str:
+class OCRMode(StrEnum):
+    """Valid --ocr-mode values; typer rejects anything else at parse time (exit 2)."""
+
+    AUTO = "auto"
+    ON = "on"
+    OFF = "off"
+
+
+def _resolve_ocr_mode(ocr_mode: OCRMode, force_ocr: bool) -> str:
     """Return effective OCR mode from CLI flags."""
     if force_ocr:
         return "on"
-    return ocr_mode
+    return str(ocr_mode)
 
 
 def _load_jobs_file(jobs_file: str) -> list[JobListing]:
@@ -631,8 +640,8 @@ def apply(
     resume_path: str = typer.Option("", "--resume", help="Path to resume file."),
     style_guide: str = typer.Option("", "--style-guide", help="Example to mimic style."),
     as_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
-    ocr_mode: str = typer.Option(
-        "auto",
+    ocr_mode: OCRMode = typer.Option(
+        OCRMode.AUTO,
         "--ocr-mode",
         help="OCR mode: auto (fallback), on (always), off (never).",
     ),
@@ -799,8 +808,8 @@ def generate_cover_letter(
     resume_path: str = typer.Option("", "--resume", help="Path to resume file."),
     style_guide: str = typer.Option("", "--style-guide", help="Style examples."),
     headed: bool = typer.Option(False, "--headed", help="Run browser in headed mode."),
-    ocr_mode: str = typer.Option(
-        "auto",
+    ocr_mode: OCRMode = typer.Option(
+        OCRMode.AUTO,
         "--ocr-mode",
         help="OCR mode: auto (fallback), on (always), off (never).",
     ),
@@ -962,11 +971,13 @@ def match(
     ctx: typer.Context,
     resume_path: str = typer.Option("", "--resume", help="Path to resume file."),
     jobs_file: str = typer.Option("", "--jobs-file", help="JSON file with job listings."),
-    top_k: int = typer.Option(5, "--top-k", "-k", help="Number of top matches."),
-    min_score: float = typer.Option(0.0, "--min-score", help="Minimum match score (0.0-1.0)."),
+    top_k: int = typer.Option(5, "--top-k", "-k", min=1, help="Number of top matches."),
+    min_score: float = typer.Option(
+        0.0, "--min-score", min=0.0, max=1.0, help="Minimum match score (0.0-1.0)."
+    ),
     as_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
-    ocr_mode: str = typer.Option(
-        "auto",
+    ocr_mode: OCRMode = typer.Option(
+        OCRMode.AUTO,
         "--ocr-mode",
         help="OCR mode: auto (fallback), on (always), off (never).",
     ),
@@ -996,7 +1007,6 @@ def match(
     async def _run() -> None:
         from job_applicator.documents.resume import ResumeLoader
         from job_applicator.embeddings.matching import JobMatcher
-        from job_applicator.models import JobBoard, JobListing
 
         if not settings.resume_path:
             err_console.print("[red]Resume path required. Use --resume.[/red]")
@@ -1036,27 +1046,11 @@ def match(
         if jobs_file:
             jobs = _load_jobs_file(jobs_file)
         else:
-            # Example jobs for demo
-            from pydantic import HttpUrl
-
-            jobs = [
-                JobListing(
-                    title="Python Developer",
-                    company="TechCorp",
-                    url=HttpUrl("https://example.com/1"),
-                    description="Looking for Python developer with FastAPI experience",
-                    requirements=["Python", "FastAPI", "PostgreSQL"],
-                    board=JobBoard.LINKEDIN,
-                ),
-                JobListing(
-                    title="Backend Engineer",
-                    company="StartupXYZ",
-                    url=HttpUrl("https://example.com/2"),
-                    description="Backend engineer for microservices",
-                    requirements=["Python", "Docker", "AWS"],
-                    board=JobBoard.LINKEDIN,
-                ),
-            ]
+            err_console.print(
+                "[red]No jobs to match. Provide --jobs-file <path> "
+                "(a JSON array of job listings).[/red]"
+            )
+            raise typer.Exit(1)
 
         if not as_json:
             console.print(f"[green]Loaded {len(jobs)} jobs[/green]")
@@ -1190,16 +1184,18 @@ def batch(
         "", "--query", "-q", help="Search query (alternative to --jobs-file)."
     ),
     site: str = typer.Option("linkedin", "--site", "-s", help="Job board for --query."),
-    top_k: int = typer.Option(5, "--top-k", "-k", help="Max jobs to tailor."),
-    min_score: float = typer.Option(0.0, "--min-score", help="Skip jobs below this score."),
+    top_k: int = typer.Option(5, "--top-k", "-k", min=1, help="Max jobs to tailor."),
+    min_score: float = typer.Option(
+        0.0, "--min-score", min=0.0, max=1.0, help="Skip jobs below this score."
+    ),
     cover_letter: bool = typer.Option(
         True, "--cover-letter/--no-cover-letter", help="Generate cover letters."
     ),
     style_guide: str = typer.Option("", "--style-guide", help="Style example file."),
     headed: bool = typer.Option(False, "--headed", help="Run browser in headed mode."),
     as_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
-    ocr_mode: str = typer.Option(
-        "auto",
+    ocr_mode: OCRMode = typer.Option(
+        OCRMode.AUTO,
         "--ocr-mode",
         help="OCR mode: auto (fallback), on (always), off (never).",
     ),
@@ -1673,7 +1669,7 @@ def tailor(
     style_guide: str = typer.Option("", "--style-guide", help="Style examples."),
     headed: bool = typer.Option(False, "--headed", help="Run browser in headed mode."),
     min_score: float = typer.Option(
-        0.0, "--min-score", help="Abort if match score is below this threshold (0.0-1.0)."
+        0.0, "--min-score", min=0.0, max=1.0, help="Abort if below this match threshold (0.0-1.0)."
     ),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Skip interactive prompts (auto-answer yes)."
@@ -1681,8 +1677,8 @@ def tailor(
     as_json: bool = typer.Option(
         False, "--json", help="Emit the tailored résumé as JSON (implies --yes / non-interactive)."
     ),
-    ocr_mode: str = typer.Option(
-        "auto",
+    ocr_mode: OCRMode = typer.Option(
+        OCRMode.AUTO,
         "--ocr-mode",
         help="OCR mode: auto (fallback), on (always), off (never).",
     ),
@@ -1988,8 +1984,8 @@ def ats_check(
     strict: bool = typer.Option(
         False, "--strict", help="Exit non-zero if the résumé is not ATS-compatible (for CI gating)."
     ),
-    ocr_mode: str = typer.Option(
-        "auto",
+    ocr_mode: OCRMode = typer.Option(
+        OCRMode.AUTO,
         "--ocr-mode",
         help="OCR mode: auto (fallback), on (always), off (never).",
     ),
@@ -2181,8 +2177,11 @@ delay_between_applications_s = 2.0
         config_content = config_content.replace(_token, str(LLMConfig.model_fields[_field].default))
 
     config_path = Path(output_path)
+    if config_path.is_dir():
+        err_console.print(f"[red]Output path is a directory, not a file: {output_path}[/red]")
+        raise typer.Exit(1)
     if config_path.exists():
-        console.print("[yellow]config.toml already exists. Skipping.[/yellow]")
+        console.print(f"[yellow]{output_path} already exists. Skipping.[/yellow]")
         return
 
     reporter = _get_reporter(

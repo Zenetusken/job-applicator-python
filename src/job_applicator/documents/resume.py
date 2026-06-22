@@ -63,13 +63,13 @@ class ResumeLoader:
         suffix = file_path.suffix.lower()
         try:
             if suffix == ".pdf":
-                return self._load_pdf(file_path, ocr_mode=ocr_mode)
+                data = self._load_pdf(file_path, ocr_mode=ocr_mode)
             elif suffix == ".docx":
-                return self._load_docx(file_path)
+                data = self._load_docx(file_path)
             elif suffix in (".txt", ".md"):
-                return self._load_text(file_path)
+                data = self._load_text(file_path)
             elif suffix in (".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp"):
-                return self._load_image(file_path, ocr_mode=ocr_mode)
+                data = self._load_image(file_path, ocr_mode=ocr_mode)
             else:
                 fmt = suffix or "(no file extension)"
                 raise DocumentError(f"Unsupported resume format: {fmt} ({file_path.name})")
@@ -79,6 +79,13 @@ class ResumeLoader:
             raise DocumentError(
                 f"Could not parse resume {file_path.name}: {type(exc).__name__}: {exc}"
             ) from exc
+
+        if not data.raw_text.strip():
+            raise DocumentError(
+                f"Resume has no extractable text: {file_path.name} (the file is empty, or its "
+                "text could not be extracted — for a scanned PDF try --ocr-mode on)"
+            )
+        return data
 
     def _load_docx(self, path: Path) -> ResumeData:
         """Load a DOCX resume."""
