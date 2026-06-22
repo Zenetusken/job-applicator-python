@@ -39,6 +39,8 @@ def _drive(
     *,
     sections: list[object] | None = None,
     yes: bool = False,
+    staleness: list[str] | None = None,
+    ordering: list[str] | None = None,
 ):
     """Drive the `tailor` command through its interactive loop.
 
@@ -53,9 +55,9 @@ def _drive(
     audit = MagicMock(
         entries=[],
         warnings=[],
-        staleness_issues=[],
-        ordering_issues=[],
-        is_stale=False,
+        staleness_issues=staleness or [],
+        ordering_issues=ordering or [],
+        is_stale=bool(staleness),  # mirrors resume_tailor.py: is_stale = bool(staleness_issues)
         earliest_date="2020",
         latest_date="2023",
     )
@@ -210,3 +212,61 @@ def test_tailor_invalid_choice_then_quit(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert "Invalid choice" in result.output
     engine.refine.assert_not_awaited()
     assert not list(tmp_path.glob("tailored_*.txt"))
+
+
+def test_tailor_stale_but_ordered_cv_triggers_confirm_gate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A stale-but-correctly-ordered CV (staleness, NO ordering issues) must still trigger the
+    'Proceed anyway?' confirm gate. Regression guard — the gate was nested under
+    `if audit.ordering_issues:`, so a stale-but-ordered CV silently skipped it and tailored anyway.
+    """
+    # Answer the confirm prompt "n" → abort BEFORE tailoring.
+    result, engine, _cl = _drive(
+        monkeypatch, tmp_path, ["n"], staleness=["Most recent role ended 2019 (5+ years ago)"]
+    )
+    assert result.exit_code == 0, result.output  # typer.Exit(0) user-abort
+    assert "Aborted. Please update your CV." in result.output
+    engine.tailor.assert_not_awaited()  # gate fired + aborted before any tailoring
+
+
+def test_tailor_clean_dates_show_coherent_message(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A CV with NO staleness/ordering issues shows the '✓ Dates look coherent' confirmation.
+    Regression guard — that else-branch was dead (nested under `if ordering_issues:` + an
+    always-true `or`), so the message never printed for a clean CV.
+    """
+    result, _engine, _cl = _drive(monkeypatch, tmp_path, ["A", "N"])  # default audit = all clean
+    assert result.exit_code == 0, result.output
+    assert "Dates look coherent and current." in result.output
+    assert len(list(tmp_path.glob("tailored_*.txt"))) == 1  # tailoring proceeded normally
+
+
+def test_tailor_yes_auto_proceeds_through_stale_date_gate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`--yes` on a stale CV fires the date gate and auto-proceeds (no prompt), then tailors —
+    covers the gate's `yes` branch (the other date tests exercise the else / interactive paths).
+    """
+    result, engine, _cl = _drive(
+        monkeypatch, tmp_path, [], yes=True, staleness=["Most recent role ended 2019"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "--yes flag set, proceeding automatically." in result.output
+    engine.tailor.assert_awaited_once()
+    assert len(list(tmp_path.glob("tailored_*.txt"))) == 1  # proceeded past the gate + tailored
+
+
+def test_tailor_ordering_only_cv_fires_gate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An ordering-issue-only CV (no staleness) fires the gate (closes the 4-state matrix:
+    clean / stale-only / ordering-only / both — the last two share the same boolean branch)."""
+    result, _engine, _cl = _drive(
+        monkeypatch, tmp_path, ["y", "A", "N"], ordering=["Roles listed out of chronological order"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "Ordering Issues" in result.output
+    assert "Dates look coherent" not in result.output  # gate fired, not the else
+    assert len(list(tmp_path.glob("tailored_*.txt"))) == 1  # 'y' → proceeded + tailored
