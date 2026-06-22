@@ -58,7 +58,6 @@ dev = [
     "pytest>=8.4",
     "pytest-asyncio>=0.25",
     "pytest-cov>=6.2",
-    "pytest-textual-snapshot>=1.1",  # snapshot/Pilot testing for the Textual TUI
     "hypothesis>=6.142",
 ]
 

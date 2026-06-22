@@ -119,8 +119,22 @@ async def test_tui_refresh_picks_up_new_jobs(tmp_path: Path) -> None:
         assert table.row_count == 2
 
 
-async def test_tui_launch_reads_only_local_state(tmp_path: Path) -> None:
-    """Mounting touches ONLY the injected store/app_state — no browser/LLM/account."""
+async def test_tui_launch_reads_only_local_state(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Mounting reads the injected store/app_state and constructs NO browser / scraper /
+    applicator / LLM — the account-safety invariant, asserted on the negative too."""
+    import litellm
+
+    import job_applicator.factories as factories
+
+    browser = MagicMock()
+    scraper = MagicMock()
+    applicator = MagicMock()
+    acompletion = MagicMock()
+    monkeypatch.setattr(factories, "_make_browser", browser)
+    monkeypatch.setattr(factories, "_make_scraper", scraper)
+    monkeypatch.setattr(factories, "_make_applicator", applicator)
+    monkeypatch.setattr(litellm, "acompletion", acompletion)
+
     store = MagicMock()
     store.list_jobs.return_value = []
     app_state = MagicMock()
@@ -128,8 +142,84 @@ async def test_tui_launch_reads_only_local_state(tmp_path: Path) -> None:
     app = JobApplicatorApp(settings=AppSettings(), store=store, app_state=app_state)
     async with app.run_test() as pilot:
         await pilot.pause()
-    store.list_jobs.assert_called()
+    store.list_jobs.assert_called()  # reads local state…
     app_state.list_recent.assert_called()
+    browser.assert_not_called()  # …and nothing else
+    scraper.assert_not_called()
+    applicator.assert_not_called()
+    acompletion.assert_not_called()
+
+
+async def test_tui_applied_count_counts_only_submitted(tmp_path: Path) -> None:
+    """The status line's 'applied' count reflects SUBMITTED applications only."""
+    from datetime import UTC, datetime
+
+    from job_applicator.models import ApplicationResult, ApplicationStatus
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))
+    app_state = MagicMock()
+    app_state.list_recent.return_value = [
+        ApplicationResult(
+            job=_job(2), status=ApplicationStatus.SUBMITTED, timestamp=datetime.now(UTC)
+        ),
+        ApplicationResult(
+            job=_job(3), status=ApplicationStatus.FAILED, timestamp=datetime.now(UTC)
+        ),
+    ]
+    app = JobApplicatorApp(settings=AppSettings(), store=store, app_state=app_state)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app._applied_count == 1  # the FAILED one is not counted
+
+
+def test_tui_detail_markup_renders_and_escapes() -> None:
+    """The detail pane renders a job's fields and escapes markup metacharacters."""
+    from datetime import UTC, datetime
+
+    from rich.markup import escape
+
+    from job_applicator.models import FunnelStatus, StoredJob
+
+    job = JobListing(
+        title="Sr Eng",
+        company="Ac[me]",  # a "[" would be Rich markup if unescaped
+        url="https://x/9",
+        board=JobBoard.LINKEDIN,
+        location="Remote",
+        salary="$160k",
+        requirements=["python"],
+        description="Async role.",
+    )
+    stored = StoredJob(
+        id=9,
+        job=job,
+        funnel_status=FunnelStatus.COVER_LETTER,
+        match_score=0.81,
+        semantic_score=0.8,
+        skill_score=0.83,
+        matched_skills=["python"],
+        missing_skills=["k8s"],
+        tailored_resume_path="/out/t.txt",
+        cover_letter_path="/out/cl.txt",
+        first_seen_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    app = JobApplicatorApp(settings=AppSettings(), store=MagicMock(), app_state=MagicMock())
+    md = app._detail_markup(stored)
+    for token in (
+        "Sr Eng",
+        "Remote",
+        "$160k",
+        "81%",
+        "python",
+        "k8s",
+        "/out/t.txt",
+        "/out/cl.txt",
+        "Async role.",
+    ):
+        assert token in md, token
+    assert escape("Ac[me]") in md  # company is escaped, not interpreted as markup
 
 
 async def test_tui_store_error_is_shown_not_raised(tmp_path: Path) -> None:
@@ -158,3 +248,15 @@ def test_tui_command_non_tty_clean_error() -> None:
     result = CliRunner().invoke(cli.app, ["tui"])
     assert result.exit_code == 1
     assert "interactive terminal" in result.stderr
+
+
+def test_tui_tty_guard_requires_both_streams(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The TUI launches only when BOTH stdout and stdin are a TTY — a TTY stdout with a
+    piped stdin (`producer | job-applicator`) must NOT launch (Textual would hang)."""
+    import sys
+
+    monkeypatch.setattr(sys, "stdout", MagicMock(isatty=lambda: True))
+    monkeypatch.setattr(sys, "stdin", MagicMock(isatty=lambda: False))
+    assert cli._tui_tty_ok() is False
+    monkeypatch.setattr(sys, "stdin", MagicMock(isatty=lambda: True))
+    assert cli._tui_tty_ok() is True

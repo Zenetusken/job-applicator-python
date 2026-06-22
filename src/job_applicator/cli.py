@@ -283,13 +283,30 @@ def main(
         return
     # Bare invocation: open the TUI in an interactive terminal; otherwise print help
     # (so pipes / CI / `job-applicator | cat` get usable output, never a hung UI).
-    if sys.stdout.isatty():
-        from job_applicator.tui import run_tui
-
-        run_tui(_get_settings())
+    if _tui_tty_ok():
+        _launch_tui()
     else:
         typer.echo(ctx.get_help())
         raise typer.Exit(0)
+
+
+def _tui_tty_ok() -> bool:
+    """True only when BOTH stdout and stdin are a real terminal. Textual reads keys from
+    stdin, so a TTY stdout with a piped/redirected stdin (`producer | job-applicator`,
+    `job-applicator < file`) would launch a UI that hangs waiting for input."""
+    return sys.stdout.isatty() and sys.stdin.isatty()
+
+
+def _launch_tui() -> None:
+    """Run the TUI, turning a store-construction failure into a clean message — the
+    stores are built before the event loop, outside the app's own error handling."""
+    from job_applicator.tui import run_tui
+
+    try:
+        run_tui(_get_settings())
+    except JobApplicatorError as exc:
+        err_console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
+        raise typer.Exit(1) from exc
 
 
 def _verbose_option() -> bool:
@@ -1361,12 +1378,10 @@ def tui() -> None:
     account-safe (reads local state only). Same as running `job-applicator` with no
     command in a terminal.
     """
-    if not sys.stdout.isatty():
+    if not _tui_tty_ok():
         err_console.print("[yellow]The TUI needs an interactive terminal (a TTY).[/yellow]")
         raise typer.Exit(1)
-    from job_applicator.tui import run_tui
-
-    run_tui(_get_settings())
+    _launch_tui()
 
 
 def _resume_tailored_resume(
