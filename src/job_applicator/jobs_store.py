@@ -312,13 +312,29 @@ class JobStore:
         except Exception as exc:  # corrupt / enum-drift row → typed error, not a raw crash
             raise JobStoreError(f"Could not read stored job {ref!r}: {exc}") from exc
 
-    def list_jobs(self, *, status: FunnelStatus | None = None, limit: int = 50) -> list[StoredJob]:
-        """Return stored jobs, newest-updated first, optionally filtered by stage."""
+    def list_jobs(
+        self,
+        *,
+        status: FunnelStatus | None = None,
+        board: str | None = None,
+        limit: int = 50,
+    ) -> list[StoredJob]:
+        """Return stored jobs, newest-updated first, optionally filtered by stage/board.
+
+        Filters are applied in SQL *before* the LIMIT, so a board filter sees every
+        matching row — not just the most-recent ``limit`` rows of any board.
+        """
         sql = "SELECT * FROM jobs"
+        clauses: list[str] = []
         params: list[Any] = []
         if status is not None:
-            sql += " WHERE funnel_status = ?"
+            clauses.append("funnel_status = ?")
             params.append(status.value)
+        if board is not None:
+            clauses.append("board = ?")
+            params.append(board)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY updated_at DESC LIMIT ?"
         params.append(limit)
         try:

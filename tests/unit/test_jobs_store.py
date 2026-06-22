@@ -180,6 +180,17 @@ def test_list_jobs_filter_and_limit(store: JobStore) -> None:
     assert len(store.list_jobs(limit=1)) == 1
 
 
+def test_list_jobs_board_filter_before_limit(store: JobStore) -> None:
+    """A board filter is applied in SQL before LIMIT, so it sees all matching rows even
+    when newer rows of another board would otherwise fill the limit window."""
+    store.upsert_job(_job(1))  # linkedin
+    store.upsert_job(_job(2))  # linkedin
+    store.upsert_job(_job(3, board=JobBoard.INDEED))  # indeed, newest-updated
+    linkedin = store.list_jobs(board="linkedin", limit=2)
+    assert len(linkedin) == 2  # both linkedin jobs — not hidden behind the newer indeed one
+    assert all(s.job.board is JobBoard.LINKEDIN for s in linkedin)
+
+
 def test_list_jobs_orders_newest_updated_first(store: JobStore) -> None:
     store.upsert_job(_job(1))
     store.upsert_job(_job(2))

@@ -744,10 +744,9 @@ def apply(
             effective_site = stored.job.board.value
         elif not query:
             # The applicator is board-specific, so a saved-list run targets one board:
-            # the requested --site (default linkedin).
-            store_jobs = [
-                s.job for s in _get_jobs_store().list_jobs(limit=limit) if s.job.board.value == site
-            ]
+            # the requested --site (default linkedin). Filter in SQL (before LIMIT) so we
+            # don't miss older jobs of this board hidden behind newer ones of another.
+            store_jobs = [s.job for s in _get_jobs_store().list_jobs(board=site, limit=limit)]
             if not store_jobs:
                 err_console.print(
                     f"[yellow]No saved {site} jobs to apply to. Run "

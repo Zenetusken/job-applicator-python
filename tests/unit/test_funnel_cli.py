@@ -376,3 +376,64 @@ def test_apply_from_uses_stored_board(tmp_path: Path, monkeypatch: pytest.Monkey
     assert result.exit_code == 0, result.output
     assert make_browser.call_args.args[0] == "indeed"  # stored board, not the linkedin default
     assert make_applicator.call_args.args[0] == "indeed"
+
+
+# --------------------------------------------------- store robustness / dedup
+def test_status_dedups_job_in_both_stores(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A job present in BOTH stores (tailored head + submitted tail) is counted once, at
+    its furthest stage (applied) — the core no-double-count contract."""
+    from job_applicator.state import ApplicationState
+
+    shared = _job(1)
+    js = JobStore(db_path=tmp_path / "applications.db")
+    js.mark_tailored(shared, tailored_resume_path="/t.txt")  # head: tailored, url .../1
+    st = ApplicationState(db_path=tmp_path / "applications.db")
+    st.record(
+        ApplicationResult(
+            job=shared, status=ApplicationStatus.SUBMITTED, timestamp=datetime.now(UTC)
+        )
+    )  # tail: submitted, same url
+    monkeypatch.setattr(cli, "_get_jobs_store", lambda: js)
+    monkeypatch.setattr("job_applicator.state.ApplicationState", lambda *a, **k: st)
+
+    result = CliRunner().invoke(cli.app, ["status", "--json"])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.stdout)
+    assert data["total"] == 1  # same URL → one row, not two
+    assert data["counts"]["applied"] == 1
+    assert data["counts"]["tailored"] == 0  # overridden to its furthest stage
+
+
+def test_search_persistence_failure_is_best_effort(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A store-write failure warns but does NOT sink the freshly-scraped results."""
+    from job_applicator.jobs_store import JobStoreError
+
+    scraper = MagicMock(scrape=AsyncMock(return_value=[_job(1)]))
+    store = MagicMock()
+    store.upsert_job.side_effect = JobStoreError("database is locked")
+    monkeypatch.setattr(cli, "_make_browser", lambda *a, **k: _browser_cm())
+    monkeypatch.setattr(cli, "_make_scraper", lambda *a, **k: scraper)
+    monkeypatch.setattr(cli, "_get_jobs_store", lambda: store)
+
+    result = CliRunner().invoke(cli.app, ["search", "-q", "python", "--json"])
+    assert result.exit_code == 0, result.output  # scrape result survives the store hiccup
+    assert len(json.loads(result.stdout)) == 1  # the scraped job is still emitted
+    assert "Could not save" in result.stderr  # but the failure is surfaced
+
+
+def test_status_db_error_is_clean(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A store read failure (e.g. a concurrent write-lock) is a clean typed error."""
+    from job_applicator.jobs_store import JobStoreError
+
+    store = MagicMock()
+    store.list_jobs.side_effect = JobStoreError("database is locked")
+    monkeypatch.setattr(cli, "_get_jobs_store", lambda: store)
+    monkeypatch.setattr(
+        "job_applicator.state.ApplicationState",
+        lambda *a, **k: MagicMock(list_recent=lambda limit=0: []),
+    )
+
+    result = CliRunner().invoke(cli.app, ["status"])
+    assert result.exit_code == 1, result.output
+    assert "Traceback (most recent call last)" not in (result.stdout + result.stderr)
+    assert "database is locked" in result.stderr
