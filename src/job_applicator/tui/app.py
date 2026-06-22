@@ -110,20 +110,28 @@ class JobApplicatorApp(App[None]):
         table.focus()  # the job list owns focus, not the (hidden) filter Input
 
     # -------------------------------------------------------------------- data
-    def _reload(self) -> None:
+    def _reload(self, *, refresh_applied: bool = True) -> None:
         """(Re)load jobs from the store and repaint. Account-safe; errors are shown,
-        not raised, so a DB hiccup never crashes the UI."""
+        not raised, so a DB hiccup never crashes the UI.
+
+        ``refresh_applied=False`` skips the applied-URLs requery: during a search (which
+        writes only the jobs table) the SUBMITTED set is invariant, so the per-streamed-row
+        repaint reuses it instead of re-reading list_recent N times on the event loop.
+        """
         self._load_error = ""
         try:
             self._all = self._store.list_jobs(limit=500)
-            self._applied_urls = {
-                str(a.job.url)
-                for a in self._app_state.list_recent(limit=10_000)
-                if a.status == ApplicationStatus.SUBMITTED
-            }
+            if refresh_applied:
+                self._applied_urls = {
+                    str(a.job.url)
+                    for a in self._app_state.list_recent(limit=10_000)
+                    if a.status == ApplicationStatus.SUBMITTED
+                }
         except JobApplicatorError as exc:
-            self._all, self._applied_urls = [], set()
+            self._all = []
             self._load_error = str(exc)
+            if refresh_applied:
+                self._applied_urls = set()
         # Best-match-first: scored jobs by score desc, then unscored (kept newest-first by
         # the stable sort, since the store returns updated_at-desc). Sorting the VIEW — not
         # the shared list_jobs query the CLI also uses — keeps this TUI-local, and makes the
@@ -564,7 +572,8 @@ class JobApplicatorApp(App[None]):
             if not streamed:
                 streamed = True
                 table.loading = False
-            self._reload()
+            # The SUBMITTED set can't change during a search, so skip its requery per row.
+            self._reload(refresh_applied=False)
 
         try:
             found = await self._run_action(
