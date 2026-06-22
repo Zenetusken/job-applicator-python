@@ -735,6 +735,27 @@ async def test_ats_check_runs_checker_on_resume(monkeypatch) -> None:  # type: i
     checker.return_value.check.assert_called_once()
 
 
+async def test_ats_check_falls_back_on_empty_tailored(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A whitespace-only / unreadable tailored artifact falls back to the configured résumé."""
+    from job_applicator.models import ATSCompatibilityResult
+    from job_applicator.tui import actions
+
+    empty = tmp_path / "empty.txt"
+    empty.write_text("   ", encoding="utf-8")  # whitespace-only
+    result = ATSCompatibilityResult(score=0.9)
+    loader = MagicMock(load=MagicMock(return_value=MagicMock()), parse_text=MagicMock())
+    checker = MagicMock()
+    checker.return_value.check.return_value = result
+    monkeypatch.setattr("job_applicator.documents.ats_checker.ATSChecker", checker)
+    monkeypatch.setattr("job_applicator.documents.resume.ResumeLoader", lambda: loader)
+    got = await actions.ats_check(
+        AppSettings(resume_path="/r.pdf"), tailored_resume_path=str(empty)
+    )
+    assert got is result
+    loader.load.assert_called_once()  # fell back to the configured résumé
+    loader.parse_text.assert_not_called()  # empty tailored text → not parsed
+
+
 async def test_tui_ats_check_shows_modal(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """`A` runs the (mocked) ATS check and shows the result modal."""
     from job_applicator.models import ATSCompatibilityResult

@@ -213,9 +213,17 @@ async def ats_check(
 
     def _run() -> ATSCompatibilityResult:
         loader = ResumeLoader()
+        resume = None
         if tailored_resume_path and Path(tailored_resume_path).exists():
-            resume = loader.parse_text(Path(tailored_resume_path).read_text(encoding="utf-8"))
-        else:
+            try:
+                text = Path(tailored_resume_path).read_text(encoding="utf-8")
+            except (OSError, ValueError):  # unreadable / non-UTF-8 → use the configured one
+                text = ""
+            if text.strip():
+                resume = loader.parse_text(text)
+        if (
+            resume is None
+        ):  # no usable tailored text → the configured résumé (load enforces non-empty)
             resume = loader.load(settings.resume_path)
         return ATSChecker().check(resume)
 
