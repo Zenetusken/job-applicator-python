@@ -260,3 +260,57 @@ def test_tui_tty_guard_requires_both_streams(monkeypatch) -> None:  # type: igno
     assert cli._tui_tty_ok() is False
     monkeypatch.setattr(sys, "stdin", MagicMock(isatty=lambda: True))
     assert cli._tui_tty_ok() is True
+
+
+def test_bare_invocation_tty_launches_tui(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """In a real terminal, bare `job-applicator` launches the TUI."""
+    import job_applicator.tui as tui_pkg
+
+    launched = MagicMock()
+    monkeypatch.setattr(cli, "_tui_tty_ok", lambda: True)
+    monkeypatch.setattr(cli, "_get_settings", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(tui_pkg, "run_tui", launched)
+    result = CliRunner().invoke(cli.app, [])
+    assert result.exit_code == 0, result.output
+    launched.assert_called_once()
+
+
+def test_tui_command_tty_launches(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """`job-applicator tui` in a real terminal launches the TUI."""
+    import job_applicator.tui as tui_pkg
+
+    launched = MagicMock()
+    monkeypatch.setattr(cli, "_tui_tty_ok", lambda: True)
+    monkeypatch.setattr(cli, "_get_settings", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(tui_pkg, "run_tui", launched)
+    result = CliRunner().invoke(cli.app, ["tui"])
+    assert result.exit_code == 0, result.output
+    launched.assert_called_once()
+
+
+def test_tui_launch_store_error_is_clean(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A store-construction failure at launch is a clean typed error, not a traceback."""
+    import job_applicator.tui as tui_pkg
+
+    monkeypatch.setattr(cli, "_tui_tty_ok", lambda: True)
+    monkeypatch.setattr(cli, "_get_settings", lambda *a, **k: MagicMock())
+
+    def _boom(_settings: object) -> None:
+        raise JobStoreError("cannot open db")
+
+    monkeypatch.setattr(tui_pkg, "run_tui", _boom)
+    result = CliRunner().invoke(cli.app, ["tui"])
+    assert result.exit_code == 1
+    assert "cannot open db" in result.stderr
+    assert "Traceback (most recent call last)" not in (result.stdout + result.stderr)
+
+
+def test_tui_statusline_unset_resume_keeps_dim_markup() -> None:
+    """When resume_path is unset (first-run default), the sentinel keeps its dim styling
+    instead of being escaped into literal '[dim]…' text."""
+    app = JobApplicatorApp(
+        settings=AppSettings(resume_path=""), store=MagicMock(), app_state=MagicMock()
+    )
+    line = app._statusline()
+    assert "[dim]not set" in line  # markup preserved
+    assert "\\[dim]" not in line  # not escaped to literal brackets

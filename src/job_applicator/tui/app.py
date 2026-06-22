@@ -139,9 +139,14 @@ class JobApplicatorApp(App[None]):
 
     # ------------------------------------------------------------------ render
     def _statusline(self) -> str:
-        resume = self._settings.resume_path or "[dim]not set — configure resume_path[/dim]"
         if self._load_error:
             return f"[red]⚠ {escape(self._load_error)}[/red]"
+        # Pre-styled sentinel when unset (the default first-run state); escape() only the
+        # real path, never the sentinel's own markup.
+        path = self._settings.resume_path
+        resume = (
+            f"[cyan]{escape(path)}[/cyan]" if path else "[dim]not set — configure resume_path[/dim]"
+        )
         counts: dict[str, int] = {}
         for s in self._all:
             counts[s.funnel_status.value] = counts.get(s.funnel_status.value, 0) + 1
@@ -157,7 +162,7 @@ class JobApplicatorApp(App[None]):
             if self._filter
             else ""
         )
-        return f"Résumé [cyan]{escape(str(resume))}[/cyan]\n{' · '.join(parts)}{filt}"
+        return f"Résumé {resume}\n{' · '.join(parts)}{filt}"
 
     def _update_detail(self, job: StoredJob | None) -> None:
         self._current = job
