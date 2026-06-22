@@ -1349,6 +1349,20 @@ async def test_tui_help_modal_opens_and_lists_keys(tmp_path: Path) -> None:
         assert not isinstance(app.screen, HelpScreen)  # dismissed
 
 
+async def test_tui_modal_fades_in_to_full_opacity(tmp_path: Path) -> None:
+    """Modals fade in on mount (a 'layer appeared' transition) and SETTLE at full opacity.
+    The visual feel is for live testing; this guards against a modal stuck transparent."""
+    from job_applicator.tui.screens import HelpScreen
+
+    app = _app(tmp_path, seed=1)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("question_mark")
+        await pilot.pause(0.4)  # let the ~0.18s fade complete
+        assert isinstance(app.screen, HelpScreen)
+        assert app.screen.styles.opacity == 1.0  # fully visible after the fade, not stuck at 0
+
+
 def test_tui_empty_state_points_at_in_app_keys(tmp_path: Path) -> None:
     """With an empty store the detail pane guides via IN-APP keys (s / e / ?), not a CLI
     command — the TUI shouldn't tell a user sitting inside it to go run the CLI."""
