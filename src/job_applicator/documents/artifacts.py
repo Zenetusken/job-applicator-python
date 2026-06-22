@@ -11,6 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from job_applicator.exceptions import DocumentError
+
 if TYPE_CHECKING:
     from job_applicator.models import CoverLetterResult, TailoredResume
 
@@ -18,6 +20,15 @@ if TYPE_CHECKING:
 def _safe(text: str) -> str:
     """Filesystem-safe slug: alphanumerics/-/_ kept, everything else → '_', capped."""
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in text)[:30]
+
+
+def _write_text(path: Path, content: str) -> None:
+    """Write text, wrapping a filesystem failure as a typed ``DocumentError`` (CLAUDE.md:
+    every raised exception is a ``JobApplicatorError`` subclass)."""
+    try:
+        path.write_text(content, encoding="utf-8")
+    except OSError as exc:
+        raise DocumentError(f"Cannot write {path}: {exc}") from exc
 
 
 def artifact_basename(company: str, title: str, *, when: datetime) -> str:
@@ -35,10 +46,10 @@ def write_tailored(
     """
     base = artifact_basename(tailored.job_company, tailored.job_title, when=when)
     resume_path = output_dir / f"{base}.txt"
-    resume_path.write_text(tailored.tailored_text, encoding="utf-8")
+    _write_text(resume_path, tailored.tailored_text)
     tailored.output_path = str(resume_path)
     meta_path = output_dir / f"{base}.meta.json"
-    meta_path.write_text(tailored.model_dump_json(indent=2), encoding="utf-8")
+    _write_text(meta_path, tailored.model_dump_json(indent=2))
     return str(resume_path), str(meta_path)
 
 
@@ -51,8 +62,8 @@ def write_cover_letter(
         f"_{when.strftime('%Y%m%d_%H%M%S')}"
     )
     cl_path = output_dir / f"{base}.txt"
-    cl_path.write_text(result.cover_letter_text, encoding="utf-8")
+    _write_text(cl_path, result.cover_letter_text)
     result.output_path = str(cl_path)
     meta_path = output_dir / f"{base}.meta.json"
-    meta_path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+    _write_text(meta_path, result.model_dump_json(indent=2))
     return str(cl_path), str(meta_path)

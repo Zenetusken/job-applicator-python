@@ -101,6 +101,30 @@ The driver's checks, individually (all via the venv entrypoint):
 `doctor` is the fastest "is the whole stack wired?" check — it prints a green/red
 line per subsystem and exits 0 when healthy.
 
+## TUI (interactive home screen)
+
+Bare `job-applicator` in a terminal (stdout **and** stdin a TTY) opens the full-screen
+Textual UI; `job-applicator tui` is the explicit form. Piped / non-TTY prints help, and
+`tui` in a non-TTY exits 1 with a clean message (so pipes/CI never hang). It's the
+navigable home over the job funnel — drive it with keys:
+
+| key | action |
+|---|---|
+| ↑↓ / j k · `/` · `r` · `q` | navigate · filter · refresh · quit |
+| `e` | set your résumé in-app (saved to `config.toml`, atomically) |
+| `s` | search (modal) → scrape + score against the résumé → results land ranked |
+| `t` / `c` | tailor / cover-letter the selected job (local LLM, background worker) |
+| `a` | apply — dry-run by default; a real submit needs the danger checkbox |
+
+> **Account safety.** Launching, navigating, and filtering touch only local state. `s`/`a`
+> touch the real LinkedIn account ONLY after an explicit in-app confirm; apply is dry-run
+> unless you tick the danger checkbox; it never auto-logs-in. So the TUI is **not** part of
+> the smoke driver (it's interactive and would touch the account on `s`/`a`).
+
+**Verify headlessly** (no TTY, no account): the TUI is covered by Pilot tests —
+`.venv/bin/python -m pytest tests/unit/test_tui.py -q` drives mount/nav/filter/actions with
+mocked seams and asserts no browser is built without an explicit confirm.
+
 ## Run (human path)
 
 The actual job-search commands (`search`, `match`, `apply`, `batch`) need a seeded
