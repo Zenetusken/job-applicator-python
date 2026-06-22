@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from job_applicator.documents.artifacts import write_cover_letter, write_tailored
@@ -53,9 +54,15 @@ async def tailor_job(settings: AppSettings, job: JobListing) -> TailoredResume:
     return tailored
 
 
-async def cover_letter_job(settings: AppSettings, job: JobListing) -> CoverLetterResult:
+async def cover_letter_job(
+    settings: AppSettings, job: JobListing, tailored_resume_path: str = ""
+) -> CoverLetterResult:
     """Generate a cover letter for ``job`` from the configured résumé and write the
     artifact; returns the ``CoverLetterResult`` with ``output_path`` set.
+
+    When ``tailored_resume_path`` points at an existing tailored-résumé artifact, the
+    letter draws on that TAILORED text (so a cover letter for a tailored job reflects it) —
+    best-effort: a read failure falls back to the original résumé.
 
     Raises ``JobApplicatorError`` subclasses on failure. LLM + local files only; touches
     no account.
@@ -68,10 +75,22 @@ async def cover_letter_job(settings: AppSettings, job: JobListing) -> CoverLette
     from job_applicator.models import CoverLetterResult
 
     resume_data = await asyncio.to_thread(ResumeLoader().load, settings.resume_path)
+    tailored_text = ""
+    if tailored_resume_path:
+        try:
+            tailored_text = await asyncio.to_thread(
+                Path(tailored_resume_path).read_text, encoding="utf-8"
+            )
+        except OSError:  # artifact gone/unreadable → fall back to the original résumé
+            logger.warning("cover letter: tailored résumé unreadable; using the original")
     tone_section = ToneDetector().format_for_prompt(_detect_tone(job))
     generator = CoverLetterGenerator(settings.llm, runtime=_make_runtime(settings))
     letter = await generator.generate(
-        job, _load_user_profile(settings), resume_data, tone_section=tone_section
+        job,
+        _load_user_profile(settings),
+        resume_data,
+        tone_section=tone_section,
+        tailored_resume_text=tailored_text,
     )
     result = CoverLetterResult(
         job_title=job.title,
