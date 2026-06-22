@@ -522,6 +522,83 @@ async def test_tui_apply_real_submit_requires_checkbox(tmp_path: Path, monkeypat
     assert captured["submit"] is True
 
 
+async def test_apply_job_skips_over_cap_without_browser(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """apply_job(submit=True) over the daily cap returns SKIPPED and never opens a browser."""
+    import job_applicator.factories as factories
+    from job_applicator.models import ApplicationStatus
+    from job_applicator.tui import actions
+
+    make_browser = MagicMock()
+    monkeypatch.setattr(factories, "_make_browser", make_browser)
+    monkeypatch.setattr(
+        "job_applicator.state.ApplicationState",
+        lambda *a, **k: MagicMock(
+            has_applied=lambda url: False, count_today=lambda board=None: 999
+        ),
+    )
+    result = await actions.apply_job(AppSettings(), _job(1), submit=True)
+    assert result.status is ApplicationStatus.SKIPPED
+    make_browser.assert_not_called()
+
+
+async def test_tui_search_empty_query_keeps_modal_open(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Submitting the search modal with a blank query keeps it open and touches nothing."""
+    import job_applicator.factories as factories
+    from job_applicator.tui.screens import SearchScreen
+
+    make_browser = MagicMock()
+    monkeypatch.setattr(factories, "_make_browser", make_browser)
+    app = _app(tmp_path, seed=1)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("s")
+        await pilot.pause()
+        await pilot.press("enter")  # submit with an empty query
+        await pilot.pause()
+        assert isinstance(app.screen, SearchScreen)  # still open
+        make_browser.assert_not_called()
+
+
+async def test_tui_account_action_blocked_when_busy(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """While an account action is running, a second one is refused (not started/cancelled)."""
+    from job_applicator.tui.screens import SearchScreen
+
+    app = _app(tmp_path, seed=1)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(app, "_account_busy", lambda: True)
+        await pilot.press("s")
+        await pilot.pause()
+        assert not isinstance(app.screen, SearchScreen)  # modal never opened while busy
+
+
+async def test_tui_worker_error_does_not_crash_app(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A non-typed bug inside an action worker surfaces as a toast — the app stays alive."""
+    from job_applicator.models import FunnelStatus
+    from job_applicator.tui import actions
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))
+
+    async def _boom(_settings: object, _job: object) -> object:
+        raise RuntimeError("kaboom")  # NOT a JobApplicatorError
+
+    monkeypatch.setattr(actions, "tailor_job", _boom)
+    app = JobApplicatorApp(
+        settings=AppSettings(resume_path="/r.pdf"),
+        store=store,
+        app_state=MagicMock(list_recent=lambda **k: []),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("t")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app.is_running  # survived the worker bug
+    # the post-action store write never ran (the error was caught, not silently succeeded)
+    assert store.get("https://linkedin.com/jobs/1").funnel_status is FunnelStatus.FOUND
+
+
 async def test_apply_job_skips_already_applied_without_browser(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """apply_job(submit=True) on an already-applied job returns ALREADY_APPLIED and never
     opens a browser — the dedup gate fires before any account touch."""

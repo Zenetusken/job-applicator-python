@@ -8,8 +8,9 @@ later increment. Launch is offline and account-safe (reads the local SQLite stor
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
 from functools import partial
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, TypeVar
 
 from rich.markup import escape
 from textual import work
@@ -27,6 +28,8 @@ if TYPE_CHECKING:
     from job_applicator.models import JobListing, StoredJob
     from job_applicator.scrapers.base import SearchParams
     from job_applicator.state import ApplicationState
+
+T = TypeVar("T")
 
 # Stage → display glyph/colour for the sidebar + detail.
 _STAGE_STYLE: dict[str, str] = {
@@ -245,10 +248,8 @@ class JobApplicatorApp(App[None]):
         from job_applicator.tui import actions
 
         self.notify(f"Tailoring {job.title}…")
-        try:
-            tailored = await actions.tailor_job(self._settings, job)
-        except JobApplicatorError as exc:
-            self.notify(f"Tailor failed: {exc}", severity="error", timeout=8)
+        tailored = await self._run_action("Tailor", actions.tailor_job(self._settings, job))
+        if tailored is None:
             return
         self._store.mark_tailored(job, tailored_resume_path=tailored.output_path)
         self._reload()
@@ -265,10 +266,10 @@ class JobApplicatorApp(App[None]):
         from job_applicator.tui import actions
 
         self.notify(f"Writing a cover letter for {job.title}…")
-        try:
-            result = await actions.cover_letter_job(self._settings, job)
-        except JobApplicatorError as exc:
-            self.notify(f"Cover letter failed: {exc}", severity="error", timeout=8)
+        result = await self._run_action(
+            "Cover letter", actions.cover_letter_job(self._settings, job)
+        )
+        if result is None:
             return
         self._store.set_cover_letter(str(job.url), result.output_path)
         self._reload()
@@ -277,6 +278,12 @@ class JobApplicatorApp(App[None]):
     def action_search(self) -> None:
         """Open the search modal. Touches the account only on submit — the modal collects
         the query and shows the 'opens a browser on your real account' warning."""
+        if self._account_busy():
+            self.notify(
+                "An account action is already running — wait for it to finish.",
+                severity="warning",
+            )
+            return
         from job_applicator.tui.screens import SearchScreen
 
         self.push_screen(SearchScreen(), self._search_then)
@@ -285,15 +292,15 @@ class JobApplicatorApp(App[None]):
         if params is not None:  # None = cancelled; nothing touched the account
             self._search_worker(params)
 
-    @work(exclusive=True, group="account")
+    @work(group="account")
     async def _search_worker(self, params: SearchParams) -> None:
         from job_applicator.tui import actions
 
         self.notify(f"Searching for '{params.query}'… a browser window will open.", timeout=8)
-        try:
-            found = await actions.search_jobs(self._settings, self._store, params)
-        except JobApplicatorError as exc:
-            self.notify(f"Search failed: {exc}", severity="error", timeout=10)
+        found = await self._run_action(
+            "Search", actions.search_jobs(self._settings, self._store, params)
+        )
+        if found is None:
             return
         self._reload()
         self.notify(f"Found {found} job(s) — added to your funnel.", timeout=6)
@@ -304,6 +311,22 @@ class JobApplicatorApp(App[None]):
         if self._current is None:
             self.notify("No job selected.", severity="warning")
             return
+        from job_applicator.models import JobBoard
+
+        if self._current.job.board is not JobBoard.LINKEDIN:
+            self.notify(
+                f"Automated apply is LinkedIn-only — apply to "
+                f"{self._current.job.board.value} jobs manually.",
+                severity="warning",
+                timeout=8,
+            )
+            return
+        if self._account_busy():
+            self.notify(
+                "An account action is already running — wait for it to finish.",
+                severity="warning",
+            )
+            return
         from job_applicator.tui.screens import ApplyScreen
 
         job = self._current.job
@@ -313,20 +336,41 @@ class JobApplicatorApp(App[None]):
         if submit is not None:  # None = cancelled; nothing touched the account
             self._apply_worker(job, submit=submit)
 
-    @work(exclusive=True, group="account")
+    @work(group="account")
     async def _apply_worker(self, job: JobListing, *, submit: bool) -> None:
         from job_applicator.tui import actions
 
         mode = "Submitting a real application to" if submit else "Dry-run for"
         self.notify(f"{mode} {job.title}… a browser window will open.", timeout=8)
-        try:
-            result = await actions.apply_job(self._settings, job, submit=submit)
-        except JobApplicatorError as exc:
-            self.notify(f"Apply failed: {exc}", severity="error", timeout=10)
+        result = await self._run_action(
+            "Apply", actions.apply_job(self._settings, job, submit=submit)
+        )
+        if result is None:
             return
         self._reload()
         suffix = "" if submit else "  (dry run — nothing submitted)"
         self.notify(f"{job.title}: {result.status.value}{suffix}", timeout=8)
+
+    def _account_busy(self) -> bool:
+        """True while an account-touching worker (search/apply) is running. Account actions
+        run one-at-a-time and uninterrupted — so a real submission always completes and is
+        recorded, never cancelled mid-flight by a second action (which would risk a
+        duplicate)."""
+        from textual.worker import WorkerState
+
+        return any(w.group == "account" and w.state is WorkerState.RUNNING for w in self.workers)
+
+    async def _run_action(self, label: str, coro: Awaitable[T]) -> T | None:
+        """Await an action coroutine, turning ANY failure into a toast — a worker bug must
+        never tear down the whole app. Returns the result, or None on failure."""
+        try:
+            return await coro
+        except JobApplicatorError as exc:
+            self.notify(f"{label} failed: {exc}", severity="error", timeout=8)
+        except Exception as exc:  # surface any worker bug as a toast, keep the app alive
+            self.log.error(f"{label} worker error: {exc!r}")
+            self.notify(f"{label} error: {exc}", severity="error", timeout=10)
+        return None
 
     def action_cursor_down(self) -> None:
         self.query_one("#joblist", DataTable).action_cursor_down()

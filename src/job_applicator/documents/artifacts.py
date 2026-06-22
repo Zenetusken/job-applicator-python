@@ -1,7 +1,8 @@
-"""Shared output-artifact helpers for tailored résumés.
+"""Output-artifact helpers for tailored résumés / cover letters.
 
-One place for the ``tailored_<company>_<title>_<timestamp>.txt`` + ``.meta.json``
-convention so the TUI action layer and the CLI don't drift into separate copies.
+The ``tailored_<company>_<title>_<timestamp>.txt`` + ``.meta.json`` convention in one
+place, used by the TUI action layer. (The CLI's batch/tailor paths still inline
+equivalent logic — a future cleanup could adopt these helpers to fully converge.)
 """
 
 from __future__ import annotations

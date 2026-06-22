@@ -1,13 +1,15 @@
 """UI-agnostic action layer for the TUI.
 
-The operations a user triggers from inside the app (tailor; cover letter next). Pure
-async functions that the app's background workers call, so they're unit-testable without
-the UI. Account-safe: local files + the LLM only — never a browser, scraper, applicator,
-or login.
+The operations a user triggers from inside the app (tailor, cover letter, search, apply).
+Pure async functions the app's background workers call, so they're unit-testable without
+the UI. ``tailor_job`` / ``cover_letter_job`` are account-safe (LLM + local files only);
+``search_jobs`` / ``apply_job`` are ACCOUNT-TOUCHING (real browser) — each is marked
+below, and the UI gates them behind an explicit confirm.
 """
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -37,10 +39,11 @@ async def tailor_job(settings: AppSettings, job: JobListing) -> TailoredResume:
     from job_applicator.documents.resume_tailor import ResumeTailor
     from job_applicator.factories import _make_runtime
 
-    resume_data = ResumeLoader().load(settings.resume_path)
+    resume_data = await asyncio.to_thread(ResumeLoader().load, settings.resume_path)
     engine = ResumeTailor(settings.llm, runtime=_make_runtime(settings))
     tailored = await engine.tailor(resume=resume_data, job=job, user_instructions="")
-    write_tailored(settings.ensure_output_dir(), tailored, when=datetime.now())
+    output_dir = await asyncio.to_thread(settings.ensure_output_dir)
+    await asyncio.to_thread(write_tailored, output_dir, tailored, when=datetime.now())
     return tailored
 
 
@@ -58,7 +61,7 @@ async def cover_letter_job(settings: AppSettings, job: JobListing) -> CoverLette
     from job_applicator.factories import _make_runtime
     from job_applicator.models import CoverLetterResult
 
-    resume_data = ResumeLoader().load(settings.resume_path)
+    resume_data = await asyncio.to_thread(ResumeLoader().load, settings.resume_path)
     tone_section = ToneDetector().format_for_prompt(_detect_tone(job))
     generator = CoverLetterGenerator(settings.llm, runtime=_make_runtime(settings))
     letter = await generator.generate(
@@ -72,7 +75,8 @@ async def cover_letter_job(settings: AppSettings, job: JobListing) -> CoverLette
         attempt=1,
         prompt_version="1.0",
     )
-    write_cover_letter(settings.ensure_output_dir(), result, when=datetime.now())
+    output_dir = await asyncio.to_thread(settings.ensure_output_dir)
+    await asyncio.to_thread(write_cover_letter, output_dir, result, when=datetime.now())
     return result
 
 
