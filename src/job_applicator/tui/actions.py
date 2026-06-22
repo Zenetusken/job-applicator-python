@@ -68,12 +68,12 @@ async def cover_letter_job(
     Raises ``JobApplicatorError`` subclasses on failure. LLM + local files only; touches
     no account.
     """
-    from job_applicator.cli import _detect_tone, _load_user_profile
     from job_applicator.documents.cover_letter import CoverLetterGenerator
     from job_applicator.documents.resume import ResumeLoader
     from job_applicator.documents.tone_detector import ToneDetector
     from job_applicator.factories import _make_runtime
     from job_applicator.models import CoverLetterResult
+    from job_applicator.utils.profile import _detect_tone, _load_user_profile
 
     resume_data = await asyncio.to_thread(ResumeLoader().load, settings.resume_path)
     tailored_text = ""

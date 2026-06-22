@@ -2,8 +2,8 @@
 
 The accept/retry/refine loop plus its generate/refine/save helpers. Orchestration
 only: it composes ``documents.cover_letter`` (the generator) with the shared LLM
-runtime. The shared cli helpers ``_detect_tone`` / ``_load_user_profile`` are imported
-lazily from cli (inside the functions) to avoid a cli ↔ workflow import cycle.
+runtime. The shared ``_detect_tone`` / ``_load_user_profile`` helpers come from
+``utils.profile`` (extracted from cli so workflows don't import CLI internals).
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from rich.table import Table
 
 from job_applicator.factories import _make_runtime
 from job_applicator.utils.diff import render_diff
+from job_applicator.utils.profile import _detect_tone, _load_user_profile
 
 if TYPE_CHECKING:
     from rich.console import Console
@@ -52,7 +53,6 @@ async def _generate_cover_letter(
     ``runtime`` is REQUIRED so the caller always shares one breaker — a per-call
     default would reset the breaker across the interactive retry loop.
     """
-    from job_applicator.cli import _load_user_profile
     from job_applicator.documents.cover_letter import CoverLetterGenerator
     from job_applicator.models import CoverLetterResult
 
@@ -165,7 +165,6 @@ async def _cover_letter_workflow(
 
     Returns the Path to the saved cover letter, or None if skipped.
     """
-    from job_applicator.cli import _detect_tone
     from job_applicator.documents.tone_detector import ToneDetector
     from job_applicator.models import CoverLetterSession
 

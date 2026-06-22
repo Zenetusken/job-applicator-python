@@ -707,8 +707,8 @@ async def test_cover_letter_job_uses_tailored_resume_text(tmp_path: Path, monkey
         "job_applicator.documents.tone_detector.ToneDetector",
         lambda: MagicMock(format_for_prompt=lambda t: ""),
     )
-    monkeypatch.setattr("job_applicator.cli._detect_tone", lambda job: MagicMock())
-    monkeypatch.setattr("job_applicator.cli._load_user_profile", lambda s: MagicMock())
+    monkeypatch.setattr("job_applicator.utils.profile._detect_tone", lambda job: MagicMock())
+    monkeypatch.setattr("job_applicator.utils.profile._load_user_profile", lambda s: MagicMock())
     settings = AppSettings(resume_path="/r.pdf", output_dir=str(tmp_path / "out"))
 
     await actions.cover_letter_job(settings, _job(1), tailored_resume_path=str(tailored))
