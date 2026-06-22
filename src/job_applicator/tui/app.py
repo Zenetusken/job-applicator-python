@@ -408,19 +408,24 @@ class JobApplicatorApp(App[None]):
         self.notify(f"Tailored ✓  →  {tailored.output_path}", timeout=6)
 
     def action_cover_letter(self) -> None:
-        """Write a cover letter for the selected job in a background worker. Account-safe."""
+        """Write a cover letter for the selected job in a background worker. Account-safe.
+        If the job was already tailored, the letter draws on the tailored résumé."""
         job = self._selected_job_with_resume()
         if job is not None:
-            self._cover_letter_worker(job)
+            tailored = self._current.tailored_resume_path if self._current else ""
+            self._cover_letter_worker(job, tailored)
 
     @work(exclusive=True, group="action")
-    async def _cover_letter_worker(self, job: JobListing) -> None:
+    async def _cover_letter_worker(self, job: JobListing, tailored_resume_path: str) -> None:
         from job_applicator.tui import actions
 
         self._set_busy(f"Writing a cover letter for {job.title}…")
         try:
             result = await self._run_action(
-                "Cover letter", actions.cover_letter_job(self._settings, job)
+                "Cover letter",
+                actions.cover_letter_job(
+                    self._settings, job, tailored_resume_path=tailored_resume_path
+                ),
             )
         finally:
             self._set_busy("")

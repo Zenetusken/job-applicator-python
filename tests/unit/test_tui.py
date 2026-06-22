@@ -658,7 +658,9 @@ async def test_tui_cover_letter_action_advances_funnel(tmp_path: Path, monkeypat
         output_path="/out/cover.txt",
     )
 
-    async def _fake_cl(_settings: object, _job: object) -> CoverLetterResult:
+    async def _fake_cl(
+        _settings: object, _job: object, tailored_resume_path: str = ""
+    ) -> CoverLetterResult:
         return fake
 
     monkeypatch.setattr(actions, "cover_letter_job", _fake_cl)
@@ -675,6 +677,44 @@ async def test_tui_cover_letter_action_advances_funnel(tmp_path: Path, monkeypat
     got = store.get("https://linkedin.com/jobs/1")
     assert got is not None and got.funnel_status is FunnelStatus.COVER_LETTER
     assert got.cover_letter_path == "/out/cover.txt"
+
+
+async def test_cover_letter_job_uses_tailored_resume_text(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """cover_letter_job reads a given tailored-résumé artifact and passes its text to the
+    generator; with no path it falls back to empty (the original résumé)."""
+    from job_applicator.tui import actions
+
+    tailored = tmp_path / "tailored.txt"
+    tailored.write_text("TAILORED RESUME BODY", encoding="utf-8")
+    captured: dict[str, str] = {}
+
+    async def _generate(
+        job, user, resume, style_guide=None, tone_section="", tailored_resume_text=""
+    ):  # type: ignore[no-untyped-def]
+        captured["tailored"] = tailored_resume_text
+        return "Dear hiring manager,"
+
+    monkeypatch.setattr(
+        "job_applicator.documents.cover_letter.CoverLetterGenerator",
+        lambda *a, **k: MagicMock(generate=_generate),
+    )
+    monkeypatch.setattr(
+        "job_applicator.documents.resume.ResumeLoader",
+        lambda: MagicMock(load=lambda p: MagicMock()),
+    )
+    monkeypatch.setattr("job_applicator.factories._make_runtime", lambda s: MagicMock())
+    monkeypatch.setattr(
+        "job_applicator.documents.tone_detector.ToneDetector",
+        lambda: MagicMock(format_for_prompt=lambda t: ""),
+    )
+    monkeypatch.setattr("job_applicator.cli._detect_tone", lambda job: MagicMock())
+    monkeypatch.setattr("job_applicator.cli._load_user_profile", lambda s: MagicMock())
+    settings = AppSettings(resume_path="/r.pdf", output_dir=str(tmp_path / "out"))
+
+    await actions.cover_letter_job(settings, _job(1), tailored_resume_path=str(tailored))
+    assert captured["tailored"] == "TAILORED RESUME BODY"  # tailored text read + passed
+    await actions.cover_letter_job(settings, _job(1))  # no tailored path
+    assert captured["tailored"] == ""  # falls back to the original résumé
 
 
 async def test_tui_tailor_needs_resume(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
