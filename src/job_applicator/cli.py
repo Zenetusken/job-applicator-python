@@ -25,7 +25,7 @@ from job_applicator.factories import (
     _make_runtime,
     _make_scraper,
 )
-from job_applicator.models import BatchRunSpec, DoctorReport, UserProfile
+from job_applicator.models import BatchRunSpec, DoctorReport
 from job_applicator.utils.console import console, err_console
 from job_applicator.utils.cookies import (
     _cookies_from_browser,
@@ -35,13 +35,13 @@ from job_applicator.utils.cookies import (
 )
 from job_applicator.utils.llm import SERVE_SCRIPT
 from job_applicator.utils.logging import setup_logging
+from job_applicator.utils.profile import _detect_tone, _load_user_profile
 from job_applicator.utils.verbose import VerboseReporter
 from job_applicator.workflows.apply import _apply_to_jobs
 from job_applicator.workflows.tailor import _tailor_workflow
 
 if TYPE_CHECKING:
     from job_applicator.batch_state import BatchState
-    from job_applicator.documents.tone_detector import ToneProfile
     from job_applicator.jobs_store import JobStore
     from job_applicator.models import (
         ATSCompatibilityResult,
@@ -229,17 +229,6 @@ def _run_ats_post_tailor(original_text: str, tailored_text: str) -> ATSCompatibi
                 console.print(f"  [yellow]![/yellow] New issue: {check['details']}")
     console.print()
     return tailored_result
-
-
-def _detect_tone(job: JobListing) -> ToneProfile:
-    """Detect job posting tone deterministically via keyword matching."""
-    from job_applicator.documents.tone_detector import ToneDetector
-
-    return ToneDetector().detect(
-        title=job.title,
-        description=job.description,
-        requirements=job.requirements,
-    )
 
 
 def version_callback(value: bool) -> None:
@@ -2659,15 +2648,3 @@ def _get_settings(headed: bool = False) -> AppSettings:
     if headed:
         settings.browser.headless = False
     return settings
-
-
-def _load_user_profile(settings: AppSettings) -> UserProfile:
-    """Load user profile from settings."""
-    name_parts = settings.profile_name.split() if settings.profile_name else ["User"]
-    return UserProfile(
-        first_name=name_parts[0],
-        last_name=name_parts[-1] if len(name_parts) > 1 else "",
-        email=settings.target.linkedin_email,
-        phone="",
-        resume_path=settings.resume_path,
-    )

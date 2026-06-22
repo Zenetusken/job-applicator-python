@@ -267,7 +267,7 @@ class TestGenerateCoverLetter:
 
         with (
             patch("job_applicator.documents.cover_letter.CoverLetterGenerator") as mock_gen_cls,
-            patch("job_applicator.cli._load_user_profile") as mock_profile,
+            patch("job_applicator.workflows.cover_letter._load_user_profile") as mock_profile,
         ):
             mock_gen = mock_gen_cls.return_value
             mock_gen.generate = AsyncMock(return_value="Dear Hiring Manager")
@@ -305,7 +305,7 @@ class TestGenerateCoverLetter:
 
         with (
             patch("job_applicator.documents.cover_letter.CoverLetterGenerator") as mock_gen_cls,
-            patch("job_applicator.cli._load_user_profile") as mock_profile,
+            patch("job_applicator.workflows.cover_letter._load_user_profile") as mock_profile,
         ):
             mock_gen = mock_gen_cls.return_value
             mock_gen.generate = AsyncMock(side_effect=RuntimeError("LLM down"))
@@ -341,7 +341,7 @@ class TestGenerateCoverLetter:
 
         with (
             patch("job_applicator.documents.cover_letter.CoverLetterGenerator") as mock_gen_cls,
-            patch("job_applicator.cli._load_user_profile") as mock_profile,
+            patch("job_applicator.workflows.cover_letter._load_user_profile") as mock_profile,
         ):
             mock_gen = mock_gen_cls.return_value
             mock_gen.generate = AsyncMock(return_value="letter")
@@ -858,7 +858,7 @@ async def test_workflow_threads_one_shared_runtime_across_attempts() -> None:
             "job_applicator.documents.cover_letter.CoverLetterGenerator",
             side_effect=capture_gen,
         ),
-        patch("job_applicator.cli._load_user_profile", return_value=MagicMock()),
+        patch("job_applicator.workflows.cover_letter._load_user_profile", return_value=MagicMock()),
     ):
         await _cover_letter_workflow(
             console, settings, job, resume_data, None, None, "tailored text"
