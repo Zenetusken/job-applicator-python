@@ -65,18 +65,15 @@ LIVE (vLLM): `doctor`, `match --jobs-file` (ranking + JSON + no-scrape), `genera
 (inline; voice-tells as a metric), `tailor --yes` (non-interactive + abort path), `batch`
 (multi-job + malformed-input + crash-recovery via deterministic DB-state simulation).
 
-## Known issues this currently flags (the regression baseline)
+## Known issues (the regression baseline)
 
-Running this today reproduces — deterministically — the findings from the manual QA pass.
+**XFAIL: none.** The QA-arc backlog (8 fixes across PRs #39–45) is fully cleared — `KNOWN_FAIL`
+in `qa.py` is empty, so every check is a guarded PASS. A new `XFAIL` here means a freshly-triaged bug
+whose check asserts the *correct* behavior (XFAIL until fixed → XPASS → promote).
 
-**XFAIL** (real bugs; each is asserted at its *correct* behavior, so it flips to `XPASS`
-when fixed — then delete its name from `KNOWN_FAIL` in `qa.py`):
-
-- `match` reports `missing_skills: []` for a React/TypeScript job against a Python résumé (0.55 threshold too loose).
-
-**WARN** (UX, non-gating): `ats-check` exits 0 on an incompatible résumé (no `--strict`);
-`doctor`/`generate-cover-letter`/`tailor` lack `--json`; `--log-file` to an unwritable path
-exits 0 silently.
+**WARN** (UX, non-gating, still open): `ats-check` exits 0 on an incompatible résumé (no
+`--strict`); `doctor`/`generate-cover-letter`/`tailor` lack `--json`; `--log-file` to an
+unwritable path exits 0 silently.
 
 ## Extending it
 

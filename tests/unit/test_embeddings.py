@@ -165,6 +165,28 @@ class TestJobMatcher:
         assert matched == []
         assert missing == []
 
+    def test_skill_match_threshold_rejects_false_positive_band(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pins the 0.75 skill-match threshold. A best-cosine in the false-positive band
+        (0.59-0.73 — e.g. React~Python measured 0.62) is correctly MISSING; a genuine-match
+        score (>=0.78) is covered. At the old 0.55 the false-positive band was wrongly
+        'covered' (a Python résumé reported missing_skills=[] for a React job)."""
+        from job_applicator.embeddings.matching import JobMatcher
+
+        matcher = JobMatcher(EmbeddingConfig(device="cpu", memory_limit_gb=0.5))
+        svc = matcher._service
+        # Stub the model out — control the cosine directly (no model load).
+        monkeypatch.setattr(svc, "embed_batch", lambda texts, **kw: [[1.0]] * len(texts))
+
+        monkeypatch.setattr(svc, "similarity", lambda a, b: 0.62)  # false-positive band
+        matched, missing = matcher._match_skills(["Python"], ["React"])
+        assert matched == [] and missing == ["React"]  # NOT covered at 0.75 (was at 0.55)
+
+        monkeypatch.setattr(svc, "similarity", lambda a, b: 0.80)  # genuine match
+        matched, missing = matcher._match_skills(["Python"], ["React"])
+        assert matched == ["Python"] and missing == []
+
     def test_embed_text_with_prefix(self) -> None:
         """embed_text should prepend the prefix when provided."""
         from job_applicator.embeddings.matching import JobMatcher
@@ -252,11 +274,13 @@ class TestJobMatcher:
         # Pass strings straight through as their own "embeddings".
         matcher._service.embed_batch = lambda texts: list(texts)  # type: ignore[method-assign]
 
+        # Synthetic scores (not real cosines) — all "matched" values are above the 0.75
+        # threshold so this test exercises the used-skills CLAIMING logic, not the threshold.
         sim_table = {
             ("Python", "Python"): 0.90,
             ("Python", "Java"): 0.20,
-            ("Python development", "Python"): 0.80,
-            ("Python development", "Java"): 0.60,
+            ("Python development", "Python"): 0.85,
+            ("Python development", "Java"): 0.80,
         }
         matcher._service.similarity = lambda a, b: sim_table[(a, b)]  # type: ignore[method-assign]
 

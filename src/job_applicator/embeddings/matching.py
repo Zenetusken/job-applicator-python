@@ -334,7 +334,14 @@ class JobMatcher:
         # Find matches using similarity threshold
         matched: list[str] = []
         missing: list[str] = []
-        threshold = 0.55  # Lower threshold for semantic matching
+        # Empirically tuned (2026-06-22): mxbai-embed-large-v1 scores ANY two same-domain tech
+        # terms ~0.55-0.73 (Java~Python 0.73, Kubernetes~Docker 0.70, React~Python 0.62), so the
+        # old 0.55 marked unrelated skills "covered" (a Python résumé reported NO missing skills
+        # for a React job). Genuine matches/synonyms/supersets score >=0.78 (Postgres~PostgreSQL
+        # 0.91, containerization~Docker 0.78); 0.75 sits in the gap — drops the false-positives,
+        # keeps real coverage. (Tuned on a Python-résumé/tech-job sample; if false-negatives show
+        # up in other domains — a genuine match dipping below 0.75 — revisit the value.)
+        threshold = 0.75
 
         used_skills: set[str] = set()
         for i, (_norm_req, original_req) in enumerate(valid_reqs):
