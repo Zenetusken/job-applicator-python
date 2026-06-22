@@ -92,4 +92,4 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
 - Model: `mixedbread-ai/mxbai-embed-large-v1` (1024 dimensions)
 - Cache: `~/.job-applicator/embeddings/` (numpy arrays)
 - Matching: Cosine similarity with combined scoring
-- Skill threshold: 0.55 for semantic match
+- Skill threshold: 0.75 for semantic match (empirically tuned; 0.55 matched unrelated same-domain skills)
