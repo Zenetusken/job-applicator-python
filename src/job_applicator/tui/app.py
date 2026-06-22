@@ -8,6 +8,7 @@ later increment. Launch is offline and account-safe (reads the local SQLite stor
 
 from __future__ import annotations
 
+from functools import partial
 from typing import TYPE_CHECKING, ClassVar
 
 from rich.markup import escape
@@ -57,6 +58,7 @@ class JobApplicatorApp(App[None]):
         Binding("t", "tailor", "Tailor"),
         Binding("c", "cover_letter", "Cover letter"),
         Binding("s", "search", "Search"),
+        Binding("a", "apply", "Apply"),
         Binding("slash", "filter", "Filter"),
         Binding("escape", "clear_filter", "Clear filter", show=False),
         Binding("j", "cursor_down", "Down", show=False),
@@ -295,6 +297,36 @@ class JobApplicatorApp(App[None]):
             return
         self._reload()
         self.notify(f"Found {found} job(s) — added to your funnel.", timeout=6)
+
+    def action_apply(self) -> None:
+        """Open the apply modal for the selected job. Dry-run by default; a real submit is
+        gated behind the modal's danger checkbox. Account-touching only on confirm."""
+        if self._current is None:
+            self.notify("No job selected.", severity="warning")
+            return
+        from job_applicator.tui.screens import ApplyScreen
+
+        job = self._current.job
+        self.push_screen(ApplyScreen(job), partial(self._apply_dispatch, job))
+
+    def _apply_dispatch(self, job: JobListing, submit: bool | None) -> None:
+        if submit is not None:  # None = cancelled; nothing touched the account
+            self._apply_worker(job, submit=submit)
+
+    @work(exclusive=True, group="account")
+    async def _apply_worker(self, job: JobListing, *, submit: bool) -> None:
+        from job_applicator.tui import actions
+
+        mode = "Submitting a real application to" if submit else "Dry-run for"
+        self.notify(f"{mode} {job.title}… a browser window will open.", timeout=8)
+        try:
+            result = await actions.apply_job(self._settings, job, submit=submit)
+        except JobApplicatorError as exc:
+            self.notify(f"Apply failed: {exc}", severity="error", timeout=10)
+            return
+        self._reload()
+        suffix = "" if submit else "  (dry run — nothing submitted)"
+        self.notify(f"{job.title}: {result.status.value}{suffix}", timeout=8)
 
     def action_cursor_down(self) -> None:
         self.query_one("#joblist", DataTable).action_cursor_down()

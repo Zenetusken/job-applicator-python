@@ -448,6 +448,98 @@ async def test_tui_search_submit_runs_and_persists(tmp_path: Path, monkeypatch) 
     assert store.get("https://linkedin.com/jobs/7") is not None
 
 
+async def test_tui_apply_modal_no_account_until_confirm(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Pressing `a` opens the apply modal but constructs NO browser; cancel keeps it so."""
+    import job_applicator.factories as factories
+    from job_applicator.tui.screens import ApplyScreen
+
+    make_browser = MagicMock()
+    monkeypatch.setattr(factories, "_make_browser", make_browser)
+    app = _app(tmp_path, seed=1)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        assert isinstance(app.screen, ApplyScreen)
+        make_browser.assert_not_called()
+        await pilot.press("escape")
+        await pilot.pause()
+        make_browser.assert_not_called()
+
+
+async def test_tui_apply_dry_run_is_default(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Apply with the danger checkbox UNchecked runs a dry run (submit=False)."""
+    from datetime import UTC, datetime
+
+    from job_applicator.models import ApplicationResult, ApplicationStatus
+    from job_applicator.tui import actions
+
+    captured: dict[str, bool] = {}
+
+    async def _fake_apply(_settings: object, job: object, *, submit: bool) -> ApplicationResult:
+        captured["submit"] = submit
+        return ApplicationResult(
+            job=job, status=ApplicationStatus.PENDING, timestamp=datetime.now(UTC)
+        )  # type: ignore[arg-type]
+
+    monkeypatch.setattr(actions, "apply_job", _fake_apply)
+    app = _app(tmp_path, seed=1)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.click("#go")  # checkbox left unchecked
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    assert captured["submit"] is False
+
+
+async def test_tui_apply_real_submit_requires_checkbox(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Ticking the danger checkbox before Apply sends a real submit (submit=True)."""
+    from datetime import UTC, datetime
+
+    from job_applicator.models import ApplicationResult, ApplicationStatus
+    from job_applicator.tui import actions
+
+    captured: dict[str, bool] = {}
+
+    async def _fake_apply(_settings: object, job: object, *, submit: bool) -> ApplicationResult:
+        captured["submit"] = submit
+        return ApplicationResult(
+            job=job, status=ApplicationStatus.SUBMITTED, timestamp=datetime.now(UTC)
+        )  # type: ignore[arg-type]
+
+    monkeypatch.setattr(actions, "apply_job", _fake_apply)
+    app = _app(tmp_path, seed=1)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.click("#real")  # tick the danger checkbox …
+        await pilot.click("#go")  # … then Apply
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    assert captured["submit"] is True
+
+
+async def test_apply_job_skips_already_applied_without_browser(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """apply_job(submit=True) on an already-applied job returns ALREADY_APPLIED and never
+    opens a browser — the dedup gate fires before any account touch."""
+    import job_applicator.factories as factories
+    from job_applicator.models import ApplicationStatus
+    from job_applicator.tui import actions
+
+    make_browser = MagicMock()
+    monkeypatch.setattr(factories, "_make_browser", make_browser)
+    monkeypatch.setattr(
+        "job_applicator.state.ApplicationState",
+        lambda *a, **k: MagicMock(has_applied=lambda url: True, count_today=lambda board=None: 0),
+    )
+    result = await actions.apply_job(AppSettings(), _job(1), submit=True)
+    assert result.status is ApplicationStatus.ALREADY_APPLIED
+    make_browser.assert_not_called()
+
+
 def test_tui_statusline_unset_resume_keeps_dim_markup() -> None:
     """When resume_path is unset (first-run default), the sentinel keeps its dim styling
     instead of being escaped into literal '[dim]…' text."""

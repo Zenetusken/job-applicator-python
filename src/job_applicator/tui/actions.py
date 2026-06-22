@@ -16,7 +16,12 @@ from job_applicator.documents.artifacts import write_cover_letter, write_tailore
 if TYPE_CHECKING:
     from job_applicator.config import AppSettings
     from job_applicator.jobs_store import JobStore
-    from job_applicator.models import CoverLetterResult, JobListing, TailoredResume
+    from job_applicator.models import (
+        ApplicationResult,
+        CoverLetterResult,
+        JobListing,
+        TailoredResume,
+    )
     from job_applicator.scrapers.base import SearchParams
 
 
@@ -88,3 +93,41 @@ async def search_jobs(settings: AppSettings, store: JobStore, params: SearchPara
     for job in jobs:
         store.upsert_job(job, source_query=params.query)
     return len(jobs)
+
+
+async def apply_job(settings: AppSettings, job: JobListing, *, submit: bool) -> ApplicationResult:
+    """Apply to ``job``. Dry-run by default (fills the form, never submits). A real submit
+    (``submit=True``) respects the daily cap and skips already-applied jobs — both checked
+    BEFORE any browser launches — and is recorded in ``ApplicationState`` on success.
+
+    ⚠ ACCOUNT-TOUCHING: launches a real browser, and on a real submit sends an actual
+    application. The TUI gates the real-submit path behind an explicit danger checkbox.
+    """
+    from datetime import UTC, datetime
+
+    from job_applicator.factories import _make_applicator, _make_browser
+    from job_applicator.models import ApplicationResult, ApplicationStatus
+    from job_applicator.state import ApplicationState
+
+    state = ApplicationState()
+    if submit:  # cap + dedup gates fire before we ever open a browser
+        if state.has_applied(str(job.url)):
+            return ApplicationResult(
+                job=job, status=ApplicationStatus.ALREADY_APPLIED, timestamp=datetime.now(UTC)
+            )
+        cap = settings.target.max_applications_per_day
+        if state.count_today(job.board.value) >= cap:
+            return ApplicationResult(
+                job=job,
+                status=ApplicationStatus.SKIPPED,
+                timestamp=datetime.now(UTC),
+                notes=f"daily cap ({cap}) reached",
+            )
+
+    site = job.board.value
+    async with _make_browser(site, settings) as browser:
+        applicator = _make_applicator(site, browser, settings)
+        result = await applicator.apply(job, submit=submit)
+    if submit and result.status == ApplicationStatus.SUBMITTED:
+        state.record(result)  # ApplicationState is the authority for "applied"
+    return result

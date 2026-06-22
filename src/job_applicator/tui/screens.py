@@ -7,8 +7,9 @@ is what authorizes the scrape; the screen itself touches nothing.
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
+from rich.markup import escape
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
@@ -17,6 +18,9 @@ from textual.widgets import Button, Checkbox, Input, Label, Static
 
 from job_applicator.models import JobBoard
 from job_applicator.scrapers.base import SearchParams
+
+if TYPE_CHECKING:
+    from job_applicator.models import JobListing
 
 
 class SearchScreen(ModalScreen[SearchParams | None]):
@@ -77,3 +81,50 @@ class SearchScreen(ModalScreen[SearchParams | None]):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         # Enter in any field submits the form (same as the Search button).
         self._submit()
+
+
+class ApplyScreen(ModalScreen[bool | None]):
+    """Confirm applying to a job. Dismisses ``True`` (real submit), ``False`` (dry run),
+    or ``None`` (cancel). A real submit requires explicitly ticking the danger checkbox —
+    never a single keypress."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "cancel", "Cancel")]
+
+    CSS = """
+    ApplyScreen { align: center middle; }
+    #applybox {
+        width: 72; height: auto; padding: 1 2;
+        border: thick $error; background: $surface;
+    }
+    #applybox Checkbox { margin: 1 0; }
+    #warn { color: $warning; margin: 1 0; }
+    #buttons { height: auto; align: right middle; }
+    #buttons Button { margin-left: 2; }
+    """
+
+    def __init__(self, job: JobListing) -> None:
+        super().__init__()
+        self._job = job
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="applybox"):
+            yield Label(f"[bold]Apply to {escape(self._job.title)}[/bold]")
+            yield Static(f"{escape(self._job.company)} · {self._job.board.value}")
+            yield Static("⚠  Opens a browser on your real LinkedIn account.", id="warn")
+            yield Checkbox(
+                "Send a REAL application — leave unchecked for a dry run "
+                "(fills the form, never submits)",
+                id="real",
+            )
+            with Horizontal(id="buttons"):
+                yield Button("Apply", variant="primary", id="go")
+                yield Button("Cancel", id="cancel")
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "go":
+            self.dismiss(self.query_one("#real", Checkbox).value)  # True = real, False = dry run
+        else:
+            self.dismiss(None)
