@@ -1041,6 +1041,39 @@ async def test_tui_search_clears_busy_and_loading(tmp_path: Path, monkeypatch) -
         assert app.query_one("#joblist", DataTable).loading is False
 
 
+async def test_tui_help_modal_opens_and_lists_keys(tmp_path: Path) -> None:
+    """`?` opens a read-only key reference that renders the actions + the account-safety
+    note; Esc dismisses it. Touches no account (pure presentation)."""
+    from textual.widgets import Static
+
+    from job_applicator.tui.screens import HelpScreen
+
+    app = _app(tmp_path, seed=1)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("question_mark")
+        await pilot.pause()
+        assert isinstance(app.screen, HelpScreen)
+        body = str(app.screen.query_one("#helpbody").query_one(Static).render())
+        assert "tailor" in body.lower() and "search" in body.lower()  # actions listed
+        assert "dry-run" in body  # account-safety reinforced in-context
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not isinstance(app.screen, HelpScreen)  # dismissed
+
+
+def test_tui_empty_state_points_at_in_app_keys(tmp_path: Path) -> None:
+    """With an empty store the detail pane guides via IN-APP keys (s / e / ?), not a CLI
+    command — the TUI shouldn't tell a user sitting inside it to go run the CLI."""
+    store = JobStore(db_path=tmp_path / "applications.db")  # empty
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    markup = app._detail_markup(None)
+    assert "job-applicator search" not in markup  # no longer points OUT to the CLI
+    assert "[cyan]s[/cyan]" in markup and "[cyan]?[/cyan]" in markup  # in-app keys
+
+
 async def test_tui_apply_modal_no_account_until_confirm(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """Pressing `a` opens the apply modal but constructs NO browser; cancel keeps it so."""
     import job_applicator.factories as factories
