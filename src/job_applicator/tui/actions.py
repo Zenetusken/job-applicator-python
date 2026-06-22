@@ -111,6 +111,7 @@ async def search_jobs(
     store: JobStore,
     params: SearchParams,
     on_progress: Callable[[str], None] | None = None,
+    on_job: Callable[[JobListing], None] | None = None,
 ) -> int:
     """Scrape ``params``, score against the résumé if one is set (→ matched, with scores;
     else → found), and persist to ``store``; returns the scraped count.
@@ -119,6 +120,11 @@ async def search_jobs(
     card ("Scraping job 7/25…") so the UI shows live progress instead of looking frozen
     during the long scrape/score. (Scoring stays phase-level: it runs in a worker thread,
     where a direct UI update would be unsafe; the batch embed dominates it anyway.)
+
+    ``on_job(job)`` (optional) is called as each listing is scraped — each is persisted to
+    the store (as ``found``) immediately, THEN ``on_job`` fires, so a UI repaint from the
+    store shows results streaming in instead of all at once. Scoring afterwards re-upserts
+    them as ``matched`` (an upgrade; the store never downgrades an already-advanced job).
 
     ⚠ ACCOUNT-TOUCHING — the only action here that is: it launches a real browser on the
     configured board. The TUI gates it behind an explicit, warned confirm (the search
@@ -130,19 +136,26 @@ async def search_jobs(
         if on_progress is not None:
             on_progress(msg)
 
+    def emit(job: JobListing) -> None:
+        # Persist FIRST (as found) so a store-driven UI repaint sees it, THEN notify.
+        store.upsert_job(job, source_query=params.query)
+        if on_job is not None:
+            on_job(job)
+
     site = params.board.value
     progress(f"Opening a browser on {site}…")
     async with _make_browser(site, settings) as browser:
         scraper = _make_scraper(site, browser, settings)
         progress(f"Searching {site} for '{params.query}'…")
         # Per-item progress ("Scraping job 7/25…") replaces the static "Searching…" as
-        # each card is processed. The scraper runs on this event loop, so the sync UI
-        # sink updates directly (no call_from_thread) — same pattern as the phase msgs.
-        jobs = await scraper.scrape(params, on_progress=on_progress)
+        # each card is processed; on_job streams each listing in as it lands. The scraper
+        # runs on this event loop, so the sync UI/store sinks act directly (no
+        # call_from_thread) — same pattern as the phase msgs.
+        jobs = await scraper.scrape(params, on_progress=on_progress, on_job=emit)
 
     # Score against the résumé when one is configured, so results arrive ranked with match
     # scores (search → matched). Best-effort: a résumé/embedding failure must never lose
-    # the scraped jobs — fall back to persisting them unscored (found).
+    # the scraped jobs — they are already persisted as found (above / below).
     matches = None
     if settings.resume_path and jobs:
         progress(f"Scoring {len(jobs)} job(s) against your résumé…")
@@ -154,6 +167,9 @@ async def search_jobs(
         for m in matches:
             store.upsert_match(m, source_query=params.query)
     else:
+        # No scoring: persist as found. Idempotent for jobs already streamed via emit;
+        # this is also the path that persists for a non-streaming scraper (one that never
+        # calls on_job — e.g. a test double), so results are never lost either way.
         for job in jobs:
             store.upsert_job(job, source_query=params.query)
     return len(jobs)

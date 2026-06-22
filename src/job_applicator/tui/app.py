@@ -110,20 +110,35 @@ class JobApplicatorApp(App[None]):
         table.focus()  # the job list owns focus, not the (hidden) filter Input
 
     # -------------------------------------------------------------------- data
-    def _reload(self) -> None:
+    def _reload(self, *, refresh_applied: bool = True) -> None:
         """(Re)load jobs from the store and repaint. Account-safe; errors are shown,
-        not raised, so a DB hiccup never crashes the UI."""
+        not raised, so a DB hiccup never crashes the UI.
+
+        ``refresh_applied=False`` skips the applied-URLs requery: during a search (which
+        writes only the jobs table) the SUBMITTED set is invariant, so the per-streamed-row
+        repaint reuses it instead of re-reading list_recent N times on the event loop.
+        """
         self._load_error = ""
         try:
             self._all = self._store.list_jobs(limit=500)
-            self._applied_urls = {
-                str(a.job.url)
-                for a in self._app_state.list_recent(limit=10_000)
-                if a.status == ApplicationStatus.SUBMITTED
-            }
+            if refresh_applied:
+                self._applied_urls = {
+                    str(a.job.url)
+                    for a in self._app_state.list_recent(limit=10_000)
+                    if a.status == ApplicationStatus.SUBMITTED
+                }
         except JobApplicatorError as exc:
-            self._all, self._applied_urls = [], set()
+            self._all = []
             self._load_error = str(exc)
+            if refresh_applied:
+                self._applied_urls = set()
+        # Best-match-first: scored jobs by score desc, then unscored (kept newest-first by
+        # the stable sort, since the store returns updated_at-desc). Sorting the VIEW — not
+        # the shared list_jobs query the CLI also uses — keeps this TUI-local, and makes the
+        # post-scoring repaint visibly re-rank streamed results.
+        self._all.sort(
+            key=lambda s: (s.match_score is not None, s.match_score or 0.0), reverse=True
+        )
         self._repaint()
 
     def _visible(self) -> list[StoredJob]:
@@ -545,13 +560,30 @@ class JobApplicatorApp(App[None]):
         from job_applicator.tui import actions
 
         table = self.query_one("#joblist", DataTable)
-        table.loading = True  # built-in spinner on the list while the scrape/score runs
+        table.loading = True  # spinner until the FIRST result streams in
         self._set_busy("Searching…")
+        streamed = False
+
+        def on_job(_job: JobListing) -> None:
+            # Each scraped listing is already persisted (actions.emit) before this fires, so
+            # a repaint from the store shows it. Drop the spinner on the first one, then let
+            # rows accumulate live. Runs on the event loop → direct UI update is safe.
+            nonlocal streamed
+            if not streamed:
+                streamed = True
+                table.loading = False
+            # The SUBMITTED set can't change during a search, so skip its requery per row.
+            self._reload(refresh_applied=False)
+
         try:
             found = await self._run_action(
                 "Search",
                 actions.search_jobs(
-                    self._settings, self._store, params, on_progress=self._set_busy
+                    self._settings,
+                    self._store,
+                    params,
+                    on_progress=self._set_busy,
+                    on_job=on_job,
                 ),
             )
         finally:
@@ -559,6 +591,8 @@ class JobApplicatorApp(App[None]):
             self._set_busy("")
         if found is None:
             return
+        # Final repaint after scoring: the streamed (found) rows now carry scores and
+        # re-sort best-match-first (the reorder-on-score).
         self._reload()
         self.notify(f"Found {found} job(s) — added to your funnel.", timeout=6)
 

@@ -186,3 +186,33 @@ async def test_scrape_emits_per_card_progress(app_settings: AppSettings, tmp_pat
         "Scraping job 3/3 on Indeed…",
     ]
     assert [j.title for j in jobs] == ["E1", "E3"]  # 2 extracted; count still reached 3/3
+
+
+@pytest.mark.asyncio
+async def test_scrape_streams_each_job_via_on_job(
+    app_settings: AppSettings, tmp_path: object
+) -> None:
+    """scrape() streams each parsed listing via on_job as it lands; the streamed sequence
+    equals the returned list."""
+    from job_applicator.models import JobListing
+
+    app_settings.target.indeed_domain = "www.indeed.com"
+    scraper = IndeedScraper(MagicMock(), app_settings)
+    scraper.COOKIE_PATH = tmp_path / "indeed.json"  # type: ignore[operator,assignment]
+    scraper._browser.persistent_context = AsyncMock(return_value=MagicMock())
+    scraper._new_stealth_page = AsyncMock(return_value=AsyncMock())
+    scraper._load_results = AsyncMock(return_value=[MagicMock() for _ in range(2)])
+
+    def _stub(n: int) -> JobListing:
+        return JobListing(
+            title=f"E{n}", company="Co", url=f"https://indeed.com/jobs/{n}", board=JobBoard.INDEED
+        )
+
+    scraper._extract_job = AsyncMock(side_effect=[_stub(1), _stub(2)])
+
+    streamed: list[JobListing] = []
+    jobs = await scraper.scrape(
+        SearchParams(query="python", board=JobBoard.INDEED), on_job=streamed.append
+    )
+    assert [j.title for j in streamed] == ["E1", "E2"]
+    assert [j.title for j in jobs] == ["E1", "E2"]

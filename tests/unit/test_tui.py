@@ -53,14 +53,14 @@ def _browser_cm() -> MagicMock:
     return cm
 
 
-def _mr(job: JobListing) -> object:
+def _mr(job: JobListing, score: float = 0.8) -> object:
     from job_applicator.embeddings.matching import MatchResult
 
     return MatchResult(
         job=job,
-        score=0.8,
-        semantic_score=0.8,
-        skill_score=0.8,
+        score=score,
+        semantic_score=score,
+        skill_score=score,
         matched_skills=["python"],
         missing_skills=[],
         summary="ok",
@@ -661,7 +661,7 @@ async def test_account_busy_blocks_a_second_action(tmp_path: Path, monkeypatch) 
     gate = asyncio.Event()
 
     async def _slow_search(
-        settings: object, store: object, params: object, on_progress=None
+        settings: object, store: object, params: object, on_progress=None, on_job=None
     ) -> int:  # type: ignore[no-untyped-def]
         await gate.wait()  # hold the worker in RUNNING
         return 0
@@ -1022,7 +1022,7 @@ async def test_tui_search_submit_runs_and_persists(tmp_path: Path, monkeypatch) 
     captured: dict[str, str] = {}
 
     async def _fake_search(
-        _settings: object, st: JobStore, params: object, on_progress=None
+        _settings: object, st: JobStore, params: object, on_progress=None, on_job=None
     ) -> int:  # type: ignore[no-untyped-def]
         captured["query"] = params.query  # type: ignore[attr-defined]
         st.upsert_job(_job(7), source_query=params.query)  # type: ignore[attr-defined]
@@ -1120,7 +1120,7 @@ async def test_search_jobs_forwards_per_item_progress(monkeypatch) -> None:  # t
 
     jobs = [_job(1), _job(2)]
 
-    async def _fake_scrape(params: object, on_progress=None):  # type: ignore[no-untyped-def]
+    async def _fake_scrape(params: object, on_progress=None, on_job=None):  # type: ignore[no-untyped-def]
         if on_progress is not None:  # the scraper emits per-card progress through its sink
             on_progress("Scraping job 1/2 on LinkedIn…")
             on_progress("Scraping job 2/2 on LinkedIn…")
@@ -1141,6 +1141,123 @@ async def test_search_jobs_forwards_per_item_progress(monkeypatch) -> None:  # t
     assert "Scoring" in joined  # phase messages still flow too
 
 
+async def test_search_jobs_streams_found_then_matched(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A streaming scraper: each job is upserted as found AS it arrives (and the on_job UI
+    hook fires), then scoring re-upserts each as matched — incremental persistence + upgrade."""
+    import job_applicator.factories as factories
+    from job_applicator.scrapers.base import SearchParams
+    from job_applicator.tui import actions
+
+    jobs = [_job(1), _job(2)]
+
+    async def _fake_scrape(params: object, on_progress=None, on_job=None):  # type: ignore[no-untyped-def]
+        for j in jobs:  # the scraper streams each listing as it lands
+            if on_job is not None:
+                on_job(j)
+        return jobs
+
+    monkeypatch.setattr(factories, "_make_browser", lambda *a, **k: _browser_cm())
+    monkeypatch.setattr(factories, "_make_scraper", lambda *a, **k: MagicMock(scrape=_fake_scrape))
+    monkeypatch.setattr(actions, "_score_jobs", lambda s, j: [_mr(jobs[0]), _mr(jobs[1])])
+    store = MagicMock()
+    seen: list[object] = []
+    await actions.search_jobs(
+        AppSettings(resume_path="/cv.pdf"),
+        store,
+        SearchParams(query="x", board=JobBoard.LINKEDIN),
+        on_job=seen.append,
+    )
+    assert [j.title for j in seen] == ["Engineer 1", "Engineer 2"]  # UI hook saw each stream
+    assert store.upsert_job.call_count == 2  # persisted as found during the stream (emit)
+    assert store.upsert_match.call_count == 2  # then upgraded to matched after scoring
+
+
+async def test_search_jobs_stream_does_not_downgrade_tailored(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Re-scraping a job already tailored must NOT downgrade it: emit's found-upsert during
+    the stream preserves the stage + artifact paths (the store no-downgrades on rediscovery)."""
+    import job_applicator.factories as factories
+    from job_applicator.scrapers.base import SearchParams
+    from job_applicator.tui import actions
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    job = _job(1)
+    store.upsert_job(job)
+    store.mark_tailored(job, tailored_resume_path="/out/t.txt")  # advance to tailored
+
+    async def _fake_scrape(params: object, on_progress=None, on_job=None):  # type: ignore[no-untyped-def]
+        if on_job is not None:
+            on_job(job)  # re-scrape the SAME url mid-stream
+        return [job]
+
+    monkeypatch.setattr(factories, "_make_browser", lambda *a, **k: _browser_cm())
+    monkeypatch.setattr(factories, "_make_scraper", lambda *a, **k: MagicMock(scrape=_fake_scrape))
+    # No résumé → no scoring → only emit's found-upsert runs (the downgrade risk path).
+    await actions.search_jobs(
+        AppSettings(), store, SearchParams(query="x", board=JobBoard.LINKEDIN)
+    )
+    stored = store.list_jobs(limit=10)[0]
+    assert stored.funnel_status.value == "tailored"  # NOT downgraded to found
+    assert stored.tailored_resume_path == "/out/t.txt"  # artifact path preserved
+
+
+async def test_tui_search_streams_rows_incrementally(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Rows appear in the table AS the search streams them (not all at once at the end), and
+    the loading spinner clears on the first result."""
+    import asyncio
+
+    from textual.widgets import DataTable
+
+    from job_applicator.scrapers.base import SearchParams
+    from job_applicator.tui import actions
+
+    gate = asyncio.Event()
+
+    async def _fake(_s: object, st: JobStore, _p: object, on_progress=None, on_job=None) -> int:  # type: ignore[no-untyped-def]
+        st.upsert_job(_job(101), source_query="x")  # mimic emit: persist THEN notify
+        if on_job is not None:
+            on_job(_job(101))
+        await gate.wait()  # hold after the first streamed row
+        st.upsert_job(_job(102), source_query="x")
+        if on_job is not None:
+            on_job(_job(102))
+        return 2
+
+    monkeypatch.setattr(actions, "search_jobs", _fake)
+    store = JobStore(db_path=tmp_path / "applications.db")  # empty
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#joblist", DataTable)
+        assert table.row_count == 0
+        app._search_worker(SearchParams(query="x", board=JobBoard.LINKEDIN))
+        await pilot.pause()
+        assert table.row_count == 1  # first row streamed in (not waiting for the whole scrape)
+        assert table.loading is False  # spinner cleared on the first result
+        gate.set()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert table.row_count == 2  # second row streamed in too
+
+
+async def test_tui_reload_sorts_best_match_first(tmp_path: Path) -> None:
+    """The list VIEW shows scored jobs best-first then unscored — independent of the store's
+    updated_at order (we sort the view, not the shared list_jobs query the CLI also uses)."""
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_match(_mr(_job(1), 0.30))  # low score, upserted first (oldest updated_at)
+    store.upsert_match(_mr(_job(2), 0.90))  # high score
+    store.upsert_job(_job(3))  # unscored, newest updated_at
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        order = [s.job.title for s in app._all]
+        # scored desc (E2@90% then E1@30%), then the unscored E3 last — NOT updated_at order
+        assert order == ["Engineer 2", "Engineer 1", "Engineer 3"]
+
+
 async def test_tui_search_shows_per_item_progress(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """A per-item scrape tick reaches the live status line (⏳ Scraping N/M) DURING the
     search — verified mid-flight via a gate, then cleared when the worker finishes."""
@@ -1151,7 +1268,7 @@ async def test_tui_search_shows_per_item_progress(tmp_path: Path, monkeypatch) -
 
     gate = asyncio.Event()
 
-    async def _fake(_s: object, _st: object, _p: object, on_progress=None) -> int:  # type: ignore[no-untyped-def]
+    async def _fake(_s: object, _st: object, _p: object, on_progress=None, on_job=None) -> int:  # type: ignore[no-untyped-def]
         if on_progress is not None:
             on_progress("Scraping job 2/3 on LinkedIn…")
         await gate.wait()  # hold the worker so we can observe the live line
@@ -1190,7 +1307,7 @@ async def test_tui_search_clears_busy_and_loading(tmp_path: Path, monkeypatch) -
 
     store = JobStore(db_path=tmp_path / "applications.db")
 
-    async def _fake(_s: object, _st: object, _p: object, on_progress=None) -> int:  # type: ignore[no-untyped-def]
+    async def _fake(_s: object, _st: object, _p: object, on_progress=None, on_job=None) -> int:  # type: ignore[no-untyped-def]
         if on_progress is not None:
             on_progress("Searching…")
         return 0

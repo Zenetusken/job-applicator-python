@@ -277,6 +277,49 @@ async def test_scrape_emits_per_card_progress(
 
 
 @pytest.mark.asyncio
+async def test_scrape_streams_each_job_via_on_job(
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """scrape() calls on_job with each fully-parsed listing as it lands (streaming) — and
+    only with real jobs (a card whose extraction returns None is ticked for progress but
+    NOT streamed). The streamed sequence equals the returned list."""
+    from job_applicator.models import JobBoard, JobListing
+
+    monkeypatch.setattr("job_applicator.scrapers.linkedin.navigate", AsyncMock())
+    monkeypatch.setattr("job_applicator.scrapers.linkedin.random_delay", AsyncMock())
+    monkeypatch.setattr(
+        "job_applicator.scrapers.linkedin.wait_for_selector", AsyncMock(return_value=True)
+    )
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    scraper._logged_in = True
+    scraper._get_context = AsyncMock(return_value=MagicMock())
+    page = AsyncMock()
+    page.query_selector_all = AsyncMock(
+        return_value=[MagicMock(click=AsyncMock()) for _ in range(3)]
+    )
+    scraper._new_stealth_page = AsyncMock(return_value=page)
+    scraper._get_desc_text = AsyncMock(return_value="")
+    scraper._extract_description = AsyncMock(return_value="")
+
+    def _stub(n: int) -> JobListing:
+        return JobListing(
+            title=f"E{n}",
+            company="Co",
+            url=f"https://linkedin.com/jobs/{n}",
+            board=JobBoard.LINKEDIN,
+        )
+
+    scraper._extract_job = AsyncMock(side_effect=[_stub(1), None, _stub(3)])  # card 2 fails
+
+    streamed: list[JobListing] = []
+    jobs = await scraper.scrape(
+        SearchParams(query="python", board=JobBoard.LINKEDIN), on_job=streamed.append
+    )
+    assert [j.title for j in streamed] == ["E1", "E3"]  # only real jobs streamed
+    assert [j.title for j in jobs] == ["E1", "E3"]  # streamed sequence == returned list
+
+
+@pytest.mark.asyncio
 async def test_scrape_without_on_progress_is_safe(
     app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
 ) -> None:

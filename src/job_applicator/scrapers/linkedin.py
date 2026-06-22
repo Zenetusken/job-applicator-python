@@ -258,6 +258,7 @@ class LinkedInScraper(BaseScraper):
         self,
         params: SearchParams,
         on_progress: Callable[[str], None] | None = None,
+        on_job: Callable[[JobListing], None] | None = None,
     ) -> list[JobListing]:
         """Scrape LinkedIn job listings.
 
@@ -279,13 +280,14 @@ class LinkedInScraper(BaseScraper):
                 "The session is saved to the persistent browser profile and reused "
                 "automatically on subsequent runs.",
             )
-        return await self._scrape_listings(params, context, on_progress)
+        return await self._scrape_listings(params, context, on_progress, on_job)
 
     async def _scrape_listings(
         self,
         params: SearchParams,
         context: BrowserContext,
         on_progress: Callable[[str], None] | None = None,
+        on_job: Callable[[JobListing], None] | None = None,
     ) -> list[JobListing]:
         """Fetch and parse job cards from the search results page."""
         jobs: list[JobListing] = []
@@ -340,6 +342,8 @@ class LinkedInScraper(BaseScraper):
                         if desc:
                             job = job.model_copy(update={"description": desc})
                         jobs.append(job)
+                        if on_job is not None:  # stream the listing as soon as it's complete
+                            on_job(job)
                 except Exception as exc:
                     failures += 1
                     logger.warning("Failed to extract job card: %s", exc)
