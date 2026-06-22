@@ -227,7 +227,7 @@ def core_checks(fx: dict[str, Path]) -> None:
     record("config-init: writes sample", t, cp.returncode == 0 and (WORK / "c.toml").exists(),
            f"exit={cp.returncode}")
 
-    # KNOWN BUG: should be a clean error, currently a traceback.
+    # Regression guard (#43): a bad output path is a clean error, not a traceback.
     cp = run("config-init", "-o", "/proc/nope/c.toml")
     record("config-init: bad output path → clean error (no traceback)", t,
            cp.returncode != 0 and not has_traceback(cp), f"exit={cp.returncode}")
@@ -282,8 +282,7 @@ def core_checks(fx: dict[str, Path]) -> None:
            cp.returncode == 0 and "Could not write verbose log" in (cp.stdout + cp.stderr),
            f"exit={cp.returncode}")
 
-
-    # KNOWN BUG: --verbose appends a Rich report to stdout → JSON no longer parses.
+    # Regression guard (#42): the --verbose report goes to stderr, so --json stdout stays JSON.
     cp = run("ats-check", "--resume", str(fx["resume"]), "--json", "--verbose")
     ok_jv = False
     try:
@@ -339,8 +338,8 @@ def live_checks(fx: dict[str, Path]) -> None:
     ok_mj = isinstance(arr, list) and bool(arr) and "title" in arr[0] and "score" in arr[0]
     record("match: --json is valid JSON", t, cp.returncode == 0 and ok_mj, f"exit={cp.returncode}")
 
-    # KNOWN: semantic skill match is loose — a Python-only résumé shows NO missing skills
-    # for a React/TypeScript job (Python "covers" React at the 0.55 threshold).
+    # Regression guard (#45): at the 0.75 skill-match threshold a Python-only résumé reports
+    # React/TypeScript as MISSING for a React job (the old 0.55 wrongly "covered" them).
     react_ok = False
     if isinstance(arr, list):
         react = next((j for j in arr if "React" in j.get("title", "")), None)
@@ -388,7 +387,7 @@ def live_checks(fx: dict[str, Path]) -> None:
     record("generate-cover-letter: --json emits valid JSON (clean stdout)", t, ok_gj,
            f"exit={cp.returncode}")
 
-    # KNOWN BUG: --yes should be non-interactive; today it hangs on the action menu.
+    # Regression guard (#39): --yes must be non-interactive (it used to hang on the action menu).
     cp = run("tailor", "-t", "Senior Python Engineer", "-c", "Initech",
              "-d", "Async pipelines; asyncio, Pydantic, PostgreSQL.",
              "--resume", str(fx["resume"]), "--yes", timeout=200)
@@ -396,6 +395,16 @@ def live_checks(fx: dict[str, Path]) -> None:
     wrote = out_dir.exists() and any(out_dir.glob("tailored_*.txt"))
     record("tailor: --yes is non-interactive (exits, writes artifact)", t,
            cp.returncode == 0 and wrote, f"exit={cp.returncode} (124=hang)")
+    cp = run("tailor", "-t", "Senior Python Engineer", "-c", "Initech",
+             "-d", "Async pipelines; asyncio, Pydantic.", "--resume", str(fx["resume"]),
+             "--json", timeout=200)
+    ok_tj = False
+    try:
+        ok_tj = bool(json.loads(cp.stdout).get("tailored_text"))
+    except Exception:
+        pass
+    record("tailor: --json emits valid JSON (clean stdout, implies --yes)", t, ok_tj,
+           f"exit={cp.returncode}")
 
     cp = run("tailor", "-t", "Chef", "-c", "Restaurant", "-d", "Cook food in a kitchen.",
              "--resume", str(fx["resume"]), "--yes", "--min-score", "0.99", timeout=180)

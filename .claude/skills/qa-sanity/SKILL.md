@@ -67,14 +67,15 @@ LIVE (vLLM): `doctor`, `match --jobs-file` (ranking + JSON + no-scrape), `genera
 
 ## Known issues (the regression baseline)
 
-**XFAIL: none.** The QA-arc backlog (8 fixes across PRs #39–45) is fully cleared — `KNOWN_FAIL`
-in `qa.py` is empty, so every check is a guarded PASS. A new `XFAIL` here means a freshly-triaged bug
-whose check asserts the *correct* behavior (XFAIL until fixed → XPASS → promote).
+**XFAIL: none.** The QA-arc backlog is fully cleared — `KNOWN_FAIL` in `qa.py` is empty, so
+every check is a guarded PASS. A new `XFAIL` here means a freshly-triaged bug whose check asserts
+the *correct* behavior (XFAIL until fixed → XPASS → promote).
 
-**WARN** (UX, non-gating, still open): `tailor` lacks `--json` (it's an interactive refine
-loop — `--json` is a distinct design, handled in its own follow-up PR). `doctor` + `gcl` +
-the rest now have `--json` (guarded as PASS checks); `ats-check --strict` and the unwritable
-`--log-file` warning are likewise guarded.
+**WARN: none open.** Every design item the manual QA surfaced is resolved + guarded as a PASS
+check: `ats-check --strict`, the non-fatal unwritable-`--log-file` warning, and `--json` on every
+data-producing command (`doctor`, `generate-cover-letter`, `tailor`, `match`, `batch`, `ats-check`,
+`search`, `apply` — only the interactive/status-only `login`/`import-cookies`/`config-init`/
+`check-session` omit it).
 
 ## Extending it
 
