@@ -360,9 +360,15 @@ def search(
             return
 
         # Persist discovered jobs so they flow into match/tailor/apply and `status`.
-        store = _get_jobs_store()
-        for job in jobs:
-            store.upsert_job(job, source_query=query)
+        # Best-effort: a store hiccup must not sink the freshly-scraped results.
+        try:
+            store = _get_jobs_store()
+            for job in jobs:
+                store.upsert_job(job, source_query=query)
+        except JobApplicatorError as exc:
+            err_console.print(
+                f"[yellow]⚠ Could not save jobs to the store: {escape(str(exc))}[/yellow]"
+            )
 
         if as_json:
             import json
@@ -723,7 +729,10 @@ def apply(
 
         # Resolve target jobs from the store BEFORE launching a browser when they need
         # no scraping (--from a stored job, or the saved-jobs list); only --query scrapes.
+        # The board to apply on comes from the stored job(s), not the --site default, so a
+        # stored Indeed job isn't pushed through the LinkedIn applicator.
         store_jobs: list[JobListing] = []
+        effective_site = site
         if from_ref:
             stored = _get_jobs_store().get(from_ref)
             if stored is None:
@@ -732,25 +741,31 @@ def apply(
                     "Run `job-applicator status` to list saved jobs."
                 )
             store_jobs = [stored.job]
+            effective_site = stored.job.board.value
         elif not query:
-            store_jobs = [s.job for s in _get_jobs_store().list_jobs(limit=limit)]
+            # The applicator is board-specific, so a saved-list run targets one board:
+            # the requested --site (default linkedin).
+            store_jobs = [
+                s.job for s in _get_jobs_store().list_jobs(limit=limit) if s.job.board.value == site
+            ]
             if not store_jobs:
                 err_console.print(
-                    "[yellow]No saved jobs to apply to. Run `job-applicator search -q ...` "
-                    "first, pass --from <id>, or use --query to search.[/yellow]"
+                    f"[yellow]No saved {site} jobs to apply to. Run "
+                    f"`job-applicator search -q ...` first, pass --from <id>, "
+                    f"or use --query to search.[/yellow]"
                 )
                 raise typer.Exit(1)
 
-        async with _make_browser(site, settings) as browser:
+        async with _make_browser(effective_site, settings) as browser:
             # Scrape only for a --query without --from; otherwise apply to the store jobs.
             if query and not from_ref:
-                scraper = _make_scraper(site, browser, settings)
+                scraper = _make_scraper(effective_site, browser, settings)
                 params = SearchParams(
                     query=query,
                     max_results=limit,
-                    board=JobBoard(site),
+                    board=JobBoard(effective_site),
                 )
-                with console.status(f"Searching {site}..."):
+                with console.status(f"Searching {effective_site}..."):
                     jobs = await scraper.scrape(params)
             else:
                 jobs = store_jobs
@@ -803,14 +818,14 @@ def apply(
 
             # Apply to jobs
 
-            applicator = _make_applicator(site, browser, settings)
+            applicator = _make_applicator(effective_site, browser, settings)
 
             await _apply_to_jobs(
                 jobs,
                 applicator,
                 cover_letters,
                 settings,
-                site,
+                effective_site,
                 limit,
                 submit=submit,
                 validate=validate,
@@ -1108,9 +1123,15 @@ def match(
             matches = [m for m in matches if m.score >= min_score]
 
         # Persist scored jobs so they flow into tailor/apply and `status`.
-        store = _get_jobs_store()
-        for m in matches:
-            store.upsert_match(m)
+        # Best-effort: a store hiccup must not sink the computed match results.
+        try:
+            store = _get_jobs_store()
+            for m in matches:
+                store.upsert_match(m)
+        except JobApplicatorError as exc:
+            err_console.print(
+                f"[yellow]⚠ Could not save matches to the store: {escape(str(exc))}[/yellow]"
+            )
 
         if reporter and matches:
             reporter.record_match(
@@ -1219,13 +1240,22 @@ def status(
     from job_applicator.models import ApplicationStatus, FunnelStatus
     from job_applicator.state import ApplicationState
 
-    store = _get_jobs_store()
-    app_state = ApplicationState()
+    # Read both stores up front so a DB hiccup (e.g. a concurrent apply/batch holding
+    # the write lock past the 5s timeout) surfaces as a clean message, not a raw
+    # traceback — matching the other commands' typed-error handling.
+    try:
+        store = _get_jobs_store()
+        app_state = ApplicationState()
+        stored_jobs = store.list_jobs(limit=10_000)
+        recent_apps = app_state.list_recent(limit=10_000)
+    except JobApplicatorError as exc:
+        err_console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
+        raise typer.Exit(1) from exc
 
     # URL-keyed view: stage from the store, overridden to APPLIED when the
     # application-state store has a SUBMITTED record (its authority for "applied").
     view: dict[str, dict[str, Any]] = {}
-    for s in store.list_jobs(limit=10_000):
+    for s in stored_jobs:
         url = str(s.job.url)
         view[url] = {
             "title": s.job.title,
@@ -1236,7 +1266,7 @@ def status(
             "url": url,
             "when": s.updated_at,
         }
-    for appres in app_state.list_recent(limit=10_000):
+    for appres in recent_apps:
         if appres.status != ApplicationStatus.SUBMITTED:
             continue
         url = str(appres.job.url)
@@ -2101,14 +2131,21 @@ def tailor(
             yes=yes,
         )
 
-        # Reflect an accepted tailor in the funnel store so `status` shows it. The
-        # workflow sets output_path only on [A]ccept; a [Q]uit leaves it empty.
-        if result.output_path:
-            _get_jobs_store().mark_tailored(
-                job,
-                tailored_resume_path=result.output_path,
-                cover_letter_path=result.cover_letter_path,
-            )
+        # Reflect an accepted tailor in the funnel store so `status` shows it — only for
+        # a job with a real identity (a stored --from job, or one given --url); a manual
+        # job with no URL would collide on the placeholder URL. Best-effort: a store
+        # hiccup must not sink an already-saved tailoring (especially under --json).
+        if result.output_path and (from_ref or job_url):
+            try:
+                _get_jobs_store().mark_tailored(
+                    job,
+                    tailored_resume_path=result.output_path,
+                    cover_letter_path=result.cover_letter_path,
+                )
+            except JobApplicatorError as exc:
+                err_console.print(
+                    f"[yellow]⚠ Could not update the job store: {escape(str(exc))}[/yellow]"
+                )
 
         if as_json:
             # All human/Rich output above was redirected to stderr (below); the workflow's many

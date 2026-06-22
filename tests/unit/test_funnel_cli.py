@@ -62,7 +62,9 @@ def test_status_json_composes_both_stores(tmp_path: Path, monkeypatch: pytest.Mo
     js.mark_tailored(_job(2), tailored_resume_path="/out/2.txt")  # tailored
     from job_applicator.state import ApplicationState
 
-    st = ApplicationState(db_path=tmp_path / "apps2.db")
+    # Both stores share ONE db file (the production layout: jobs + applications tables
+    # co-located in applications.db), so this exercises the real single-file composition.
+    st = ApplicationState(db_path=tmp_path / "applications.db")
     st.record(
         ApplicationResult(
             job=_job(3), status=ApplicationStatus.SUBMITTED, timestamp=datetime.now(UTC)
@@ -209,7 +211,7 @@ def test_apply_empty_saved_list_fails_before_browser(
 
     result = CliRunner().invoke(cli.app, ["apply"])
     assert result.exit_code == 1, result.output
-    assert "No saved jobs" in result.output
+    assert "No saved" in result.output and "jobs to apply" in result.output
     make_browser.assert_not_called()
 
 
@@ -264,21 +266,15 @@ def test_tailor_from_unknown_errors(
     assert "Traceback (most recent call last)" not in result.output
 
 
-def test_tailor_from_marks_tailored(
-    tmp_path: Path, sample_resume: object, monkeypatch: pytest.MonkeyPatch
+def _patch_tailor_stack(
+    monkeypatch: pytest.MonkeyPatch, sample_resume: object, store: MagicMock
 ) -> None:
-    """tailor --from a stored job runs the engine and marks the job tailored in the store.
+    """Mock the tailor command's resume/LLM/workflow stack so its cli wiring (esp. the
+    post-workflow mark_tailored hook) runs offline. The interactive workflow is stubbed
+    to simulate the user accepting ([A]) by setting result.output_path."""
+    from job_applicator.models import TailoredResume
 
-    Mocks the LLM engine + interactive workflow so it covers the cli wiring — crucially
-    the post-workflow ``mark_tailored`` hook — offline (it is otherwise LIVE-only)."""
-    from job_applicator.models import StoredJob, TailoredResume
-
-    store = MagicMock()
-    store.get.return_value = StoredJob(
-        id=1, job=_job(1), first_seen_at=datetime.now(UTC), updated_at=datetime.now(UTC)
-    )
     monkeypatch.setattr(cli, "_get_jobs_store", lambda: store)
-
     loader = MagicMock()
     loader.load.return_value = sample_resume
     monkeypatch.setattr("job_applicator.documents.resume.ResumeLoader", lambda: loader)
@@ -287,7 +283,6 @@ def test_tailor_from_marks_tailored(
         cli, "_detect_tone", lambda job: MagicMock(primary="professional", confidence=0.8)
     )
     monkeypatch.setattr(cli, "_make_runtime", lambda settings: MagicMock())
-
     audit = MagicMock(
         entries=[],
         warnings=[],
@@ -304,16 +299,16 @@ def test_tailor_from_marks_tailored(
     tailored = TailoredResume(
         original_path="/tmp/r.txt",
         tailored_text="TAILORED",
-        job_title="Engineer 1",
-        job_company="Co1",
+        job_title="X",
+        job_company="Y",
         match_score=0.8,
         semantic_score=0.8,
         skill_score=0.8,
         changes_summary="changes",
     )
-    engine = MagicMock(tailor=AsyncMock(return_value=tailored))
     monkeypatch.setattr(
-        "job_applicator.documents.resume_tailor.ResumeTailor", lambda *a, **k: engine
+        "job_applicator.documents.resume_tailor.ResumeTailor",
+        lambda *a, **k: MagicMock(tailor=AsyncMock(return_value=tailored)),
     )
 
     async def _wf(
@@ -323,6 +318,20 @@ def test_tailor_from_marks_tailored(
 
     monkeypatch.setattr(cli, "_tailor_workflow", _wf)
 
+
+def test_tailor_from_marks_tailored(
+    tmp_path: Path, sample_resume: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """tailor --from a stored job runs the engine and marks the job tailored in the store
+    (covers the post-workflow mark_tailored hook offline — otherwise LIVE-only)."""
+    from job_applicator.models import StoredJob
+
+    store = MagicMock()
+    store.get.return_value = StoredJob(
+        id=1, job=_job(1), first_seen_at=datetime.now(UTC), updated_at=datetime.now(UTC)
+    )
+    _patch_tailor_stack(monkeypatch, sample_resume, store)
+
     result = CliRunner().invoke(
         cli.app, ["tailor", "--from", "1", "--resume", "/tmp/r.txt", "--yes"]
     )
@@ -330,3 +339,40 @@ def test_tailor_from_marks_tailored(
     store.get.assert_called_once_with("1")
     store.mark_tailored.assert_called_once()
     assert store.mark_tailored.call_args.kwargs["tailored_resume_path"] == "/out/tailored.txt"
+
+
+def test_tailor_manual_without_url_not_persisted(
+    tmp_path: Path, sample_resume: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A manual `tailor -t/-c` with no --url/--from is NOT written to the store — its
+    placeholder URL would otherwise collide with every other no-url manual tailor."""
+    store = MagicMock()
+    _patch_tailor_stack(monkeypatch, sample_resume, store)
+
+    result = CliRunner().invoke(
+        cli.app, ["tailor", "-t", "Eng", "-c", "Acme", "--resume", "/tmp/r.txt", "--yes"]
+    )
+    assert result.exit_code == 0, result.output
+    store.mark_tailored.assert_not_called()
+
+
+def test_apply_from_uses_stored_board(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """apply --from an Indeed job must build the Indeed browser/applicator — not the
+    --site linkedin default — so the stored job's board governs which applicator runs."""
+    js = JobStore(db_path=tmp_path / "applications.db")
+    js.upsert_job(
+        JobListing(
+            title="Data Eng", company="Initech", url="https://indeed.com/j/9", board=JobBoard.INDEED
+        )
+    )  # id 1
+    monkeypatch.setattr(cli, "_get_jobs_store", lambda: js)
+    _, applicator = _patch_apply_browser(monkeypatch)
+    make_browser = MagicMock(return_value=_browser_cm())
+    make_applicator = MagicMock(return_value=applicator)
+    monkeypatch.setattr(cli, "_make_browser", make_browser)
+    monkeypatch.setattr(cli, "_make_applicator", make_applicator)
+
+    result = CliRunner().invoke(cli.app, ["apply", "--from", "1", "--no-cover-letter"])
+    assert result.exit_code == 0, result.output
+    assert make_browser.call_args.args[0] == "indeed"  # stored board, not the linkedin default
+    assert make_applicator.call_args.args[0] == "indeed"

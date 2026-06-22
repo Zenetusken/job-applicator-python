@@ -139,8 +139,10 @@ class JobStore:
                         location=excluded.location,
                         salary=excluded.salary,
                         seniority=excluded.seniority,
-                        description=excluded.description,
-                        requirements=excluded.requirements,
+                        description=COALESCE(NULLIF(excluded.description, ''), jobs.description),
+                        requirements=CASE
+                            WHEN excluded.requirements = '[]' THEN jobs.requirements
+                            ELSE excluded.requirements END,
                         source_query=COALESCE(NULLIF(excluded.source_query, ''), jobs.source_query),
                         updated_at=excluded.updated_at
                     """,
@@ -188,8 +190,10 @@ class JobStore:
                         location=excluded.location,
                         salary=excluded.salary,
                         seniority=excluded.seniority,
-                        description=excluded.description,
-                        requirements=excluded.requirements,
+                        description=COALESCE(NULLIF(excluded.description, ''), jobs.description),
+                        requirements=CASE
+                            WHEN excluded.requirements = '[]' THEN jobs.requirements
+                            ELSE excluded.requirements END,
                         match_score=excluded.match_score,
                         semantic_score=excluded.semantic_score,
                         skill_score=excluded.skill_score,
@@ -233,9 +237,10 @@ class JobStore:
     ) -> None:
         """Record that a job has been tailored (upsert + advance the funnel stage).
 
-        Called when ``tailor`` saves an artifact, so even a manually-specified job
-        (``-t/-c`` rather than ``--from``) appears in ``status``. Advances to
-        ``cover_letter`` when a cover letter was generated, else ``tailored``.
+        Called when ``tailor`` saves an artifact for a job with a real identity (a
+        stored ``--from`` job, or one given a ``--url``). Advances to ``cover_letter``
+        when a cover letter was generated, else ``tailored`` — but never downgrades a
+        job already at ``cover_letter`` (a re-tailor without a cover letter keeps it).
         """
         now = _now()
         status = (
@@ -257,7 +262,10 @@ class JobStore:
                         location=excluded.location,
                         salary=excluded.salary,
                         seniority=excluded.seniority,
-                        funnel_status=excluded.funnel_status,
+                        funnel_status=CASE
+                            WHEN excluded.funnel_status = 'cover_letter'
+                                OR jobs.funnel_status = 'cover_letter'
+                            THEN 'cover_letter' ELSE 'tailored' END,
                         tailored_resume_path=excluded.tailored_resume_path,
                         cover_letter_path=COALESCE(
                             NULLIF(excluded.cover_letter_path, ''), jobs.cover_letter_path),
@@ -297,7 +305,12 @@ class JobStore:
                     row = conn.execute("SELECT * FROM jobs WHERE job_url = ?", (ref,)).fetchone()
         except sqlite3.Error as exc:
             raise JobStoreError(f"Cannot read job: {exc}") from exc
-        return self._row_to_stored(row) if row is not None else None
+        if row is None:
+            return None
+        try:
+            return self._row_to_stored(row)
+        except Exception as exc:  # corrupt / enum-drift row → typed error, not a raw crash
+            raise JobStoreError(f"Could not read stored job {ref!r}: {exc}") from exc
 
     def list_jobs(self, *, status: FunnelStatus | None = None, limit: int = 50) -> list[StoredJob]:
         """Return stored jobs, newest-updated first, optionally filtered by stage."""
@@ -321,17 +334,6 @@ class JobStore:
             except Exception as exc:  # a single corrupt row must not break the listing
                 logger.warning("Skipping corrupt job row: %s", exc)
         return out
-
-    def counts(self) -> dict[str, int]:
-        """Return job counts keyed by funnel_status (absent stages omitted)."""
-        try:
-            with self._connect() as conn:
-                rows = conn.execute(
-                    "SELECT funnel_status, COUNT(*) FROM jobs GROUP BY funnel_status"
-                ).fetchall()
-        except sqlite3.Error as exc:
-            raise JobStoreError(f"Cannot count jobs: {exc}") from exc
-        return {row[0]: int(row[1]) for row in rows}
 
     @staticmethod
     def _row_to_stored(row: sqlite3.Row) -> StoredJob:

@@ -130,11 +130,44 @@ def test_source_query_preserved_on_rediscovery(store: JobStore) -> None:
     assert got.source_query == "python remote"
 
 
-def test_counts_by_stage(store: JobStore) -> None:
-    store.upsert_job(_job(1))  # found
-    store.upsert_match(_match(_job(2)))  # matched
-    store.mark_tailored(_job(3), tailored_resume_path="/out/3.txt")  # tailored
-    assert store.counts() == {"found": 1, "matched": 1, "tailored": 1}
+def test_mark_tailored_does_not_downgrade_cover_letter(store: JobStore) -> None:
+    """A re-tailor without a cover letter must not pull a cover_letter job back to tailored."""
+    job = _job(1)
+    store.mark_tailored(job, tailored_resume_path="/t.txt", cover_letter_path="/cl.txt")
+    store.mark_tailored(job, tailored_resume_path="/t2.txt")  # re-tailor, no cover letter
+    got = store.get("1")
+    assert got is not None
+    assert got.funnel_status is FunnelStatus.COVER_LETTER  # stage preserved, not downgraded
+    assert got.cover_letter_path == "/cl.txt"  # original cover-letter artifact kept
+    assert got.tailored_resume_path == "/t2.txt"  # resume artifact refreshed
+
+
+def test_rediscovery_preserves_rich_fields(store: JobStore) -> None:
+    """A later thin re-search must not clobber a rich description/requirements."""
+    rich = _job(
+        1, description="Full async pipeline role", requirements=["python", "asyncio", "aws"]
+    )
+    store.upsert_match(_match(rich))
+    store.upsert_job(_job(1, description="", requirements=[]))  # thin list-page re-discovery
+    got = store.get("1")
+    assert got is not None
+    assert got.job.description == "Full async pipeline role"
+    assert got.job.requirements == ["python", "asyncio", "aws"]
+
+
+def test_get_corrupt_row_raises_typed_error(tmp_path: Path) -> None:
+    """A row with an out-of-enum funnel_status surfaces a typed JobStoreError, not a raw crash."""
+    import sqlite3
+
+    p = tmp_path / "applications.db"
+    store = JobStore(db_path=p)
+    store.upsert_job(_job(1))
+    conn = sqlite3.connect(str(p))
+    conn.execute("UPDATE jobs SET funnel_status='archived' WHERE id=1")  # not a FunnelStatus
+    conn.commit()
+    conn.close()
+    with pytest.raises(JobStoreError):
+        store.get("1")
 
 
 def test_list_jobs_filter_and_limit(store: JobStore) -> None:
