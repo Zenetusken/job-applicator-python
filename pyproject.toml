@@ -95,6 +95,12 @@ select = [
 "src/job_applicator/state.py" = ["S608"]
 "src/job_applicator/batch_state.py" = ["S608"]
 
+[tool.ruff.lint.flake8-bugbear]
+# typer.Option / typer.Argument are immutable factories used as parameter defaults (the typer
+# idiom); exempt them from B008 (function-call-in-default) so enum/non-literal defaults like
+# `typer.Option(OCRMode.AUTO, ...)` don't trip it (string-literal defaults never did).
+extend-immutable-calls = ["typer.Option", "typer.Argument"]
+
 [tool.ruff.format]
 quote-style = "double"
 

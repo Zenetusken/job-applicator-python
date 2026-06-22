@@ -282,6 +282,32 @@ def core_checks(fx: dict[str, Path]) -> None:
            "Resume path required" in cp.stderr and "Resume path required" not in cp.stdout,
            f"on_stdout={'Resume path required' in cp.stdout}")
 
+    # QA pass #2 — input validation / honest failures (all offline/CORE):
+    blanktxt = WORK / "blank.txt"
+    blanktxt.write_text("   \n")  # a VALID file with no extractable text (cf. empty.docx = bad bytes)
+    cp = run("ats-check", "--resume", str(blanktxt))
+    record("B3 ats-check: empty/no-text résumé → clean 'no extractable text' error", t,
+           cp.returncode != 0 and not has_traceback(cp) and "no extractable text" in cp.stderr,
+           f"exit={cp.returncode}")
+    cp = run("ats-check", "--resume", str(fx["resume"]), "--ocr-mode", "bogus")
+    record("B2 --ocr-mode invalid value → rejected (exit 2)", t, cp.returncode == 2,
+           f"exit={cp.returncode}")
+    cp = run("match", "--resume", str(fx["resume"]))  # no --jobs-file
+    record("B7 match: no jobs source → clean error (not silent demo jobs)", t,
+           cp.returncode != 0 and not has_traceback(cp) and "Provide --jobs-file" in cp.stderr,
+           f"exit={cp.returncode}")
+    cp = run("match", "--resume", str(fx["resume"]), "--jobs-file", str(fx["jobs"]), "--top-k", "0")
+    record("B8 match: --top-k 0 (out of range) → rejected (exit 2)", t, cp.returncode == 2,
+           f"exit={cp.returncode}")
+    cp = run("match", "--resume", str(fx["resume"]), "--jobs-file", str(fx["jobs"]),
+             "--min-score", "2.0")
+    record("B8 match: --min-score >1 → rejected (exit 2)", t, cp.returncode == 2,
+           f"exit={cp.returncode}")
+    cp = run("config-init", "-o", str(WORK))  # a directory, not a file
+    record("B4 config-init: -o <directory> → clean error (not 'already exists')", t,
+           cp.returncode != 0 and not has_traceback(cp) and "directory" in cp.stderr,
+           f"exit={cp.returncode}")
+
     # import-cookies help renders "[browser]" as Rich markup and EATS it ("the  extra").
     cp = run("import-cookies", "--help")
     record("import-cookies: --help shows the [browser] extra name (markup not eaten)", t,

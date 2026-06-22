@@ -347,6 +347,15 @@ def test_resume_loader_corrupt_pdf_is_document_error(tmp_path: Path) -> None:
         ResumeLoader().load(bad, ocr_mode="off")
 
 
+def test_resume_loader_empty_text_is_document_error(tmp_path: Path) -> None:
+    """A VALID file with no extractable text (empty/whitespace) → typed DocumentError
+    ('no extractable text'), not a misleading 0.14 ATS 'score' on nothing (QA pass-2 B3)."""
+    blank = tmp_path / "blank.txt"
+    blank.write_text("   \n\t  ", encoding="utf-8")
+    with pytest.raises(DocumentError, match="no extractable text"):
+        ResumeLoader().load(blank)
+
+
 def test_resume_loader_directory_path_names_the_target(tmp_path: Path) -> None:
     """A directory (no extension) → DocumentError that NAMES the path, not an empty
     'Unsupported resume format: ' message."""
