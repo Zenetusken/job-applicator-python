@@ -229,9 +229,16 @@ class JobApplicatorApp(App[None]):
         if s.missing_skills:
             lines.append(f"Skills ✗  [red]{escape(', '.join(s.missing_skills[:8]))}[/red]")
         if s.tailored_resume_path:
-            lines.append(f"Résumé    [dim]{escape(Path(s.tailored_resume_path).name)}[/dim]")
+            name = escape(Path(s.tailored_resume_path).name)
+            lines.append(
+                f"Résumé    [@click=app.open_tailored][dim]{name}[/dim][/]"
+                "  [dim](click to open)[/dim]"
+            )
         if s.cover_letter_path:
-            lines.append(f"Cover     [dim]{escape(Path(s.cover_letter_path).name)}[/dim]")
+            name = escape(Path(s.cover_letter_path).name)
+            lines.append(
+                f"Cover     [@click=app.open_cover][dim]{name}[/dim][/]  [dim](click to open)[/dim]"
+            )
         url = str(j.url)
         if url and "example.com/placeholder" not in url:  # hide the manual-tailor placeholder
             # Click the link (mouse) to open it; `o` opens, `y` copies — the TUI captures
@@ -272,46 +279,89 @@ class JobApplicatorApp(App[None]):
             return None
         return url
 
+    @staticmethod
+    def _headless() -> bool:
+        """True on a Linux box with no graphical display, where opening a GUI app would
+        block the loop / draw over the TUI (the default "browser" may be a terminal one
+        like w3m). Callers point at a fallback instead of risking it."""
+        import os
+        import sys
+
+        return sys.platform == "linux" and not (
+            os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+        )
+
     def action_open_url(self) -> None:
         """Open the selected job's posting in the default browser, OFF the UI thread. Uses
         YOUR browser (not the tool's automation session) — a normal human click, no
         anti-bot risk."""
-        import os
-        import sys
-
         url = self._current_url()
         if url is None:
             return
-        # On headless Linux the default "browser" may be a TERMINAL browser (w3m/lynx) that
-        # would block the loop and draw over the TUI — don't risk it; point at copy instead.
-        if sys.platform == "linux" and not (
-            os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
-        ):
+        if self._headless():
             self.notify(
                 f"No graphical browser here — press 'y' to copy:  {url}",
                 severity="warning",
                 timeout=8,
             )
             return
-        self._open_url_worker(url)
+        self._open_external_worker(
+            url,
+            opened_msg=f"Opened in browser:  {url}",
+            fail_msg=f"No browser available — press 'y' to copy:  {url}",
+        )
 
-    @work(thread=True)
-    def _open_url_worker(self, url: str) -> None:
-        import webbrowser
+    def action_open_tailored(self) -> None:
+        """Open the tailored-résumé artifact for the selected job (if one was generated)."""
+        s = self._current
+        self._open_artifact(s.tailored_resume_path if s else None, "tailored résumé")
 
-        try:
-            ok = webbrowser.open(url)
-        except Exception:  # any browser-launch failure → fall back to the copy hint
-            ok = False
-        if ok:
-            self.call_from_thread(self.notify, f"Opened in browser:  {url}", timeout=4)
-        else:
-            self.call_from_thread(
-                self.notify,
-                f"No browser available — press 'y' to copy:  {url}",
+    def action_open_cover(self) -> None:
+        """Open the cover-letter artifact for the selected job (if one was generated)."""
+        s = self._current
+        self._open_artifact(s.cover_letter_path if s else None, "cover letter")
+
+    def _open_artifact(self, path: str | None, label: str) -> None:
+        """Open a generated artifact file in YOUR default viewer (off-thread), with coherent
+        toasts. Account-safe — a local file in your own viewer, nothing touches an account.
+        Opens via a ``file://`` URI through the same worker as URLs (a .txt opens as text)."""
+        if not path:
+            self.notify(f"No {label} generated yet for this job.", severity="warning")
+            return
+        p = Path(path)
+        if not p.exists():
+            self.notify(
+                f"{label.capitalize()} file is missing: {escape(p.name)}", severity="warning"
+            )
+            return
+        if self._headless():
+            self.notify(
+                f"No graphical viewer here — {label} at {escape(str(p))}",
                 severity="warning",
                 timeout=8,
             )
+            return
+        self._open_external_worker(
+            p.resolve().as_uri(),
+            opened_msg=f"Opened {label}:  {escape(p.name)}",
+            fail_msg=f"No viewer available — {label} at {escape(str(p))}",
+        )
+
+    @work(thread=True)
+    def _open_external_worker(self, target: str, *, opened_msg: str, fail_msg: str) -> None:
+        """Open ``target`` (a posting URL or a ``file://`` artifact URI) in the user's
+        default app, OFF the UI thread (a cold launch can block). ``opened_msg`` / ``fail_msg``
+        are pre-formatted by the caller so the toast reads coherently for either kind."""
+        import webbrowser
+
+        try:
+            ok = webbrowser.open(target)
+        except Exception:  # any launch failure → the caller's fallback hint
+            ok = False
+        if ok:
+            self.call_from_thread(self.notify, opened_msg, timeout=4)
+        else:
+            self.call_from_thread(self.notify, fail_msg, severity="warning", timeout=8)
 
     def action_copy_url(self) -> None:
         """Copy the selected job's URL to the clipboard (OSC 52; the TUI captures the mouse,

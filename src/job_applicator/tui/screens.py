@@ -277,6 +277,7 @@ class HelpScreen(ModalScreen[None]):
             "[bold]Links[/bold]",
             "  o           open the posting in your browser",
             "  y           copy the posting URL",
+            "  click       open a generated résumé / cover-letter artifact",
             "",
             "[bold]Account-touching[/bold]  "
             "[yellow](opens a real browser on your account)[/yellow]",
