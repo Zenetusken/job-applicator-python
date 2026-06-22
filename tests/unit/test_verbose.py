@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from typer.testing import CliRunner
 
 from job_applicator.cli import app
@@ -97,3 +99,56 @@ def test_ats_check_strict_gates_exit_on_incompatible(tmp_path: Path) -> None:
     gdoc.save(str(good))
     r_good = runner.invoke(app, ["ats-check", "--resume", str(good), "--strict"])
     assert r_good.exit_code == 0, r_good.output  # compatible → --strict does not gate
+
+
+def test_gcl_json_stdout_is_pure_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """`generate-cover-letter --json` emits ONLY the JSON object to stdout — all progress/info
+    (Detected tone, Style loaded, the spinner) goes to stderr. Regression guard: 'Detected tone:'
+    was printed to stdout, so `gcl --json | jq` broke on the leading non-JSON line. The LIVE
+    qa-sanity check needs vLLM; this pins the stdout split in the green unit gate."""
+    import job_applicator.cli as cli
+    from job_applicator.models import ResumeData
+
+    loader = MagicMock()
+    loader.load.return_value = ResumeData(raw_text="Jane\njane@example.com\nPython, SQL")
+    gen = MagicMock()
+    gen.generate = AsyncMock(return_value="Dear Hiring Manager,\n\nI build async Python systems.")
+    tone = MagicMock(primary="professional", confidence=0.9)
+
+    monkeypatch.setattr("job_applicator.documents.resume.ResumeLoader", lambda: loader)
+    monkeypatch.setattr(
+        "job_applicator.documents.cover_letter.CoverLetterGenerator", lambda *a, **k: gen
+    )
+    monkeypatch.setattr(cli, "_load_user_profile", lambda settings: MagicMock())
+    monkeypatch.setattr(cli, "_detect_tone", lambda job: tone)
+    monkeypatch.setattr(cli, "_make_runtime", lambda settings: MagicMock())
+    monkeypatch.setattr(
+        "job_applicator.documents.tone_detector.ToneDetector",
+        lambda: MagicMock(format_for_prompt=lambda tp: ""),
+    )
+
+    resume = tmp_path / "r.txt"
+    resume.write_text("Jane\njane@example.com\nPython, SQL")
+    result = runner.invoke(
+        app,
+        [
+            "generate-cover-letter",
+            "-t",
+            "Dev",
+            "-c",
+            "Acme",
+            "-d",
+            "Python",
+            "--resume",
+            str(resume),
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    parsed = json.loads(result.stdout)  # raises if any progress line leaked onto stdout
+    assert parsed == {
+        "cover_letter": "Dear Hiring Manager,\n\nI build async Python systems.",
+        "job_title": "Dev",
+        "company": "Acme",
+    }
+    assert "Detected tone" not in result.stdout  # progress went to stderr

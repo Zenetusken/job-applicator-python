@@ -744,6 +744,7 @@ def generate_cover_letter(
     job_title: str = typer.Option(..., "--job-title", "-t", help="Job title."),
     company: str = typer.Option(..., "--company", "-c", help="Company name."),
     job_description: str = typer.Option("", "--description", "-d", help="Job description."),
+    as_json: bool = typer.Option(False, "--json", help="Output the cover letter as JSON."),
     resume_path: str = typer.Option("", "--resume", help="Path to resume file."),
     style_guide: str = typer.Option("", "--style-guide", help="Style examples."),
     headed: bool = typer.Option(False, "--headed", help="Run browser in headed mode."),
@@ -817,7 +818,7 @@ def generate_cover_letter(
         )
 
         tone_profile = _detect_tone(job)
-        console.print(
+        err_console.print(  # progress/info → stderr (keeps --json stdout clean)
             f"[dim]Detected tone: {tone_profile.primary} "
             f"(confidence: {tone_profile.confidence:.0%})[/dim]"
         )
@@ -830,11 +831,11 @@ def generate_cover_letter(
             paths = [p.strip() for p in settings.style_guide_path.split(",") if p.strip()]
 
             if len(paths) == 1:
-                with console.status("Analyzing writing style..."):
+                with err_console.status("Analyzing writing style..."):
                     style = await generator.load_style_guide(paths[0])
-                console.print(f"[green]Style loaded: {style.tone}[/green]")
+                err_console.print(f"[green]Style loaded: {style.tone}[/green]")
             elif len(paths) > 1:
-                with console.status(f"Analyzing {len(paths)} style examples..."):
+                with err_console.status(f"Analyzing {len(paths)} style examples..."):
                     from job_applicator.documents.style_analyzer import StyleAnalyzer
 
                     analyzer = StyleAnalyzer(settings.llm)
@@ -854,7 +855,7 @@ def generate_cover_letter(
                     if texts:
                         style = await analyzer.analyze_multiple(texts)
                         msg = f"Combined style from {len(texts)} examples"
-                        console.print(f"[green]{msg}: {style.tone}[/green]")
+                        err_console.print(f"[green]{msg}: {style.tone}[/green]")
 
         if reporter:
             reporter.record_llm_call(
@@ -868,13 +869,23 @@ def generate_cover_letter(
 
         tone_section = ToneDetector().format_for_prompt(tone_profile)
 
-        with console.status("Generating cover letter..."):
+        with err_console.status("Generating cover letter..."):  # progress → stderr
             letter = await generator.generate(
                 job, user_profile, resume_data, style, tone_section=tone_section
             )
 
-        console.print("\n[bold]Generated Cover Letter:[/bold]\n")
-        console.print(letter)
+        if as_json:
+            import json
+
+            sys.stdout.write(
+                json.dumps(
+                    {"cover_letter": letter, "job_title": job_title, "company": company}, indent=2
+                )
+                + "\n"
+            )
+        else:
+            console.print("\n[bold]Generated Cover Letter:[/bold]\n")
+            console.print(letter)
 
     try:
         asyncio.run(_run())
@@ -2184,6 +2195,7 @@ def check_session(
 @app.command()
 def doctor(
     ctx: typer.Context,
+    as_json: bool = typer.Option(False, "--json", help="Output the health report as JSON."),
     verbose: bool = _verbose_option(),
     log_file: str | None = _log_file_option(),
 ) -> None:
@@ -2193,7 +2205,13 @@ def doctor(
 
     settings = _get_settings()
     report = asyncio.run(run_diagnostics(settings))
-    _render_doctor(report)
+    if as_json:
+        import json
+
+        # `ok` is a @property (excluded from model_dump) — include the headline verdict explicitly.
+        sys.stdout.write(json.dumps({"ok": report.ok, **report.model_dump()}, indent=2) + "\n")
+    else:
+        _render_doctor(report)
     if not report.ok:
         raise typer.Exit(1)
 

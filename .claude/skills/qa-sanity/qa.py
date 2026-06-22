@@ -282,11 +282,6 @@ def core_checks(fx: dict[str, Path]) -> None:
            cp.returncode == 0 and "Could not write verbose log" in (cp.stdout + cp.stderr),
            f"exit={cp.returncode}")
 
-    # WARN-tier (deferred to the --json PR): doctor lacks --json.
-    cp = run("doctor", "--json")  # parsed/rejected before doctor runs (no vLLM needed)
-    if cp.returncode != 0:
-        warn("consistency: doctor lacks --json (match/batch/ats-check have it)", t,
-             f"doctor --json exit={cp.returncode}")
 
     # KNOWN BUG: --verbose appends a Rich report to stdout → JSON no longer parses.
     cp = run("ats-check", "--resume", str(fx["resume"]), "--json", "--verbose")
@@ -320,6 +315,13 @@ def live_checks(fx: dict[str, Path]) -> None:
     cp = run("doctor", timeout=180)
     record("doctor: runs, LLM reachable", t,
            cp.returncode == 0 and "reachable" in cp.stdout, f"exit={cp.returncode}")
+    cp = run("doctor", "--json", timeout=180)
+    ok_dj = False
+    try:
+        ok_dj = "ok" in json.loads(cp.stdout)
+    except Exception:
+        pass
+    record("doctor: --json emits valid JSON (incl. ok verdict)", t, ok_dj, f"exit={cp.returncode}")
 
     cp = run("match", "--resume", str(fx["resume"]), "--jobs-file", str(fx["jobs"]), "--top-k", "3",
              timeout=180)
@@ -374,6 +376,17 @@ def live_checks(fx: dict[str, Path]) -> None:
                    f"voice_tells={tells}")
     except Exception as exc:  # pragma: no cover
         warn("generate-cover-letter: voice quality", t, f"could not score: {exc}")
+
+    cp = run("generate-cover-letter", "-t", "Senior Python Engineer", "-c", "Initech",
+             "-d", "Async pipelines; asyncio, Pydantic.", "--resume", str(fx["resume"]),
+             "--json", timeout=240)
+    ok_gj = False
+    try:
+        ok_gj = bool(json.loads(cp.stdout).get("cover_letter"))
+    except Exception:
+        pass
+    record("generate-cover-letter: --json emits valid JSON (clean stdout)", t, ok_gj,
+           f"exit={cp.returncode}")
 
     # KNOWN BUG: --yes should be non-interactive; today it hangs on the action menu.
     cp = run("tailor", "-t", "Senior Python Engineer", "-c", "Initech",

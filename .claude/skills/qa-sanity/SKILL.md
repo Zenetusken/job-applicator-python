@@ -71,9 +71,10 @@ LIVE (vLLM): `doctor`, `match --jobs-file` (ranking + JSON + no-scrape), `genera
 in `qa.py` is empty, so every check is a guarded PASS. A new `XFAIL` here means a freshly-triaged bug
 whose check asserts the *correct* behavior (XFAIL until fixed → XPASS → promote).
 
-**WARN** (UX, non-gating, still open): `doctor`/`generate-cover-letter`/`tailor` lack `--json`
-(the other commands have it). (`ats-check --strict` now gates exit on the verdict, and an
-unwritable `--log-file` warns + is non-fatal by design — both now guarded as PASS checks.)
+**WARN** (UX, non-gating, still open): `tailor` lacks `--json` (it's an interactive refine
+loop — `--json` is a distinct design, handled in its own follow-up PR). `doctor` + `gcl` +
+the rest now have `--json` (guarded as PASS checks); `ats-check --strict` and the unwritable
+`--log-file` warning are likewise guarded.
 
 ## Extending it
 
