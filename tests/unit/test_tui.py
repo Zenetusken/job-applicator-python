@@ -114,6 +114,24 @@ async def test_tui_filter_narrows_then_clears(tmp_path: Path) -> None:
         assert table.row_count == 2  # filter cleared
 
 
+async def test_tui_help_key_does_not_leak_into_filter(tmp_path: Path) -> None:
+    """`?` must NOT open help while the filter Input is focused — like the documented
+    `/`-leak, a printable key typed mid-filter belongs in the Input, not the app binding."""
+    from textual.widgets import Input
+
+    from job_applicator.tui.screens import HelpScreen
+
+    app = _app(tmp_path, seed=1)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("slash")  # open + focus the filter Input
+        await pilot.pause()
+        await pilot.press("question_mark")  # ? while filtering → a literal char, not help
+        await pilot.pause()
+        assert not isinstance(app.screen, HelpScreen)  # help did NOT open
+        assert "?" in app.query_one("#filter", Input).value  # the char went to the Input
+
+
 async def test_tui_empty_store(tmp_path: Path) -> None:
     store = JobStore(db_path=tmp_path / "applications.db")
     app_state = MagicMock()

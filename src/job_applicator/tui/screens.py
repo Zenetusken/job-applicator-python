@@ -284,7 +284,7 @@ class HelpScreen(ModalScreen[None]):
             "  a           apply — [yellow]dry-run by default[/yellow]; a real submit needs the "
             "danger checkbox",
             "",
-            "[dim]search/apply never auto-login and respect the daily cap.[/dim]",
+            "[dim]search/apply never auto-login; apply respects the daily cap.[/dim]",
         ]
     )
 
