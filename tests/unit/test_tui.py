@@ -263,6 +263,67 @@ def test_tui_detail_hides_placeholder_url() -> None:
     app = JobApplicatorApp(settings=AppSettings(), store=MagicMock(), app_state=MagicMock())
     assert "placeholder" not in app._detail_markup(_stored("https://example.com/placeholder"))
     assert "linkedin.com/jobs/1" in app._detail_markup(_stored("https://linkedin.com/jobs/1"))
+    # the URL is a clickable link (mouse → open), since the TUI captures terminal selection
+    assert "@click=app.open_url" in app._detail_markup(_stored("https://linkedin.com/jobs/1"))
+
+
+async def test_tui_open_url_opens_browser(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """`o` opens the selected job's posting in the default browser."""
+    import webbrowser
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))
+    opened: dict[str, str] = {}
+    monkeypatch.setattr(webbrowser, "open", lambda u: opened.setdefault("url", u) or True)
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("o")
+        await pilot.pause()
+    assert opened["url"] == "https://linkedin.com/jobs/1"
+
+
+async def test_tui_copy_url_to_clipboard(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """`y` copies the selected job's URL to the clipboard."""
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    copied: dict[str, str] = {}
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(app, "copy_to_clipboard", lambda text: copied.setdefault("url", text))
+        await pilot.press("y")
+        await pilot.pause()
+    assert copied["url"] == "https://linkedin.com/jobs/1"
+
+
+async def test_tui_open_url_noop_on_placeholder(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A placeholder-URL job (manual tailor) doesn't open a browser on `o`."""
+    import webbrowser
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(
+        JobListing(
+            title="Dev",
+            company="Acme",
+            url="https://example.com/placeholder",
+            board=JobBoard.INDEED,
+        )
+    )
+    never = MagicMock()
+    monkeypatch.setattr(webbrowser, "open", never)
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("o")
+        await pilot.pause()
+    never.assert_not_called()
 
 
 async def test_tui_set_resume_sets_session_and_persists(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
