@@ -401,6 +401,53 @@ async def test_tui_tailor_needs_resume(tmp_path: Path, monkeypatch) -> None:  # 
     assert store.get("https://linkedin.com/jobs/1").funnel_status is FunnelStatus.FOUND
 
 
+async def test_tui_search_opens_modal_without_touching_account(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Pressing `s` opens the search modal but constructs NO browser; cancel keeps it so."""
+    import job_applicator.factories as factories
+    from job_applicator.tui.screens import SearchScreen
+
+    make_browser = MagicMock()
+    monkeypatch.setattr(factories, "_make_browser", make_browser)
+    app = _app(tmp_path, seed=1)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("s")
+        await pilot.pause()
+        assert isinstance(app.screen, SearchScreen)  # modal is up…
+        make_browser.assert_not_called()  # …but nothing has touched the account
+        await pilot.press("escape")  # cancel
+        await pilot.pause()
+        make_browser.assert_not_called()
+
+
+async def test_tui_search_submit_runs_and_persists(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Submitting the search modal runs the (mocked) scrape and the results land in the store."""
+    from job_applicator.tui import actions
+
+    store = JobStore(db_path=tmp_path / "applications.db")  # empty
+    captured: dict[str, str] = {}
+
+    async def _fake_search(_settings: object, st: JobStore, params: object) -> int:
+        captured["query"] = params.query  # type: ignore[attr-defined]
+        st.upsert_job(_job(7), source_query=params.query)  # type: ignore[attr-defined]
+        return 1
+
+    monkeypatch.setattr(actions, "search_jobs", _fake_search)
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("s")
+        await pilot.pause()
+        await pilot.press("p", "y", "t", "h", "o", "n")  # query into the focused field
+        await pilot.press("enter")  # submit (the deliberate, account-authorizing act)
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    assert captured["query"] == "python"
+    assert store.get("https://linkedin.com/jobs/7") is not None
+
+
 def test_tui_statusline_unset_resume_keeps_dim_markup() -> None:
     """When resume_path is unset (first-run default), the sentinel keeps its dim styling
     instead of being escaped into literal '[dim]…' text."""

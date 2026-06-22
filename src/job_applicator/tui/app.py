@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from job_applicator.config import AppSettings
     from job_applicator.jobs_store import JobStore
     from job_applicator.models import JobListing, StoredJob
+    from job_applicator.scrapers.base import SearchParams
     from job_applicator.state import ApplicationState
 
 # Stage → display glyph/colour for the sidebar + detail.
@@ -55,6 +56,7 @@ class JobApplicatorApp(App[None]):
         Binding("r", "refresh", "Refresh"),
         Binding("t", "tailor", "Tailor"),
         Binding("c", "cover_letter", "Cover letter"),
+        Binding("s", "search", "Search"),
         Binding("slash", "filter", "Filter"),
         Binding("escape", "clear_filter", "Clear filter", show=False),
         Binding("j", "cursor_down", "Down", show=False),
@@ -269,6 +271,30 @@ class JobApplicatorApp(App[None]):
         self._store.set_cover_letter(str(job.url), result.output_path)
         self._reload()
         self.notify(f"Cover letter ✓  →  {result.output_path}", timeout=6)
+
+    def action_search(self) -> None:
+        """Open the search modal. Touches the account only on submit — the modal collects
+        the query and shows the 'opens a browser on your real account' warning."""
+        from job_applicator.tui.screens import SearchScreen
+
+        self.push_screen(SearchScreen(), self._search_then)
+
+    def _search_then(self, params: SearchParams | None) -> None:
+        if params is not None:  # None = cancelled; nothing touched the account
+            self._search_worker(params)
+
+    @work(exclusive=True, group="account")
+    async def _search_worker(self, params: SearchParams) -> None:
+        from job_applicator.tui import actions
+
+        self.notify(f"Searching for '{params.query}'… a browser window will open.", timeout=8)
+        try:
+            found = await actions.search_jobs(self._settings, self._store, params)
+        except JobApplicatorError as exc:
+            self.notify(f"Search failed: {exc}", severity="error", timeout=10)
+            return
+        self._reload()
+        self.notify(f"Found {found} job(s) — added to your funnel.", timeout=6)
 
     def action_cursor_down(self) -> None:
         self.query_one("#joblist", DataTable).action_cursor_down()

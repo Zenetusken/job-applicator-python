@@ -15,7 +15,9 @@ from job_applicator.documents.artifacts import write_cover_letter, write_tailore
 
 if TYPE_CHECKING:
     from job_applicator.config import AppSettings
+    from job_applicator.jobs_store import JobStore
     from job_applicator.models import CoverLetterResult, JobListing, TailoredResume
+    from job_applicator.scrapers.base import SearchParams
 
 
 async def tailor_job(settings: AppSettings, job: JobListing) -> TailoredResume:
@@ -67,3 +69,22 @@ async def cover_letter_job(settings: AppSettings, job: JobListing) -> CoverLette
     )
     write_cover_letter(settings.ensure_output_dir(), result, when=datetime.now())
     return result
+
+
+async def search_jobs(settings: AppSettings, store: JobStore, params: SearchParams) -> int:
+    """Scrape ``params`` and persist the results to ``store`` (found stage); returns the
+    count.
+
+    ⚠ ACCOUNT-TOUCHING — the only action here that is: it launches a real browser on the
+    configured board. The TUI gates it behind an explicit, warned confirm (the search
+    modal), and tests never let it construct a real browser.
+    """
+    from job_applicator.factories import _make_browser, _make_scraper
+
+    site = params.board.value
+    async with _make_browser(site, settings) as browser:
+        scraper = _make_scraper(site, browser, settings)
+        jobs = await scraper.scrape(params)
+    for job in jobs:
+        store.upsert_job(job, source_query=params.query)
+    return len(jobs)
