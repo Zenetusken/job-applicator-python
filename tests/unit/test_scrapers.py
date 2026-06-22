@@ -229,6 +229,85 @@ async def test_check_session_unhealthy_directs_to_login(app_settings: AppSetting
 
 
 @pytest.mark.asyncio
+async def test_scrape_emits_per_card_progress(
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """scrape() ticks on_progress once per CARD (1-based, /total) at the TOP of the loop,
+    so a card whose extraction returns None or raises still advances the count to N/N —
+    the count tracks cards processed, not jobs extracted (else it stalls on a bad card)."""
+    from job_applicator.models import JobBoard, JobListing
+
+    monkeypatch.setattr("job_applicator.scrapers.linkedin.navigate", AsyncMock())
+    monkeypatch.setattr("job_applicator.scrapers.linkedin.random_delay", AsyncMock())
+    monkeypatch.setattr(
+        "job_applicator.scrapers.linkedin.wait_for_selector", AsyncMock(return_value=True)
+    )
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    scraper._logged_in = True  # skip the session check; we exercise the scrape loop
+    scraper._get_context = AsyncMock(return_value=MagicMock())
+    page = AsyncMock()
+    page.query_selector_all = AsyncMock(
+        return_value=[MagicMock(click=AsyncMock()) for _ in range(4)]
+    )
+    scraper._new_stealth_page = AsyncMock(return_value=page)
+    scraper._get_desc_text = AsyncMock(return_value="")  # no description-change → no early break
+    scraper._extract_description = AsyncMock(return_value="")
+
+    def _stub(n: int) -> JobListing:
+        return JobListing(
+            title=f"E{n}",
+            company="Co",
+            url=f"https://linkedin.com/jobs/{n}",
+            board=JobBoard.LINKEDIN,
+        )
+
+    # card 2 → None (no job), card 3 → raises; both must still tick the counter.
+    scraper._extract_job = AsyncMock(side_effect=[_stub(1), None, ValueError("bad card"), _stub(4)])
+
+    msgs: list[str] = []
+    jobs = await scraper.scrape(SearchParams(query="python", board=JobBoard.LINKEDIN), msgs.append)
+
+    assert msgs == [
+        "Scraping job 1/4 on LinkedIn…",
+        "Scraping job 2/4 on LinkedIn…",
+        "Scraping job 3/4 on LinkedIn…",
+        "Scraping job 4/4 on LinkedIn…",
+    ]
+    assert [j.title for j in jobs] == ["E1", "E4"]  # only 2 extracted; count still reached 4/4
+
+
+@pytest.mark.asyncio
+async def test_scrape_without_on_progress_is_safe(
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """on_progress is optional — the existing CLI/batch callers pass none and scrape() must
+    not blow up (the per-card hook is guarded)."""
+    from job_applicator.models import JobBoard, JobListing
+
+    monkeypatch.setattr("job_applicator.scrapers.linkedin.navigate", AsyncMock())
+    monkeypatch.setattr("job_applicator.scrapers.linkedin.random_delay", AsyncMock())
+    monkeypatch.setattr(
+        "job_applicator.scrapers.linkedin.wait_for_selector", AsyncMock(return_value=True)
+    )
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    scraper._logged_in = True
+    scraper._get_context = AsyncMock(return_value=MagicMock())
+    page = AsyncMock()
+    page.query_selector_all = AsyncMock(return_value=[MagicMock(click=AsyncMock())])
+    scraper._new_stealth_page = AsyncMock(return_value=page)
+    scraper._get_desc_text = AsyncMock(return_value="")
+    scraper._extract_description = AsyncMock(return_value="")
+    scraper._extract_job = AsyncMock(
+        return_value=JobListing(
+            title="E1", company="Co", url="https://linkedin.com/jobs/1", board=JobBoard.LINKEDIN
+        )
+    )
+
+    jobs = await scraper.scrape(SearchParams(query="python", board=JobBoard.LINKEDIN))
+    assert [j.title for j in jobs] == ["E1"]
+
+
+@pytest.mark.asyncio
 async def test_check_session_graceful_on_navigation_error(
     app_settings: AppSettings,
 ) -> None:

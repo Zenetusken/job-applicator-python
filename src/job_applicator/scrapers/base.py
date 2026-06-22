@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING
 from job_applicator.models import JobBoard, JobListing, SessionHealth
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from job_applicator.browser.manager import BrowserManager
     from job_applicator.config import AppSettings
 
@@ -58,8 +60,18 @@ class BaseScraper(ABC):
         """Which job board this scraper targets."""
 
     @abstractmethod
-    async def scrape(self, params: SearchParams) -> list[JobListing]:
-        """Scrape job listings matching search parameters."""
+    async def scrape(
+        self,
+        params: SearchParams,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> list[JobListing]:
+        """Scrape job listings matching search parameters.
+
+        ``on_progress(msg)`` (optional) is invoked as each job card is processed
+        ("Scraping job 7/25…") so a caller can show live per-item progress instead
+        of a single opaque wait. It is called from the scrape coroutine on the
+        caller's event loop, so a UI sink can update directly.
+        """
 
     @abstractmethod
     async def login(self, email: str, password: str) -> bool:

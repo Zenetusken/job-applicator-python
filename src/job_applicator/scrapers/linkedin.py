@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode, urlsplit
 
 from playwright.async_api import BrowserContext, ElementHandle, Page
@@ -24,6 +24,9 @@ from job_applicator.scrapers.base import BaseScraper, SearchParams
 from job_applicator.utils.cookies import load_cookies, save_cookies
 from job_applicator.utils.logging import get_logger
 from job_applicator.utils.retry import async_retry
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = get_logger("scrapers.linkedin")
 
@@ -251,7 +254,11 @@ class LinkedInScraper(BaseScraper):
             await page.close()
 
     @async_retry(max_attempts=3, base_delay=2.0, exceptions=(NavigationError,))
-    async def scrape(self, params: SearchParams) -> list[JobListing]:
+    async def scrape(
+        self,
+        params: SearchParams,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> list[JobListing]:
         """Scrape LinkedIn job listings.
 
         Reuses an existing authenticated session (persistent profile / saved
@@ -272,10 +279,13 @@ class LinkedInScraper(BaseScraper):
                 "The session is saved to the persistent browser profile and reused "
                 "automatically on subsequent runs.",
             )
-        return await self._scrape_listings(params, context)
+        return await self._scrape_listings(params, context, on_progress)
 
     async def _scrape_listings(
-        self, params: SearchParams, context: BrowserContext
+        self,
+        params: SearchParams,
+        context: BrowserContext,
+        on_progress: Callable[[str], None] | None = None,
     ) -> list[JobListing]:
         """Fetch and parse job cards from the search results page."""
         jobs: list[JobListing] = []
@@ -304,7 +314,14 @@ class LinkedInScraper(BaseScraper):
                 logger.warning("No job cards found on page")
                 return jobs
             failures = 0
-            for card in cards[: params.max_results]:
+            selected = cards[: params.max_results]
+            total = len(selected)
+            for i, card in enumerate(selected, start=1):
+                # Tick per CARD (not per extracted job) at the top of the loop, so the
+                # count never stalls on a card whose extraction fails and so it shows
+                # WHILE the slow click+description-wait for this card runs.
+                if on_progress is not None:
+                    on_progress(f"Scraping job {i}/{total} on LinkedIn…")
                 try:
                     job = await self._extract_job(card, params.board)
                     if job:
