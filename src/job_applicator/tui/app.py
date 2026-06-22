@@ -300,15 +300,18 @@ class JobApplicatorApp(App[None]):
             return
         if self._headless():
             self.notify(
-                f"No graphical browser here — press 'y' to copy:  {url}",
+                f"No graphical browser here — press 'y' to copy:  {escape(url)}",
                 severity="warning",
                 timeout=8,
             )
             return
+        # escape() the (scraped) URL: notify renders Rich markup, so a bracketed URL
+        # (IPv6 host, or a ?filter[0]= query param) would otherwise drop that span.
+        safe = escape(url)
         self._open_external_worker(
             url,
-            opened_msg=f"Opened in browser:  {url}",
-            fail_msg=f"No browser available — press 'y' to copy:  {url}",
+            opened_msg=f"Opened in browser:  {safe}",
+            fail_msg=f"No browser available — press 'y' to copy:  {safe}",
         )
 
     def action_open_tailored(self) -> None:
@@ -369,8 +372,8 @@ class JobApplicatorApp(App[None]):
         url = self._current_url()
         if url is None:
             return
-        self.copy_to_clipboard(url)
-        self.notify(f"URL copied (OSC 52):  {url}", timeout=5)
+        self.copy_to_clipboard(url)  # the clipboard gets the raw URL; only the toast escapes
+        self.notify(f"URL copied (OSC 52):  {escape(url)}", timeout=5)
 
     def action_set_resume(self) -> None:
         """Set the résumé path in-app (no TOML editing) — opens a modal, saves to config."""

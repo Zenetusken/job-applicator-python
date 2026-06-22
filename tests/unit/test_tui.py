@@ -344,6 +344,31 @@ async def test_tui_copy_url_to_clipboard(tmp_path: Path, monkeypatch) -> None:  
     assert copied["url"] == "https://linkedin.com/jobs/1"
 
 
+async def test_tui_open_url_toast_escapes_markup_in_url(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A scraped URL with a tag-like bracket (?ref=[red]…) is escaped in the toast — notify
+    renders Rich markup, so an unescaped span would be silently dropped from the message."""
+    import sys
+
+    from rich.markup import escape
+
+    monkeypatch.setattr(sys, "platform", "linux")  # headless → synchronous warning toast
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    raw = "https://linkedin.com/jobs/1?ref=[red]abc"
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1, url=raw))
+    toasts: list[str] = []
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(app, "notify", lambda msg, **k: toasts.append(msg))
+        app.action_open_url()
+        await pilot.pause()
+    assert toasts and escape(raw) in toasts[0]  # bracket span escaped, not stripped
+
+
 def _tailored_app(tmp_path: Path, **paths: str) -> JobApplicatorApp:
     """An app whose single selected job carries the given artifact path(s)."""
     store = JobStore(db_path=tmp_path / "applications.db")
