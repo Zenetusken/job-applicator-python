@@ -390,6 +390,20 @@ def core_checks(fx: dict[str, Path]) -> None:
         pass
     record("status: reflects a job in the store (read path)", t, seeded_ok, "store→status")
 
+    # TUI launch wiring (Increment 2). The harness captures stdout (NOT a TTY), so the
+    # full-screen app never actually launches here — bare invocation prints help, `tui`
+    # errors cleanly. The interactive app itself is covered by Pilot unit tests.
+    cp = run()  # bare invocation, non-TTY
+    record("tui: bare invocation (non-TTY) → help, exit 0, no traceback", t,
+           cp.returncode == 0 and "Usage" in cp.stdout and not has_traceback(cp),
+           f"exit={cp.returncode}")
+    cp = run("tui", "--help")
+    record("tui: --help works", t, cp.returncode == 0 and "Usage" in cp.stdout,
+           f"exit={cp.returncode}")
+    cp = run("tui")  # non-TTY → clean guard, never a Textual launch
+    record("tui: non-TTY → clean error (not a crash)", t,
+           cp.returncode == 1 and not has_traceback(cp), f"exit={cp.returncode}")
+
 
 # ---------------------------------------------------------------- LIVE checks (need vLLM)
 def live_checks(fx: dict[str, Path]) -> None:

@@ -1,0 +1,187 @@
+"""Modal screens for the TUI.
+
+Account-safety note: ``SearchScreen`` only *collects* parameters. Submitting it — the
+deliberate act, taken with the "opens a browser on your real account" warning visible —
+is what authorizes the scrape; the screen itself touches nothing.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, ClassVar
+
+from rich.markup import escape
+from textual.app import ComposeResult
+from textual.binding import Binding, BindingType
+from textual.containers import Horizontal, Vertical
+from textual.screen import ModalScreen
+from textual.widgets import Button, Checkbox, Input, Label, Static
+
+from job_applicator.models import JobBoard
+from job_applicator.scrapers.base import SearchParams
+
+if TYPE_CHECKING:
+    from job_applicator.models import JobListing
+
+
+class SearchScreen(ModalScreen[SearchParams | None]):
+    """A search form. Dismisses with ``SearchParams`` on submit (authorizing the
+    account-touching scrape) or ``None`` on cancel/Esc."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "cancel", "Cancel")]
+
+    CSS = """
+    SearchScreen { align: center middle; }
+    #searchbox {
+        width: 68; height: auto; padding: 1 2;
+        border: thick $accent; background: $surface;
+    }
+    #searchbox Input, #searchbox Checkbox { margin: 1 0; }
+    #warn { color: $warning; margin: 1 0; }
+    #buttons { height: auto; align: right middle; }
+    #buttons Button { margin-left: 2; }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="searchbox"):
+            yield Label("[bold]Search jobs[/bold]")
+            yield Input(placeholder="query — e.g. senior python engineer", id="q")
+            yield Input(placeholder="location (optional)", id="loc")
+            yield Checkbox("Remote only", id="remote")
+            yield Static("⚠  Opens a browser on your real LinkedIn account.", id="warn")
+            with Horizontal(id="buttons"):
+                yield Button("Search", variant="primary", id="go")
+                yield Button("Cancel", id="cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#q", Input).focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def _submit(self) -> None:
+        query = self.query_one("#q", Input).value.strip()
+        if not query:
+            self.notify("Enter a search query.", severity="warning")
+            return
+        self.dismiss(
+            SearchParams(
+                query=query,
+                location=self.query_one("#loc", Input).value.strip(),
+                remote_only=self.query_one("#remote", Checkbox).value,
+                board=JobBoard.LINKEDIN,
+            )
+        )
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "go":
+            self._submit()
+        else:
+            self.dismiss(None)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        # Enter in any field submits the form (same as the Search button).
+        self._submit()
+
+
+class ApplyScreen(ModalScreen[bool | None]):
+    """Confirm applying to a job. Dismisses ``True`` (real submit), ``False`` (dry run),
+    or ``None`` (cancel). A real submit requires explicitly ticking the danger checkbox —
+    never a single keypress."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "cancel", "Cancel")]
+
+    CSS = """
+    ApplyScreen { align: center middle; }
+    #applybox {
+        width: 72; height: auto; padding: 1 2;
+        border: thick $error; background: $surface;
+    }
+    #applybox Checkbox { margin: 1 0; }
+    #warn { color: $warning; margin: 1 0; }
+    #buttons { height: auto; align: right middle; }
+    #buttons Button { margin-left: 2; }
+    """
+
+    def __init__(self, job: JobListing) -> None:
+        super().__init__()
+        self._job = job
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="applybox"):
+            yield Label(f"[bold]Apply to {escape(self._job.title)}[/bold]")
+            yield Static(f"{escape(self._job.company)} · {self._job.board.value}")
+            yield Static("⚠  Opens a browser on your real LinkedIn account.", id="warn")
+            yield Checkbox(
+                "Send a REAL application — leave unchecked for a dry run "
+                "(fills the form, never submits)",
+                id="real",
+            )
+            with Horizontal(id="buttons"):
+                yield Button("Apply", variant="primary", id="go")
+                yield Button("Cancel", id="cancel")
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "go":
+            self.dismiss(self.query_one("#real", Checkbox).value)  # True = real, False = dry run
+        else:
+            self.dismiss(None)
+
+
+class SetupScreen(ModalScreen[str | None]):
+    """Set the résumé path in-app. Dismisses with the entered path or ``None`` (cancel)."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "cancel", "Cancel")]
+
+    CSS = """
+    SetupScreen { align: center middle; }
+    #setupbox {
+        width: 72; height: auto; padding: 1 2;
+        border: thick $accent; background: $surface;
+    }
+    #setupbox Input { margin: 1 0; }
+    #hint { color: $text-muted; }
+    #buttons { height: auto; align: right middle; }
+    #buttons Button { margin-left: 2; }
+    """
+
+    def __init__(self, current: str = "") -> None:
+        super().__init__()
+        self._current = current
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="setupbox"):
+            yield Label("[bold]Set your résumé[/bold]")
+            yield Input(
+                value=self._current,
+                placeholder="/path/to/your/cv.pdf  (or .docx / .txt)",
+                id="path",
+            )
+            yield Static("Saved to config.toml so you only set it once.", id="hint")
+            with Horizontal(id="buttons"):
+                yield Button("Save", variant="primary", id="go")
+                yield Button("Cancel", id="cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#path", Input).focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def _submit(self) -> None:
+        path = self.query_one("#path", Input).value.strip()
+        if not path:
+            self.notify("Enter a résumé path.", severity="warning")
+            return
+        self.dismiss(path)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "go":
+            self._submit()
+        else:
+            self.dismiss(None)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self._submit()

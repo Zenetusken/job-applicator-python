@@ -291,6 +291,20 @@ class JobStore:
         except sqlite3.Error as exc:
             raise JobStoreError(f"Cannot record tailored job: {exc}") from exc
 
+    def set_cover_letter(self, job_url: str, cover_letter_path: str) -> None:
+        """Record a generated cover letter: store its path and advance the stage to
+        ``cover_letter`` (the furthest head stage). The job must already exist."""
+        now = _now()
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE jobs SET cover_letter_path = ?, funnel_status = 'cover_letter', "
+                    "updated_at = ? WHERE job_url = ?",
+                    (cover_letter_path, now, job_url),
+                )
+        except sqlite3.Error as exc:
+            raise JobStoreError(f"Cannot record cover letter: {exc}") from exc
+
     # ------------------------------------------------------------------- reads
     def get(self, ref: str) -> StoredJob | None:
         """Resolve a stored job by numeric id or exact job URL (for ``--from``)."""

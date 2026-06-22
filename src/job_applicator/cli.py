@@ -248,7 +248,7 @@ def version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
-@app.callback()
+@app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
     version: bool = typer.Option(
@@ -271,10 +271,42 @@ def main(
         help="Write verbose report to file (requires --verbose).",
     ),
 ) -> None:
-    """Automated job application tool with AI-powered cover letters."""
+    """Automated job application tool with AI-powered cover letters.
+
+    Run with no command in a terminal to open the full-screen UI (`tui`).
+    """
     if log_file and not verbose:
         raise typer.BadParameter("--log-file requires --verbose")
     ctx.obj = VerboseContext(verbose=verbose, log_file=log_file)
+
+    if ctx.invoked_subcommand is not None:
+        return
+    # Bare invocation: open the TUI in an interactive terminal; otherwise print help
+    # (so pipes / CI / `job-applicator | cat` get usable output, never a hung UI).
+    if _tui_tty_ok():
+        _launch_tui()
+    else:
+        typer.echo(ctx.get_help())
+        raise typer.Exit(0)
+
+
+def _tui_tty_ok() -> bool:
+    """True only when BOTH stdout and stdin are a real terminal. Textual reads keys from
+    stdin, so a TTY stdout with a piped/redirected stdin (`producer | job-applicator`,
+    `job-applicator < file`) would launch a UI that hangs waiting for input."""
+    return sys.stdout.isatty() and sys.stdin.isatty()
+
+
+def _launch_tui() -> None:
+    """Run the TUI, turning a store-construction failure into a clean message — the
+    stores are built before the event loop, outside the app's own error handling."""
+    from job_applicator.tui import run_tui
+
+    try:
+        run_tui(_get_settings())
+    except JobApplicatorError as exc:
+        err_console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
+        raise typer.Exit(1) from exc
 
 
 def _verbose_option() -> bool:
@@ -1336,6 +1368,21 @@ def status(
         score = f"{r['score']:.0%}" if r["score"] is not None else "—"
         table.add_row(r["stage"].replace("_", " "), score, r["title"], r["company"], r["board"])
     console.print(table)
+
+
+@app.command()
+def tui() -> None:
+    """Open the full-screen terminal UI — a navigable home over your job funnel.
+
+    Browse the search → tailor → cover-letter → apply pipeline and act on the selected job
+    from inside the app. Launching, navigating, and filtering touch only local state; the
+    search and apply actions touch your real account only behind an explicit confirm. Same
+    as running `job-applicator` with no command in a terminal.
+    """
+    if not _tui_tty_ok():
+        err_console.print("[yellow]The TUI needs an interactive terminal (a TTY).[/yellow]")
+        raise typer.Exit(1)
+    _launch_tui()
 
 
 def _resume_tailored_resume(
