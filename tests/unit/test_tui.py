@@ -344,6 +344,158 @@ async def test_tui_copy_url_to_clipboard(tmp_path: Path, monkeypatch) -> None:  
     assert copied["url"] == "https://linkedin.com/jobs/1"
 
 
+async def test_tui_open_url_toast_escapes_markup_in_url(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A scraped URL with a tag-like bracket (?ref=[red]…) is escaped in the toast — notify
+    renders Rich markup, so an unescaped span would be silently dropped from the message."""
+    import sys
+
+    from rich.markup import escape
+
+    monkeypatch.setattr(sys, "platform", "linux")  # headless → synchronous warning toast
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    raw = "https://linkedin.com/jobs/1?ref=[red]abc"
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1, url=raw))
+    toasts: list[str] = []
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(app, "notify", lambda msg, **k: toasts.append(msg))
+        app.action_open_url()
+        await pilot.pause()
+    assert toasts and escape(raw) in toasts[0]  # bracket span escaped, not stripped
+
+
+def _tailored_app(tmp_path: Path, **paths: str) -> JobApplicatorApp:
+    """An app whose single selected job carries the given artifact path(s)."""
+    store = JobStore(db_path=tmp_path / "applications.db")
+    job = _job(1)
+    store.upsert_job(job)
+    store.mark_tailored(job, **paths)  # tailored_resume_path=… [+ cover_letter_path=…]
+    return JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+
+
+def test_tui_artifact_lines_are_clickable(tmp_path: Path) -> None:
+    """The tailored-résumé and cover-letter lines are click-to-open links; the path is NOT
+    baked into the markup (the action resolves it from the selected job at click time)."""
+    from datetime import UTC, datetime
+
+    from job_applicator.models import StoredJob
+
+    stored = StoredJob(
+        id=1,
+        job=_job(1),
+        tailored_resume_path="/out/t.txt",
+        cover_letter_path="/out/cl.txt",
+        first_seen_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    app = JobApplicatorApp(settings=AppSettings(), store=MagicMock(), app_state=MagicMock())
+    md = app._detail_markup(stored)
+    assert "@click=app.open_tailored" in md and "@click=app.open_cover" in md
+    assert "/out/" not in md  # no path embedded — resolved from _current on click
+
+
+async def test_tui_open_tailored_artifact(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Opening the tailored artifact launches the default viewer with its file:// URI."""
+    import webbrowser
+
+    monkeypatch.setenv("DISPLAY", ":0")  # pass the headless guard
+    art = tmp_path / "tailored_Acme_Dev.txt"
+    art.write_text("resume text", encoding="utf-8")
+    opened: dict[str, str] = {}
+    monkeypatch.setattr(webbrowser, "open", lambda u: opened.setdefault("uri", u) or True)
+    app = _tailored_app(tmp_path, tailored_resume_path=str(art))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_open_tailored()
+        await app.workers.wait_for_complete()  # off-thread open worker
+        await pilot.pause()
+    assert opened["uri"].startswith("file://") and opened["uri"].endswith("tailored_Acme_Dev.txt")
+
+
+async def test_tui_open_cover_artifact(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The cover-letter line opens its own artifact (open_cover wired to cover_letter_path)."""
+    import webbrowser
+
+    monkeypatch.setenv("DISPLAY", ":0")
+    resume = tmp_path / "tailored.txt"
+    resume.write_text("r", encoding="utf-8")
+    cover = tmp_path / "cover_letter_Acme.txt"
+    cover.write_text("dear hiring manager", encoding="utf-8")
+    opened: dict[str, str] = {}
+    monkeypatch.setattr(webbrowser, "open", lambda u: opened.setdefault("uri", u) or True)
+    app = _tailored_app(tmp_path, tailored_resume_path=str(resume), cover_letter_path=str(cover))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_open_cover()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    assert opened["uri"].endswith("cover_letter_Acme.txt")  # the cover, not the résumé
+
+
+async def test_tui_open_tailored_headless_does_not_launch(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """On headless Linux (no DISPLAY) opening an artifact does NOT launch a viewer."""
+    import sys
+    import webbrowser
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    art = tmp_path / "t.txt"
+    art.write_text("x", encoding="utf-8")
+    never = MagicMock()
+    monkeypatch.setattr(webbrowser, "open", never)
+    app = _tailored_app(tmp_path, tailored_resume_path=str(art))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_open_tailored()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    never.assert_not_called()
+
+
+async def test_tui_open_tailored_noop_when_absent(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A job with no tailored artifact: opening it warns and launches nothing."""
+    import webbrowser
+
+    monkeypatch.setenv("DISPLAY", ":0")
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))  # no artifact generated
+    never = MagicMock()
+    monkeypatch.setattr(webbrowser, "open", never)
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_open_tailored()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    never.assert_not_called()
+
+
+async def test_tui_open_tailored_missing_file_does_not_launch(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A recorded artifact path whose file is gone warns and launches nothing (not a crash)."""
+    import webbrowser
+
+    monkeypatch.setenv("DISPLAY", ":0")
+    never = MagicMock()
+    monkeypatch.setattr(webbrowser, "open", never)
+    app = _tailored_app(tmp_path, tailored_resume_path=str(tmp_path / "gone.txt"))  # never created
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_open_tailored()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    never.assert_not_called()
+
+
 async def test_tui_open_url_noop_on_placeholder(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """A placeholder-URL job (manual tailor) doesn't open a browser on `o`."""
     import webbrowser
