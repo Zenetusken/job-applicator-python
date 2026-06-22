@@ -10,6 +10,7 @@ below, and the UI gates them behind an explicit confirm.
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -17,6 +18,7 @@ from job_applicator.documents.artifacts import write_cover_letter, write_tailore
 
 if TYPE_CHECKING:
     from job_applicator.config import AppSettings
+    from job_applicator.embeddings.matching import MatchResult
     from job_applicator.jobs_store import JobStore
     from job_applicator.models import (
         ApplicationResult,
@@ -25,6 +27,8 @@ if TYPE_CHECKING:
         TailoredResume,
     )
     from job_applicator.scrapers.base import SearchParams
+
+logger = logging.getLogger(__name__)
 
 
 async def tailor_job(settings: AppSettings, job: JobListing) -> TailoredResume:
@@ -81,12 +85,12 @@ async def cover_letter_job(settings: AppSettings, job: JobListing) -> CoverLette
 
 
 async def search_jobs(settings: AppSettings, store: JobStore, params: SearchParams) -> int:
-    """Scrape ``params`` and persist the results to ``store`` (found stage); returns the
-    count.
+    """Scrape ``params``, score against the résumé if one is set (→ matched, with scores;
+    else → found), and persist to ``store``; returns the scraped count.
 
     ⚠ ACCOUNT-TOUCHING — the only action here that is: it launches a real browser on the
     configured board. The TUI gates it behind an explicit, warned confirm (the search
-    modal), and tests never let it construct a real browser.
+    modal), and tests never let it construct a real browser. The scoring step is offline.
     """
     from job_applicator.factories import _make_browser, _make_scraper
 
@@ -94,9 +98,32 @@ async def search_jobs(settings: AppSettings, store: JobStore, params: SearchPara
     async with _make_browser(site, settings) as browser:
         scraper = _make_scraper(site, browser, settings)
         jobs = await scraper.scrape(params)
-    for job in jobs:
-        store.upsert_job(job, source_query=params.query)
+
+    # Score against the résumé when one is configured, so results arrive ranked with match
+    # scores (search → matched). Best-effort: a résumé/embedding failure must never lose
+    # the scraped jobs — fall back to persisting them unscored (found).
+    matches = None
+    if settings.resume_path and jobs:
+        try:
+            matches = await asyncio.to_thread(_score_jobs, settings, jobs)
+        except Exception:
+            logger.warning("search: scoring failed; persisting jobs unscored", exc_info=True)
+    if matches is not None:
+        for m in matches:
+            store.upsert_match(m, source_query=params.query)
+    else:
+        for job in jobs:
+            store.upsert_job(job, source_query=params.query)
     return len(jobs)
+
+
+def _score_jobs(settings: AppSettings, jobs: list[JobListing]) -> list[MatchResult]:
+    """Load the résumé and rank ``jobs`` against it (sync, CPU/GPU — call via to_thread)."""
+    from job_applicator.documents.resume import ResumeLoader
+    from job_applicator.embeddings.matching import JobMatcher
+
+    resume = ResumeLoader().load(settings.resume_path)
+    return JobMatcher(settings.embedding).rank_jobs(resume, jobs, len(jobs))
 
 
 async def apply_job(settings: AppSettings, job: JobListing, *, submit: bool) -> ApplicationResult:

@@ -8,7 +8,7 @@ tests run under the project's ``asyncio_mode = auto``.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from textual.widgets import DataTable
 from typer.testing import CliRunner
@@ -42,6 +42,28 @@ def _app(tmp_path: Path, *, seed: int = 2) -> JobApplicatorApp:
     app_state.list_recent.return_value = []
     return JobApplicatorApp(
         settings=AppSettings(resume_path="/cv/r.pdf"), store=store, app_state=app_state
+    )
+
+
+def _browser_cm() -> MagicMock:
+    """A stand-in for `_make_browser(...)` — an async context manager yielding a browser."""
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=MagicMock())
+    cm.__aexit__ = AsyncMock(return_value=False)
+    return cm
+
+
+def _mr(job: JobListing) -> object:
+    from job_applicator.embeddings.matching import MatchResult
+
+    return MatchResult(
+        job=job,
+        score=0.8,
+        semantic_score=0.8,
+        skill_score=0.8,
+        matched_skills=["python"],
+        missing_skills=[],
+        summary="ok",
     )
 
 
@@ -503,6 +525,50 @@ async def test_tui_search_submit_runs_and_persists(tmp_path: Path, monkeypatch) 
         await pilot.pause()
     assert captured["query"] == "python"
     assert store.get("https://linkedin.com/jobs/7") is not None
+
+
+async def test_search_jobs_scores_when_resume_set(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """search_jobs scores scraped jobs against the résumé (→ upsert_match) when one is set."""
+    import job_applicator.factories as factories
+    from job_applicator.scrapers.base import SearchParams
+    from job_applicator.tui import actions
+
+    jobs = [_job(1), _job(2)]
+    monkeypatch.setattr(factories, "_make_browser", lambda *a, **k: _browser_cm())
+    monkeypatch.setattr(
+        factories, "_make_scraper", lambda *a, **k: MagicMock(scrape=AsyncMock(return_value=jobs))
+    )
+    monkeypatch.setattr(actions, "_score_jobs", lambda settings, j: [_mr(jobs[0]), _mr(jobs[1])])
+    store = MagicMock()
+    n = await actions.search_jobs(
+        AppSettings(resume_path="/cv.pdf"), store, SearchParams(query="x", board=JobBoard.LINKEDIN)
+    )
+    assert n == 2
+    assert store.upsert_match.call_count == 2
+    store.upsert_job.assert_not_called()
+
+
+async def test_search_jobs_found_when_no_resume(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Without a résumé, search_jobs persists scraped jobs as found (no scoring)."""
+    import job_applicator.factories as factories
+    from job_applicator.scrapers.base import SearchParams
+    from job_applicator.tui import actions
+
+    jobs = [_job(1), _job(2)]
+    monkeypatch.setattr(factories, "_make_browser", lambda *a, **k: _browser_cm())
+    monkeypatch.setattr(
+        factories, "_make_scraper", lambda *a, **k: MagicMock(scrape=AsyncMock(return_value=jobs))
+    )
+    score = MagicMock()
+    monkeypatch.setattr(actions, "_score_jobs", score)
+    store = MagicMock()
+    n = await actions.search_jobs(
+        AppSettings(resume_path=""), store, SearchParams(query="x", board=JobBoard.LINKEDIN)
+    )
+    assert n == 2
+    assert store.upsert_job.call_count == 2
+    store.upsert_match.assert_not_called()
+    score.assert_not_called()  # no scoring without a résumé
 
 
 async def test_tui_apply_modal_no_account_until_confirm(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
