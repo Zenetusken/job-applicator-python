@@ -26,6 +26,22 @@ class ApplicationStatus(StrEnum):
     ALREADY_APPLIED = "already_applied"
 
 
+class FunnelStatus(StrEnum):
+    """Where a job sits in the application funnel.
+
+    The funnel *head* (found → matched → tailored → cover_letter) lives in
+    ``jobs_store.JobStore``; ``APPLIED`` is authoritative in
+    ``state.ApplicationState`` (it drives the daily cap), so the store never
+    forks it — the ``status`` view composes both.
+    """
+
+    FOUND = "found"
+    MATCHED = "matched"
+    TAILORED = "tailored"
+    COVER_LETTER = "cover_letter"
+    APPLIED = "applied"
+
+
 class JobListing(BaseModel):
     """Scraped job data from a job board."""
 
@@ -43,6 +59,31 @@ class JobListing(BaseModel):
     )
     posted_at: datetime | None = None
     scraped_at: datetime = Field(default_factory=datetime.now)
+
+    model_config = {"extra": "forbid"}
+
+
+class StoredJob(BaseModel):
+    """A job persisted in the funnel store: the listing plus funnel metadata.
+
+    The cross-boundary contract from ``jobs_store.JobStore`` to its callers (the
+    ``status`` view, ``--from`` resolution, the TUI). ``job`` is the reconstructed
+    listing; the remaining fields are funnel state the store owns.
+    """
+
+    id: int
+    job: JobListing
+    funnel_status: FunnelStatus = FunnelStatus.FOUND
+    match_score: float | None = None
+    semantic_score: float | None = None
+    skill_score: float | None = None
+    matched_skills: list[str] = Field(default_factory=list)
+    missing_skills: list[str] = Field(default_factory=list)
+    tailored_resume_path: str = ""
+    cover_letter_path: str = ""
+    source_query: str = ""
+    first_seen_at: datetime
+    updated_at: datetime
 
     model_config = {"extra": "forbid"}
 

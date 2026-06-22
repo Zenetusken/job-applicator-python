@@ -42,6 +42,7 @@ from job_applicator.workflows.tailor import _tailor_workflow
 if TYPE_CHECKING:
     from job_applicator.batch_state import BatchState
     from job_applicator.documents.tone_detector import ToneProfile
+    from job_applicator.jobs_store import JobStore
     from job_applicator.models import (
         ATSCompatibilityResult,
         JobListing,
@@ -161,6 +162,18 @@ def _load_jobs_file(jobs_file: str) -> list[JobListing]:
                 f"Jobs file {jobs_file}: entry #{i} has invalid/missing fields: {fields}"
             ) from exc
     return jobs
+
+
+def _get_jobs_store() -> JobStore:
+    """Construct the funnel store (DI seam — tests patch this to isolate the DB).
+
+    Lazily imports the (light, sqlite-only) store module so it isn't loaded until a
+    command touches the funnel; the runtime construct uses this local import, not the
+    ``TYPE_CHECKING`` one, so there is no construct-time ``NameError``.
+    """
+    from job_applicator.jobs_store import JobStore
+
+    return JobStore()
 
 
 def _run_ats_preflight(resume: ResumeData) -> ATSCompatibilityResult:
@@ -345,6 +358,11 @@ def search(
             else:
                 console.print("[yellow]No jobs found.[/yellow]")
             return
+
+        # Persist discovered jobs so they flow into match/tailor/apply and `status`.
+        store = _get_jobs_store()
+        for job in jobs:
+            store.upsert_job(job, source_query=query)
 
         if as_json:
             import json
@@ -633,7 +651,12 @@ def import_cookies(
 def apply(
     ctx: typer.Context,
     site: str = typer.Option("linkedin", "--site", "-s", help="Job board."),
-    query: str = typer.Option("", "--query", "-q", help="Search query (empty = use saved list)."),
+    query: str = typer.Option(
+        "", "--query", "-q", help="Search query (empty = apply to saved jobs from the store)."
+    ),
+    from_ref: str = typer.Option(
+        "", "--from", help="Apply to a stored job by id or URL (from `status`); skips searching."
+    ),
     limit: int = typer.Option(5, "--limit", "-n", help="Max applications."),
     cover_letter: bool = typer.Option(True, "--cover-letter/--no-cover-letter", help="AI cover."),
     headed: bool = typer.Option(False, "--headed", help="Run browser in headed mode."),
@@ -694,12 +717,33 @@ def apply(
     )
 
     async def _run() -> None:
+        from job_applicator.exceptions import DocumentError
         from job_applicator.models import JobBoard
         from job_applicator.scrapers.base import SearchParams
 
+        # Resolve target jobs from the store BEFORE launching a browser when they need
+        # no scraping (--from a stored job, or the saved-jobs list); only --query scrapes.
+        store_jobs: list[JobListing] = []
+        if from_ref:
+            stored = _get_jobs_store().get(from_ref)
+            if stored is None:
+                raise DocumentError(
+                    f"No stored job matches --from {from_ref!r}. "
+                    "Run `job-applicator status` to list saved jobs."
+                )
+            store_jobs = [stored.job]
+        elif not query:
+            store_jobs = [s.job for s in _get_jobs_store().list_jobs(limit=limit)]
+            if not store_jobs:
+                err_console.print(
+                    "[yellow]No saved jobs to apply to. Run `job-applicator search -q ...` "
+                    "first, pass --from <id>, or use --query to search.[/yellow]"
+                )
+                raise typer.Exit(1)
+
         async with _make_browser(site, settings) as browser:
-            # Search for jobs
-            if query:
+            # Scrape only for a --query without --from; otherwise apply to the store jobs.
+            if query and not from_ref:
                 scraper = _make_scraper(site, browser, settings)
                 params = SearchParams(
                     query=query,
@@ -709,8 +753,7 @@ def apply(
                 with console.status(f"Searching {site}..."):
                     jobs = await scraper.scrape(params)
             else:
-                err_console.print("[yellow]No query provided. Use --query to search.[/yellow]")
-                raise typer.Exit(1)
+                jobs = store_jobs
 
             if not jobs:
                 console.print("[yellow]No jobs found to apply to.[/yellow]")
@@ -1064,6 +1107,11 @@ def match(
         if min_score > 0:
             matches = [m for m in matches if m.score >= min_score]
 
+        # Persist scored jobs so they flow into tailor/apply and `status`.
+        store = _get_jobs_store()
+        for m in matches:
+            store.upsert_match(m)
+
         if reporter and matches:
             reporter.record_match(
                 embedding_model=settings.embedding.model_name,
@@ -1148,6 +1196,117 @@ def match(
         if reporter:
             log_file = ctx.obj.log_file if isinstance(ctx.obj, VerboseContext) else None
             reporter.render(err_console, log_file)
+
+
+@app.command()
+def status(
+    ctx: typer.Context,
+    as_json: bool = typer.Option(False, "--json", help="Output the funnel as JSON."),
+    limit: int = typer.Option(20, "--limit", "-n", min=1, help="Max recent jobs to show."),
+    verbose: bool = _verbose_option(),
+    log_file: str | None = _log_file_option(),
+) -> None:
+    """Show your job funnel: counts by stage and the most recent jobs.
+
+    Composes the funnel head (found/matched/tailored, from the job store) with the
+    applied tail (submitted applications, from the application-state store), keyed by
+    URL so each job shows its *furthest* stage (no double counting). Offline and
+    account-safe — reads local state only, never the network or your account.
+    """
+    _merge_verbose_ctx(ctx, verbose, log_file)
+    from datetime import UTC
+
+    from job_applicator.models import ApplicationStatus, FunnelStatus
+    from job_applicator.state import ApplicationState
+
+    store = _get_jobs_store()
+    app_state = ApplicationState()
+
+    # URL-keyed view: stage from the store, overridden to APPLIED when the
+    # application-state store has a SUBMITTED record (its authority for "applied").
+    view: dict[str, dict[str, Any]] = {}
+    for s in store.list_jobs(limit=10_000):
+        url = str(s.job.url)
+        view[url] = {
+            "title": s.job.title,
+            "company": s.job.company,
+            "board": s.job.board.value,
+            "stage": s.funnel_status.value,
+            "score": s.match_score,
+            "url": url,
+            "when": s.updated_at,
+        }
+    for appres in app_state.list_recent(limit=10_000):
+        if appres.status != ApplicationStatus.SUBMITTED:
+            continue
+        url = str(appres.job.url)
+        row = view.get(
+            url,
+            {
+                "title": appres.job.title,
+                "company": appres.job.company,
+                "board": appres.job.board.value,
+                "score": None,
+                "url": url,
+            },
+        )
+        row["stage"] = FunnelStatus.APPLIED.value
+        row["when"] = appres.timestamp
+        view[url] = row
+
+    def _when_key(row: dict[str, Any]) -> Any:
+        # Normalize naive→aware (assume UTC) so the two stores' timestamps compare.
+        when = row["when"]
+        return when.replace(tzinfo=UTC) if when.tzinfo is None else when
+
+    rows = sorted(view.values(), key=_when_key, reverse=True)
+
+    order = [s.value for s in FunnelStatus]
+    counts = dict.fromkeys(order, 0)
+    for r in rows:
+        counts[r["stage"]] = counts.get(r["stage"], 0) + 1
+
+    if as_json:
+        import json
+
+        payload = {
+            "counts": counts,
+            "total": len(rows),
+            "recent": [
+                {
+                    "title": r["title"],
+                    "company": r["company"],
+                    "board": r["board"],
+                    "stage": r["stage"],
+                    "score": r["score"],
+                    "url": r["url"],
+                    "when": r["when"].isoformat(),
+                }
+                for r in rows[:limit]
+            ],
+        }
+        sys.stdout.write(json.dumps(payload, indent=2) + "\n")
+        return
+
+    summary = " · ".join(f"{counts[st]} {st.replace('_', ' ')}" for st in order)
+    console.print(Panel(summary, title="Funnel", border_style="cyan"))
+
+    if not rows:
+        console.print(
+            "[dim]No jobs yet. Run `job-applicator search -q ...` to discover jobs.[/dim]"
+        )
+        return
+
+    table = Table(title=f"Recent jobs (showing {min(limit, len(rows))} of {len(rows)})")
+    table.add_column("Stage", style="cyan")
+    table.add_column("Score")
+    table.add_column("Title", style="green")
+    table.add_column("Company")
+    table.add_column("Board", style="dim")
+    for r in rows[:limit]:
+        score = f"{r['score']:.0%}" if r["score"] is not None else "—"
+        table.add_row(r["stage"].replace("_", " "), score, r["title"], r["company"], r["board"])
+    console.print(table)
 
 
 def _resume_tailored_resume(
@@ -1659,8 +1818,11 @@ def batch(
 def tailor(
     ctx: typer.Context,
     resume_path: str = typer.Option("", "--resume", help="Path to resume file."),
-    job_title: str = typer.Option(..., "--job-title", "-t", help="Job title."),
-    company: str = typer.Option(..., "--company", "-c", help="Company name."),
+    from_ref: str = typer.Option(
+        "", "--from", help="Tailor a stored job by id or URL (from `status`) instead of -t/-c/-d."
+    ),
+    job_title: str = typer.Option("", "--job-title", "-t", help="Job title (or use --from)."),
+    company: str = typer.Option("", "--company", "-c", help="Company name (or use --from)."),
     job_description: str = typer.Option("", "--description", "-d", help="Job description."),
     job_url: str = typer.Option("", "--url", help="Job posting URL."),
     requirements: str = typer.Option(
@@ -1720,6 +1882,7 @@ def tailor(
 
         from job_applicator.documents.resume import ResumeLoader
         from job_applicator.documents.resume_tailor import ResumeTailor
+        from job_applicator.exceptions import DocumentError
         from job_applicator.models import JobBoard, JobListing
 
         if not settings.resume_path:
@@ -1749,18 +1912,33 @@ def tailor(
                 suggestions=ats_result.suggestions,
             )
 
-        req_list = [r.strip() for r in requirements.split(",") if r.strip()] if requirements else []
-        url = HttpUrl(job_url) if job_url else HttpUrl("https://example.com/placeholder")
-
-        job = JobListing(
-            title=job_title,
-            company=company,
-            description=job_description,
-            url=url,
-            requirements=req_list,
-            location=location,
-            board=JobBoard.INDEED,
-        )
+        if from_ref:
+            stored = _get_jobs_store().get(from_ref)
+            if stored is None:
+                raise DocumentError(
+                    f"No stored job matches --from {from_ref!r}. "
+                    "Run `job-applicator status` to list saved jobs."
+                )
+            job = stored.job
+        else:
+            if not job_title or not company:
+                err_console.print(
+                    "[red]Provide --job-title and --company, or --from <id|url>.[/red]"
+                )
+                raise typer.Exit(1)
+            req_list = (
+                [r.strip() for r in requirements.split(",") if r.strip()] if requirements else []
+            )
+            url = HttpUrl(job_url) if job_url else HttpUrl("https://example.com/placeholder")
+            job = JobListing(
+                title=job_title,
+                company=company,
+                description=job_description,
+                url=url,
+                requirements=req_list,
+                location=location,
+                board=JobBoard.INDEED,
+            )
 
         tone_profile = _detect_tone(job)
         console.print(
@@ -1922,6 +2100,15 @@ def tailor(
             reporter,
             yes=yes,
         )
+
+        # Reflect an accepted tailor in the funnel store so `status` shows it. The
+        # workflow sets output_path only on [A]ccept; a [Q]uit leaves it empty.
+        if result.output_path:
+            _get_jobs_store().mark_tailored(
+                job,
+                tailored_resume_path=result.output_path,
+                cover_letter_path=result.cover_letter_path,
+            )
 
         if as_json:
             # All human/Rich output above was redirected to stderr (below); the workflow's many

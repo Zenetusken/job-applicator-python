@@ -352,6 +352,44 @@ def core_checks(fx: dict[str, Path]) -> None:
         record(f"account-safe: {cmd} --help works (NOT executed)", t,
                cp.returncode == 0 and "Usage" in cp.stdout, f"exit={cp.returncode}")
 
+    # --- Funnel backbone (Increment 1): the `status` dashboard + job store, offline.
+    # apply --from / saved-list stay account-safe (probed --help-only above); their
+    # gating is unit-covered (test_funnel_cli asserts NO browser is built on a bad/empty
+    # target). Here we exercise the offline read path end-to-end through the real CLI.
+    cp = run("status")
+    record("status: runs on an empty store (clean, no traceback)", t,
+           cp.returncode == 0 and "Funnel" in cp.stdout and not has_traceback(cp),
+           f"exit={cp.returncode}")
+    cp = run("status", "--json")
+    ok_sj = False
+    try:
+        payload = json.loads(cp.stdout)
+        ok_sj = payload["total"] == 0 and {"found", "matched", "applied"} <= set(payload["counts"])
+    except Exception:
+        pass
+    record("status: --json is valid JSON with funnel counts", t, cp.returncode == 0 and ok_sj,
+           f"exit={cp.returncode}")
+
+    # Seed one job straight into the isolated store (status above created the schema), then
+    # prove `status` reflects it — the store→status read path, offline & account-safe.
+    seeded_ok = False
+    try:
+        c = sqlite3.connect(str(ISO_HOME / ".job-applicator" / "applications.db"))
+        c.execute(
+            "INSERT INTO jobs (job_url, title, company, board, funnel_status, "
+            "first_seen_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+            ("https://example.com/qa/seed", "QA Seeded Eng", "QACo", "linkedin", "found",
+             "2026-06-22T00:00:00+00:00", "2026-06-22T00:00:00+00:00"),
+        )
+        c.commit()
+        c.close()
+        cp = run("status", "--json")
+        payload = json.loads(cp.stdout)
+        seeded_ok = payload["total"] == 1 and payload["counts"]["found"] == 1
+    except Exception:
+        pass
+    record("status: reflects a job in the store (read path)", t, seeded_ok, "store→status")
+
 
 # ---------------------------------------------------------------- LIVE checks (need vLLM)
 def live_checks(fx: dict[str, Path]) -> None:
@@ -394,6 +432,19 @@ def live_checks(fx: dict[str, Path]) -> None:
             react_ok = "react" in miss or "typescript" in miss
     record("match: React job reports React/TypeScript as missing skills", t, react_ok,
            "missing_skills under-reports the gap" if not react_ok else "ok")
+
+    # Increment 1: match persists scored jobs into the funnel store (a side effect of the
+    # LIVE match runs above) — assert at the isolated DB directly.
+    fdb = ISO_HOME / ".job-applicator" / "applications.db"
+    jobs_rows = 0
+    if fdb.exists():
+        fc = sqlite3.connect(str(fdb))
+        try:
+            jobs_rows = fc.execute("select count(*) from jobs").fetchone()[0]
+        except sqlite3.Error:
+            jobs_rows = 0
+        fc.close()
+    record("match: persists scored jobs to the store", t, jobs_rows >= 1, f"jobs_rows={jobs_rows}")
 
     cp = run("generate-cover-letter", "-t", "Senior Python Engineer", "-c", "Initech",
              "-d", "Async pipelines; asyncio, Pydantic, PostgreSQL, AWS.",
@@ -456,6 +507,33 @@ def live_checks(fx: dict[str, Path]) -> None:
              "--resume", str(fx["resume"]), "--yes", "--min-score", "0.99", timeout=180)
     record("tailor: --min-score abort path", t,
            cp.returncode == 0 and "Aborting" in cp.stdout, f"exit={cp.returncode}")
+
+    # Increment 1: `tailor --from <url>` tailors a stored job (no -t/-c retyping) and marks
+    # it tailored in the store — the funnel head→tailor handoff, end-to-end.
+    tfrom_url = "https://example.com/qa/tfrom"
+    tfrom_ok = False
+    tfrom_exit = "n/a"
+    try:
+        tc = sqlite3.connect(str(ISO_HOME / ".job-applicator" / "applications.db"))
+        tc.execute(
+            "INSERT OR IGNORE INTO jobs (job_url, title, company, board, funnel_status, "
+            "description, first_seen_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+            (tfrom_url, "Senior Python Engineer", "Initech", "linkedin", "found",
+             "Async pipelines; asyncio, Pydantic, PostgreSQL.",
+             "2026-06-22T00:00:00+00:00", "2026-06-22T00:00:00+00:00"),
+        )
+        tc.commit()
+        tc.close()
+        cp = run("tailor", "--from", tfrom_url, "--resume", str(fx["resume"]), "--yes", timeout=200)
+        tfrom_exit = str(cp.returncode)
+        tc = sqlite3.connect(str(ISO_HOME / ".job-applicator" / "applications.db"))
+        row = tc.execute("select funnel_status from jobs where job_url=?", (tfrom_url,)).fetchone()
+        tc.close()
+        tfrom_ok = cp.returncode == 0 and row is not None and row[0] in ("tailored", "cover_letter")
+    except Exception as exc:
+        tfrom_exit = f"err:{exc}"
+    record("tailor: --from a stored job tailors it (marks it tailored)", t, tfrom_ok,
+           f"exit={tfrom_exit}")
 
     # batch: clean multi-job run + artifacts
     cp = run("batch", "--resume", str(fx["resume"]), "--jobs-file", str(fx["jobs"]),
