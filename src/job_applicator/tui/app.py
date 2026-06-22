@@ -65,6 +65,8 @@ class JobApplicatorApp(App[None]):
         Binding("s", "search", "Search"),
         Binding("a", "apply", "Apply"),
         Binding("e", "set_resume", "Résumé"),
+        Binding("o", "open_url", "Open"),
+        Binding("y", "copy_url", "Copy URL", show=False),
         Binding("slash", "filter", "Filter"),
         Binding("escape", "clear_filter", "Clear filter", show=False),
         Binding("j", "cursor_down", "Down", show=False),
@@ -220,7 +222,13 @@ class JobApplicatorApp(App[None]):
             lines.append(f"Cover     [dim]{escape(Path(s.cover_letter_path).name)}[/dim]")
         url = str(j.url)
         if url and "example.com/placeholder" not in url:  # hide the manual-tailor placeholder
-            lines += ["", f"[blue underline]{escape(url)}[/blue underline]"]
+            # Click the link (mouse) to open it; `o` opens, `y` copies — the TUI captures
+            # the mouse, so plain terminal select/copy doesn't work.
+            lines += [
+                "",
+                f"[@click=app.open_url][blue underline]{escape(url)}[/blue underline][/]"
+                "  [dim](o open · y copy)[/dim]",
+            ]
         if j.description:
             desc = j.description[:600] + ("…" if len(j.description) > 600 else "")
             lines += ["", "[bold]Description[/bold]", escape(desc)]
@@ -234,6 +242,67 @@ class JobApplicatorApp(App[None]):
 
     def action_refresh(self) -> None:
         self._reload()
+
+    def _current_url(self) -> str | None:
+        """The selected job's posting URL, or None (with a toast) when there isn't one."""
+        if self._current is None:
+            self.notify("No job selected.", severity="warning")
+            return None
+        url = str(self._current.job.url)
+        if not url or "example.com/placeholder" in url:
+            self.notify("This job has no URL.", severity="warning")
+            return None
+        return url
+
+    def action_open_url(self) -> None:
+        """Open the selected job's posting in the default browser, OFF the UI thread. Uses
+        YOUR browser (not the tool's automation session) — a normal human click, no
+        anti-bot risk."""
+        import os
+        import sys
+
+        url = self._current_url()
+        if url is None:
+            return
+        # On headless Linux the default "browser" may be a TERMINAL browser (w3m/lynx) that
+        # would block the loop and draw over the TUI — don't risk it; point at copy instead.
+        if sys.platform == "linux" and not (
+            os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+        ):
+            self.notify(
+                f"No graphical browser here — press 'y' to copy:  {url}",
+                severity="warning",
+                timeout=8,
+            )
+            return
+        self._open_url_worker(url)
+
+    @work(thread=True)
+    def _open_url_worker(self, url: str) -> None:
+        import webbrowser
+
+        try:
+            ok = webbrowser.open(url)
+        except Exception:  # any browser-launch failure → fall back to the copy hint
+            ok = False
+        if ok:
+            self.call_from_thread(self.notify, f"Opened in browser:  {url}", timeout=4)
+        else:
+            self.call_from_thread(
+                self.notify,
+                f"No browser available — press 'y' to copy:  {url}",
+                severity="warning",
+                timeout=8,
+            )
+
+    def action_copy_url(self) -> None:
+        """Copy the selected job's URL to the clipboard (OSC 52; the TUI captures the mouse,
+        so plain terminal selection can't)."""
+        url = self._current_url()
+        if url is None:
+            return
+        self.copy_to_clipboard(url)
+        self.notify(f"URL copied (OSC 52):  {url}", timeout=5)
 
     def action_set_resume(self) -> None:
         """Set the résumé path in-app (no TOML editing) — opens a modal, saves to config."""
