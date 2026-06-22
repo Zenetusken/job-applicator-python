@@ -38,13 +38,13 @@ AI-powered job application tool using Playwright browser automation with modern 
 
 Tests are auto-marked by location in `tests/conftest.py`, so marker selection works:
 
-- `pytest -m unit` — fast, isolated unit suite (596 tests; no browser/GPU/vLLM). The green gate.
+- `pytest -m unit` — fast, isolated unit suite (no browser/GPU/vLLM). The green gate.
   (`pytest tests/unit/` is equivalent.)
-- `pytest -m live` — the 21 live tests at `tests/` root that need vLLM (`localhost:8000`) + GPU;
+- `pytest -m live` — the live tests at `tests/` root that need vLLM (`localhost:8000`) + GPU;
   kept out of the gate (full suite is green when vLLM is up).
-- `pytest -m integration` — the 5 integration tests (`tests/integration/`): board
+- `pytest -m integration` — the integration tests (`tests/integration/`): board
   `browser_policy()` → `_make_browser` wiring (construction-only, no real launch).
-- `pytest` — everything (622).
+- `pytest` — everything.
 
 ## Target Boards
 
