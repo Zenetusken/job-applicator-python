@@ -232,6 +232,26 @@ def core_checks(fx: dict[str, Path]) -> None:
     record("config-init: bad output path → clean error (no traceback)", t,
            cp.returncode != 0 and not has_traceback(cp), f"exit={cp.returncode}")
 
+    # B6 (QA pass #2): a bad --jobs-file must be a clean typed error, never a raw traceback.
+    # match had NO inner handler → its outer `except Exception` re-raised → Typer traceback.
+    # Fails at the jobs-load (before embeddings/tailoring) → offline/CORE.
+    notalist = WORK / "jobs_notalist.json"
+    notalist.write_text("{}")
+    badfields = WORK / "jobs_badfields.json"
+    badfields.write_text('[{"title": "x"}]')
+    jobsdir = WORK / "jobsdir"  # a directory path → IsADirectoryError (OSError, not FileNotFound)
+    jobsdir.mkdir(exist_ok=True)
+    nonutf8 = WORK / "jobs_nonutf8.json"  # non-UTF-8 bytes → UnicodeDecodeError (a ValueError)
+    nonutf8.write_bytes(b"\xff\xfe not utf-8 \x80\x81")
+    for label, jf2 in (("malformed", fx["malformed"]), ("not-a-list", notalist),
+                       ("missing-fields", badfields), ("missing-file", WORK / "nope.json"),
+                       ("directory", jobsdir), ("non-utf8", nonutf8)):
+        for cmd in ("match", "batch"):
+            extra = ("--no-cover-letter",) if cmd == "batch" else ()
+            cp = run(cmd, "--resume", str(fx["resume"]), "--jobs-file", str(jf2), *extra)
+            record(f"{cmd}: bad jobs-file ({label}) → clean error, no traceback", t,
+                   cp.returncode != 0 and not has_traceback(cp), f"exit={cp.returncode}")
+
     cp = run("ats-check", "--resume", str(fx["resume"]))
     record("ats-check: valid docx", t, cp.returncode == 0 and "ATS Score" in cp.stdout,
            f"exit={cp.returncode}")

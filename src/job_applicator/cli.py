@@ -103,6 +103,57 @@ def _resolve_ocr_mode(ocr_mode: str, force_ocr: bool) -> str:
     return ocr_mode
 
 
+def _load_jobs_file(jobs_file: str) -> list[JobListing]:
+    """Load + validate a JSON jobs file into JobListings.
+
+    Raises a clean typed ``DocumentError`` for the realistic bad-input modes — missing file,
+    unreadable/directory path, non-UTF-8 bytes, malformed JSON, not a JSON array, a non-object
+    entry, or an entry with invalid/missing fields — so a caller's ``except JobApplicatorError``
+    renders a one-line message instead of a raw traceback. (Pathological inputs — deeply-nested
+    JSON → RecursionError, multi-GB → MemoryError — are out of scope and still surface.)
+    JobListing is annotation-only at module scope, so it's imported at runtime here.
+    """
+    import json
+
+    from pydantic import ValidationError
+
+    from job_applicator.exceptions import DocumentError
+    from job_applicator.models import JobListing
+
+    try:
+        with open(jobs_file, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError as exc:
+        raise DocumentError(f"Jobs file not found: {jobs_file}") from exc
+    except json.JSONDecodeError as exc:
+        raise DocumentError(f"Jobs file is not valid JSON ({jobs_file}): {exc}") from exc
+    except (OSError, UnicodeDecodeError) as exc:
+        # directory / unreadable (IsADirectoryError, PermissionError) / non-UTF-8 bytes —
+        # the rest of the OSError family + decode errors, kept typed so callers stay clean.
+        raise DocumentError(
+            f"Could not read jobs file {jobs_file}: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    if not isinstance(data, list):
+        raise DocumentError(
+            f"Jobs file must be a JSON array of job objects ({jobs_file}); "
+            f"got {type(data).__name__}"
+        )
+
+    jobs: list[JobListing] = []
+    for i, item in enumerate(data, 1):
+        if not isinstance(item, dict):
+            raise DocumentError(f"Jobs file {jobs_file}: entry #{i} is not a job object")
+        try:
+            jobs.append(JobListing(**item))
+        except ValidationError as exc:
+            fields = ", ".join(str(e["loc"][0]) for e in exc.errors() if e.get("loc")) or "?"
+            raise DocumentError(
+                f"Jobs file {jobs_file}: entry #{i} has invalid/missing fields: {fields}"
+            ) from exc
+    return jobs
+
+
 def _run_ats_preflight(resume: ResumeData) -> ATSCompatibilityResult:
     """Run ATS compatibility check and warn if issues found."""
     from job_applicator.documents.ats_checker import ATSChecker
@@ -983,12 +1034,7 @@ def match(
         # Load jobs
         jobs: list[JobListing] = []
         if jobs_file:
-            import json
-
-            with open(jobs_file) as f:  # noqa: ASYNC230
-                data = json.load(f)
-                for item in data:
-                    jobs.append(JobListing(**item))
+            jobs = _load_jobs_file(jobs_file)
         else:
             # Example jobs for demo
             from pydantic import HttpUrl
@@ -1206,7 +1252,7 @@ def batch(
         from job_applicator.documents.resume import ResumeLoader
         from job_applicator.documents.resume_tailor import ResumeTailor
         from job_applicator.embeddings.matching import JobMatcher, MatchResult
-        from job_applicator.models import JobBoard, JobListing, TailoringReport
+        from job_applicator.models import JobBoard, TailoringReport
 
         if not settings.resume_path:
             err_console.print("[red]Resume path required. Use --resume.[/red]")
@@ -1238,17 +1284,7 @@ def batch(
 
         jobs: list[JobListing] = []
         if jobs_file:
-            try:
-                with open(jobs_file) as f:  # noqa: ASYNC230
-                    data = json.load(f)
-                    for item in data:
-                        jobs.append(JobListing(**item))
-            except FileNotFoundError:
-                err_console.print(f"[red]Jobs file not found: {jobs_file}[/red]")
-                raise typer.Exit(1) from None
-            except Exception as exc:
-                err_console.print(f"[red]Error reading jobs file: {escape(str(exc))}[/red]")
-                raise typer.Exit(1) from exc
+            jobs = _load_jobs_file(jobs_file)
         elif query:
             from job_applicator.scrapers.base import SearchParams
 
