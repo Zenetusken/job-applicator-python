@@ -155,3 +155,34 @@ async def test_scrape_auto_retries_on_region_redirect(
     assert scraper._resolved_base == "https://ca.indeed.com"
     assert calls[0] == "https://www.indeed.com"  # first attempt on the default
     assert calls[1] == "https://ca.indeed.com"  # retry on the detected region
+
+
+@pytest.mark.asyncio
+async def test_scrape_emits_per_card_progress(app_settings: AppSettings, tmp_path: object) -> None:
+    """scrape() ticks on_progress per CARD (1-based, /total) at the top of the loop, so a
+    card whose extraction raises still advances the count to N/N (counts cards, not jobs)."""
+    from job_applicator.models import JobListing
+
+    app_settings.target.indeed_domain = "www.indeed.com"  # pin (no region detour)
+    scraper = IndeedScraper(MagicMock(), app_settings)
+    scraper.COOKIE_PATH = tmp_path / "indeed.json"  # type: ignore[operator,assignment]
+    scraper._browser.persistent_context = AsyncMock(return_value=MagicMock())
+    scraper._new_stealth_page = AsyncMock(return_value=AsyncMock())
+    scraper._load_results = AsyncMock(return_value=[MagicMock() for _ in range(3)])
+
+    def _stub(n: int) -> JobListing:
+        return JobListing(
+            title=f"E{n}", company="Co", url=f"https://indeed.com/jobs/{n}", board=JobBoard.INDEED
+        )
+
+    scraper._extract_job = AsyncMock(side_effect=[_stub(1), ValueError("bad card"), _stub(3)])
+
+    msgs: list[str] = []
+    jobs = await scraper.scrape(SearchParams(query="python", board=JobBoard.INDEED), msgs.append)
+
+    assert msgs == [
+        "Scraping job 1/3 on Indeed…",
+        "Scraping job 2/3 on Indeed…",
+        "Scraping job 3/3 on Indeed…",
+    ]
+    assert [j.title for j in jobs] == ["E1", "E3"]  # 2 extracted; count still reached 3/3

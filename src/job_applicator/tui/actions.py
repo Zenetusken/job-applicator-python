@@ -115,8 +115,10 @@ async def search_jobs(
     """Scrape ``params``, score against the résumé if one is set (→ matched, with scores;
     else → found), and persist to ``store``; returns the scraped count.
 
-    ``on_progress(msg)`` (optional) is called at each phase boundary so the UI can show
-    live progress instead of looking frozen during the long scrape/score.
+    ``on_progress(msg)`` (optional) is called at each phase boundary AND per scraped
+    card ("Scraping job 7/25…") so the UI shows live progress instead of looking frozen
+    during the long scrape/score. (Scoring stays phase-level: it runs in a worker thread,
+    where a direct UI update would be unsafe; the batch embed dominates it anyway.)
 
     ⚠ ACCOUNT-TOUCHING — the only action here that is: it launches a real browser on the
     configured board. The TUI gates it behind an explicit, warned confirm (the search
@@ -133,7 +135,10 @@ async def search_jobs(
     async with _make_browser(site, settings) as browser:
         scraper = _make_scraper(site, browser, settings)
         progress(f"Searching {site} for '{params.query}'…")
-        jobs = await scraper.scrape(params)
+        # Per-item progress ("Scraping job 7/25…") replaces the static "Searching…" as
+        # each card is processed. The scraper runs on this event loop, so the sync UI
+        # sink updates directly (no call_from_thread) — same pattern as the phase msgs.
+        jobs = await scraper.scrape(params, on_progress=on_progress)
 
     # Score against the résumé when one is configured, so results arrive ranked with match
     # scores (search → matched). Best-effort: a résumé/embedding failure must never lose

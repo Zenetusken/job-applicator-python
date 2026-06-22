@@ -21,6 +21,7 @@ region explicitly.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlencode, urlsplit
 
 from playwright.async_api import BrowserContext, ElementHandle, Page
@@ -36,6 +37,9 @@ from job_applicator.utils.logging import get_logger
 from job_applicator.utils.region import detect_indeed_domain
 from job_applicator.utils.retry import async_retry
 from job_applicator.utils.url import host_matches
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = get_logger("scrapers.indeed")
 
@@ -130,7 +134,11 @@ class IndeedScraper(BaseScraper):
         return "just a moment" in title or "verify you are human" in title
 
     @async_retry(max_attempts=3, base_delay=2.0, exceptions=(NavigationError,))
-    async def scrape(self, params: SearchParams) -> list[JobListing]:
+    async def scrape(
+        self,
+        params: SearchParams,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> list[JobListing]:
         """Scrape Indeed job listings for the given search params.
 
         Indeed redirects by region; _load_results pins whatever regional host it
@@ -162,7 +170,13 @@ class IndeedScraper(BaseScraper):
                 logger.warning("No Indeed job cards found (page: %s)", page.url)
                 return jobs
 
-            for card in cards[: params.max_results]:
+            selected = cards[: params.max_results]
+            total = len(selected)
+            for i, card in enumerate(selected, start=1):
+                # Tick per CARD at the top of the loop (see LinkedIn) so a failed
+                # extraction never stalls the count.
+                if on_progress is not None:
+                    on_progress(f"Scraping job {i}/{total} on Indeed…")
                 try:
                     job = await self._extract_job(card, params.board)
                     if job:

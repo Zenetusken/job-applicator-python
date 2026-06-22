@@ -941,6 +941,66 @@ async def test_search_jobs_reports_phase_progress(monkeypatch) -> None:  # type:
     assert "Opening a browser" in joined and "Searching" in joined and "Scoring" in joined
 
 
+async def test_search_jobs_forwards_per_item_progress(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """search_jobs forwards on_progress INTO scraper.scrape, so the scraper's per-card ticks
+    reach the UI sink alongside the phase messages (the scraper formats; actions just wires)."""
+    import job_applicator.factories as factories
+    from job_applicator.scrapers.base import SearchParams
+    from job_applicator.tui import actions
+
+    jobs = [_job(1), _job(2)]
+
+    async def _fake_scrape(params: object, on_progress=None):  # type: ignore[no-untyped-def]
+        if on_progress is not None:  # the scraper emits per-card progress through its sink
+            on_progress("Scraping job 1/2 on LinkedIn…")
+            on_progress("Scraping job 2/2 on LinkedIn…")
+        return jobs
+
+    monkeypatch.setattr(factories, "_make_browser", lambda *a, **k: _browser_cm())
+    monkeypatch.setattr(factories, "_make_scraper", lambda *a, **k: MagicMock(scrape=_fake_scrape))
+    monkeypatch.setattr(actions, "_score_jobs", lambda settings, j: [_mr(jobs[0]), _mr(jobs[1])])
+    msgs: list[str] = []
+    await actions.search_jobs(
+        AppSettings(resume_path="/cv.pdf"),
+        MagicMock(),
+        SearchParams(query="python", board=JobBoard.LINKEDIN),
+        on_progress=msgs.append,
+    )
+    joined = " | ".join(msgs)
+    assert "Scraping job 1/2" in joined and "Scraping job 2/2" in joined  # per-item forwarded
+    assert "Scoring" in joined  # phase messages still flow too
+
+
+async def test_tui_search_shows_per_item_progress(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A per-item scrape tick reaches the live status line (⏳ Scraping N/M) DURING the
+    search — verified mid-flight via a gate, then cleared when the worker finishes."""
+    import asyncio
+
+    from job_applicator.scrapers.base import SearchParams
+    from job_applicator.tui import actions
+
+    gate = asyncio.Event()
+
+    async def _fake(_s: object, _st: object, _p: object, on_progress=None) -> int:  # type: ignore[no-untyped-def]
+        if on_progress is not None:
+            on_progress("Scraping job 2/3 on LinkedIn…")
+        await gate.wait()  # hold the worker so we can observe the live line
+        return 0
+
+    monkeypatch.setattr(actions, "search_jobs", _fake)
+    app = _app(tmp_path, seed=1)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._search_worker(SearchParams(query="x", board=JobBoard.LINKEDIN))
+        await pilot.pause()
+        line = app._statusline()
+        assert "⏳" in line and "Scraping job 2/3" in line  # the per-item count is live
+        gate.set()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._busy == ""  # cleared after the search
+
+
 async def test_tui_busy_indicator_in_statusline(tmp_path: Path) -> None:
     """_set_busy shows a live '⏳ …' line in the status bar and clears back to counts."""
     app = _app(tmp_path, seed=1)
