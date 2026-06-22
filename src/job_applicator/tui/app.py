@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable
 from functools import partial
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, TypeVar
 
 from rich.markup import escape
@@ -208,10 +209,12 @@ class JobApplicatorApp(App[None]):
         if s.missing_skills:
             lines.append(f"Skills ✗  [red]{escape(', '.join(s.missing_skills[:8]))}[/red]")
         if s.tailored_resume_path:
-            lines.append(f"Résumé    [dim]{escape(s.tailored_resume_path)}[/dim]")
+            lines.append(f"Résumé    [dim]{escape(Path(s.tailored_resume_path).name)}[/dim]")
         if s.cover_letter_path:
-            lines.append(f"Cover     [dim]{escape(s.cover_letter_path)}[/dim]")
-        lines += ["", f"[blue underline]{escape(str(j.url))}[/blue underline]"]
+            lines.append(f"Cover     [dim]{escape(Path(s.cover_letter_path).name)}[/dim]")
+        url = str(j.url)
+        if url and "example.com/placeholder" not in url:  # hide the manual-tailor placeholder
+            lines += ["", f"[blue underline]{escape(url)}[/blue underline]"]
         if j.description:
             desc = j.description[:600] + ("…" if len(j.description) > 600 else "")
             lines += ["", "[bold]Description[/bold]", escape(desc)]

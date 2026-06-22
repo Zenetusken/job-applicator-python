@@ -214,12 +214,32 @@ def test_tui_detail_markup_renders_and_escapes() -> None:
         "81%",
         "python",
         "k8s",
-        "/out/t.txt",
-        "/out/cl.txt",
+        "t.txt",  # artifact paths shown as basename (no ugly mid-path wrap)
+        "cl.txt",
         "Async role.",
     ):
         assert token in md, token
+    assert "/out/" not in md  # the directory is dropped — basename only
     assert escape("Ac[me]") in md  # company is escaped, not interpreted as markup
+
+
+def test_tui_detail_hides_placeholder_url() -> None:
+    """A manual-tailor job (placeholder URL) shows no meaningless URL line; a real URL does."""
+    from datetime import UTC, datetime
+
+    from job_applicator.models import StoredJob
+
+    def _stored(url: str) -> StoredJob:
+        return StoredJob(
+            id=1,
+            job=JobListing(title="Dev", company="Acme", url=url, board=JobBoard.INDEED),
+            first_seen_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+
+    app = JobApplicatorApp(settings=AppSettings(), store=MagicMock(), app_state=MagicMock())
+    assert "placeholder" not in app._detail_markup(_stored("https://example.com/placeholder"))
+    assert "linkedin.com/jobs/1" in app._detail_markup(_stored("https://linkedin.com/jobs/1"))
 
 
 async def test_tui_store_error_is_shown_not_raised(tmp_path: Path) -> None:

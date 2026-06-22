@@ -59,6 +59,20 @@ def skip_live_if_no_vllm(request: pytest.FixtureRequest) -> None:
         pytest.skip("vLLM endpoint not reachable; start it or run `pytest -m unit`")
 
 
+@pytest.fixture(autouse=True)
+def _isolate_local_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point every local-state store at a throwaway dir so NO test can read or write the
+    real ``~/.job-applicator/applications.db`` (the user's funnel / dedupe / batch state).
+
+    Tests that pass an explicit ``db_path`` are unaffected; this guards the *no-arg*
+    default — e.g. a command's ``_get_jobs_store()`` / the tailor→``mark_tailored`` hook,
+    which would otherwise persist into real state during ``pytest -m unit``.
+    """
+    db = tmp_path / "ja-state" / "applications.db"
+    for module in ("jobs_store", "state", "batch_state"):
+        monkeypatch.setattr(f"job_applicator.{module}.DEFAULT_DB_PATH", db)
+
+
 @pytest.fixture
 def browser_config() -> BrowserConfig:
     return BrowserConfig(headless=True, slow_mo=0, timeout_ms=5000)
