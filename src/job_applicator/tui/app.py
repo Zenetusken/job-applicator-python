@@ -1,9 +1,10 @@
-"""The Textual application: a read-only browser over the job-funnel store.
+"""The Textual application: a navigable home over the job-funnel store.
 
-Layout: a status line (résumé + funnel summary), a job-list sidebar (the funnel head
-from ``JobStore``), a detail pane for the highlighted job, and a footer keybar. This
-increment is the *shell* — navigation only; tailor/cover-letter/apply actions land in a
-later increment. Launch is offline and account-safe (reads the local SQLite store only).
+Layout: a status line (résumé + funnel summary), a job-list sidebar (the funnel head from
+``JobStore``), a detail pane for the highlighted job, and a footer keybar. Actions run on
+the selected job in background workers — tailor / cover-letter (LLM, account-safe),
+search / apply (account-touching, behind explicit confirms), and résumé setup. Launching,
+navigating, and filtering touch only local state.
 """
 
 from __future__ import annotations
@@ -63,6 +64,7 @@ class JobApplicatorApp(App[None]):
         Binding("c", "cover_letter", "Cover letter"),
         Binding("s", "search", "Search"),
         Binding("a", "apply", "Apply"),
+        Binding("e", "set_resume", "Résumé"),
         Binding("slash", "filter", "Filter"),
         Binding("escape", "clear_filter", "Clear filter", show=False),
         Binding("j", "cursor_down", "Down", show=False),
@@ -155,9 +157,7 @@ class JobApplicatorApp(App[None]):
         # Pre-styled sentinel when unset (the default first-run state); escape() only the
         # real path, never the sentinel's own markup.
         path = self._settings.resume_path
-        resume = (
-            f"[cyan]{escape(path)}[/cyan]" if path else "[dim]not set — configure resume_path[/dim]"
-        )
+        resume = f"[cyan]{escape(path)}[/cyan]" if path else "[dim]not set — press 'e' to set[/dim]"
         counts: dict[str, int] = {}
         for s in self._all:
             counts[s.funnel_status.value] = counts.get(s.funnel_status.value, 0) + 1
@@ -229,6 +229,54 @@ class JobApplicatorApp(App[None]):
     def action_refresh(self) -> None:
         self._reload()
 
+    def action_set_resume(self) -> None:
+        """Set the résumé path in-app (no TOML editing) — opens a modal, saves to config."""
+        from job_applicator.tui.screens import SetupScreen
+
+        self.push_screen(SetupScreen(self._settings.resume_path), self._set_resume_then)
+
+    def _set_resume_then(self, path: str | None) -> None:
+        if not path:  # cancelled
+            return
+        self._settings.resume_path = path  # take effect immediately (this session)
+        saved = self._persist_resume_path(path)
+        self._reload()  # repaint the status line
+        if saved is not None:
+            self.notify(f"Résumé set ✓ — saved to {saved}", timeout=6)
+        else:
+            self.notify(
+                "Résumé set for this session (couldn't write config — set resume_path "
+                "manually to persist).",
+                severity="warning",
+                timeout=8,
+            )
+
+    def _persist_resume_path(self, path: str) -> Path | None:
+        """Best-effort: write ``resume_path`` into the config file — create it if missing,
+        replace the existing line if present (preserving the rest). Returns the file
+        written, or None on failure (caller falls back to a session-only set)."""
+        import json
+        import os
+        import re
+
+        from job_applicator.config import CONFIG_FILE_ENV_VAR, DEFAULT_CONFIG_FILE
+
+        cfg = Path(os.environ.get(CONFIG_FILE_ENV_VAR, DEFAULT_CONFIG_FILE))
+        line = f"resume_path = {json.dumps(path)}"
+        try:
+            if cfg.exists():
+                text = cfg.read_text(encoding="utf-8")
+                pattern = re.compile(r"(?m)^[ \t]*#?[ \t]*resume_path[ \t]*=.*$")
+                text = (
+                    pattern.sub(line, text, count=1) if pattern.search(text) else f"{line}\n{text}"
+                )
+                cfg.write_text(text, encoding="utf-8")
+            else:
+                cfg.write_text(f"# job-applicator config\n{line}\n", encoding="utf-8")
+        except OSError:
+            return None
+        return cfg
+
     def _selected_job_with_resume(self) -> JobListing | None:
         """The selected job's listing, or None (with a toast) when there's no selection
         or no résumé configured — the shared guard for the LLM actions."""
@@ -236,7 +284,7 @@ class JobApplicatorApp(App[None]):
             self.notify("No job selected.", severity="warning")
             return None
         if not self._settings.resume_path:
-            self.notify("Set a résumé first (config resume_path).", severity="warning")
+            self.notify("Set a résumé first — press 'e'.", severity="warning")
             return None
         return self._current.job
 

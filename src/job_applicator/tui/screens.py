@@ -128,3 +128,60 @@ class ApplyScreen(ModalScreen[bool | None]):
             self.dismiss(self.query_one("#real", Checkbox).value)  # True = real, False = dry run
         else:
             self.dismiss(None)
+
+
+class SetupScreen(ModalScreen[str | None]):
+    """Set the résumé path in-app. Dismisses with the entered path or ``None`` (cancel)."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "cancel", "Cancel")]
+
+    CSS = """
+    SetupScreen { align: center middle; }
+    #setupbox {
+        width: 72; height: auto; padding: 1 2;
+        border: thick $accent; background: $surface;
+    }
+    #setupbox Input { margin: 1 0; }
+    #hint { color: $text-muted; }
+    #buttons { height: auto; align: right middle; }
+    #buttons Button { margin-left: 2; }
+    """
+
+    def __init__(self, current: str = "") -> None:
+        super().__init__()
+        self._current = current
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="setupbox"):
+            yield Label("[bold]Set your résumé[/bold]")
+            yield Input(
+                value=self._current,
+                placeholder="/path/to/your/cv.pdf  (or .docx / .txt)",
+                id="path",
+            )
+            yield Static("Saved to config.toml so you only set it once.", id="hint")
+            with Horizontal(id="buttons"):
+                yield Button("Save", variant="primary", id="go")
+                yield Button("Cancel", id="cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#path", Input).focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def _submit(self) -> None:
+        path = self.query_one("#path", Input).value.strip()
+        if not path:
+            self.notify("Enter a résumé path.", severity="warning")
+            return
+        self.dismiss(path)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "go":
+            self._submit()
+        else:
+            self.dismiss(None)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self._submit()

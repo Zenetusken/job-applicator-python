@@ -242,6 +242,43 @@ def test_tui_detail_hides_placeholder_url() -> None:
     assert "linkedin.com/jobs/1" in app._detail_markup(_stored("https://linkedin.com/jobs/1"))
 
 
+async def test_tui_set_resume_sets_session_and_persists(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """`e` → résumé modal → submit sets the session résumé AND writes it to config.toml."""
+    from textual.widgets import Input
+
+    cfg = tmp_path / "config.toml"
+    monkeypatch.setenv("JOB_APPLICATOR_CONFIG_FILE", str(cfg))
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))
+    app = JobApplicatorApp(
+        settings=AppSettings(resume_path=""),  # unset → the "press e" state
+        store=store,
+        app_state=MagicMock(list_recent=lambda **k: []),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        app.screen.query_one("#path", Input).value = "/cv/me.pdf"
+        await pilot.press("enter")
+        await pilot.pause()
+    assert app._settings.resume_path == "/cv/me.pdf"  # session
+    assert cfg.exists() and 'resume_path = "/cv/me.pdf"' in cfg.read_text()  # persisted
+
+
+def test_persist_resume_path_updates_existing_config(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """_persist_resume_path replaces the existing resume_path line, preserving the rest."""
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('profile_name = "me"\nresume_path = "/old.pdf"\nlog_level = "INFO"\n')
+    monkeypatch.setenv("JOB_APPLICATOR_CONFIG_FILE", str(cfg))
+    app = JobApplicatorApp(settings=AppSettings(), store=MagicMock(), app_state=MagicMock())
+    saved = app._persist_resume_path("/new.pdf")
+    assert saved == cfg
+    text = cfg.read_text()
+    assert 'resume_path = "/new.pdf"' in text and 'resume_path = "/old.pdf"' not in text
+    assert 'profile_name = "me"' in text and 'log_level = "INFO"' in text  # rest preserved
+
+
 async def test_tui_store_error_is_shown_not_raised(tmp_path: Path) -> None:
     """A store read failure on load is surfaced in the UI, never crashes it."""
     store = MagicMock()
