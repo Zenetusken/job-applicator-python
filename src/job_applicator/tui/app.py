@@ -255,26 +255,54 @@ class JobApplicatorApp(App[None]):
         return url
 
     def action_open_url(self) -> None:
-        """Open the selected job's posting in the default browser. Uses YOUR browser (not
-        the tool's automation session) — a normal human click, no anti-bot risk."""
-        import webbrowser
+        """Open the selected job's posting in the default browser, OFF the UI thread. Uses
+        YOUR browser (not the tool's automation session) — a normal human click, no
+        anti-bot risk."""
+        import os
+        import sys
 
         url = self._current_url()
         if url is None:
             return
-        if webbrowser.open(url):
-            self.notify(f"Opened in browser: {url}", timeout=4)
+        # On headless Linux the default "browser" may be a TERMINAL browser (w3m/lynx) that
+        # would block the loop and draw over the TUI — don't risk it; point at copy instead.
+        if sys.platform == "linux" and not (
+            os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+        ):
+            self.notify(
+                f"No graphical browser here — press 'y' to copy:  {url}",
+                severity="warning",
+                timeout=8,
+            )
+            return
+        self._open_url_worker(url)
+
+    @work(thread=True)
+    def _open_url_worker(self, url: str) -> None:
+        import webbrowser
+
+        try:
+            ok = webbrowser.open(url)
+        except Exception:  # any browser-launch failure → fall back to the copy hint
+            ok = False
+        if ok:
+            self.call_from_thread(self.notify, f"Opened in browser:  {url}", timeout=4)
         else:
-            self.notify(f"No browser available — press 'y' to copy:  {url}", severity="warning")
+            self.call_from_thread(
+                self.notify,
+                f"No browser available — press 'y' to copy:  {url}",
+                severity="warning",
+                timeout=8,
+            )
 
     def action_copy_url(self) -> None:
-        """Copy the selected job's URL to the clipboard (the TUI captures the mouse, so
-        plain terminal selection can't)."""
+        """Copy the selected job's URL to the clipboard (OSC 52; the TUI captures the mouse,
+        so plain terminal selection can't)."""
         url = self._current_url()
         if url is None:
             return
         self.copy_to_clipboard(url)
-        self.notify(f"Copied to clipboard:  {url}", timeout=4)
+        self.notify(f"URL copied (OSC 52):  {url}", timeout=5)
 
     def action_set_resume(self) -> None:
         """Set the résumé path in-app (no TOML editing) — opens a modal, saves to config."""
