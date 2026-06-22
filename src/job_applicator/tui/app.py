@@ -44,7 +44,7 @@ _STAGE_STYLE: dict[str, str] = {
 
 
 class JobApplicatorApp(App[None]):
-    """Navigable home screen over the funnel store (read-only shell)."""
+    """Navigable home screen over the funnel store — browse and act on jobs in-app."""
 
     TITLE = "job-applicator"
 
@@ -85,7 +85,7 @@ class JobApplicatorApp(App[None]):
         self._all: list[StoredJob] = []
         self._by_key: dict[str, StoredJob] = {}
         self._current: StoredJob | None = None  # job shown in the detail pane
-        self._applied_count = 0
+        self._applied_urls: set[str] = set()  # URLs with a SUBMITTED record (applied)
         self._filter = ""
         self._load_error = ""
 
@@ -111,13 +111,13 @@ class JobApplicatorApp(App[None]):
         self._load_error = ""
         try:
             self._all = self._store.list_jobs(limit=500)
-            self._applied_count = sum(
-                1
+            self._applied_urls = {
+                str(a.job.url)
                 for a in self._app_state.list_recent(limit=10_000)
                 if a.status == ApplicationStatus.SUBMITTED
-            )
+            }
         except JobApplicatorError as exc:
-            self._all, self._applied_count = [], 0
+            self._all, self._applied_urls = [], set()
             self._load_error = str(exc)
         self._repaint()
 
@@ -129,6 +129,12 @@ class JobApplicatorApp(App[None]):
             s for s in self._all if needle in s.job.title.lower() or needle in s.job.company.lower()
         ]
 
+    def _effective_stage(self, s: StoredJob) -> str:
+        """The job's stage, overridden to 'applied' when ApplicationState has a SUBMITTED
+        record for it — so the sidebar, the counts, and the CLI `status` agree (a job
+        applied via the funnel stays in the store at its head stage)."""
+        return "applied" if str(s.job.url) in self._applied_urls else s.funnel_status.value
+
     def _repaint(self) -> None:
         self.query_one("#statusline", Static).update(self._statusline())
         table = self.query_one("#joblist", DataTable)
@@ -138,7 +144,7 @@ class JobApplicatorApp(App[None]):
         for s in visible:
             key = str(s.id)
             self._by_key[key] = s
-            stage = s.funnel_status.value
+            stage = self._effective_stage(s)
             style = _STAGE_STYLE.get(stage, "white")
             score = f"{s.match_score:.0%}" if s.match_score is not None else "—"
             table.add_row(
@@ -158,15 +164,15 @@ class JobApplicatorApp(App[None]):
         # real path, never the sentinel's own markup.
         path = self._settings.resume_path
         resume = f"[cyan]{escape(path)}[/cyan]" if path else "[dim]not set — press 'e' to set[/dim]"
+        # Compose by URL (furthest-stage-wins) so an applied job — which stays in the store
+        # at its head stage — is counted once as applied, matching the CLI `status`.
         counts: dict[str, int] = {}
         for s in self._all:
-            counts[s.funnel_status.value] = counts.get(s.funnel_status.value, 0) + 1
-        parts = [
-            f"{counts.get(st.value, 0)} {st.value.replace('_', ' ')}"
-            for st in FunnelStatus
-            if st is not FunnelStatus.APPLIED
-        ]
-        parts.append(f"{self._applied_count} applied")
+            stage = self._effective_stage(s)
+            counts[stage] = counts.get(stage, 0) + 1
+        head_urls = {str(s.job.url) for s in self._all}
+        counts["applied"] = counts.get("applied", 0) + len(self._applied_urls - head_urls)
+        parts = [f"{counts.get(st.value, 0)} {st.value.replace('_', ' ')}" for st in FunnelStatus]
         shown = len(self._visible())
         filt = (
             f"   [dim](filter: {escape(self._filter)} — {shown} shown)[/dim]"
@@ -188,7 +194,7 @@ class JobApplicatorApp(App[None]):
                 "[dim] to discover jobs, then [/dim][cyan]match[/cyan][dim] to score them.[/dim]"
             )
         j = s.job
-        stage = s.funnel_status.value
+        stage = self._effective_stage(s)
         style = _STAGE_STYLE.get(stage, "white")
         lines = [
             f"[bold]{escape(j.title)}[/bold]",
@@ -252,12 +258,19 @@ class JobApplicatorApp(App[None]):
             )
 
     def _persist_resume_path(self, path: str) -> Path | None:
-        """Best-effort: write ``resume_path`` into the config file — create it if missing,
-        replace the existing line if present (preserving the rest). Returns the file
-        written, or None on failure (caller falls back to a session-only set)."""
+        """Best-effort: write a top-level ``resume_path`` into the config file — create it
+        if missing, else replace an ACTIVE top-level line, else prepend.
+
+        Safe over a credentialed config: the result is re-parsed and must yield exactly
+        this top-level ``resume_path`` (so a line accidentally rewritten inside a ``[table]``
+        or a duplicate key that won't parse is rejected), and the swap is ATOMIC
+        (temp file + ``os.replace``) so a torn write can never destroy the config. Returns
+        the file written, or None on any failure (caller falls back to a session-only set).
+        """
         import json
         import os
         import re
+        import tomllib
 
         from job_applicator.config import CONFIG_FILE_ENV_VAR, DEFAULT_CONFIG_FILE
 
@@ -266,14 +279,21 @@ class JobApplicatorApp(App[None]):
         try:
             if cfg.exists():
                 text = cfg.read_text(encoding="utf-8")
-                pattern = re.compile(r"(?m)^[ \t]*#?[ \t]*resume_path[ \t]*=.*$")
-                text = (
+                # Match an ACTIVE line only (no leading '#', so we never un-comment an
+                # example into a duplicate key); else prepend at the very top (top-level).
+                pattern = re.compile(r"(?m)^[ \t]*resume_path[ \t]*=.*$")
+                new_text = (
                     pattern.sub(line, text, count=1) if pattern.search(text) else f"{line}\n{text}"
                 )
-                cfg.write_text(text, encoding="utf-8")
             else:
-                cfg.write_text(f"# job-applicator config\n{line}\n", encoding="utf-8")
-        except OSError:
+                new_text = f"# job-applicator config\n{line}\n"
+            # Validate before committing: must parse AND set resume_path at top level.
+            if tomllib.loads(new_text).get("resume_path") != path:
+                return None
+            tmp = cfg.with_name(f"{cfg.name}.tmp")
+            tmp.write_text(new_text, encoding="utf-8")
+            os.replace(tmp, cfg)  # atomic swap
+        except (OSError, ValueError):  # ValueError covers tomllib.TOMLDecodeError
             return None
         return cfg
 
@@ -409,7 +429,8 @@ class JobApplicatorApp(App[None]):
         duplicate)."""
         from textual.worker import WorkerState
 
-        return any(w.group == "account" and w.state is WorkerState.RUNNING for w in self.workers)
+        active = (WorkerState.PENDING, WorkerState.RUNNING)
+        return any(w.group == "account" and w.state in active for w in self.workers)
 
     async def _run_action(self, label: str, coro: Awaitable[T]) -> T | None:
         """Await an action coroutine, turning ANY failure into a toast — a worker bug must

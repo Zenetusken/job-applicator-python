@@ -1374,9 +1374,10 @@ def status(
 def tui() -> None:
     """Open the full-screen terminal UI — a navigable home over your job funnel.
 
-    A read-only browser of your search → match → tailor → apply pipeline. Offline and
-    account-safe (reads local state only). Same as running `job-applicator` with no
-    command in a terminal.
+    Browse the search → tailor → cover-letter → apply pipeline and act on the selected job
+    from inside the app. Launching, navigating, and filtering touch only local state; the
+    search and apply actions touch your real account only behind an explicit confirm. Same
+    as running `job-applicator` with no command in a terminal.
     """
     if not _tui_tty_ok():
         err_console.print("[yellow]The TUI needs an interactive terminal (a TTY).[/yellow]")

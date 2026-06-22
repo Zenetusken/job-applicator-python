@@ -192,7 +192,8 @@ async def test_tui_applied_count_counts_only_submitted(tmp_path: Path) -> None:
     app = JobApplicatorApp(settings=AppSettings(), store=store, app_state=app_state)
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert app._applied_count == 1  # the FAILED one is not counted
+        # only the SUBMITTED job's URL is tracked as applied (the FAILED one is not)
+        assert app._applied_urls == {"https://linkedin.com/jobs/2"}
 
 
 def test_tui_detail_markup_renders_and_escapes() -> None:
@@ -299,6 +300,136 @@ def test_persist_resume_path_updates_existing_config(tmp_path: Path, monkeypatch
     text = cfg.read_text()
     assert 'resume_path = "/new.pdf"' in text and 'resume_path = "/old.pdf"' not in text
     assert 'profile_name = "me"' in text and 'log_level = "INFO"' in text  # rest preserved
+
+
+def test_persist_resume_path_inserts_when_absent(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A config without a resume_path gets a top-level key prepended; rest preserved."""
+    import tomllib
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('profile_name = "me"\nlog_level = "INFO"\n')
+    monkeypatch.setenv("JOB_APPLICATOR_CONFIG_FILE", str(cfg))
+    app = JobApplicatorApp(settings=AppSettings(), store=MagicMock(), app_state=MagicMock())
+    assert app._persist_resume_path("/new.pdf") == cfg
+    data = tomllib.loads(cfg.read_text())
+    assert data["resume_path"] == "/new.pdf"
+    assert data["profile_name"] == "me" and data["log_level"] == "INFO"
+
+
+def test_persist_resume_path_no_duplicate_with_comment(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A commented example + an active key → the ACTIVE one is replaced, no duplicate key
+    (the result still parses)."""
+    import tomllib
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('# resume_path = "/example.pdf"\nresume_path = "/old.pdf"\n')
+    monkeypatch.setenv("JOB_APPLICATOR_CONFIG_FILE", str(cfg))
+    app = JobApplicatorApp(settings=AppSettings(), store=MagicMock(), app_state=MagicMock())
+    assert app._persist_resume_path("/new.pdf") == cfg
+    assert tomllib.loads(cfg.read_text())["resume_path"] == "/new.pdf"  # parses → no dup key
+    assert "/old.pdf" not in cfg.read_text()
+
+
+def test_persist_resume_path_rejects_mis_target_without_corrupting(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """A resume_path that would only land inside a [table] is rejected (None), file untouched."""
+    cfg = tmp_path / "config.toml"
+    original = '[llm]\nresume_path = "/wrong.pdf"\n'
+    cfg.write_text(original)
+    monkeypatch.setenv("JOB_APPLICATOR_CONFIG_FILE", str(cfg))
+    # _persist reads the env directly (not settings), so a mock settings avoids loading
+    # this intentionally-invalid config through pydantic.
+    app = JobApplicatorApp(settings=MagicMock(), store=MagicMock(), app_state=MagicMock())
+    assert app._persist_resume_path("/new.pdf") is None  # validation rejects
+    assert cfg.read_text() == original  # not corrupted
+
+
+async def test_tui_applied_job_counted_once_not_double(tmp_path: Path) -> None:
+    """A job that is in the funnel AND applied shows as 'applied' once — no double-count."""
+    from datetime import UTC, datetime
+
+    from job_applicator.models import ApplicationResult, ApplicationStatus
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    job = _job(1)
+    store.mark_tailored(job, tailored_resume_path="/t.txt")
+    store.set_cover_letter("https://linkedin.com/jobs/1", "/cl.txt")  # head stage = cover_letter
+    app_state = MagicMock()
+    app_state.list_recent.return_value = [
+        ApplicationResult(job=job, status=ApplicationStatus.SUBMITTED, timestamp=datetime.now(UTC))
+    ]
+    app = JobApplicatorApp(settings=AppSettings(), store=store, app_state=app_state)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        line = app._statusline()
+        assert "1 applied" in line
+        assert "0 cover letter" in line  # NOT also counted at its head stage
+        assert app._effective_stage(app._all[0]) == "applied"  # sidebar/detail agree
+
+
+async def test_search_jobs_fallback_to_found_when_scoring_fails(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """If scoring raises, the scraped jobs are still persisted (as found) — never lost."""
+    import job_applicator.factories as factories
+    from job_applicator.scrapers.base import SearchParams
+    from job_applicator.tui import actions
+
+    jobs = [_job(1), _job(2)]
+    monkeypatch.setattr(factories, "_make_browser", lambda *a, **k: _browser_cm())
+    monkeypatch.setattr(
+        factories, "_make_scraper", lambda *a, **k: MagicMock(scrape=AsyncMock(return_value=jobs))
+    )
+
+    def _boom(settings: object, j: object) -> object:
+        raise RuntimeError("embeddings down")
+
+    monkeypatch.setattr(actions, "_score_jobs", _boom)
+    store = MagicMock()
+    n = await actions.search_jobs(
+        AppSettings(resume_path="/cv.pdf"), store, SearchParams(query="x", board=JobBoard.LINKEDIN)
+    )
+    assert n == 2
+    assert store.upsert_job.call_count == 2  # fell back to found
+    store.upsert_match.assert_not_called()
+
+
+async def test_account_busy_blocks_a_second_action(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """While an account worker runs, _account_busy() is True and a 2nd action is refused."""
+    import asyncio
+
+    from job_applicator.models import JobBoard
+    from job_applicator.scrapers.base import SearchParams
+    from job_applicator.tui import actions
+    from job_applicator.tui.screens import SearchScreen
+
+    gate = asyncio.Event()
+
+    async def _slow_search(settings: object, store: object, params: object) -> int:
+        await gate.wait()  # hold the worker in RUNNING
+        return 0
+
+    monkeypatch.setattr(actions, "search_jobs", _slow_search)
+    app = _app(tmp_path, seed=1)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._search_worker(SearchParams(query="x", board=JobBoard.LINKEDIN))
+        await pilot.pause()
+        assert app._account_busy() is True  # the real predicate, not a mock
+        app.action_search()  # a second account action…
+        await pilot.pause()
+        assert not isinstance(app.screen, SearchScreen)  # …is refused while busy
+        gate.set()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._account_busy() is False
+
+
+def test_conftest_isolates_real_store(tmp_path: Path) -> None:
+    """The autouse isolation fixture points a no-arg JobStore away from real user state."""
+    import pathlib
+
+    real = pathlib.Path.home() / ".job-applicator" / "applications.db"
+    assert JobStore()._path != real  # isolated by tests/conftest.py::_isolate_local_state
 
 
 async def test_tui_store_error_is_shown_not_raised(tmp_path: Path) -> None:
