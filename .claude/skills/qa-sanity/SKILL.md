@@ -72,8 +72,6 @@ Running this today reproduces — deterministically — the findings from the ma
 **XFAIL** (real bugs; each is asserted at its *correct* behavior, so it flips to `XPASS`
 when fixed — then delete its name from `KNOWN_FAIL` in `qa.py`):
 
-- `config-init -o <unwritable>` tracebacks instead of a clean error.
-- `import-cookies --help` eats `[browser]` (Rich parses it as markup) → "the  extra".
 - `match` reports `missing_skills: []` for a React/TypeScript job against a Python résumé (0.55 threshold too loose).
 
 **WARN** (UX, non-gating): `ats-check` exits 0 on an incompatible résumé (no `--strict`);

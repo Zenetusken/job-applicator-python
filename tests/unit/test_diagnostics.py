@@ -369,6 +369,17 @@ def test_config_init_uses_llmconfig_defaults(tmp_path: Path) -> None:
     assert f'api_base = "{LLMConfig.model_fields["api_base"].default}"' in text
 
 
+def test_config_init_unwritable_path_is_clean_error(tmp_path: Path) -> None:
+    """config-init to an unwritable path → clean message + exit 1, not a raw traceback."""
+    from typer.testing import CliRunner
+
+    bad = tmp_path / "missing-dir" / "config.toml"  # parent dir absent → write raises OSError
+    result = CliRunner().invoke(cli.app, ["config-init", "-o", str(bad)])
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "Could not write config" in result.output
+
+
 # --- check_browser: Playwright + Chromium presence -------------------------
 
 
