@@ -16,6 +16,7 @@ AI-powered job application tool using Playwright browser automation with modern 
 - **instructor** — structured outputs from LLMs
 - **sentence-transformers** — mxbai-embed-large-v1 for semantic matching
 - **Pydantic v2** — data validation and settings
+- **Textual** — full-screen terminal UI (the `tui` command / bare invocation)
 
 ## Universal Rules
 
@@ -78,6 +79,20 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
   profile / virtual display) lives on the scraper, not the CLI, so anti-bot requirements can't drift
   and any caller builds the right browser. `_make_browser` (in `factories.py`) reads it.
 - **Easy Apply is dry-run by default;** real submission requires `apply --submit`.
+- **The job funnel is persisted.** `search`/`match` upsert into a SQLite `JobStore`
+  (`jobs_store.py`, in `~/.job-applicator/applications.db`) so jobs flow
+  search→match→tailor→cover-letter without re-typing. `ApplicationState` stays the
+  authority for "applied" (it drives the daily cap); the `status` command composes both by
+  URL (furthest-stage-wins, no double-count). `tailor`/`apply` take `--from <id|url>` to act
+  on a stored job, and bare `apply` reads the saved list.
+- **The TUI is a presentation layer over the service seams.** `tui/` (Textual) calls the
+  factories (`_make_browser`/`_make_scraper`/`_make_applicator`/`_make_runtime`),
+  `JobMatcher`, `ResumeTailor`, `CoverLetterGenerator`, and `JobStore` directly — it does
+  NOT reuse the terminal-bound `workflows/` functions. Bare `job-applicator` opens it when
+  stdout+stdin are a TTY (else prints help). Launching, navigating, and filtering are
+  offline/account-safe; the account-touching actions (search/apply) run only behind an
+  explicit in-app confirm, and a real apply needs a danger checkbox (dry-run default) — the
+  low-friction TUI must never turn an account action into a one-keypress accident.
 
 ## GPU Memory Layout
 

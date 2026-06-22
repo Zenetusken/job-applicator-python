@@ -5,11 +5,14 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 from job_applicator.documents.artifacts import (
     artifact_basename,
     write_cover_letter,
     write_tailored,
 )
+from job_applicator.exceptions import DocumentError
 from job_applicator.models import CoverLetterResult, TailoredResume
 
 WHEN = datetime(2026, 6, 22, 14, 30, 0)
@@ -58,3 +61,21 @@ def test_artifact_basename_sanitizes_and_caps() -> None:
     assert base.startswith("tailored_")
     assert "/" not in base and ":" not in base  # specials → "_"
     assert base.endswith("_20260622_143000")
+
+
+def test_write_tailored_wraps_oserror_as_document_error(tmp_path: Path) -> None:
+    """A filesystem failure surfaces as a typed DocumentError, not a bare OSError."""
+    not_a_dir = tmp_path / "afile"
+    not_a_dir.write_text("x")  # output_dir is a FILE → writing under it fails
+    tailored = TailoredResume(
+        original_path="/r.pdf",
+        tailored_text="T",
+        job_title="T",
+        job_company="C",
+        match_score=0.8,
+        semantic_score=0.8,
+        skill_score=0.8,
+        changes_summary="c",
+    )
+    with pytest.raises(DocumentError):
+        write_tailored(not_a_dir, tailored, when=WHEN)
