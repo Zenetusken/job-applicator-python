@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, ClassVar
 
 from rich.markup import escape
+from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, VerticalScroll
@@ -22,7 +23,7 @@ from job_applicator.models import ApplicationStatus, FunnelStatus
 if TYPE_CHECKING:
     from job_applicator.config import AppSettings
     from job_applicator.jobs_store import JobStore
-    from job_applicator.models import StoredJob
+    from job_applicator.models import JobListing, StoredJob
     from job_applicator.state import ApplicationState
 
 # Stage → display glyph/colour for the sidebar + detail.
@@ -52,6 +53,7 @@ class JobApplicatorApp(App[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh", "Refresh"),
+        Binding("t", "tailor", "Tailor"),
         Binding("slash", "filter", "Filter"),
         Binding("escape", "clear_filter", "Clear filter", show=False),
         Binding("j", "cursor_down", "Down", show=False),
@@ -215,6 +217,31 @@ class JobApplicatorApp(App[None]):
 
     def action_refresh(self) -> None:
         self._reload()
+
+    def action_tailor(self) -> None:
+        """Tailor the selected job's résumé — runs the LLM in a background worker so the
+        UI stays responsive. Account-safe (no browser/account)."""
+        if self._current is None:
+            self.notify("No job selected.", severity="warning")
+            return
+        if not self._settings.resume_path:
+            self.notify("Set a résumé first (config resume_path).", severity="warning")
+            return
+        self._tailor_worker(self._current.job)
+
+    @work(exclusive=True, group="action")
+    async def _tailor_worker(self, job: JobListing) -> None:
+        from job_applicator.tui import actions
+
+        self.notify(f"Tailoring {job.title}…")
+        try:
+            tailored = await actions.tailor_job(self._settings, job)
+        except JobApplicatorError as exc:
+            self.notify(f"Tailor failed: {exc}", severity="error", timeout=8)
+            return
+        self._store.mark_tailored(job, tailored_resume_path=tailored.output_path)
+        self._reload()
+        self.notify(f"Tailored ✓  →  {tailored.output_path}", timeout=6)
 
     def action_cursor_down(self) -> None:
         self.query_one("#joblist", DataTable).action_cursor_down()

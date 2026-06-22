@@ -305,6 +305,66 @@ def test_tui_launch_store_error_is_clean(monkeypatch) -> None:  # type: ignore[n
     assert "Traceback (most recent call last)" not in (result.stdout + result.stderr)
 
 
+async def test_tui_tailor_action_marks_tailored(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Pressing `t` runs the (mocked) tailor in a worker and advances the job to tailored."""
+    from job_applicator.models import FunnelStatus, TailoredResume
+    from job_applicator.tui import actions
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))
+    fake = TailoredResume(
+        original_path="/r.pdf",
+        tailored_text="T",
+        job_title="Engineer 1",
+        job_company="Co1",
+        match_score=0.8,
+        semantic_score=0.8,
+        skill_score=0.8,
+        changes_summary="c",
+        output_path="/out/tailored.txt",
+    )
+
+    async def _fake_tailor(_settings: object, _job: object) -> TailoredResume:
+        return fake
+
+    monkeypatch.setattr(actions, "tailor_job", _fake_tailor)
+    app = JobApplicatorApp(
+        settings=AppSettings(resume_path="/r.pdf"),
+        store=store,
+        app_state=MagicMock(list_recent=lambda **k: []),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("t")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    got = store.get("https://linkedin.com/jobs/1")
+    assert got is not None and got.funnel_status is FunnelStatus.TAILORED
+    assert got.tailored_resume_path == "/out/tailored.txt"
+
+
+async def test_tui_tailor_needs_resume(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Pressing `t` with no résumé configured warns and never runs the tailor."""
+    from job_applicator.models import FunnelStatus
+    from job_applicator.tui import actions
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))
+    never = MagicMock()
+    monkeypatch.setattr(actions, "tailor_job", never)
+    app = JobApplicatorApp(
+        settings=AppSettings(resume_path=""),  # unset
+        store=store,
+        app_state=MagicMock(list_recent=lambda **k: []),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("t")
+        await pilot.pause()
+    never.assert_not_called()
+    assert store.get("https://linkedin.com/jobs/1").funnel_status is FunnelStatus.FOUND
+
+
 def test_tui_statusline_unset_resume_keeps_dim_markup() -> None:
     """When resume_path is unset (first-run default), the sentinel keeps its dim styling
     instead of being escaped into literal '[dim]…' text."""
