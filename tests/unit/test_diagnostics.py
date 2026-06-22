@@ -263,6 +263,26 @@ def test_ok_requires_http_200() -> None:
     assert not _report(reachable=False, http_status=None, model_available=True).ok
 
 
+def test_doctor_json_emits_report_and_preserves_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`doctor --json` emits the DoctorReport as JSON (no Rich table) and preserves the
+    exit code (non-zero when not ok)."""
+    import json
+    from unittest.mock import AsyncMock
+
+    from typer.testing import CliRunner
+
+    report = _report(reachable=False, http_status=None, model_available=True)  # not ok
+    monkeypatch.setattr(
+        "job_applicator.diagnostics.run_diagnostics", AsyncMock(return_value=report)
+    )
+    result = CliRunner().invoke(cli.app, ["doctor", "--json"])
+    assert result.exit_code == 1  # not ok → exit 1, preserved under --json
+    parsed = json.loads(result.stdout)  # raises if stdout isn't pure JSON
+    assert parsed["ok"] is False  # headline verdict included (ok is a @property)
+    assert parsed["llm"]["reachable"] is False
+    assert "job-applicator doctor" not in result.stdout  # the Rich health view is suppressed
+
+
 def test_doctor_report_round_trips() -> None:
     # computed-free `ok` + extra='forbid' must survive dump → validate.
     rep = _report(reachable=True, http_status=401, model_available=False)
