@@ -343,6 +343,42 @@ async def test_tui_tailor_action_marks_tailored(tmp_path: Path, monkeypatch) -> 
     assert got.tailored_resume_path == "/out/tailored.txt"
 
 
+async def test_tui_cover_letter_action_advances_funnel(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Pressing `c` runs the (mocked) cover-letter action and advances to cover_letter."""
+    from job_applicator.models import CoverLetterResult, FunnelStatus
+    from job_applicator.tui import actions
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))
+    fake = CoverLetterResult(
+        job_title="Engineer 1",
+        job_company="Co1",
+        job_url="https://linkedin.com/jobs/1",
+        cover_letter_text="Dear hiring manager,",
+        attempt=1,
+        prompt_version="1.0",
+        output_path="/out/cover.txt",
+    )
+
+    async def _fake_cl(_settings: object, _job: object) -> CoverLetterResult:
+        return fake
+
+    monkeypatch.setattr(actions, "cover_letter_job", _fake_cl)
+    app = JobApplicatorApp(
+        settings=AppSettings(resume_path="/r.pdf"),
+        store=store,
+        app_state=MagicMock(list_recent=lambda **k: []),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("c")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    got = store.get("https://linkedin.com/jobs/1")
+    assert got is not None and got.funnel_status is FunnelStatus.COVER_LETTER
+    assert got.cover_letter_path == "/out/cover.txt"
+
+
 async def test_tui_tailor_needs_resume(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """Pressing `t` with no résumé configured warns and never runs the tailor."""
     from job_applicator.models import FunnelStatus

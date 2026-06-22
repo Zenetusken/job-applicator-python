@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from job_applicator.models import TailoredResume
+    from job_applicator.models import CoverLetterResult, TailoredResume
 
 
 def _safe(text: str) -> str:
@@ -39,3 +39,19 @@ def write_tailored(
     meta_path = output_dir / f"{base}.meta.json"
     meta_path.write_text(tailored.model_dump_json(indent=2), encoding="utf-8")
     return str(resume_path), str(meta_path)
+
+
+def write_cover_letter(
+    output_dir: Path, result: CoverLetterResult, *, when: datetime
+) -> tuple[str, str]:
+    """Write the cover-letter text + its ``.meta.json`` sidecar; sets ``result.output_path``."""
+    base = (
+        f"cover_letter_{_safe(result.job_company)}_{_safe(result.job_title)}"
+        f"_{when.strftime('%Y%m%d_%H%M%S')}"
+    )
+    cl_path = output_dir / f"{base}.txt"
+    cl_path.write_text(result.cover_letter_text, encoding="utf-8")
+    result.output_path = str(cl_path)
+    meta_path = output_dir / f"{base}.meta.json"
+    meta_path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+    return str(cl_path), str(meta_path)

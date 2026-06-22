@@ -54,6 +54,7 @@ class JobApplicatorApp(App[None]):
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh", "Refresh"),
         Binding("t", "tailor", "Tailor"),
+        Binding("c", "cover_letter", "Cover letter"),
         Binding("slash", "filter", "Filter"),
         Binding("escape", "clear_filter", "Clear filter", show=False),
         Binding("j", "cursor_down", "Down", show=False),
@@ -218,16 +219,22 @@ class JobApplicatorApp(App[None]):
     def action_refresh(self) -> None:
         self._reload()
 
-    def action_tailor(self) -> None:
-        """Tailor the selected job's résumé — runs the LLM in a background worker so the
-        UI stays responsive. Account-safe (no browser/account)."""
+    def _selected_job_with_resume(self) -> JobListing | None:
+        """The selected job's listing, or None (with a toast) when there's no selection
+        or no résumé configured — the shared guard for the LLM actions."""
         if self._current is None:
             self.notify("No job selected.", severity="warning")
-            return
+            return None
         if not self._settings.resume_path:
             self.notify("Set a résumé first (config resume_path).", severity="warning")
-            return
-        self._tailor_worker(self._current.job)
+            return None
+        return self._current.job
+
+    def action_tailor(self) -> None:
+        """Tailor the selected job's résumé in a background worker. Account-safe."""
+        job = self._selected_job_with_resume()
+        if job is not None:
+            self._tailor_worker(job)
 
     @work(exclusive=True, group="action")
     async def _tailor_worker(self, job: JobListing) -> None:
@@ -242,6 +249,26 @@ class JobApplicatorApp(App[None]):
         self._store.mark_tailored(job, tailored_resume_path=tailored.output_path)
         self._reload()
         self.notify(f"Tailored ✓  →  {tailored.output_path}", timeout=6)
+
+    def action_cover_letter(self) -> None:
+        """Write a cover letter for the selected job in a background worker. Account-safe."""
+        job = self._selected_job_with_resume()
+        if job is not None:
+            self._cover_letter_worker(job)
+
+    @work(exclusive=True, group="action")
+    async def _cover_letter_worker(self, job: JobListing) -> None:
+        from job_applicator.tui import actions
+
+        self.notify(f"Writing a cover letter for {job.title}…")
+        try:
+            result = await actions.cover_letter_job(self._settings, job)
+        except JobApplicatorError as exc:
+            self.notify(f"Cover letter failed: {exc}", severity="error", timeout=8)
+            return
+        self._store.set_cover_letter(str(job.url), result.output_path)
+        self._reload()
+        self.notify(f"Cover letter ✓  →  {result.output_path}", timeout=6)
 
     def action_cursor_down(self) -> None:
         self.query_one("#joblist", DataTable).action_cursor_down()
