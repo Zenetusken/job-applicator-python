@@ -39,6 +39,9 @@ def _drive(
     *,
     sections: list[object] | None = None,
     yes: bool = False,
+    as_json: bool = False,
+    min_score: str = "0",
+    match_score: float = 0.8,
     staleness: list[str] | None = None,
     ordering: list[str] | None = None,
 ):
@@ -67,6 +70,8 @@ def _drive(
     loader.load.return_value = ResumeData(raw_text="John Doe\njohn@example.com\nPython, SQL")
     tone = MagicMock(primary="professional", confidence=0.9)
     cl_workflow = AsyncMock(return_value=Path("output/cover.txt"))
+    matcher = MagicMock()
+    matcher.match_resume_to_job.return_value = MagicMock(score=match_score)
 
     monkeypatch.setattr(cli.console, "input", MagicMock(side_effect=inputs))
 
@@ -83,10 +88,13 @@ def _drive(
         ),
         patch.object(cli, "_detect_tone", return_value=tone),
         patch("job_applicator.workflows.tailor._cover_letter_workflow", cl_workflow),
+        patch("job_applicator.embeddings.matching.JobMatcher", return_value=matcher),
     ):
-        args = ["tailor", "-t", "Dev", "-c", "Acme", "--resume", "r.pdf", "--min-score", "0"]
+        args = ["tailor", "-t", "Dev", "-c", "Acme", "--resume", "r.pdf", "--min-score", min_score]
         if yes:
             args.append("--yes")
+        if as_json:
+            args.append("--json")
         result = CliRunner().invoke(
             cli.app,
             args,
@@ -270,3 +278,34 @@ def test_tailor_ordering_only_cv_fires_gate(
     assert "Ordering Issues" in result.output
     assert "Dates look coherent" not in result.output  # gate fired, not the else
     assert len(list(tmp_path.glob("tailored_*.txt"))) == 1  # 'y' → proceeded + tailored
+
+
+def test_tailor_json_emits_tailored_resume(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """`tailor --json` is non-interactive (implies --yes) and emits the TailoredResume as JSON
+    on stdout; the Rich preview/diff/date-audit all go to stderr (so `tailor --json | jq` works).
+    inputs=[] → any prompt would StopIteration; --json must auto-accept without prompting."""
+    import json
+
+    result, engine, cl = _drive(monkeypatch, tmp_path, [], as_json=True)
+    assert result.exit_code == 0, result.output
+    parsed = json.loads(result.stdout)  # raises if any Rich output leaked onto stdout
+    assert parsed["tailored_text"] == "INITIAL"  # the auto-accepted version
+    assert parsed["job_title"] == "Dev" and parsed["job_company"] == "Acme"
+    assert parsed["output_path"]  # the saved artifact path is carried in the JSON
+    assert "Tailored Resume Preview" not in result.stdout  # Rich preview lives on stderr
+    engine.tailor.assert_awaited_once()
+    cl.assert_not_awaited()  # cover-letter offer skipped (non-interactive)
+
+
+def test_tailor_json_min_score_abort_exits_nonzero(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`tailor --json` with a sub-threshold match score exits NON-ZERO (not a silent
+    empty-stdout success). Under --json the abort message is on stderr, so the exit code is the
+    only signal a `| jq` pipeline gets — Exit(0) there would look like a working-but-empty run."""
+    result, engine, _cl = _drive(
+        monkeypatch, tmp_path, [], as_json=True, min_score="0.99", match_score=0.10
+    )
+    assert result.exit_code != 0  # sub-threshold → non-zero (the gate-2a finding)
+    assert result.stdout.strip() == ""  # nothing tailored → no JSON emitted
+    engine.tailor.assert_not_awaited()  # aborted before tailoring

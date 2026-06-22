@@ -1642,6 +1642,9 @@ def tailor(
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Skip interactive prompts (auto-answer yes)."
     ),
+    as_json: bool = typer.Option(
+        False, "--json", help="Emit the tailored résumé as JSON (implies --yes / non-interactive)."
+    ),
     ocr_mode: str = typer.Option(
         "auto",
         "--ocr-mode",
@@ -1657,6 +1660,8 @@ def tailor(
 ) -> None:
     """Tailor a resume for a specific job with interactive preview."""
     _merge_verbose_ctx(ctx, verbose, log_file)
+    yes = yes or as_json  # --json is non-interactive: auto-accept + reserve stdout for the JSON
+    real_stdout = sys.stdout  # captured before _run redirects stdout→stderr (the JSON lands here)
     settings = _get_settings(headed)
     if resume_path:
         settings.resume_path = resume_path
@@ -1830,7 +1835,9 @@ def tailor(
                     f"[red]Match score {pre_match.score:.0%} is below threshold "
                     f"{min_score:.0%}. Aborting.[/red]"
                 )
-                raise typer.Exit(0)
+                # Under --json the abort message is on stderr; signal "no result" via a non-zero
+                # exit so a `tailor --json | jq` pipeline isn't a silent empty-stdout success.
+                raise typer.Exit(1 if as_json else 0)
 
         try:
             with console.status("Tailoring resume..."):
@@ -1883,8 +1890,20 @@ def tailor(
             yes=yes,
         )
 
+        if as_json:
+            # All human/Rich output above was redirected to stderr (below); the workflow's many
+            # console helpers (ATS preflight, date audit, preview…) thus stay off stdout. Write
+            # only the JSON result to the real stdout so `tailor --json | jq` is clean.
+            real_stdout.write(result.model_dump_json(indent=2) + "\n")
+
+    import contextlib
+
     try:
-        asyncio.run(_run())
+        if as_json:
+            with contextlib.redirect_stdout(sys.stderr):
+                asyncio.run(_run())
+        else:
+            asyncio.run(_run())
     except JobApplicatorError as exc:
         # Typed, expected failures (no session, anti-bot block, missing resume)
         # — show the message cleanly instead of a raw Python traceback.
