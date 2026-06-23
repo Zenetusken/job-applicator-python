@@ -1178,6 +1178,36 @@ async def test_tui_search_opens_modal_without_touching_account(tmp_path: Path, m
         make_browser.assert_not_called()
 
 
+async def test_tui_search_modal_collects_max_results(tmp_path: Path) -> None:
+    """The search modal collects a Max-results value into SearchParams, clamped to 1-50
+    (blank -> default 25). The scraper already honours params.max_results."""
+    from textual.widgets import Input
+
+    from job_applicator.tui.screens import SearchScreen
+
+    app = _app(tmp_path, seed=1)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        async def submit_with(maxn: str) -> int:
+            out: dict[str, object] = {}
+            app.push_screen(SearchScreen(), lambda r: out.__setitem__("r", r))
+            await pilot.pause()
+            app.screen.query_one("#q", Input).value = "python"
+            app.screen.query_one("#maxn", Input).value = maxn
+            app.screen._submit()  # type: ignore[attr-defined]
+            await pilot.pause()
+            return out["r"].max_results  # type: ignore[union-attr]
+
+        assert await submit_with("40") == 40  # honoured as entered
+        assert await submit_with("100") == 50  # clamped to the cap
+        assert await submit_with("0") == 1  # clamped to the floor
+        assert await submit_with("") == 25  # blank -> default
+        # The integer Input permits a bare "-"/"+" (restrict regex), which int() rejects;
+        # the except-ValueError fallback must keep that from crashing the dismiss.
+        assert await submit_with("-") == 25  # unparseable -> default (not a crash)
+
+
 async def test_tui_search_submit_runs_and_persists(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """Submitting the search modal runs the (mocked) scrape and the results land in the store."""
     from job_applicator.tui import actions
