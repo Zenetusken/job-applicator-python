@@ -66,6 +66,7 @@ class SearchScreen(_FadeModalScreen[SearchParams | None]):
             yield Label("[bold]Search jobs[/bold]")
             yield Input(placeholder="query — e.g. senior python engineer", id="q")
             yield Input(placeholder="location (optional)", id="loc")
+            yield Input(value="25", placeholder="max results (1-50)", id="maxn", type="integer")
             yield Checkbox("Remote only", id="remote")
             yield Static("⚠  Opens a browser on your real LinkedIn account.", id="warn")
             with Horizontal(id="buttons"):
@@ -76,8 +77,20 @@ class SearchScreen(_FadeModalScreen[SearchParams | None]):
         super().on_mount()  # fade-in
         self.query_one("#q", Input).focus()
 
+    _MAX_RESULTS_CAP = 50
+
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+    def _max_results(self) -> int:
+        """How many results to scrape — clamped to 1…cap. Empty/invalid falls back to the
+        default (the Input is integer-only, so non-numeric shouldn't reach here)."""
+        raw = self.query_one("#maxn", Input).value.strip()
+        try:
+            n = int(raw) if raw else 25
+        except ValueError:
+            n = 25
+        return max(1, min(self._MAX_RESULTS_CAP, n))
 
     def _submit(self) -> None:
         query = self.query_one("#q", Input).value.strip()
@@ -89,6 +102,7 @@ class SearchScreen(_FadeModalScreen[SearchParams | None]):
                 query=query,
                 location=self.query_one("#loc", Input).value.strip(),
                 remote_only=self.query_one("#remote", Checkbox).value,
+                max_results=self._max_results(),
                 board=JobBoard.LINKEDIN,
             )
         )
@@ -286,6 +300,7 @@ class HelpScreen(_FadeModalScreen[None]):
             "",
             "[bold]Navigate[/bold]",
             "  ↑ ↓ · j k   move selection",
+            "  ] \\[         scroll the posting / detail pane",  # \\[ → literal '[' (not a tag)
             "  /           filter title/company · Esc clears",
             "  r           refresh from the store",
             "  q           quit",

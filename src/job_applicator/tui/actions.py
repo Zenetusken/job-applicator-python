@@ -142,11 +142,12 @@ async def search_jobs(
         if on_job is not None:
             on_job(job)
 
-    site = params.board.value
-    progress(f"Opening a browser on {site}…")
+    site = params.board.value  # wire form for the factories
+    site_name = params.board.display_name  # proper casing for the user-facing phase messages
+    progress(f"Opening a browser on {site_name}…")
     async with _make_browser(site, settings) as browser:
         scraper = _make_scraper(site, browser, settings)
-        progress(f"Searching {site} for '{params.query}'…")
+        progress(f"Searching {site_name} for '{params.query}'…")
         # Per-item progress ("Scraping job 7/25…") replaces the static "Searching…" as
         # each card is processed; on_job streams each listing in as it lands. The scraper
         # runs on this event loop, so the sync UI/store sinks act directly (no

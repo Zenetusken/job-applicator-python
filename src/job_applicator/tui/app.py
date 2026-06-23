@@ -19,7 +19,8 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, VerticalScroll
-from textual.widgets import DataTable, Footer, Input, Static
+from textual.widget import Widget
+from textual.widgets import DataTable, Footer, Input, LoadingIndicator, Static
 
 from job_applicator.exceptions import JobApplicatorError
 from job_applicator.models import ApplicationStatus, FunnelStatus
@@ -43,6 +44,46 @@ _STAGE_STYLE: dict[str, str] = {
 }
 
 
+def _elide(text: str, limit: int) -> str:
+    """Truncate to ``limit`` columns with a trailing ellipsis (display only — elide the raw
+    value BEFORE escaping, since escape() changes length)."""
+    return text if len(text) <= limit else text[: max(1, limit - 1)] + "…"
+
+
+def _elide_mid(text: str, limit: int) -> str:
+    """Elide the MIDDLE, keeping head + tail — for artifact filenames whose identity lives in
+    both the prefix (kind/company) and the suffix (timestamp)."""
+    if len(text) <= limit:
+        return text
+    keep = max(2, limit - 1)
+    head = (keep + 1) // 2
+    return text[:head] + "…" + text[-(keep - head) :]
+
+
+class _JobListLoading(LoadingIndicator):
+    """Loading state shown over the job list while a search runs. A ``LoadingIndicator``
+    subclass (a self-rendering leaf — what Textual's loading cover expects; a container with
+    composed children collapses in the cover) given a SOLID app-surface background so the
+    cover shows the theme instead of bare terminal grey. The animation fills + centres itself;
+    the descriptive phase text stays in the status header (``_set_busy``)."""
+
+    DEFAULT_CSS = """
+    _JobListLoading { color: $accent; }
+    /* The cover gets the `-textual-loading-indicator` class, whose base rule sets a
+       translucent `$boost` background (the bare-grey bleed). Match that selector's
+       specificity (type + class) to override it with a SOLID surface. */
+    _JobListLoading.-textual-loading-indicator { background: $surface; }
+    """
+
+
+class JobListTable(DataTable[str]):
+    """The job-list table. Overrides the loading widget so a running search shows a themed
+    indicator over the app surface instead of the framework default's bare grey overlay."""
+
+    def get_loading_widget(self) -> Widget:
+        return _JobListLoading()
+
+
 class JobApplicatorApp(App[None]):
     """Navigable home screen over the funnel store — browse and act on jobs in-app."""
 
@@ -51,7 +92,10 @@ class JobApplicatorApp(App[None]):
     CSS = """
     #statusline { height: 4; border: round $primary; padding: 0 1; }
     #body { height: 1fr; }
-    #joblist { width: 45%; border-right: solid $panel; }
+    /* height: 1fr so the table fills the body like the detail pane — a DataTable defaults
+       to height:auto (sizes to its rows), which left the left side short of the bottom with
+       few results AND made the loading cover only span the content rows. */
+    #joblist { width: 45%; height: 1fr; border-right: solid $panel; }
     #detail { width: 1fr; padding: 0 1; }
     #filter { dock: bottom; display: none; border: round $accent; }
     #filter.visible { display: block; }
@@ -73,6 +117,10 @@ class JobApplicatorApp(App[None]):
         Binding("escape", "clear_filter", "Clear filter", show=False),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
+        # Scroll the detail pane (the job list owns focus / arrows, so a long posting needs
+        # its own keys for keyboard users; the mouse wheel works over it too).
+        Binding("right_square_bracket", "scroll_detail(1)", "Scroll posting", show=False),
+        Binding("left_square_bracket", "scroll_detail(-1)", "Scroll posting up", show=False),
     ]
 
     def __init__(
@@ -98,8 +146,8 @@ class JobApplicatorApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Static(id="statusline")
         with Horizontal(id="body"):
-            yield DataTable(id="joblist", cursor_type="row", zebra_stripes=True)
-            yield VerticalScroll(Static(id="detail"))
+            yield JobListTable(id="joblist", cursor_type="row", zebra_stripes=True)
+            yield VerticalScroll(Static(id="detail"), id="detailscroll")
         yield Input(id="filter", placeholder="filter title/company — Enter to apply, Esc to clear")
         yield Footer()
 
@@ -158,6 +206,13 @@ class JobApplicatorApp(App[None]):
     def _repaint(self) -> None:
         self.query_one("#statusline", Static).update(self._statusline())
         table = self.query_one("#joblist", DataTable)
+        # Cap Title (and Company) so the auto-sized Title column can't expand to the longest
+        # title and push Company off the right edge (the reported bug). Fixed caps are
+        # deliberate over a pane-width-derived value: the latter reads table.size mid-layout
+        # and proved racy. ~46+22 columns fit any pane ≳86 cols (terminals ≳190 wide); on a
+        # narrower terminal the table scrolls horizontally as before, but never hides Company
+        # on a normal-width one. Cells ellipsize cleanly instead of hard-cutting at the edge.
+        title_cap, company_cap = 46, 22
         table.clear()
         self._by_key = {}
         visible = self._visible()
@@ -170,8 +225,8 @@ class JobApplicatorApp(App[None]):
             table.add_row(
                 f"[{style}]{stage.replace('_', ' ')}[/{style}]",
                 score,
-                escape(s.job.title),
-                escape(s.job.company),
+                escape(_elide(s.job.title, title_cap)),
+                escape(_elide(s.job.company, company_cap)),
                 key=key,
             )
         self._update_detail(visible[0] if visible else None)
@@ -227,10 +282,10 @@ class JobApplicatorApp(App[None]):
         style = _STAGE_STYLE.get(stage, "white")
         lines = [
             f"[bold]{escape(j.title)}[/bold]",
-            f"[green]{escape(j.company)}[/green]   [dim]{j.board.value}[/dim]",
+            f"[green]{escape(j.company)}[/green]   [dim]{j.board.display_name}[/dim]",
             "",
             f"Stage     [{style}]{stage.replace('_', ' ')}[/{style}]",
-            f"Location  {escape(j.location) or '—'}",
+            f"Location  {escape(j.location) if j.location else '—'}",
             f"Salary    {escape(j.salary) if j.salary else '—'}",
         ]
         if s.match_score is not None:
@@ -244,28 +299,31 @@ class JobApplicatorApp(App[None]):
         if s.missing_skills:
             lines.append(f"Skills ✗  [red]{escape(', '.join(s.missing_skills[:8]))}[/red]")
         if s.tailored_resume_path:
-            name = escape(Path(s.tailored_resume_path).name)
+            name = escape(_elide_mid(Path(s.tailored_resume_path).name, 40))
             lines.append(
                 f"Résumé    [@click=app.open_tailored][dim]{name}[/dim][/]"
                 "  [dim](click to open)[/dim]"
             )
         if s.cover_letter_path:
-            name = escape(Path(s.cover_letter_path).name)
+            name = escape(_elide_mid(Path(s.cover_letter_path).name, 40))
             lines.append(
                 f"Cover     [@click=app.open_cover][dim]{name}[/dim][/]  [dim](click to open)[/dim]"
             )
         url = str(j.url)
         if url and "example.com/placeholder" not in url:  # hide the manual-tailor placeholder
-            # Click the link (mouse) to open it; `o` opens, `y` copies — the TUI captures
-            # the mouse, so plain terminal select/copy doesn't work.
+            # Show a compact form of the (often tracking-heavy) URL; o/click/y still act on
+            # the FULL stored URL (they read j.url, never this display text). The TUI captures
+            # the mouse, so plain terminal select/copy doesn't work — hence o/y.
+            shown = escape(_elide(url, 64))
             lines += [
                 "",
-                f"[@click=app.open_url][blue underline]{escape(url)}[/blue underline][/]"
+                f"[@click=app.open_url][blue underline]{shown}[/blue underline][/]"
                 "  [dim](o open · y copy)[/dim]",
             ]
         if j.description:
-            desc = j.description[:600] + ("…" if len(j.description) > 600 else "")
-            lines += ["", "[bold]Description[/bold]", escape(desc)]
+            # Full description (the store keeps up to ~5k chars); the detail pane scrolls.
+            # Truncating here hid the rest of the posting even though the pane can scroll.
+            lines += ["", "[bold]Description[/bold]", escape(j.description)]
         return "\n".join(lines)
 
     # ----------------------------------------------------------------- actions
@@ -282,6 +340,15 @@ class JobApplicatorApp(App[None]):
         from job_applicator.tui.screens import HelpScreen
 
         self.push_screen(HelpScreen())
+
+    def action_scroll_detail(self, direction: int) -> None:
+        """Page the detail/posting pane (the job list owns focus + the arrow keys, so a long
+        posting needs its own keys for keyboard users)."""
+        pane = self.query_one("#detailscroll", VerticalScroll)
+        if direction > 0:
+            pane.scroll_page_down()
+        else:
+            pane.scroll_page_up()
 
     def _current_url(self) -> str | None:
         """The selected job's posting URL, or None (with a toast) when there isn't one."""

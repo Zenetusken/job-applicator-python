@@ -401,6 +401,170 @@ def test_tui_artifact_lines_are_clickable(tmp_path: Path) -> None:
     assert "/out/" not in md  # no path embedded — resolved from _current on click
 
 
+def _stored(**job_over: object) -> object:
+    from datetime import UTC, datetime
+
+    from job_applicator.models import StoredJob
+
+    return StoredJob(
+        id=1,
+        job=_job(1, **job_over),
+        first_seen_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+
+def test_jobboard_display_name() -> None:
+    """The user-facing board name is properly cased; the enum value stays the wire form."""
+    assert JobBoard.LINKEDIN.display_name == "LinkedIn"
+    assert JobBoard.INDEED.display_name == "Indeed"
+    assert JobBoard.LINKEDIN.value == "linkedin"  # wire form unchanged
+
+
+def test_tui_detail_shows_full_description() -> None:
+    """The full posting renders (the detail pane scrolls) — not capped at 600 chars, which
+    hid the rest of the posting even though the pane can scroll."""
+    app = JobApplicatorApp(settings=AppSettings(), store=MagicMock(), app_state=MagicMock())
+    desc = "HEAD " + "x" * 700 + " UNIQUE_TAIL_MARKER"  # > 600 chars
+    md = app._detail_markup(_stored(description=desc))
+    assert "UNIQUE_TAIL_MARKER" in md  # the tail beyond char 600 is present
+
+
+def test_tui_detail_elides_long_url() -> None:
+    """A long tracking URL is elided in the DISPLAY but stays clickable — o/click/y act on the
+    full stored URL, never this display text."""
+    app = JobApplicatorApp(settings=AppSettings(), store=MagicMock(), app_state=MagicMock())
+    url = "https://www.linkedin.com/jobs/view/4267843029/?refId=" + "Z" * 200
+    md = app._detail_markup(_stored(url=url))
+    assert "@click=app.open_url" in md  # still clickable (the action reads j.url, not display)
+    assert "…" in md  # the display form is elided
+    assert "Z" * 200 not in md  # the tracking tail is not dumped into the pane
+    assert "linkedin.com/jobs/view/4267843029" in md  # the meaningful head is kept
+
+
+def test_tui_detail_shows_board_proper_case() -> None:
+    """The detail line shows the board properly cased ('LinkedIn'), not the enum value."""
+    app = JobApplicatorApp(settings=AppSettings(), store=MagicMock(), app_state=MagicMock())
+    md = app._detail_markup(_stored(company="Acme"))
+    assert "LinkedIn" in md  # proper-cased board name
+
+
+def test_tui_detail_elides_long_artifact_filename() -> None:
+    """A long artifact filename is middle-elided (keeps prefix + timestamp), still clickable."""
+    app = JobApplicatorApp(settings=AppSettings(), store=MagicMock(), app_state=MagicMock())
+    from datetime import UTC, datetime
+
+    from job_applicator.models import StoredJob
+
+    longname = "/out/tailored_" + "C" * 60 + "_194403.txt"
+    stored = StoredJob(
+        id=1,
+        job=_job(1),
+        tailored_resume_path=longname,
+        first_seen_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    md = app._detail_markup(stored)
+    assert "…" in md  # middle-elided
+    assert "C" * 60 not in md  # the long run is collapsed
+    assert "194403.txt" in md  # the identifying tail is kept
+    assert "@click=app.open_tailored" in md  # still clickable
+
+
+async def test_tui_joblist_company_visible_no_overflow(tmp_path: Path) -> None:
+    """At a normal-width terminal a very long title no longer pushes Company off-screen: the
+    table fits its pane (no horizontal scroll), so all four columns render."""
+    from textual.widgets import DataTable
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1, title="T" * 120, company="Acme Corporation Worldwide Holdings"))
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test(size=(240, 40)) as pilot:
+        await pilot.pause()
+        t = app.query_one("#joblist", DataTable)
+        # No horizontal overflow → every column (incl. Company) is on-screen. Without the
+        # title cap, the 120-char title would expand the table well past the pane.
+        assert t.virtual_size.width <= t.size.width
+
+
+async def test_tui_detail_scroll_keys(tmp_path: Path) -> None:
+    """`]` pages the detail pane down — so a keyboard user can read a long posting that the
+    list-focused arrow keys can't reach."""
+    from textual.containers import VerticalScroll
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1, description="paragraph\n" * 400))  # overflows the pane
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test(size=(120, 20)) as pilot:
+        await pilot.pause()
+        pane = app.query_one("#detailscroll", VerticalScroll)
+        assert pane.scroll_target_y == 0
+        await pilot.press("right_square_bracket")
+        await pilot.pause()
+        assert pane.scroll_target_y > 0  # the posting scrolled down
+
+
+def test_tui_joblist_loading_widget_override() -> None:
+    """The loading widget is a self-rendering LoadingIndicator subclass (a container with
+    composed children collapses when used as a cover — the regression this guards)."""
+    from textual.widgets import LoadingIndicator
+
+    from job_applicator.tui.app import JobListTable, _JobListLoading
+
+    widget = JobListTable().get_loading_widget()
+    assert isinstance(widget, _JobListLoading)
+    assert isinstance(widget, LoadingIndicator)  # leaf, renders itself — does not collapse
+
+
+async def test_tui_joblist_loading_is_themed_on_screen(tmp_path: Path) -> None:
+    """Real frame: loading mounts a self-rendering cover that FILLS the area (non-collapsed)
+    with a SOLID background — guards both the grey bleed AND the 0x0-collapse regression."""
+    from textual.widgets import DataTable
+
+    from job_applicator.tui.app import _JobListLoading
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    for i in range(8):  # enough rows that the cover area is clearly non-trivial
+        store.upsert_job(_job(i))
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test(size=(200, 40)) as pilot:
+        await pilot.pause()
+        table = app.query_one("#joblist", DataTable)
+        table.loading = True  # the reactive the real search worker uses
+        await pilot.pause()
+        cover = table._cover_widget  # the loading cover lives here (not the query tree)
+        assert isinstance(cover, _JobListLoading)  # our themed widget, not the framework default
+        assert cover.size.width > 0 and cover.size.height > 0  # renders (didn't collapse to 0x0)
+        assert cover.styles.background.a == 1.0  # solid → no grey bleed-through
+
+
+async def test_tui_panes_fill_body_equally(tmp_path: Path) -> None:
+    """The list and detail panes are the same height (both fill the body) — a DataTable
+    defaults to height:auto, which left the left side short of the bottom with few rows."""
+    from textual.containers import VerticalScroll
+    from textual.widgets import DataTable
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))  # a SINGLE row — the case where auto-height was short
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test(size=(200, 40)) as pilot:
+        await pilot.pause()
+        table = app.query_one("#joblist", DataTable)
+        detail = app.query_one("#detailscroll", VerticalScroll)
+        body_height = app.query_one("#body").size.height
+        # Both panes fill the body (symmetric). A collapsed auto-height table (~2 rows) fails
+        # the body-equality, so this catches the regression even without the symmetry assert.
+        assert table.size.height == detail.size.height == body_height
+
+
 async def test_tui_open_tailored_artifact(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """Opening the tailored artifact launches the default viewer with its file:// URI."""
     import webbrowser
@@ -1014,6 +1178,36 @@ async def test_tui_search_opens_modal_without_touching_account(tmp_path: Path, m
         make_browser.assert_not_called()
 
 
+async def test_tui_search_modal_collects_max_results(tmp_path: Path) -> None:
+    """The search modal collects a Max-results value into SearchParams, clamped to 1-50
+    (blank -> default 25). The scraper already honours params.max_results."""
+    from textual.widgets import Input
+
+    from job_applicator.tui.screens import SearchScreen
+
+    app = _app(tmp_path, seed=1)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        async def submit_with(maxn: str) -> int:
+            out: dict[str, object] = {}
+            app.push_screen(SearchScreen(), lambda r: out.__setitem__("r", r))
+            await pilot.pause()
+            app.screen.query_one("#q", Input).value = "python"
+            app.screen.query_one("#maxn", Input).value = maxn
+            app.screen._submit()  # type: ignore[attr-defined]
+            await pilot.pause()
+            return out["r"].max_results  # type: ignore[union-attr]
+
+        assert await submit_with("40") == 40  # honoured as entered
+        assert await submit_with("100") == 50  # clamped to the cap
+        assert await submit_with("0") == 1  # clamped to the floor
+        assert await submit_with("") == 25  # blank -> default
+        # The integer Input permits a bare "-"/"+" (restrict regex), which int() rejects;
+        # the except-ValueError fallback must keep that from crashing the dismiss.
+        assert await submit_with("-") == 25  # unparseable -> default (not a crash)
+
+
 async def test_tui_search_submit_runs_and_persists(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """Submitting the search modal runs the (mocked) scrape and the results land in the store."""
     from job_applicator.tui import actions
@@ -1109,6 +1303,9 @@ async def test_search_jobs_reports_phase_progress(monkeypatch) -> None:  # type:
     )
     joined = " | ".join(msgs)
     assert "Opening a browser" in joined and "Searching" in joined and "Scoring" in joined
+    # Proper-cased board name in the phase messages (consistent with the scraper's "on
+    # LinkedIn…" per-item line), not the lowercase enum value.
+    assert "LinkedIn" in joined and "linkedin for" not in joined
 
 
 async def test_search_jobs_forwards_per_item_progress(monkeypatch) -> None:  # type: ignore[no-untyped-def]
