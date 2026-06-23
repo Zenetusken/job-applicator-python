@@ -7,7 +7,7 @@ is what authorizes the scrape; the screen itself touches nothing.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, TypeVar
 
 from rich.markup import escape
 from textual.app import ComposeResult
@@ -22,8 +22,28 @@ from job_applicator.scrapers.base import SearchParams
 if TYPE_CHECKING:
     from job_applicator.models import ATSCompatibilityResult, JobListing
 
+T = TypeVar("T")
 
-class SearchScreen(ModalScreen[SearchParams | None]):
+
+class _FadeModalScreen(ModalScreen[T]):
+    """Base for the app's dialogs: a subtle fade-in on mount so a modal reads as a layer
+    that *appears* over the dimmed app, rather than snapping in. Animating the screen's
+    opacity fades the dim backdrop and the box in together.
+
+    The fade honours reduced-motion: ``styles.animate`` respects the app's ``AnimationLevel``
+    (``TEXTUAL_ANIMATIONS``), degrading to an instant show when animations are disabled.
+    Subclasses that override ``on_mount`` (e.g. to focus an input) must call
+    ``super().on_mount()``.
+    """
+
+    _FADE_DURATION = 0.18
+
+    def on_mount(self) -> None:
+        self.styles.opacity = 0.0
+        self.styles.animate("opacity", value=1.0, duration=self._FADE_DURATION)
+
+
+class SearchScreen(_FadeModalScreen[SearchParams | None]):
     """A search form. Dismisses with ``SearchParams`` on submit (authorizing the
     account-touching scrape) or ``None`` on cancel/Esc."""
 
@@ -54,6 +74,7 @@ class SearchScreen(ModalScreen[SearchParams | None]):
                 yield Button("Cancel", id="cancel")
 
     def on_mount(self) -> None:
+        super().on_mount()  # fade-in
         self.query_one("#q", Input).focus()
 
     _MAX_RESULTS_CAP = 50
@@ -97,7 +118,7 @@ class SearchScreen(ModalScreen[SearchParams | None]):
         self._submit()
 
 
-class ApplyScreen(ModalScreen[bool | None]):
+class ApplyScreen(_FadeModalScreen[bool | None]):
     """Confirm applying to a job. Dismisses ``True`` (real submit), ``False`` (dry run),
     or ``None`` (cancel). A real submit requires explicitly ticking the danger checkbox —
     never a single keypress."""
@@ -144,7 +165,7 @@ class ApplyScreen(ModalScreen[bool | None]):
             self.dismiss(None)
 
 
-class SetupScreen(ModalScreen[str | None]):
+class SetupScreen(_FadeModalScreen[str | None]):
     """Set the résumé path in-app. Dismisses with the entered path or ``None`` (cancel)."""
 
     BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "cancel", "Cancel")]
@@ -179,6 +200,7 @@ class SetupScreen(ModalScreen[str | None]):
                 yield Button("Cancel", id="cancel")
 
     def on_mount(self) -> None:
+        super().on_mount()  # fade-in
         self.query_one("#path", Input).focus()
 
     def action_cancel(self) -> None:
@@ -201,7 +223,7 @@ class SetupScreen(ModalScreen[str | None]):
         self._submit()
 
 
-class AtsScreen(ModalScreen[None]):
+class AtsScreen(_FadeModalScreen[None]):
     """Read-only ATS-compatibility result for the selected job's résumé. Esc / Close
     dismisses; the body scrolls when there are many warnings."""
 
@@ -254,7 +276,7 @@ class AtsScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
-class HelpScreen(ModalScreen[None]):
+class HelpScreen(_FadeModalScreen[None]):
     """Read-only key reference, grouped by account-safety tier so the safe/local keys read
     as distinct from the account-touching ones. Esc / Close dismisses."""
 
