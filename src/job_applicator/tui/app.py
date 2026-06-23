@@ -681,23 +681,27 @@ class JobApplicatorApp(App[None]):
 
         self.push_screen(SearchScreen(), self._search_then)
 
-    def _search_then(self, params: SearchParams | None) -> None:
-        if params is not None:  # None = cancelled; nothing touched the account
-            self._search_worker(params)
+    def _search_then(self, plans: list[SearchParams] | None) -> None:
+        if plans:  # None/[] = cancelled or no board selected; nothing touched the account
+            self._search_worker(plans)
 
     @work(group="account")
-    async def _search_worker(self, params: SearchParams) -> None:
+    async def _search_worker(self, plans: list[SearchParams]) -> None:
+        """Scrape each selected board SEQUENTIALLY in this single account worker — never two
+        browsers at once, and never interrupted (so a real submission elsewhere can't be
+        cancelled mid-flight). One board failing (e.g. Indeed can't clear Cloudflare) is
+        toasted by ``_run_action`` and does NOT abort the remaining board(s)."""
         from job_applicator.tui import actions
 
         table = self.query_one("#joblist", DataTable)
-        table.loading = True  # spinner until the FIRST result streams in
+        table.loading = True  # spinner until the FIRST result streams in (across all boards)
         self._set_busy("Searching…")
         streamed = False
 
         def on_job(_job: JobListing) -> None:
             # Each scraped listing is already persisted (actions.emit) before this fires, so
-            # a repaint from the store shows it. Drop the spinner on the first one, then let
-            # rows accumulate live. Runs on the event loop → direct UI update is safe.
+            # a repaint from the store shows it. Drop the spinner on the first one (any
+            # board), then let rows accumulate live. On the event loop → direct UI update.
             nonlocal streamed
             if not streamed:
                 streamed = True
@@ -705,26 +709,39 @@ class JobApplicatorApp(App[None]):
             # The SUBMITTED set can't change during a search, so skip its requery per row.
             self._reload(refresh_applied=False)
 
+        total = 0
+        failed: list[str] = []
         try:
-            found = await self._run_action(
-                "Search",
-                actions.search_jobs(
-                    self._settings,
-                    self._store,
-                    params,
-                    on_progress=self._set_busy,
-                    on_job=on_job,
-                ),
-            )
+            for params in plans:
+                found = await self._run_action(
+                    f"Search {params.board.display_name}",
+                    actions.search_jobs(
+                        self._settings,
+                        self._store,
+                        params,
+                        on_progress=self._set_busy,
+                        on_job=on_job,
+                    ),
+                )
+                if found is None:  # this board errored (already toasted); try the next
+                    failed.append(params.board.display_name)
+                else:
+                    total += found
         finally:
             table.loading = False
             self._set_busy("")
-        if found is None:
-            return
         # Final repaint after scoring: the streamed (found) rows now carry scores and
         # re-sort best-match-first (the reorder-on-score).
         self._reload()
-        self.notify(f"Found {found} job(s) — added to your funnel.", timeout=6)
+        if total == 0 and failed:
+            return  # every attempted board errored — _run_action already toasted each
+        boards = ", ".join(p.board.display_name for p in plans)
+        suffix = f"  ({', '.join(failed)} failed)" if failed else ""
+        self.notify(
+            f"Found {total} job(s) across {boards}{suffix} — added to your funnel.",
+            severity="warning" if failed else "information",
+            timeout=8,
+        )
 
     def action_apply(self) -> None:
         """Open the apply modal for the selected job. Dry-run by default; a real submit is

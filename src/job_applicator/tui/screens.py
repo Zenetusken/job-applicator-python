@@ -13,6 +13,7 @@ from rich.markup import escape
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Input, Label, Static
 
@@ -43,32 +44,69 @@ class _FadeModalScreen(ModalScreen[T]):
         self.styles.animate("opacity", value=1.0, duration=self._FADE_DURATION)
 
 
-class SearchScreen(_FadeModalScreen[SearchParams | None]):
-    """A search form. Dismisses with ``SearchParams`` on submit (authorizing the
-    account-touching scrape) or ``None`` on cancel/Esc."""
+class SearchScreen(_FadeModalScreen[list[SearchParams] | None]):
+    """A search form across one or both boards. Dismisses with a list of ``SearchParams`` —
+    one per selected board, each carrying that board's own result count — which authorizes
+    the scrape, or ``None`` on cancel/Esc.
+
+    Account-safety: only LinkedIn reuses the real account; Indeed search is public (a clean,
+    windowless browser, no login). The warning is board-aware, so the user always sees which
+    of the two they are about to touch."""
 
     BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "cancel", "Cancel")]
 
+    _MAX_RESULTS_CAP = 50
+
+    # (checkbox id, board, count-input id, warning shown while that board is selected). The
+    # default count is 25 (matches SearchParams.max_results and the CLI `search --max`).
+    _BOARDS: ClassVar[list[tuple[str, JobBoard, str, str]]] = [
+        (
+            "bd_linkedin",
+            JobBoard.LINKEDIN,
+            "n_linkedin",
+            "⚠  LinkedIn opens a browser on your real account.",
+        ),
+        (
+            "bd_indeed",
+            JobBoard.INDEED,
+            "n_indeed",
+            "Indeed search is public - a clean, windowless browser, no login.",
+        ),
+    ]
+
+    # The box auto-sizes to its content (snug on a normal terminal) but caps at 90% of the
+    # screen and SCROLLS as a whole when the terminal is too short — so the Search/Cancel
+    # buttons can never be pushed off-screen. The warning sits directly above the buttons, so
+    # it's on-screen whenever they are (account-safety stays visible at the moment of submit).
     CSS = """
     SearchScreen { align: center middle; }
     #searchbox {
-        width: 68; height: auto; padding: 1 2;
+        width: 68; height: auto; max-height: 90%; padding: 1 2;
         border: thick $accent; background: $surface;
     }
     #searchbox Input, #searchbox Checkbox { margin: 1 0; }
+    .boardrow { height: auto; }
+    .boardrow Checkbox { width: 18; }
+    .ncount { width: 14; }
     #warn { color: $warning; margin: 1 0; }
     #buttons { height: auto; align: right middle; }
     #buttons Button { margin-left: 2; }
     """
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="searchbox"):
+        with VerticalScroll(id="searchbox"):
             yield Label("[bold]Search jobs[/bold]")
-            yield Input(placeholder="query — e.g. senior python engineer", id="q")
+            yield Input(placeholder="query - e.g. senior python engineer", id="q")
             yield Input(placeholder="location (optional)", id="loc")
-            yield Input(value="25", placeholder="max results (1-50)", id="maxn", type="integer")
             yield Checkbox("Remote only", id="remote")
-            yield Static("⚠  Opens a browser on your real LinkedIn account.", id="warn")
+            yield Label("[bold]Boards[/bold]   [dim]results per board (1-50)[/dim]")
+            with Horizontal(classes="boardrow"):
+                yield Checkbox("LinkedIn", value=True, id="bd_linkedin")
+                yield Input(value="25", id="n_linkedin", type="integer", classes="ncount")
+            with Horizontal(classes="boardrow"):
+                yield Checkbox("Indeed", value=False, id="bd_indeed")
+                yield Input(value="25", id="n_indeed", type="integer", classes="ncount")
+            yield Static("", id="warn")
             with Horizontal(id="buttons"):
                 yield Button("Search", variant="primary", id="go")
                 yield Button("Cancel", id="cancel")
@@ -76,16 +114,37 @@ class SearchScreen(_FadeModalScreen[SearchParams | None]):
     def on_mount(self) -> None:
         super().on_mount()  # fade-in
         self.query_one("#q", Input).focus()
-
-    _MAX_RESULTS_CAP = 50
+        self._update_warning()  # seed the board-aware warning for the default selection
 
     def action_cancel(self) -> None:
         self.dismiss(None)
 
-    def _max_results(self) -> int:
-        """How many results to scrape — clamped to 1…cap. Empty/invalid falls back to the
-        default (the Input is integer-only, so non-numeric shouldn't reach here)."""
-        raw = self.query_one("#maxn", Input).value.strip()
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        # Any board toggle re-derives the warning (the Remote checkbox is harmless here).
+        self._update_warning()
+
+    def _warning_text(self) -> str:
+        """The board-aware warning for the current selection (or a prompt when none) — pure,
+        so it reads the same whether or not the ``#warn`` Static is mounted yet."""
+        lines = [msg for cb, _b, _n, msg in self._BOARDS if self._checked(cb)]
+        return "\n".join(lines) if lines else "[red]Select at least one board.[/red]"
+
+    def _update_warning(self) -> None:
+        """Refresh the warning Static. Guarded so a ``Checkbox.Changed`` fired during mount
+        (before ``#warn`` exists) is a no-op — ``on_mount`` seeds it once the tree is up."""
+        try:
+            warn = self.query_one("#warn", Static)
+        except NoMatches:
+            return
+        warn.update(self._warning_text())
+
+    def _checked(self, checkbox_id: str) -> bool:
+        return self.query_one(f"#{checkbox_id}", Checkbox).value
+
+    def _count(self, input_id: str) -> int:
+        """A board's result count - clamped to 1…cap. Empty/invalid → the default (the Input
+        is integer-only, so a non-numeric value shouldn't reach here)."""
+        raw = self.query_one(f"#{input_id}", Input).value.strip()
         try:
             n = int(raw) if raw else 25
         except ValueError:
@@ -97,15 +156,23 @@ class SearchScreen(_FadeModalScreen[SearchParams | None]):
         if not query:
             self.notify("Enter a search query.", severity="warning")
             return
-        self.dismiss(
+        location = self.query_one("#loc", Input).value.strip()
+        remote = self.query_one("#remote", Checkbox).value
+        plans = [
             SearchParams(
                 query=query,
-                location=self.query_one("#loc", Input).value.strip(),
-                remote_only=self.query_one("#remote", Checkbox).value,
-                max_results=self._max_results(),
-                board=JobBoard.LINKEDIN,
+                location=location,
+                remote_only=remote,
+                max_results=self._count(n_id),
+                board=board,
             )
-        )
+            for cb, board, n_id, _msg in self._BOARDS
+            if self._checked(cb)
+        ]
+        if not plans:
+            self.notify("Select at least one board to search.", severity="warning")
+            return
+        self.dismiss(plans)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "go":
