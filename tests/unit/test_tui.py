@@ -544,6 +544,27 @@ async def test_tui_joblist_loading_is_themed_on_screen(tmp_path: Path) -> None:
         assert cover.styles.background.a == 1.0  # solid → no grey bleed-through
 
 
+async def test_tui_panes_fill_body_equally(tmp_path: Path) -> None:
+    """The list and detail panes are the same height (both fill the body) — a DataTable
+    defaults to height:auto, which left the left side short of the bottom with few rows."""
+    from textual.containers import VerticalScroll
+    from textual.widgets import DataTable
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))  # a SINGLE row — the case where auto-height was short
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test(size=(200, 40)) as pilot:
+        await pilot.pause()
+        table = app.query_one("#joblist", DataTable)
+        detail = app.query_one("#detailscroll", VerticalScroll)
+        body_height = app.query_one("#body").size.height
+        # Both panes fill the body (symmetric). A collapsed auto-height table (~2 rows) fails
+        # the body-equality, so this catches the regression even without the symmetry assert.
+        assert table.size.height == detail.size.height == body_height
+
+
 async def test_tui_open_tailored_artifact(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """Opening the tailored artifact launches the default viewer with its file:// URI."""
     import webbrowser

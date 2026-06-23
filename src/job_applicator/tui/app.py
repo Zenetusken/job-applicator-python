@@ -92,7 +92,10 @@ class JobApplicatorApp(App[None]):
     CSS = """
     #statusline { height: 4; border: round $primary; padding: 0 1; }
     #body { height: 1fr; }
-    #joblist { width: 45%; border-right: solid $panel; }
+    /* height: 1fr so the table fills the body like the detail pane — a DataTable defaults
+       to height:auto (sizes to its rows), which left the left side short of the bottom with
+       few results AND made the loading cover only span the content rows. */
+    #joblist { width: 45%; height: 1fr; border-right: solid $panel; }
     #detail { width: 1fr; padding: 0 1; }
     #filter { dock: bottom; display: none; border: round $accent; }
     #filter.visible { display: block; }
