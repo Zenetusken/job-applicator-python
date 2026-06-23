@@ -509,22 +509,27 @@ async def test_tui_detail_scroll_keys(tmp_path: Path) -> None:
 
 
 def test_tui_joblist_loading_widget_override() -> None:
-    """The job-list table overrides the loading widget with the themed one (not the default)."""
+    """The loading widget is a self-rendering LoadingIndicator subclass (a container with
+    composed children collapses when used as a cover — the regression this guards)."""
+    from textual.widgets import LoadingIndicator
+
     from job_applicator.tui.app import JobListTable, _JobListLoading
 
-    assert isinstance(JobListTable().get_loading_widget(), _JobListLoading)
-    assert "background: $surface" in _JobListLoading.DEFAULT_CSS  # themed, not bare grey
+    widget = JobListTable().get_loading_widget()
+    assert isinstance(widget, _JobListLoading)
+    assert isinstance(widget, LoadingIndicator)  # leaf, renders itself — does not collapse
 
 
 async def test_tui_joblist_loading_is_themed_on_screen(tmp_path: Path) -> None:
-    """Real frame: putting the list into loading mounts the themed cover with a SOLID
-    background (alpha 1.0), so the terminal grey can't bleed through (the reported issue)."""
+    """Real frame: loading mounts a self-rendering cover that FILLS the area (non-collapsed)
+    with a SOLID background — guards both the grey bleed AND the 0x0-collapse regression."""
     from textual.widgets import DataTable
 
     from job_applicator.tui.app import _JobListLoading
 
     store = JobStore(db_path=tmp_path / "applications.db")
-    store.upsert_job(_job(1))
+    for i in range(8):  # enough rows that the cover area is clearly non-trivial
+        store.upsert_job(_job(i))
     app = JobApplicatorApp(
         settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
     )
@@ -535,6 +540,7 @@ async def test_tui_joblist_loading_is_themed_on_screen(tmp_path: Path) -> None:
         await pilot.pause()
         cover = table._cover_widget  # the loading cover lives here (not the query tree)
         assert isinstance(cover, _JobListLoading)  # our themed widget, not the framework default
+        assert cover.size.width > 0 and cover.size.height > 0  # renders (didn't collapse to 0x0)
         assert cover.styles.background.a == 1.0  # solid → no grey bleed-through
 
 

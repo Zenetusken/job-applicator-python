@@ -18,7 +18,7 @@ from rich.markup import escape
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, VerticalScroll
 from textual.widget import Widget
 from textual.widgets import DataTable, Footer, Input, LoadingIndicator, Static
 
@@ -60,26 +60,20 @@ def _elide_mid(text: str, limit: int) -> str:
     return text[:head] + "…" + text[-(keep - head) :]
 
 
-class _JobListLoading(Vertical):
-    """Loading state shown over the job list while a search runs. Fills the list area with
-    the app surface (the default leaves bare terminal grey that breaks the theme) and centres
-    a themed indicator. The descriptive phase text lives in the status header (``_set_busy``),
-    so this stays a clean visual cue with no competing copy."""
+class _JobListLoading(LoadingIndicator):
+    """Loading state shown over the job list while a search runs. A ``LoadingIndicator``
+    subclass (a self-rendering leaf — what Textual's loading cover expects; a container with
+    composed children collapses in the cover) given a SOLID app-surface background so the
+    cover shows the theme instead of bare terminal grey. The animation fills + centres itself;
+    the descriptive phase text stays in the status header (``_set_busy``)."""
 
     DEFAULT_CSS = """
-    _JobListLoading { align: center middle; background: $surface; }
-    _JobListLoading #loadcard {
-        width: auto; height: auto; min-width: 22; padding: 1 4;
-        border: round $accent; background: $surface;
-    }
-    _JobListLoading LoadingIndicator {
-        width: 100%; height: 1; color: $accent; background: $surface;
-    }
+    _JobListLoading { color: $accent; }
+    /* The cover gets the `-textual-loading-indicator` class, whose base rule sets a
+       translucent `$boost` background (the bare-grey bleed). Match that selector's
+       specificity (type + class) to override it with a SOLID surface. */
+    _JobListLoading.-textual-loading-indicator { background: $surface; }
     """
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="loadcard"):
-            yield LoadingIndicator()
 
 
 class JobListTable(DataTable[str]):
