@@ -368,8 +368,9 @@ class HelpScreen(_FadeModalScreen[None]):
             "[bold]Navigate[/bold]",
             "  ↑ ↓ · j k   move selection",
             "  ] \\[         scroll the posting / detail pane",  # \\[ → literal '[' (not a tag)
-            "  /           filter title/company · Esc clears both filters",
+            "  /           filter title/company · Esc clears all filters",
             "  f           filter by funnel stage (cycles)",
+            "  b           filter by board (cycles)",
             "  S           sort: best match · recent · funnel stage (cycles)",
             "  r           refresh from the store",
             "  q           quit",

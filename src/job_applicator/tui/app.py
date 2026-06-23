@@ -23,7 +23,7 @@ from textual.widget import Widget
 from textual.widgets import DataTable, Footer, Input, LoadingIndicator, Static
 
 from job_applicator.exceptions import JobApplicatorError
-from job_applicator.models import ApplicationStatus, FunnelStatus
+from job_applicator.models import ApplicationStatus, FunnelStatus, JobBoard
 
 if TYPE_CHECKING:
     from job_applicator.config import AppSettings
@@ -48,6 +48,11 @@ _STAGE_STYLE: dict[str, str] = {
 # compares cleanly against it. `_STAGE_ORDER` ranks a stage for the "stage" sort.
 _STAGE_CYCLE: list[str | None] = [None, *(st.value for st in FunnelStatus)]
 _STAGE_ORDER: dict[str, int] = {st.value: i for i, st in enumerate(FunnelStatus)}
+
+# Board-filter cycle: None (all) then each board; compared against `s.job.board.value`.
+# `_BOARD_STYLE` colours the list's Board column for a quick LinkedIn-vs-Indeed scan.
+_BOARD_CYCLE: list[str | None] = [None, *(b.value for b in JobBoard)]
+_BOARD_STYLE: dict[str, str] = {"linkedin": "blue", "indeed": "yellow"}
 
 # Sort orders cycled by `S`; "match" (best opportunity first) is the default. The labels are
 # what the status line shows.
@@ -129,6 +134,7 @@ class JobApplicatorApp(App[None]):
         Binding("y", "copy_url", "Copy URL", show=False),
         Binding("slash", "filter", "Filter"),
         Binding("f", "cycle_stage_filter", "Stage"),
+        Binding("b", "cycle_board_filter", "Board"),
         Binding("S", "cycle_sort", "Sort"),
         Binding("question_mark", "help", "Help"),
         Binding("escape", "clear_filter", "Clear filter", show=False),
@@ -158,6 +164,7 @@ class JobApplicatorApp(App[None]):
         self._busy = ""  # transient "⏳ working…" status while a worker runs
         self._filter = ""  # text filter (title/company substring)
         self._stage_filter: str | None = None  # funnel-stage filter (None = all stages)
+        self._board_filter: str | None = None  # board filter (None = all boards)
         self._sort_mode = "match"  # list sort order (see _SORT_CYCLE)
         self._load_error = ""
 
@@ -172,7 +179,7 @@ class JobApplicatorApp(App[None]):
 
     def on_mount(self) -> None:
         table = self.query_one("#joblist", DataTable)
-        table.add_columns("Stage", "Score", "Title", "Company")
+        table.add_columns("Stage", "Score", "Board", "Title", "Company")
         self._reload()
         table.focus()  # the job list owns focus, not the (hidden) filter Input
 
@@ -230,6 +237,8 @@ class JobApplicatorApp(App[None]):
         jobs = self._all
         if self._stage_filter is not None:
             jobs = [s for s in jobs if self._effective_stage(s) == self._stage_filter]
+        if self._board_filter is not None:
+            jobs = [s for s in jobs if s.job.board.value == self._board_filter]
         if self._filter:
             needle = self._filter.lower()
             jobs = [
@@ -249,10 +258,11 @@ class JobApplicatorApp(App[None]):
         # Cap Title (and Company) so the auto-sized Title column can't expand to the longest
         # title and push Company off the right edge (the reported bug). Fixed caps are
         # deliberate over a pane-width-derived value: the latter reads table.size mid-layout
-        # and proved racy. ~46+22 columns fit any pane ≳86 cols (terminals ≳190 wide); on a
-        # narrower terminal the table scrolls horizontally as before, but never hides Company
-        # on a normal-width one. Cells ellipsize cleanly instead of hard-cutting at the edge.
-        title_cap, company_cap = 46, 22
+        # and proved racy. Lowered from 46/22 to make room for the Board column: 38+18 keeps
+        # the whole table ≤ ~84 cols so every column (incl. Company) still fits the pane at a
+        # ~190-wide terminal (measured); narrower terminals h-scroll as before. Cells
+        # ellipsize cleanly instead of hard-cutting at the edge.
+        title_cap, company_cap = 38, 18
         table.clear()
         self._by_key = {}
         visible = self._visible()
@@ -262,9 +272,12 @@ class JobApplicatorApp(App[None]):
             stage = self._effective_stage(s)
             style = _STAGE_STYLE.get(stage, "white")
             score = f"{s.match_score:.0%}" if s.match_score is not None else "—"
+            board = s.job.board
+            board_cell = f"[{_BOARD_STYLE.get(board.value, 'white')}]{board.display_name}[/]"
             table.add_row(
                 f"[{style}]{stage.replace('_', ' ')}[/{style}]",
                 score,
+                board_cell,
                 escape(_elide(s.job.title, title_cap)),
                 escape(_elide(s.job.company, company_cap)),
                 key=key,
@@ -295,9 +308,13 @@ class JobApplicatorApp(App[None]):
         view = [f"sort: {_SORT_LABEL[self._sort_mode]}"]
         if self._stage_filter is not None:
             view.append(f"stage: {self._stage_filter.replace('_', ' ')}")
+        if self._board_filter is not None:
+            view.append(f"board: {JobBoard(self._board_filter).display_name}")
         if self._filter:
             view.append(f"text: {escape(self._filter)}")
-        narrowed = self._stage_filter is not None or bool(self._filter)
+        narrowed = (
+            self._stage_filter is not None or self._board_filter is not None or bool(self._filter)
+        )
         tail = f" — {len(self._visible())} shown" if narrowed else ""
         suffix = f"   [dim]({' · '.join(view)}{tail})[/dim]"
         return f"Résumé {resume}\n{' · '.join(parts)}{suffix}"
@@ -317,8 +334,8 @@ class JobApplicatorApp(App[None]):
             if self._all:
                 return (
                     "[dim]No jobs match the current filter.\n\nPress [/dim][cyan]f[/cyan]"
-                    "[dim] to change the stage filter · [/dim][cyan]/[/cyan][dim] for text · "
-                    "[/dim][cyan]Esc[/cyan][dim] to clear both.[/dim]"
+                    "[dim] stage · [/dim][cyan]b[/cyan][dim] board · [/dim][cyan]/[/cyan]"
+                    "[dim] text · [/dim][cyan]Esc[/cyan][dim] to clear all.[/dim]"
                 )
             return (
                 "[dim]No jobs yet.\n\nPress [/dim][cyan]s[/cyan][dim] to search a board · "
@@ -385,9 +402,16 @@ class JobApplicatorApp(App[None]):
 
     def action_cycle_stage_filter(self) -> None:
         """Cycle the funnel-stage filter (all → each stage → all). View-only; composes with
-        the text filter and respects the 'applied' overlay via ``_effective_stage``."""
+        the board + text filters and respects the 'applied' overlay via ``_effective_stage``."""
         i = _STAGE_CYCLE.index(self._stage_filter)
         self._stage_filter = _STAGE_CYCLE[(i + 1) % len(_STAGE_CYCLE)]
+        self._repaint()
+
+    def action_cycle_board_filter(self) -> None:
+        """Cycle the board filter (all → each board → all). View-only; composes with the
+        stage + text filters."""
+        i = _BOARD_CYCLE.index(self._board_filter)
+        self._board_filter = _BOARD_CYCLE[(i + 1) % len(_BOARD_CYCLE)]
         self._repaint()
 
     def action_cycle_sort(self) -> None:
@@ -751,8 +775,6 @@ class JobApplicatorApp(App[None]):
         if self._current is None:
             self.notify("No job selected.", severity="warning")
             return
-        from job_applicator.models import JobBoard
-
         if self._current.job.board is not JobBoard.LINKEDIN:
             self.notify(
                 f"Automated apply is LinkedIn-only — apply to "
@@ -848,7 +870,8 @@ class JobApplicatorApp(App[None]):
         box.value = ""
         box.remove_class("visible")
         self._filter = ""
-        self._stage_filter = None  # Esc resets BOTH filters → back to the full list
+        self._stage_filter = None  # Esc resets ALL filters → back to the full list
+        self._board_filter = None
         self._repaint()
         self.query_one("#joblist", DataTable).focus()
 
