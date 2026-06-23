@@ -15,6 +15,12 @@ class JobBoard(StrEnum):
     LINKEDIN = "linkedin"
     INDEED = "indeed"
 
+    @property
+    def display_name(self) -> str:
+        """Human-facing board name (proper casing) for UI/messages — the enum *value*
+        ('linkedin') is the wire form; this is what a user should see ('LinkedIn')."""
+        return {"linkedin": "LinkedIn", "indeed": "Indeed"}.get(self.value, self.value.title())
+
 
 class ApplicationStatus(StrEnum):
     """Outcome of an application attempt."""

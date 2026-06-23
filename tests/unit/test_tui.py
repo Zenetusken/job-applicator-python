@@ -401,6 +401,143 @@ def test_tui_artifact_lines_are_clickable(tmp_path: Path) -> None:
     assert "/out/" not in md  # no path embedded — resolved from _current on click
 
 
+def _stored(**job_over: object) -> object:
+    from datetime import UTC, datetime
+
+    from job_applicator.models import StoredJob
+
+    return StoredJob(
+        id=1,
+        job=_job(1, **job_over),
+        first_seen_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+
+def test_jobboard_display_name() -> None:
+    """The user-facing board name is properly cased; the enum value stays the wire form."""
+    assert JobBoard.LINKEDIN.display_name == "LinkedIn"
+    assert JobBoard.INDEED.display_name == "Indeed"
+    assert JobBoard.LINKEDIN.value == "linkedin"  # wire form unchanged
+
+
+def test_tui_detail_shows_full_description() -> None:
+    """The full posting renders (the detail pane scrolls) — not capped at 600 chars, which
+    hid the rest of the posting even though the pane can scroll."""
+    app = JobApplicatorApp(settings=AppSettings(), store=MagicMock(), app_state=MagicMock())
+    desc = "HEAD " + "x" * 700 + " UNIQUE_TAIL_MARKER"  # > 600 chars
+    md = app._detail_markup(_stored(description=desc))
+    assert "UNIQUE_TAIL_MARKER" in md  # the tail beyond char 600 is present
+
+
+def test_tui_detail_elides_long_url() -> None:
+    """A long tracking URL is elided in the DISPLAY but stays clickable — o/click/y act on the
+    full stored URL, never this display text."""
+    app = JobApplicatorApp(settings=AppSettings(), store=MagicMock(), app_state=MagicMock())
+    url = "https://www.linkedin.com/jobs/view/4267843029/?refId=" + "Z" * 200
+    md = app._detail_markup(_stored(url=url))
+    assert "@click=app.open_url" in md  # still clickable (the action reads j.url, not display)
+    assert "…" in md  # the display form is elided
+    assert "Z" * 200 not in md  # the tracking tail is not dumped into the pane
+    assert "linkedin.com/jobs/view/4267843029" in md  # the meaningful head is kept
+
+
+def test_tui_detail_shows_board_proper_case() -> None:
+    """The detail line shows the board properly cased ('LinkedIn'), not the enum value."""
+    app = JobApplicatorApp(settings=AppSettings(), store=MagicMock(), app_state=MagicMock())
+    md = app._detail_markup(_stored(company="Acme"))
+    assert "LinkedIn" in md  # proper-cased board name
+
+
+def test_tui_detail_elides_long_artifact_filename() -> None:
+    """A long artifact filename is middle-elided (keeps prefix + timestamp), still clickable."""
+    app = JobApplicatorApp(settings=AppSettings(), store=MagicMock(), app_state=MagicMock())
+    from datetime import UTC, datetime
+
+    from job_applicator.models import StoredJob
+
+    longname = "/out/tailored_" + "C" * 60 + "_194403.txt"
+    stored = StoredJob(
+        id=1,
+        job=_job(1),
+        tailored_resume_path=longname,
+        first_seen_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    md = app._detail_markup(stored)
+    assert "…" in md  # middle-elided
+    assert "C" * 60 not in md  # the long run is collapsed
+    assert "194403.txt" in md  # the identifying tail is kept
+    assert "@click=app.open_tailored" in md  # still clickable
+
+
+async def test_tui_joblist_company_visible_no_overflow(tmp_path: Path) -> None:
+    """At a normal-width terminal a very long title no longer pushes Company off-screen: the
+    table fits its pane (no horizontal scroll), so all four columns render."""
+    from textual.widgets import DataTable
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1, title="T" * 120, company="Acme Corporation Worldwide Holdings"))
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test(size=(240, 40)) as pilot:
+        await pilot.pause()
+        t = app.query_one("#joblist", DataTable)
+        # No horizontal overflow → every column (incl. Company) is on-screen. Without the
+        # title cap, the 120-char title would expand the table well past the pane.
+        assert t.virtual_size.width <= t.size.width
+
+
+async def test_tui_detail_scroll_keys(tmp_path: Path) -> None:
+    """`]` pages the detail pane down — so a keyboard user can read a long posting that the
+    list-focused arrow keys can't reach."""
+    from textual.containers import VerticalScroll
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1, description="paragraph\n" * 400))  # overflows the pane
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test(size=(120, 20)) as pilot:
+        await pilot.pause()
+        pane = app.query_one("#detailscroll", VerticalScroll)
+        assert pane.scroll_target_y == 0
+        await pilot.press("right_square_bracket")
+        await pilot.pause()
+        assert pane.scroll_target_y > 0  # the posting scrolled down
+
+
+def test_tui_joblist_loading_widget_override() -> None:
+    """The job-list table overrides the loading widget with the themed one (not the default)."""
+    from job_applicator.tui.app import JobListTable, _JobListLoading
+
+    assert isinstance(JobListTable().get_loading_widget(), _JobListLoading)
+    assert "background: $surface" in _JobListLoading.DEFAULT_CSS  # themed, not bare grey
+
+
+async def test_tui_joblist_loading_is_themed_on_screen(tmp_path: Path) -> None:
+    """Real frame: putting the list into loading mounts the themed cover with a SOLID
+    background (alpha 1.0), so the terminal grey can't bleed through (the reported issue)."""
+    from textual.widgets import DataTable
+
+    from job_applicator.tui.app import _JobListLoading
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test(size=(200, 40)) as pilot:
+        await pilot.pause()
+        table = app.query_one("#joblist", DataTable)
+        table.loading = True  # the reactive the real search worker uses
+        await pilot.pause()
+        cover = table._cover_widget  # the loading cover lives here (not the query tree)
+        assert isinstance(cover, _JobListLoading)  # our themed widget, not the framework default
+        assert cover.styles.background.a == 1.0  # solid → no grey bleed-through
+
+
 async def test_tui_open_tailored_artifact(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """Opening the tailored artifact launches the default viewer with its file:// URI."""
     import webbrowser
@@ -1109,6 +1246,9 @@ async def test_search_jobs_reports_phase_progress(monkeypatch) -> None:  # type:
     )
     joined = " | ".join(msgs)
     assert "Opening a browser" in joined and "Searching" in joined and "Scoring" in joined
+    # Proper-cased board name in the phase messages (consistent with the scraper's "on
+    # LinkedIn…" per-item line), not the lowercase enum value.
+    assert "LinkedIn" in joined and "linkedin for" not in joined
 
 
 async def test_search_jobs_forwards_per_item_progress(monkeypatch) -> None:  # type: ignore[no-untyped-def]

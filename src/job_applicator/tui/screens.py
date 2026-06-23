@@ -264,6 +264,7 @@ class HelpScreen(ModalScreen[None]):
             "",
             "[bold]Navigate[/bold]",
             "  ↑ ↓ · j k   move selection",
+            "  ] \\[         scroll the posting / detail pane",  # \\[ → literal '[' (not a tag)
             "  /           filter title/company · Esc clears",
             "  r           refresh from the store",
             "  q           quit",
