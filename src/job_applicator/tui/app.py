@@ -671,18 +671,16 @@ class JobApplicatorApp(App[None]):
     def action_search(self) -> None:
         """Open the search modal. Touches the account only on submit — the modal collects
         the query and shows the 'opens a browser on your real account' warning."""
-        if self._account_busy():
-            self.notify(
-                "An account action is already running — wait for it to finish.",
-                severity="warning",
-            )
+        if self._account_busy_refused():
             return
         from job_applicator.tui.screens import SearchScreen
 
         self.push_screen(SearchScreen(), self._search_then)
 
     def _search_then(self, plans: list[SearchParams] | None) -> None:
-        if plans:  # None/[] = cancelled or no board selected; nothing touched the account
+        # None/[] = cancelled or no board selected. Re-check busy: a second search modal can
+        # stack over the first (the app keybind fires under a modal), and both could dismiss.
+        if plans and not self._account_busy_refused():
             self._search_worker(plans)
 
     @work(group="account")
@@ -735,10 +733,14 @@ class JobApplicatorApp(App[None]):
         self._reload()
         if total == 0 and failed:
             return  # every attempted board errored — _run_action already toasted each
-        boards = ", ".join(p.board.display_name for p in plans)
+        # Name only the boards that succeeded in the "across" clause; failed ones go in the
+        # suffix (so a board isn't listed twice).
+        succeeded = ", ".join(
+            p.board.display_name for p in plans if p.board.display_name not in failed
+        )
         suffix = f"  ({', '.join(failed)} failed)" if failed else ""
         self.notify(
-            f"Found {total} job(s) across {boards}{suffix} — added to your funnel.",
+            f"Found {total} job(s) across {succeeded}{suffix} — added to your funnel.",
             severity="warning" if failed else "information",
             timeout=8,
         )
@@ -759,11 +761,7 @@ class JobApplicatorApp(App[None]):
                 timeout=8,
             )
             return
-        if self._account_busy():
-            self.notify(
-                "An account action is already running — wait for it to finish.",
-                severity="warning",
-            )
+        if self._account_busy_refused():
             return
         from job_applicator.tui.screens import ApplyScreen
 
@@ -771,8 +769,11 @@ class JobApplicatorApp(App[None]):
         self.push_screen(ApplyScreen(job), partial(self._apply_dispatch, job))
 
     def _apply_dispatch(self, job: JobListing, submit: bool | None) -> None:
-        if submit is not None:  # None = cancelled; nothing touched the account
-            self._apply_worker(job, submit=submit)
+        # None = cancelled. Re-check busy at dispatch too (a stacked confirm could otherwise
+        # start a second account worker past the modal-open gate).
+        if submit is None or self._account_busy_refused():
+            return
+        self._apply_worker(job, submit=submit)
 
     @work(group="account")
     async def _apply_worker(self, job: JobListing, *, submit: bool) -> None:
@@ -801,6 +802,19 @@ class JobApplicatorApp(App[None]):
 
         active = (WorkerState.PENDING, WorkerState.RUNNING)
         return any(w.group == "account" and w.state in active for w in self.workers)
+
+    def _account_busy_refused(self) -> bool:
+        """True (after a toast) when an account action is already running. Checked at BOTH the
+        modal open AND the post-confirm dispatch, so a stacked second modal can't slip a second
+        account worker past the one-at-a-time rule (the modal gate alone isn't enough — the
+        app keybind still fires while a modal is up if focus is off an Input)."""
+        if self._account_busy():
+            self.notify(
+                "An account action is already running — wait for it to finish.",
+                severity="warning",
+            )
+            return True
+        return False
 
     async def _run_action(self, label: str, coro: Awaitable[T]) -> T | None:
         """Await an action coroutine, turning ANY failure into a toast — a worker bug must

@@ -2136,3 +2136,40 @@ async def test_tui_search_modal_layout_fits_and_aligns(tmp_path: Path) -> None:
         assert nL.x == nI.x and nL.width > 0 and nI.width > 0  # counts aligned + visible
         assert nL.x >= cbL.right  # the count sits to the right of its checkbox
         assert scr.query_one("#buttons").region.bottom <= 40  # buttons visible without scroll
+
+
+async def test_tui_search_then_refuses_a_second_concurrent_account_worker(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
+    """Defense-in-depth (account safety): if a second search is dispatched while one is already
+    running (e.g. two modals stacked), _search_then refuses it — never two account workers /
+    two browsers at once."""
+    import asyncio
+
+    from job_applicator.scrapers.base import SearchParams
+    from job_applicator.tui import actions
+
+    gate = asyncio.Event()
+    calls: list[str] = []
+
+    async def _fake(_s, st, params, on_progress=None, on_job=None) -> int:  # type: ignore[no-untyped-def]
+        calls.append(params.board.value)
+        await gate.wait()  # hold the first worker running
+        return 0
+
+    monkeypatch.setattr(actions, "search_jobs", _fake)
+    app = _app(tmp_path, seed=0)
+    toasts: list[str] = []
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(app, "notify", lambda msg, **k: toasts.append(msg))
+        app._search_then([SearchParams(query="x", board=JobBoard.LINKEDIN)])  # worker A starts
+        await pilot.pause()
+        assert app._account_busy()
+        app._search_then([SearchParams(query="y", board=JobBoard.INDEED)])  # must be refused
+        await pilot.pause()
+        assert calls == ["linkedin"]  # the second search never started
+        assert any("already running" in t for t in toasts)
+        gate.set()
+        await app.workers.wait_for_complete()
