@@ -834,7 +834,7 @@ async def test_account_busy_blocks_a_second_action(tmp_path: Path, monkeypatch) 
     app = _app(tmp_path, seed=1)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._search_worker(SearchParams(query="x", board=JobBoard.LINKEDIN))
+        app._search_worker([SearchParams(query="x", board=JobBoard.LINKEDIN)])
         await pilot.pause()
         assert app._account_busy() is True  # the real predicate, not a mock
         app.action_search()  # a second account action…
@@ -1178,9 +1178,10 @@ async def test_tui_search_opens_modal_without_touching_account(tmp_path: Path, m
         make_browser.assert_not_called()
 
 
-async def test_tui_search_modal_collects_max_results(tmp_path: Path) -> None:
-    """The search modal collects a Max-results value into SearchParams, clamped to 1-50
-    (blank -> default 25). The scraper already honours params.max_results."""
+async def test_tui_search_modal_collects_per_board_counts(tmp_path: Path) -> None:
+    """The search modal collects a per-board result count into one SearchParams per selected
+    board, each clamped to 1-50 (blank/unparseable -> default 25). With the default selection
+    (LinkedIn on, Indeed off) it yields exactly one LinkedIn plan."""
     from textual.widgets import Input
 
     from job_applicator.tui.screens import SearchScreen
@@ -1189,23 +1190,26 @@ async def test_tui_search_modal_collects_max_results(tmp_path: Path) -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
 
-        async def submit_with(maxn: str) -> int:
+        async def linkedin_count(n: str) -> int:
             out: dict[str, object] = {}
             app.push_screen(SearchScreen(), lambda r: out.__setitem__("r", r))
             await pilot.pause()
             app.screen.query_one("#q", Input).value = "python"
-            app.screen.query_one("#maxn", Input).value = maxn
+            app.screen.query_one("#n_linkedin", Input).value = n
             app.screen._submit()  # type: ignore[attr-defined]
             await pilot.pause()
-            return out["r"].max_results  # type: ignore[union-attr]
+            plans = out["r"]
+            assert isinstance(plans, list) and len(plans) == 1  # LinkedIn on, Indeed off
+            assert plans[0].board is JobBoard.LINKEDIN
+            return plans[0].max_results
 
-        assert await submit_with("40") == 40  # honoured as entered
-        assert await submit_with("100") == 50  # clamped to the cap
-        assert await submit_with("0") == 1  # clamped to the floor
-        assert await submit_with("") == 25  # blank -> default
+        assert await linkedin_count("40") == 40  # honoured as entered
+        assert await linkedin_count("100") == 50  # clamped to the cap
+        assert await linkedin_count("0") == 1  # clamped to the floor
+        assert await linkedin_count("") == 25  # blank -> default
         # The integer Input permits a bare "-"/"+" (restrict regex), which int() rejects;
         # the except-ValueError fallback must keep that from crashing the dismiss.
-        assert await submit_with("-") == 25  # unparseable -> default (not a crash)
+        assert await linkedin_count("-") == 25  # unparseable -> default (not a crash)
 
 
 async def test_tui_search_submit_runs_and_persists(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -1428,7 +1432,7 @@ async def test_tui_search_streams_rows_incrementally(tmp_path: Path, monkeypatch
         await pilot.pause()
         table = app.query_one("#joblist", DataTable)
         assert table.row_count == 0
-        app._search_worker(SearchParams(query="x", board=JobBoard.LINKEDIN))
+        app._search_worker([SearchParams(query="x", board=JobBoard.LINKEDIN)])
         await pilot.pause()
         assert table.row_count == 1  # first row streamed in (not waiting for the whole scrape)
         assert table.loading is False  # spinner cleared on the first result
@@ -1475,7 +1479,7 @@ async def test_tui_search_shows_per_item_progress(tmp_path: Path, monkeypatch) -
     app = _app(tmp_path, seed=1)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._search_worker(SearchParams(query="x", board=JobBoard.LINKEDIN))
+        app._search_worker([SearchParams(query="x", board=JobBoard.LINKEDIN)])
         await pilot.pause()
         line = app._statusline()
         assert "⏳" in line and "Scraping job 2/3" in line  # the per-item count is live
@@ -1953,3 +1957,219 @@ async def test_tui_statusline_renders_sort_stage_in_running_frame(tmp_path: Path
         await pilot.pause()
         frame = _rendered()
         assert "stage: found" in frame and "1 shown" in frame
+
+
+# ----------------------------------------- Indeed + multi-board search (Cycle E)
+async def test_tui_search_modal_multi_board_yields_one_plan_per_board(tmp_path: Path) -> None:
+    """Selecting both boards yields one SearchParams per board — each with that board's own
+    count — and the shared query/location/remote copied to both."""
+    from textual.widgets import Checkbox, Input
+
+    from job_applicator.tui.screens import SearchScreen
+
+    app = _app(tmp_path, seed=1)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        out: dict[str, object] = {}
+        app.push_screen(SearchScreen(), lambda r: out.__setitem__("r", r))
+        await pilot.pause()
+        scr = app.screen
+        scr.query_one("#q", Input).value = "python"
+        scr.query_one("#loc", Input).value = "Berlin"
+        scr.query_one("#remote", Checkbox).value = True
+        scr.query_one("#bd_indeed", Checkbox).value = True  # LinkedIn already on by default
+        scr.query_one("#n_linkedin", Input).value = "10"
+        scr.query_one("#n_indeed", Input).value = "5"
+        scr._submit()  # type: ignore[attr-defined]
+        await pilot.pause()
+        plans = out["r"]
+        assert isinstance(plans, list) and len(plans) == 2
+        by_board = {p.board: p for p in plans}
+        assert by_board[JobBoard.LINKEDIN].max_results == 10
+        assert by_board[JobBoard.INDEED].max_results == 5
+        for p in plans:  # shared params copied to every board
+            assert p.query == "python" and p.location == "Berlin" and p.remote_only is True
+
+
+async def test_tui_search_modal_requires_a_board(tmp_path: Path) -> None:
+    """Unchecking both boards refuses to submit — nothing is dismissed and the modal stays
+    open (so a search can never run with no board selected)."""
+    from textual.widgets import Checkbox, Input
+
+    from job_applicator.tui.screens import SearchScreen
+
+    app = _app(tmp_path, seed=1)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        out: dict[str, object] = {"r": "untouched"}
+        app.push_screen(SearchScreen(), lambda r: out.__setitem__("r", r))
+        await pilot.pause()
+        scr = app.screen
+        scr.query_one("#q", Input).value = "python"
+        scr.query_one("#bd_linkedin", Checkbox).value = False  # both boards off now
+        scr._submit()  # type: ignore[attr-defined]
+        await pilot.pause()
+        assert isinstance(app.screen, SearchScreen)  # still open, not dismissed
+        assert out["r"] == "untouched"  # nothing handed back
+        assert "at least one board" in scr._warning_text().lower()  # type: ignore[attr-defined]
+
+
+async def test_tui_search_modal_warning_is_board_aware(tmp_path: Path) -> None:
+    """The warning reflects exactly the selected boards: the real-account warning for
+    LinkedIn, the public note for Indeed, a prompt when neither."""
+    from textual.widgets import Checkbox
+
+    from job_applicator.tui.screens import SearchScreen
+
+    app = _app(tmp_path, seed=1)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(SearchScreen(), lambda r: None)
+        await pilot.pause()
+        scr = app.screen
+        w = scr._warning_text()  # type: ignore[attr-defined]   # default: LinkedIn on only
+        assert "real account" in w and "public" not in w
+        scr.query_one("#bd_indeed", Checkbox).value = True  # both on
+        w = scr._warning_text()  # type: ignore[attr-defined]
+        assert "real account" in w and "public" in w
+        scr.query_one("#bd_linkedin", Checkbox).value = False  # none on
+        scr.query_one("#bd_indeed", Checkbox).value = False
+        assert "at least one board" in scr._warning_text().lower()  # type: ignore[attr-defined]
+
+
+async def test_tui_search_worker_runs_each_selected_board(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The worker scrapes every selected board in ONE account worker, calling search_jobs once
+    per board (in order) with that board's params; the final toast names the boards + total."""
+    from job_applicator.scrapers.base import SearchParams
+    from job_applicator.tui import actions
+
+    calls: list[tuple[str, int]] = []
+
+    async def _fake(_s, st, params, on_progress=None, on_job=None) -> int:  # type: ignore[no-untyped-def]
+        calls.append((params.board.value, params.max_results))
+        return 3
+
+    monkeypatch.setattr(actions, "search_jobs", _fake)
+    app = _app(tmp_path, seed=0)  # empty store
+    toasts: list[str] = []
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(app, "notify", lambda msg, **k: toasts.append(msg))
+        app._search_worker(
+            [
+                SearchParams(query="x", board=JobBoard.LINKEDIN, max_results=10),
+                SearchParams(query="x", board=JobBoard.INDEED, max_results=5),
+            ]
+        )
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    assert calls == [("linkedin", 10), ("indeed", 5)]  # both boards, in order, with counts
+    assert toasts and "LinkedIn, Indeed" in toasts[-1] and "6 job(s)" in toasts[-1]
+
+
+async def test_tui_search_worker_one_board_failing_does_not_abort_the_other(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
+    """If a board errors (e.g. Indeed can't clear Cloudflare), it's toasted and skipped — the
+    other board's results still land, and the app does not crash."""
+    from job_applicator.exceptions import JobApplicatorError
+    from job_applicator.scrapers.base import SearchParams
+    from job_applicator.tui import actions
+
+    async def _fake(_s, st, params, on_progress=None, on_job=None) -> int:  # type: ignore[no-untyped-def]
+        if params.board is JobBoard.INDEED:
+            raise JobApplicatorError("Indeed: could not clear the challenge")
+        return 4
+
+    monkeypatch.setattr(actions, "search_jobs", _fake)
+    app = _app(tmp_path, seed=0)
+    toasts: list[str] = []
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(app, "notify", lambda msg, **k: toasts.append(msg))
+        app._search_worker(
+            [
+                SearchParams(query="x", board=JobBoard.LINKEDIN, max_results=10),
+                SearchParams(query="x", board=JobBoard.INDEED, max_results=10),
+            ]
+        )
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    # one toast for the Indeed failure, one summary naming the failed board; LinkedIn's 4 land
+    assert any("Indeed" in t and "could not clear" in t for t in toasts)
+    assert any("4 job(s)" in t and "Indeed failed" in t for t in toasts)
+
+
+async def test_tui_search_modal_layout_fits_and_aligns(tmp_path: Path) -> None:
+    """Real-frame layout guard (a green widget-exists test can pass while the frame is broken):
+    the board rows align (checkbox + count input), the counts are visible (non-zero width),
+    and the modal box never exceeds the screen — it SCROLLS rather than clipping the buttons
+    on a short terminal."""
+    from textual.containers import VerticalScroll
+    from textual.widgets import Checkbox, Input
+
+    from job_applicator.tui.screens import SearchScreen
+
+    # Short terminal: the box must fit the screen and scroll (buttons reachable, not clipped).
+    app = _app(tmp_path, seed=0)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        app.push_screen(SearchScreen(), lambda r: None)
+        await pilot.pause()
+        box = app.screen.query_one("#searchbox", VerticalScroll)
+        assert box.region.bottom <= 24 and box.region.y >= 0  # box fits the screen
+        assert box.virtual_size.height > box.size.height  # too tall → scrolls, not clipped
+
+    # Normal terminal: rows align, counts are visible, buttons sit in the viewport.
+    app2 = _app(tmp_path, seed=0)
+    async with app2.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        app2.push_screen(SearchScreen(), lambda r: None)
+        await pilot.pause()
+        scr = app2.screen
+        cbL = scr.query_one("#bd_linkedin", Checkbox).region
+        cbI = scr.query_one("#bd_indeed", Checkbox).region
+        nL = scr.query_one("#n_linkedin", Input).region
+        nI = scr.query_one("#n_indeed", Input).region
+        assert cbL.x == cbI.x  # board checkboxes aligned
+        assert nL.x == nI.x and nL.width > 0 and nI.width > 0  # counts aligned + visible
+        assert nL.x >= cbL.right  # the count sits to the right of its checkbox
+        assert scr.query_one("#buttons").region.bottom <= 40  # buttons visible without scroll
+
+
+async def test_tui_search_then_refuses_a_second_concurrent_account_worker(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
+    """Defense-in-depth (account safety): if a second search is dispatched while one is already
+    running (e.g. two modals stacked), _search_then refuses it — never two account workers /
+    two browsers at once."""
+    import asyncio
+
+    from job_applicator.scrapers.base import SearchParams
+    from job_applicator.tui import actions
+
+    gate = asyncio.Event()
+    calls: list[str] = []
+
+    async def _fake(_s, st, params, on_progress=None, on_job=None) -> int:  # type: ignore[no-untyped-def]
+        calls.append(params.board.value)
+        await gate.wait()  # hold the first worker running
+        return 0
+
+    monkeypatch.setattr(actions, "search_jobs", _fake)
+    app = _app(tmp_path, seed=0)
+    toasts: list[str] = []
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(app, "notify", lambda msg, **k: toasts.append(msg))
+        app._search_then([SearchParams(query="x", board=JobBoard.LINKEDIN)])  # worker A starts
+        await pilot.pause()
+        assert app._account_busy()
+        app._search_then([SearchParams(query="y", board=JobBoard.INDEED)])  # must be refused
+        await pilot.pause()
+        assert calls == ["linkedin"]  # the second search never started
+        assert any("already running" in t for t in toasts)
+        gate.set()
+        await app.workers.wait_for_complete()
