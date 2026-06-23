@@ -43,6 +43,21 @@ _STAGE_STYLE: dict[str, str] = {
     "applied": "green",
 }
 
+# Stage-filter cycle: None (all) then each funnel stage in funnel order. `_effective_stage`
+# returns exactly these values (incl. the ApplicationState "applied" overlay), so the filter
+# compares cleanly against it. `_STAGE_ORDER` ranks a stage for the "stage" sort.
+_STAGE_CYCLE: list[str | None] = [None, *(st.value for st in FunnelStatus)]
+_STAGE_ORDER: dict[str, int] = {st.value: i for i, st in enumerate(FunnelStatus)}
+
+# Sort orders cycled by `S`; "match" (best opportunity first) is the default. The labels are
+# what the status line shows.
+_SORT_CYCLE: list[str] = ["match", "recent", "stage"]
+_SORT_LABEL: dict[str, str] = {
+    "match": "best match",
+    "recent": "recent",
+    "stage": "funnel stage",
+}
+
 
 def _elide(text: str, limit: int) -> str:
     """Truncate to ``limit`` columns with a trailing ellipsis (display only — elide the raw
@@ -113,6 +128,8 @@ class JobApplicatorApp(App[None]):
         Binding("o", "open_url", "Open"),
         Binding("y", "copy_url", "Copy URL", show=False),
         Binding("slash", "filter", "Filter"),
+        Binding("f", "cycle_stage_filter", "Stage"),
+        Binding("S", "cycle_sort", "Sort"),
         Binding("question_mark", "help", "Help"),
         Binding("escape", "clear_filter", "Clear filter", show=False),
         Binding("j", "cursor_down", "Down", show=False),
@@ -139,7 +156,9 @@ class JobApplicatorApp(App[None]):
         self._current: StoredJob | None = None  # job shown in the detail pane
         self._applied_urls: set[str] = set()  # URLs with a SUBMITTED record (applied)
         self._busy = ""  # transient "⏳ working…" status while a worker runs
-        self._filter = ""
+        self._filter = ""  # text filter (title/company substring)
+        self._stage_filter: str | None = None  # funnel-stage filter (None = all stages)
+        self._sort_mode = "match"  # list sort order (see _SORT_CYCLE)
         self._load_error = ""
 
     # ------------------------------------------------------------------ layout
@@ -180,22 +199,43 @@ class JobApplicatorApp(App[None]):
             self._load_error = str(exc)
             if refresh_applied:
                 self._applied_urls = set()
-        # Best-match-first: scored jobs by score desc, then unscored (kept newest-first by
-        # the stable sort, since the store returns updated_at-desc). Sorting the VIEW — not
-        # the shared list_jobs query the CLI also uses — keeps this TUI-local, and makes the
-        # post-scoring repaint visibly re-rank streamed results.
-        self._all.sort(
-            key=lambda s: (s.match_score is not None, s.match_score or 0.0), reverse=True
-        )
+        # Sort the VIEW (not the shared list_jobs query the CLI also uses) by the active
+        # mode — keeps it TUI-local, and makes the post-scoring repaint visibly re-rank.
+        self._apply_sort()
         self._repaint()
 
+    def _apply_sort(self) -> None:
+        """Sort ``self._all`` in place by the active sort mode. Runs on the freshly
+        store-ordered list (``_reload`` re-queries updated_at-desc first), so "match" keeps
+        unscored jobs newest-first via the stable sort."""
+        if self._sort_mode == "recent":
+            self._all.sort(key=lambda s: s.updated_at, reverse=True)
+        elif self._sort_mode == "stage":
+            # Funnel order (found→applied, mirroring the status-line counts), best score
+            # first within a stage (negate for descending score under the ascending key).
+            self._all.sort(
+                key=lambda s: (
+                    _STAGE_ORDER.get(self._effective_stage(s), 0),
+                    -(s.match_score or 0.0),
+                )
+            )
+        else:  # "match" — best opportunity first: scored desc, then unscored (newest-first).
+            self._all.sort(
+                key=lambda s: (s.match_score is not None, s.match_score or 0.0), reverse=True
+            )
+
     def _visible(self) -> list[StoredJob]:
-        if not self._filter:
-            return self._all
-        needle = self._filter.lower()
-        return [
-            s for s in self._all if needle in s.job.title.lower() or needle in s.job.company.lower()
-        ]
+        """The rows to show: ``self._all`` narrowed by the stage filter then the text filter
+        (both optional, composable). Sort order is already applied to ``self._all``."""
+        jobs = self._all
+        if self._stage_filter is not None:
+            jobs = [s for s in jobs if self._effective_stage(s) == self._stage_filter]
+        if self._filter:
+            needle = self._filter.lower()
+            jobs = [
+                s for s in jobs if needle in s.job.title.lower() or needle in s.job.company.lower()
+            ]
+        return jobs
 
     def _effective_stage(self, s: StoredJob) -> str:
         """The job's stage, overridden to 'applied' when ApplicationState has a SUBMITTED
@@ -250,13 +290,17 @@ class JobApplicatorApp(App[None]):
         head_urls = {str(s.job.url) for s in self._all}
         counts["applied"] = counts.get("applied", 0) + len(self._applied_urls - head_urls)
         parts = [f"{counts.get(st.value, 0)} {st.value.replace('_', ' ')}" for st in FunnelStatus]
-        shown = len(self._visible())
-        filt = (
-            f"   [dim](filter: {escape(self._filter)} — {shown} shown)[/dim]"
-            if self._filter
-            else ""
-        )
-        return f"Résumé {resume}\n{' · '.join(parts)}{filt}"
+        # View state: the active sort (always — a control the user drives with `S`), plus the
+        # stage/text filters when set, and the shown count when either narrows the list.
+        view = [f"sort: {_SORT_LABEL[self._sort_mode]}"]
+        if self._stage_filter is not None:
+            view.append(f"stage: {self._stage_filter.replace('_', ' ')}")
+        if self._filter:
+            view.append(f"text: {escape(self._filter)}")
+        narrowed = self._stage_filter is not None or bool(self._filter)
+        tail = f" — {len(self._visible())} shown" if narrowed else ""
+        suffix = f"   [dim]({' · '.join(view)}{tail})[/dim]"
+        return f"Résumé {resume}\n{' · '.join(parts)}{suffix}"
 
     def _set_busy(self, msg: str) -> None:
         """Show a live '⏳ <msg>' progress line while a worker runs (empty string clears
@@ -271,7 +315,11 @@ class JobApplicatorApp(App[None]):
     def _detail_markup(self, s: StoredJob | None) -> str:
         if s is None:
             if self._all:
-                return "[dim]No jobs match the filter.[/dim]"
+                return (
+                    "[dim]No jobs match the current filter.\n\nPress [/dim][cyan]f[/cyan]"
+                    "[dim] to change the stage filter · [/dim][cyan]/[/cyan][dim] for text · "
+                    "[/dim][cyan]Esc[/cyan][dim] to clear both.[/dim]"
+                )
             return (
                 "[dim]No jobs yet.\n\nPress [/dim][cyan]s[/cyan][dim] to search a board · "
                 "[/dim][cyan]e[/cyan][dim] to set your résumé · [/dim][cyan]?[/cyan]"
@@ -334,6 +382,21 @@ class JobApplicatorApp(App[None]):
 
     def action_refresh(self) -> None:
         self._reload()
+
+    def action_cycle_stage_filter(self) -> None:
+        """Cycle the funnel-stage filter (all → each stage → all). View-only; composes with
+        the text filter and respects the 'applied' overlay via ``_effective_stage``."""
+        i = _STAGE_CYCLE.index(self._stage_filter)
+        self._stage_filter = _STAGE_CYCLE[(i + 1) % len(_STAGE_CYCLE)]
+        self._repaint()
+
+    def action_cycle_sort(self) -> None:
+        """Cycle the list sort order (best match → recent → funnel stage). View-only."""
+        i = _SORT_CYCLE.index(self._sort_mode)
+        self._sort_mode = _SORT_CYCLE[(i + 1) % len(_SORT_CYCLE)]
+        # Re-query store-ordered, then re-sort, so "match" keeps its newest-first tiebreak;
+        # a keypress can't change the applied set, so skip its requery.
+        self._reload(refresh_applied=False)
 
     def action_help(self) -> None:
         """Show the in-app key reference (read-only modal; touches nothing)."""
@@ -754,6 +817,7 @@ class JobApplicatorApp(App[None]):
         box.value = ""
         box.remove_class("visible")
         self._filter = ""
+        self._stage_filter = None  # Esc resets BOTH filters → back to the full list
         self._repaint()
         self.query_one("#joblist", DataTable).focus()
 

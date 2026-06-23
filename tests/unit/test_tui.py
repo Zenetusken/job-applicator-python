@@ -1736,3 +1736,190 @@ def test_tui_statusline_unset_resume_keeps_dim_markup() -> None:
     line = app._statusline()
     assert "[dim]not set" in line  # markup preserved
     assert "\\[dim]" not in line  # not escaped to literal brackets
+
+
+# --------------------------------------------- stage filter + sort (Cycle D)
+def _staged_app(tmp_path: Path, *, applied: tuple[int, ...] = ()) -> JobApplicatorApp:
+    """An app seeded with one job at each head stage — found(1), matched(2), tailored(3),
+    cover_letter(4) — plus optional SUBMITTED 'applied' overlay for the given job numbers."""
+    from datetime import UTC, datetime
+
+    from job_applicator.models import ApplicationResult, ApplicationStatus
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))  # found
+    store.upsert_match(_mr(_job(2)))  # matched
+    store.mark_tailored(_job(3), tailored_resume_path="/out/t.txt")  # tailored
+    store.mark_tailored(  # cover_letter
+        _job(4), tailored_resume_path="/out/t.txt", cover_letter_path="/out/c.txt"
+    )
+    app_state = MagicMock()
+    app_state.list_recent.return_value = [
+        ApplicationResult(
+            job=_job(n), status=ApplicationStatus.SUBMITTED, timestamp=datetime.now(UTC)
+        )
+        for n in applied
+    ]
+    return JobApplicatorApp(
+        settings=AppSettings(resume_path="/cv/r.pdf"), store=store, app_state=app_state
+    )
+
+
+async def test_tui_stage_filter_cycles_through_stages(tmp_path: Path) -> None:
+    """`f` cycles the funnel-stage filter (all → found → matched → … → applied → all),
+    narrowing the list to one stage at a time and wrapping back to the full list."""
+    app = _staged_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#joblist", DataTable)
+        assert table.row_count == 4  # all stages shown
+        await pilot.press("f")  # → found
+        await pilot.pause()
+        assert app._stage_filter == "found" and table.row_count == 1
+        assert app._current is not None and app._current.job.company == "Co1"
+        await pilot.press("f")  # → matched
+        await pilot.pause()
+        assert app._stage_filter == "matched" and table.row_count == 1
+        assert app._current is not None and app._current.job.company == "Co2"
+        for _ in range(4):  # matched → tailored → cover_letter → applied → all
+            await pilot.press("f")
+        await pilot.pause()
+        assert app._stage_filter is None and table.row_count == 4  # full circle
+
+
+async def test_tui_stage_filter_composes_with_text_filter(tmp_path: Path) -> None:
+    """The stage filter and the text filter narrow together (logical AND)."""
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1, company="Acme"))  # found
+    store.upsert_job(_job(2, company="Globex"))  # found
+    store.upsert_match(_mr(_job(3, company="Acme")))  # matched
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#joblist", DataTable)
+        app._filter = "acme"  # text filter → jobs 1 (found) + 3 (matched)
+        app._repaint()
+        assert table.row_count == 2
+        await pilot.press("f")  # add stage filter → found → only job 1
+        await pilot.pause()
+        assert app._stage_filter == "found" and table.row_count == 1
+        assert app._current is not None and app._current.job.company == "Acme"
+
+
+async def test_tui_stage_filter_respects_applied_overlay(tmp_path: Path) -> None:
+    """A SUBMITTED job shows under the 'applied' filter — not its store head stage —
+    matching how the status-line counts compose the ApplicationState overlay."""
+    app = _staged_app(tmp_path, applied=(4,))  # job 4 (cover_letter in store) is SUBMITTED
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#joblist", DataTable)
+        assert app._applied_urls == {"https://linkedin.com/jobs/4"}
+        app._stage_filter = "cover_letter"  # job 4 reads as applied now → not here
+        app._repaint()
+        assert table.row_count == 0
+        app._stage_filter = "applied"  # … it shows here instead
+        app._repaint()
+        assert table.row_count == 1
+        assert app._current is not None and app._current.job.company == "Co4"
+
+
+async def test_tui_escape_clears_stage_and_text_filters(tmp_path: Path) -> None:
+    """Esc resets BOTH the stage filter and the text filter — back to the full list."""
+    app = _staged_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#joblist", DataTable)
+        await pilot.press("f")  # stage → found
+        await pilot.pause()
+        app._filter = "co1"  # and a text filter
+        app._repaint()
+        assert app._stage_filter == "found" and app._filter == "co1"
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app._stage_filter is None and app._filter == ""
+        assert table.row_count == 4  # both cleared → all jobs
+
+
+async def test_tui_sort_cycles_and_reorders(tmp_path: Path) -> None:
+    """`S` cycles best-match → recent → funnel-stage → best-match, reordering the list."""
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_match(_mr(_job(1), score=0.2))  # matched, scored, seeded FIRST (older)
+    store.upsert_job(_job(2))  # found, unscored, seeded LAST (newer)
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app._sort_mode == "match"  # scored job first
+        assert app._visible()[0].job.company == "Co1"
+        await pilot.press("S")  # → recent (job 2 updated last)
+        await pilot.pause()
+        assert app._sort_mode == "recent" and app._visible()[0].job.company == "Co2"
+        await pilot.press("S")  # → funnel stage (found sorts before matched)
+        await pilot.pause()
+        assert app._sort_mode == "stage" and app._visible()[0].job.company == "Co2"
+        await pilot.press("S")  # → back to match
+        await pilot.pause()
+        assert app._sort_mode == "match" and app._visible()[0].job.company == "Co1"
+
+
+async def test_tui_empty_stage_shows_guidance(tmp_path: Path) -> None:
+    """Filtering to a stage with no jobs shows guidance (not 'No jobs yet') pointing at the
+    keys to change or clear the filter."""
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))  # only a 'found' job
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._stage_filter = "applied"  # no applied jobs
+        app._repaint()
+        assert app.query_one("#joblist", DataTable).row_count == 0
+        detail = app._detail_markup(None)
+        assert "No jobs match the current filter" in detail
+        assert "[cyan]f[/cyan]" in detail  # points at the stage-filter key, not 'No jobs yet'
+
+
+def test_tui_statusline_reflects_sort_and_stage() -> None:
+    """The status line always shows the active sort, and adds the stage filter + shown count
+    when a stage filter is set."""
+    app = JobApplicatorApp(settings=AppSettings(), store=MagicMock(), app_state=MagicMock())
+    app._all = []
+    line = app._statusline()  # defaults
+    assert "sort: best match" in line and "stage:" not in line
+    app._sort_mode = "recent"
+    app._stage_filter = "matched"
+    line = app._statusline()
+    assert "sort: recent" in line and "stage: matched" in line and "shown" in line
+
+
+async def test_tui_statusline_renders_sort_stage_in_running_frame(tmp_path: Path) -> None:
+    """Real-frame guard (a string method can pass while the on-screen frame is wrong): after
+    real keypresses the RUNNING status-line Static renders the sort, then the stage filter."""
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))
+    app = JobApplicatorApp(
+        settings=AppSettings(resume_path="/cv/r.pdf"),
+        store=store,
+        app_state=MagicMock(list_recent=lambda **k: []),
+    )
+
+    def _rendered() -> str:
+        from textual.widgets import Static
+
+        r = app.query_one("#statusline", Static).render()
+        return r.plain if hasattr(r, "plain") else str(r)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert "sort: best match" in _rendered()  # sort shown by default
+        await pilot.press("S")  # → recent
+        await pilot.pause()
+        assert "sort: recent" in _rendered()
+        await pilot.press("f")  # stage → found
+        await pilot.pause()
+        frame = _rendered()
+        assert "stage: found" in frame and "1 shown" in frame
