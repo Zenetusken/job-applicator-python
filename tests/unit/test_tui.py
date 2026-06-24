@@ -2211,3 +2211,121 @@ async def test_tui_search_then_refuses_a_second_concurrent_account_worker(
         assert any("already running" in t for t in toasts)
         gate.set()
         await app.workers.wait_for_complete()
+
+
+# ------------------------------------------------ board column + filter (Cycle F)
+async def test_tui_board_column_shows_each_board(tmp_path: Path) -> None:
+    """The list has a Board column showing each job's board (LinkedIn / Indeed)."""
+    from textual.coordinate import Coordinate
+    from textual.widgets import DataTable
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))  # LinkedIn (the _job default)
+    store.upsert_job(_job(2, url="https://indeed.com/jobs/2", board=JobBoard.INDEED))
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        t = app.query_one("#joblist", DataTable)
+        assert len(t.columns) == 5  # Stage, Score, Board, Title, Company
+        cells = [t.get_cell_at(Coordinate(r, 2)) for r in range(t.row_count)]  # Board column
+        assert any("LinkedIn" in c for c in cells) and any("Indeed" in c for c in cells)
+
+
+async def test_tui_board_filter_cycles_and_narrows(tmp_path: Path) -> None:
+    """`b` cycles the board filter (all → linkedin → indeed → all), narrowing the list."""
+    from textual.widgets import DataTable
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))  # LinkedIn
+    store.upsert_job(_job(2, url="https://indeed.com/jobs/2", board=JobBoard.INDEED))
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        t = app.query_one("#joblist", DataTable)
+        assert t.row_count == 2  # all boards
+        await pilot.press("b")  # → linkedin
+        await pilot.pause()
+        assert app._board_filter == "linkedin" and t.row_count == 1
+        assert app._current is not None and app._current.job.board is JobBoard.LINKEDIN
+        await pilot.press("b")  # → indeed
+        await pilot.pause()
+        assert app._board_filter == "indeed" and t.row_count == 1
+        assert app._current is not None and app._current.job.board is JobBoard.INDEED
+        await pilot.press("b")  # → all
+        await pilot.pause()
+        assert app._board_filter is None and t.row_count == 2
+
+
+async def test_tui_board_filter_composes_with_stage_filter(tmp_path: Path) -> None:
+    """Board + stage filters narrow together (logical AND)."""
+    from textual.widgets import DataTable
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))  # LinkedIn, found
+    store.upsert_match(
+        _mr(_job(2, url="https://indeed.com/2", board=JobBoard.INDEED))
+    )  # Indeed, matched
+    store.upsert_match(_mr(_job(3)))  # LinkedIn, matched
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        t = app.query_one("#joblist", DataTable)
+        app._board_filter = "linkedin"
+        app._stage_filter = "matched"
+        app._repaint()
+        assert t.row_count == 1  # LinkedIn AND matched → only job 3
+        assert app._current is not None and app._current.job.company == "Co3"
+
+
+async def test_tui_escape_clears_board_filter_too(tmp_path: Path) -> None:
+    """Esc resets the board filter along with the stage + text filters."""
+    from textual.widgets import DataTable
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))
+    store.upsert_job(_job(2, url="https://indeed.com/jobs/2", board=JobBoard.INDEED))
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        t = app.query_one("#joblist", DataTable)
+        await pilot.press("b")  # board → linkedin
+        await pilot.pause()
+        assert app._board_filter == "linkedin" and t.row_count == 1
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app._board_filter is None and t.row_count == 2
+
+
+def test_tui_statusline_shows_board_filter() -> None:
+    """The status line shows the active board filter (+ the narrowed shown-count)."""
+    app = JobApplicatorApp(settings=AppSettings(), store=MagicMock(), app_state=MagicMock())
+    app._all = []
+    app._board_filter = "indeed"
+    line = app._statusline()
+    assert "board: Indeed" in line and "shown" in line
+
+
+async def test_tui_joblist_no_overflow_with_board_column(tmp_path: Path) -> None:
+    """Real-frame guard: the added Board column still fits at a ~190-wide terminal — Company
+    is not pushed off-screen (the #65-67 fix holds via the lowered title/company caps)."""
+    from textual.widgets import DataTable
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1, title="T" * 120, company="Acme Corporation Worldwide Holdings"))
+    store.upsert_job(_job(2, url="https://indeed.com/2", board=JobBoard.INDEED, title="X" * 120))
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test(size=(190, 40)) as pilot:
+        await pilot.pause()
+        t = app.query_one("#joblist", DataTable)
+        assert len(t.columns) == 5  # Stage, Score, Board, Title, Company
+        assert t.virtual_size.width <= t.size.width  # no horizontal overflow at 190 wide
