@@ -1877,7 +1877,7 @@ async def test_tui_escape_clears_stage_and_text_filters(tmp_path: Path) -> None:
 
 
 async def test_tui_sort_cycles_and_reorders(tmp_path: Path) -> None:
-    """`S` cycles best-match → recent → funnel-stage → best-match, reordering the list."""
+    """`S` cycles best-match → recent → funnel-stage → salary → best-match, reordering."""
     store = JobStore(db_path=tmp_path / "applications.db")
     store.upsert_match(_mr(_job(1), score=0.2))  # matched, scored, seeded FIRST (older)
     store.upsert_job(_job(2))  # found, unscored, seeded LAST (newer)
@@ -1894,6 +1894,9 @@ async def test_tui_sort_cycles_and_reorders(tmp_path: Path) -> None:
         await pilot.press("S")  # → funnel stage (found sorts before matched)
         await pilot.pause()
         assert app._sort_mode == "stage" and app._visible()[0].job.company == "Co2"
+        await pilot.press("S")  # → salary (neither job lists pay; mode still advances)
+        await pilot.pause()
+        assert app._sort_mode == "salary"
         await pilot.press("S")  # → back to match
         await pilot.pause()
         assert app._sort_mode == "match" and app._visible()[0].job.company == "Co1"
@@ -1957,6 +1960,73 @@ async def test_tui_statusline_renders_sort_stage_in_running_frame(tmp_path: Path
         await pilot.pause()
         frame = _rendered()
         assert "stage: found" in frame and "1 shown" in frame
+
+
+async def test_tui_salary_sort_filter_and_toggle(tmp_path: Path) -> None:
+    """Salary sort ranks high→low with unlisted last; the min-salary filter KEEPS unlisted
+    jobs, and only the separate 'hide unlisted' toggle removes them."""
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1, salary="$150,000 a year"))  # high
+    store.upsert_job(_job(2, salary="$50,000 a year"))  # low
+    store.upsert_job(_job(3, salary=None))  # unlisted
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._sort_mode = "salary"
+        app._reload()
+        await pilot.pause()
+        order = [s.job.title for s in app._visible()]
+        assert order[0] == "Engineer 1"  # highest salary first
+        assert order[-1] == "Engineer 3"  # unlisted sorts last
+        # min $100k drops the $50k job but KEEPS the unlisted one
+        app._min_salary = 100_000
+        app._repaint()
+        await pilot.pause()
+        assert {s.job.title for s in app._visible()} == {"Engineer 1", "Engineer 3"}
+        # the hide-unlisted toggle now removes Engineer 3
+        app._hide_unlisted = True
+        app._repaint()
+        await pilot.pause()
+        assert {s.job.title for s in app._visible()} == {"Engineer 1"}
+
+
+async def test_tui_salary_keys_status_and_esc(tmp_path: Path) -> None:
+    """Real-frame: `m` cycles the floor (shown in the status line), `u` hides unlisted-pay
+    jobs, and Esc resets both back to the full list."""
+    from textual.widgets import Static
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1, salary="$150,000 a year"))
+    store.upsert_job(_job(2, salary=None))
+    app = JobApplicatorApp(
+        settings=AppSettings(resume_path="/cv/r.pdf"),
+        store=store,
+        app_state=MagicMock(list_recent=lambda **k: []),
+    )
+
+    def _rendered() -> str:
+        r = app.query_one("#statusline", Static).render()
+        return r.plain if hasattr(r, "plain") else str(r)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#joblist", DataTable)
+        await pilot.press("m")  # min salary → $40k
+        await pilot.pause()
+        assert app._min_salary == 40_000
+        assert "min $40k" in _rendered()
+        assert table.row_count == 2  # $150k clears it; the unlisted job is kept
+        await pilot.press("u")  # hide unlisted-pay jobs
+        await pilot.pause()
+        assert app._hide_unlisted is True
+        assert "listed pay only" in _rendered()
+        assert table.row_count == 1  # only the job with listed pay remains
+        await pilot.press("escape")  # resets ALL filters
+        await pilot.pause()
+        assert app._min_salary == 0 and app._hide_unlisted is False
+        assert table.row_count == 2
 
 
 # ----------------------------------------- Indeed + multi-board search (Cycle E)

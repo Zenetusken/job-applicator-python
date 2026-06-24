@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
@@ -115,8 +116,6 @@ def detect_seniority(title: str, description: str = "") -> str | None:
     only consulted when the title is inconclusive (titles are terse and
     unambiguous, whereas descriptions are noisier).
     """
-    import re
-
     for text in (title, description):
         text_lower = text.lower()
         for level, keywords in _SENIORITY_KEYWORDS.items():
@@ -124,6 +123,59 @@ def detect_seniority(title: str, description: str = "") -> str | None:
                 if re.search(rf"\b{re.escape(kw)}\b", text_lower):
                     return level
     return None
+
+
+# Currency figures in a salary string, e.g. "$86,000", "$50K", "$1.5M" — the leading "$" is
+# required so stray numbers (a "10%" bonus, a street number) aren't mistaken for pay.
+# The K/M multiplier must sit RIGHT ON the number and not start a word — so "$1.5M" scales but
+# the "M" of "$5 Main St" does not.
+_SALARY_FIGURE = re.compile(r"\$\s*(\d[\d,]*(?:\.\d+)?)([kKmM])?(?![A-Za-z])")
+_SALARY_SUFFIX = {"k": 1_000, "m": 1_000_000}
+# Pay-period detectors → annualization factor (US/CA work-year norms). Anchored on word
+# boundaries so "day" does NOT fire on "Saturday"/"payday" (a measured 260x blow-up) while
+# "/hr"-style tokens still match; the first period that matches wins.
+_SALARY_PERIODS: list[tuple[tuple[str, ...], int]] = [
+    ((r"\bhour\b", r"\bhourly\b", r"/hr\b", r"\bper hour\b", r"\ban hour\b"), 2080),
+    ((r"\bweek\b", r"\bweekly\b", r"/wk\b", r"\bper week\b"), 52),
+    ((r"\bmonth\b", r"\bmonthly\b", r"/mo\b", r"\bper month\b"), 12),
+    ((r"\bday\b", r"\bdaily\b", r"\bper day\b"), 260),
+]
+# Below this an "annual" figure is noise (a stray "$5", a typo) rather than real pay → unknown.
+_MIN_PLAUSIBLE_ANNUAL = 1_000
+
+
+def parse_salary_to_annual_min(text: str | None) -> int | None:
+    """Parse a free-text salary into a conservative ANNUAL minimum, for sort/filter.
+
+    Returns the lower bound of any range, annualized by the pay period (hourly x 2080, etc.);
+    a ``$50K`` figure expands to 50000 and ``$1.5M`` to 1500000. Returns ``None`` when nothing
+    parseable (or only an implausibly small figure) is found — an unknown salary is never forced
+    to a number, so callers treat it as "unlisted". Purely numeric: it does NOT convert
+    currencies (a ca.indeed.com figure is read as-is, in CAD). Expects a salary string, not a
+    full posting (it keys off ``$`` figures, so a stray "$"-amount in prose can mislead it).
+    """
+    if not text:
+        return None
+    figures: list[float] = []
+    for match in _SALARY_FIGURE.finditer(text):
+        try:
+            value = float(match.group(1).replace(",", ""))
+        except ValueError:
+            continue
+        suffix = match.group(2)
+        if suffix:  # "K" → thousands, "M" → millions
+            value *= _SALARY_SUFFIX[suffix.lower()]
+        figures.append(value)
+    if not figures:
+        return None
+    amount = min(figures)  # the range's lower bound is the conservative floor
+    low = text.lower()
+    for patterns, factor in _SALARY_PERIODS:
+        if any(re.search(pattern, low) for pattern in patterns):
+            amount *= factor
+            break
+    annual = int(amount)
+    return annual if annual >= _MIN_PLAUSIBLE_ANNUAL else None
 
 
 class UserProfile(BaseModel):

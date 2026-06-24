@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from playwright.async_api import BrowserContext, ElementHandle, Page
 
@@ -54,6 +54,23 @@ def _is_indeed_host(host: str) -> bool:
     return host_matches(host, "indeed.com")
 
 
+def _clean_description(raw: str) -> str:
+    """Tidy an Indeed description/snippet: collapse runs of blank lines and trim. Kept light
+    on purpose — the matcher/ATS want the text, not heavy reformatting."""
+    lines = [line.rstrip() for line in raw.replace("\r\n", "\n").split("\n")]
+    out: list[str] = []
+    blanks = 0
+    for line in lines:
+        if line.strip():
+            blanks = 0
+            out.append(line)
+        else:
+            blanks += 1
+            if blanks == 1:  # keep a single separating blank, drop the rest
+                out.append("")
+    return "\n".join(out).strip()
+
+
 class IndeedScraper(BaseScraper):
     """Scrapes public job listings from Indeed."""
 
@@ -62,6 +79,24 @@ class IndeedScraper(BaseScraper):
     # Result-card containers, tried in order (Indeed varies by region / A/B bucket). Shared
     # with the diagnostic dump so it reports a match count per selector.
     _CARD_SELECTORS = ("div.job_seen_beacon", "[data-jk]", "div.cardOutline")
+
+    # Short description teaser shown ON the result card (no click needed) — best-effort, used
+    # as the baseline description so every Indeed job carries SOME text even when the full
+    # description panel can't be loaded.
+    _SNIPPET_SELECTORS = (
+        '[data-testid="jobsnippet_footer"]',
+        "div.job-snippet",
+        "div[class*='job-snippet']",
+    )
+
+    # Full description in Indeed's right-hand detail PANE after a card is clicked.
+    # ``#jobDescriptionText`` is Indeed's long-stable description id (both the standalone
+    # viewjob page and the search split-pane); the rest are best-effort fallbacks.
+    _DESC_SELECTORS = (
+        "#jobDescriptionText",
+        ".jobsearch-JobComponent-description",
+        "[id^='jobDescriptionText']",
+    )
 
     @classmethod
     def browser_policy(cls) -> BrowserPolicy:
@@ -74,6 +109,7 @@ class IndeedScraper(BaseScraper):
         self._config = config
         self._resolved_base: str | None = None
         self._auto_base: str | None = None  # cached region origin (computed once)
+        self._diag_dumped = False  # one failing-card diagnostic per scrape (see _dump_failed_card)
 
     @property
     def _base(self) -> str:
@@ -186,6 +222,12 @@ class IndeedScraper(BaseScraper):
 
             selected = cards[: params.max_results]
             total = len(selected)
+            # Pass 1 — extract every card's listing fields (incl. the on-card snippet) WITHOUT
+            # clicking. Doing this up front means the working card-level scrape can never be
+            # lost to the description enrichment below, which clicks cards and could in
+            # principle navigate the page (detaching the remaining card handles).
+            parsed: list[tuple[int, ElementHandle, JobListing]] = []
+            seen_urls: set[str] = set()
             for i, card in enumerate(selected, start=1):
                 # Tick per CARD at the top of the loop (see LinkedIn) so a failed
                 # extraction never stalls the count.
@@ -193,14 +235,20 @@ class IndeedScraper(BaseScraper):
                     on_progress(f"Scraping job {i}/{total} on Indeed…")
                 try:
                     job = await self._extract_job(card, params.board)
-                    if job:
-                        jobs.append(job)
-                        if on_job is not None:  # stream the listing as soon as it's parsed
-                            on_job(job)
                 except Exception as exc:
                     logger.warning("Failed to extract Indeed card: %s", exc)
+                    continue
+                if not job:
+                    continue
+                # Indeed lists the SAME job as both a sponsored ad and an organic result; the
+                # canonical (data-jk) URL collapses those — skip the repeat so it isn't stored
+                # twice or counted twice.
+                if str(job.url) in seen_urls:
+                    continue
+                seen_urls.add(str(job.url))
+                parsed.append((i, card, job))
 
-            if not jobs:
+            if not parsed:
                 # Cards were present but none parsed → stale FIELD selectors against the live
                 # DOM (a genuinely empty search returns 0 CARDS above, so this is never a real
                 # empty result). Dump the DOM and FAIL LOUDLY so the caller surfaces "Indeed
@@ -212,6 +260,44 @@ class IndeedScraper(BaseScraper):
                     "selectors are stale against the current Indeed DOM."
                     + (f" Live DOM saved to {dump}." if dump else ""),
                     context={"url": page.url, "cards": len(cards)},
+                )
+
+            # Pass 2 — best-effort full-description enrichment via Indeed's split pane (mirrors
+            # the LinkedIn click-to-load flow). Non-fatal per card: a job whose detail panel
+            # won't load keeps its card snippet, so this can never drop a job.
+            self._diag_dumped = False
+            enriched = 0
+            for i, card, job in parsed:
+                if on_progress is not None:
+                    on_progress(f"Reading description {i}/{total} on Indeed…")
+                # The canonical URL is /viewjob?jk=<jk>; that key ties the loaded pane to this
+                # card (see _load_description). Jobs that fell back to an href have no jk.
+                jk = parse_qs(urlsplit(str(job.url)).query).get("jk", [None])[0]
+                desc = ""
+                try:
+                    desc = await self._load_description(page, card, jk)
+                except Exception as exc:  # enrichment is best-effort; keep the snippet
+                    logger.debug("Indeed description enrichment failed (card %d): %s", i, exc)
+                if desc and len(desc) > len(job.description):
+                    job = job.model_copy(update={"description": desc})
+                    enriched += 1
+                elif not self._diag_dumped:
+                    # First card with NO full description → capture the live DOM that tells us
+                    # WHY (navigated away? challenged? empty pane? stale snippet/desc selectors?)
+                    # so ONE user run pins the fix. The selectors are still unverified against a
+                    # real card DOM, which is why this diagnostic, not a blind retune, ships now.
+                    self._diag_dumped = True
+                    await self._dump_failed_card(page, card)
+                jobs.append(job)
+                if on_job is not None:  # stream the (possibly enriched) listing
+                    on_job(job)
+
+            if not enriched:
+                logger.warning(
+                    "Indeed: no full descriptions loaded for any of %d card(s); using the card "
+                    "snippet. Diagnostic dump in %s.",
+                    len(parsed),
+                    _DEBUG_DIR,
                 )
             logger.info("Scraped %d jobs from Indeed", len(jobs))
             return jobs
@@ -281,9 +367,17 @@ class IndeedScraper(BaseScraper):
             return None
         title = (await title_el.inner_text()).strip()
         href = await title_el.get_attribute("href")
-        if not href:
+        # Prefer the stable job key (data-jk) for a CANONICAL URL: it dedupes the same job
+        # listed as both a sponsored ad (/pagead/clk… tracking redirect) and an organic
+        # result (/viewjob), and avoids persisting an expiring redirect as the job URL. Fall
+        # back to the card href only when the live DOM exposes no jk.
+        jk = await self._card_jk(card, title_el)
+        if jk:
+            url = f"{self._base}/viewjob?jk={jk}"
+        elif href:
+            url = href if href.startswith("http") else f"{self._base}{href}"
+        else:
             return None
-        url = href if href.startswith("http") else f"{self._base}{href}"
 
         company_el = await card.query_selector('[data-testid="company-name"], span.companyName')
         company = (await company_el.inner_text()).strip() if company_el else "Unknown"
@@ -293,10 +387,114 @@ class IndeedScraper(BaseScraper):
         )
         location = (await location_el.inner_text()).strip() if location_el else ""
 
+        # Salary teaser shown on the card (best-effort; most postings omit it). Selector
+        # verified against the live DOM (2026-06-24): the figure sits in a
+        # ``li.salary-snippet-container`` (its inner_text is just the "$86,000-$112,000/yr" text).
+        salary_el = await card.query_selector(
+            '[class*="salary-snippet"], [data-testid*="salary-snippet"]'
+        )
+        salary = (await salary_el.inner_text()).strip() if salary_el else None
+
+        # The on-card snippet (best-effort) is the baseline description: it needs no click, so
+        # every job carries SOME text even when the full-description pane can't be loaded.
+        snippet = ""
+        for selector in self._SNIPPET_SELECTORS:
+            snippet_el = await card.query_selector(selector)
+            if snippet_el:
+                snippet = _clean_description((await snippet_el.inner_text()).strip())
+                if snippet:
+                    break
+
         return JobListing(
             title=title,
             company=company,
             url=url,  # type: ignore[arg-type]
             location=location,
+            salary=salary or None,
             board=board,
+            description=snippet,
         )
+
+    async def _card_jk(self, card: ElementHandle, title_el: ElementHandle) -> str | None:
+        """Indeed's stable job key, for a canonical URL + dedup. Tried on the card, then the
+        title link, then any descendant carrying it. None when the live DOM doesn't expose it
+        (the caller then falls back to the card href, so this can't regress)."""
+        for el in (card, title_el):
+            jk = await el.get_attribute("data-jk")
+            if jk:
+                return jk
+        holder = await card.query_selector("[data-jk]")
+        return await holder.get_attribute("data-jk") if holder else None
+
+    async def _get_desc_text(self, page: Page) -> str:
+        """Current right-pane description text (for change detection after a card click)."""
+        for selector in self._DESC_SELECTORS:
+            el = await page.query_selector(selector)
+            if el:
+                return (await el.inner_text()).strip()
+        return ""
+
+    async def _load_description(self, page: Page, card: ElementHandle, jk: str | None) -> str:
+        """Click the card and return the cleaned full detail-pane description (≤5k chars).
+
+        Indeed loads the description IN-PAGE and reflects the viewed job in the URL as
+        ``&vjk=<jk>`` (verified against the live DOM). Waiting for that key to match the
+        clicked card is what makes this reliable: it reads the right description even when the
+        pane was *pre-opened* on the first result, where change-detection alone fails (the pane
+        never "changes", so the old ``cur != prev`` check rejected a description that was right
+        there — the measured cause of the first-card miss). Change-detection stays as a fallback
+        for layouts/regions that don't put ``vjk`` in the URL. Best-effort: '' if nothing loads.
+        """
+        prev = await self._get_desc_text(page)
+        await card.click(timeout=5_000)
+        for _ in range(12):
+            await random_delay(0.3, 0.5)
+            text = await self._get_desc_text(page)
+            if len(text) <= 100:
+                continue
+            # The pane belongs to THIS card once the viewed-job key in the URL matches it…
+            if jk and f"vjk={jk}" in page.url:
+                return _clean_description(text[:5000])
+            # …or, where the URL carries no vjk, once it has visibly changed from the prior card
+            # (guards against reading the previous card's still-displayed description).
+            if not jk and text != prev:
+                return _clean_description(text[:5000])
+        return ""
+
+    async def _dump_failed_card(self, page: Page, card: ElementHandle) -> None:
+        """Capture everything that discriminates WHY a card yielded no full description, so a
+        single user run pins the cause instead of another blind guess. Records the page
+        URL/title (navigated? challenged?), whether each ``_DESC_SELECTOR`` is present vs
+        present-but-empty, the live match counts for the snippet / data-jk / title selectors on
+        the failing card, and the card + page HTML. Best-effort — never raises."""
+        try:
+            _DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+            (_DEBUG_DIR / "indeed-failed-card.html").write_text(
+                await page.content(), encoding="utf-8"
+            )
+            lines = [
+                f"page.url:   {page.url}",
+                f"page.title: {await page.title()}",
+                "",
+                "description selectors (pane state):",
+            ]
+            for selector in self._DESC_SELECTORS:
+                el = await page.query_selector(selector)
+                if el is None:
+                    lines.append(f"  {selector}: ABSENT")
+                else:
+                    text = (await el.inner_text()).strip()
+                    lines.append(f"  {selector}: present, text len={len(text)}")
+            lines += ["", "card selector match counts (on the failing card):"]
+            for selector in (*self._SNIPPET_SELECTORS, "[data-jk]", "a.jcs-JobTitle, h2 a"):
+                try:
+                    count = len(await card.query_selector_all(selector))
+                except Exception:  # a bad selector must not break the diagnostic
+                    count = -1
+                lines.append(f"  {selector}: {count}")
+            lines.append(f"  card data-jk attr: {await card.get_attribute('data-jk')!r}")
+            lines += ["", "failing card inner_html:", await card.inner_html()]
+            (_DEBUG_DIR / "indeed-failed-card.txt").write_text("\n".join(lines), encoding="utf-8")
+            logger.warning("Indeed failing-card diagnostic written to %s", _DEBUG_DIR)
+        except Exception as exc:  # diagnostics never break the scrape
+            logger.warning("Could not write Indeed failing-card diagnostic: %s", exc)
