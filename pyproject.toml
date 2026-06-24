@@ -1,6 +1,6 @@
 [project]
 name = "job-applicator"
-version = "0.2.0"
+version = "0.3.0"
 description = "AI-powered job application tool with browser automation"
 authors = [{name = "Drei"}]
 requires-python = ">=3.12"
@@ -59,6 +59,7 @@ dev = [
     "pytest-asyncio>=0.25",
     "pytest-cov>=6.2",
     "hypothesis>=6.142",
+    "build>=1.2",
 ]
 
 [project.scripts]
