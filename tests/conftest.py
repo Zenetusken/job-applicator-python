@@ -71,6 +71,11 @@ def _isolate_local_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     db = tmp_path / "ja-state" / "applications.db"
     for module in ("jobs_store", "state", "batch_state"):
         monkeypatch.setattr(f"job_applicator.{module}.DEFAULT_DB_PATH", db)
+    # The Indeed scraper's diagnostic dumps (empty-scrape DOM, detail-pane DOM) also land
+    # under real ~/.job-applicator/; redirect them so no scrape test writes real state.
+    monkeypatch.setattr(
+        "job_applicator.scrapers.indeed._DEBUG_DIR", tmp_path / "ja-state" / "debug"
+    )
 
 
 @pytest.fixture

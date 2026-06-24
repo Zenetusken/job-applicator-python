@@ -54,6 +54,23 @@ def _is_indeed_host(host: str) -> bool:
     return host_matches(host, "indeed.com")
 
 
+def _clean_description(raw: str) -> str:
+    """Tidy an Indeed description/snippet: collapse runs of blank lines and trim. Kept light
+    on purpose — the matcher/ATS want the text, not heavy reformatting."""
+    lines = [line.rstrip() for line in raw.replace("\r\n", "\n").split("\n")]
+    out: list[str] = []
+    blanks = 0
+    for line in lines:
+        if line.strip():
+            blanks = 0
+            out.append(line)
+        else:
+            blanks += 1
+            if blanks == 1:  # keep a single separating blank, drop the rest
+                out.append("")
+    return "\n".join(out).strip()
+
+
 class IndeedScraper(BaseScraper):
     """Scrapes public job listings from Indeed."""
 
@@ -62,6 +79,24 @@ class IndeedScraper(BaseScraper):
     # Result-card containers, tried in order (Indeed varies by region / A/B bucket). Shared
     # with the diagnostic dump so it reports a match count per selector.
     _CARD_SELECTORS = ("div.job_seen_beacon", "[data-jk]", "div.cardOutline")
+
+    # Short description teaser shown ON the result card (no click needed) — best-effort, used
+    # as the baseline description so every Indeed job carries SOME text even when the full
+    # description panel can't be loaded.
+    _SNIPPET_SELECTORS = (
+        '[data-testid="jobsnippet_footer"]',
+        "div.job-snippet",
+        "div[class*='job-snippet']",
+    )
+
+    # Full description in Indeed's right-hand detail PANE after a card is clicked.
+    # ``#jobDescriptionText`` is Indeed's long-stable description id (both the standalone
+    # viewjob page and the search split-pane); the rest are best-effort fallbacks.
+    _DESC_SELECTORS = (
+        "#jobDescriptionText",
+        ".jobsearch-JobComponent-description",
+        "[id^='jobDescriptionText']",
+    )
 
     @classmethod
     def browser_policy(cls) -> BrowserPolicy:
@@ -186,6 +221,11 @@ class IndeedScraper(BaseScraper):
 
             selected = cards[: params.max_results]
             total = len(selected)
+            # Pass 1 — extract every card's listing fields (incl. the on-card snippet) WITHOUT
+            # clicking. Doing this up front means the working card-level scrape can never be
+            # lost to the description enrichment below, which clicks cards and could in
+            # principle navigate the page (detaching the remaining card handles).
+            parsed: list[tuple[int, ElementHandle, JobListing]] = []
             for i, card in enumerate(selected, start=1):
                 # Tick per CARD at the top of the loop (see LinkedIn) so a failed
                 # extraction never stalls the count.
@@ -194,13 +234,11 @@ class IndeedScraper(BaseScraper):
                 try:
                     job = await self._extract_job(card, params.board)
                     if job:
-                        jobs.append(job)
-                        if on_job is not None:  # stream the listing as soon as it's parsed
-                            on_job(job)
+                        parsed.append((i, card, job))
                 except Exception as exc:
                     logger.warning("Failed to extract Indeed card: %s", exc)
 
-            if not jobs:
+            if not parsed:
                 # Cards were present but none parsed → stale FIELD selectors against the live
                 # DOM (a genuinely empty search returns 0 CARDS above, so this is never a real
                 # empty result). Dump the DOM and FAIL LOUDLY so the caller surfaces "Indeed
@@ -213,6 +251,35 @@ class IndeedScraper(BaseScraper):
                     + (f" Live DOM saved to {dump}." if dump else ""),
                     context={"url": page.url, "cards": len(cards)},
                 )
+
+            # Pass 2 — best-effort full-description enrichment via Indeed's split pane (mirrors
+            # the LinkedIn click-to-load flow). Non-fatal per card: a job whose detail panel
+            # won't load keeps its card snippet, so this can never drop a job.
+            enriched = 0
+            for i, card, job in parsed:
+                if on_progress is not None:
+                    on_progress(f"Reading description {i}/{total} on Indeed…")
+                try:
+                    desc = await self._load_description(page, card)
+                    if desc and len(desc) > len(job.description):
+                        job = job.model_copy(update={"description": desc})
+                        enriched += 1
+                except Exception as exc:  # enrichment is best-effort; keep the snippet
+                    logger.debug("Indeed description enrichment failed (card %d): %s", i, exc)
+                jobs.append(job)
+                if on_job is not None:  # stream the (possibly enriched) listing
+                    on_job(job)
+
+            if not enriched:
+                # No card yielded a full description → the detail-pane selectors are likely
+                # stale (or the click doesn't open the pane). Snippets still carry the jobs;
+                # dump the live pane so the selectors can be fixed against the real DOM.
+                logger.warning(
+                    "Indeed: full descriptions could not be loaded for any of %d card(s); "
+                    "the card snippet is used instead.",
+                    len(parsed),
+                )
+                await self._dump_pane(page)
             logger.info("Scraped %d jobs from Indeed", len(jobs))
             return jobs
         finally:
@@ -293,10 +360,56 @@ class IndeedScraper(BaseScraper):
         )
         location = (await location_el.inner_text()).strip() if location_el else ""
 
+        # The on-card snippet (best-effort) is the baseline description: it needs no click, so
+        # every job carries SOME text even when the full-description pane can't be loaded.
+        snippet = ""
+        for selector in self._SNIPPET_SELECTORS:
+            snippet_el = await card.query_selector(selector)
+            if snippet_el:
+                snippet = _clean_description((await snippet_el.inner_text()).strip())
+                if snippet:
+                    break
+
         return JobListing(
             title=title,
             company=company,
             url=url,  # type: ignore[arg-type]
             location=location,
             board=board,
+            description=snippet,
         )
+
+    async def _get_desc_text(self, page: Page) -> str:
+        """Current right-pane description text (for change detection after a card click)."""
+        for selector in self._DESC_SELECTORS:
+            el = await page.query_selector(selector)
+            if el:
+                return (await el.inner_text()).strip()
+        return ""
+
+    async def _load_description(self, page: Page, card: ElementHandle) -> str:
+        """Click the card to load Indeed's detail pane, wait for the description to populate,
+        and return the cleaned full text (≤5k chars). Best-effort: returns '' if the pane
+        never loads, so the caller keeps the card snippet. Mirrors the LinkedIn split pane."""
+        prev = await self._get_desc_text(page)
+        await card.click(timeout=5_000)
+        for _ in range(10):
+            await random_delay(0.3, 0.5)
+            cur = await self._get_desc_text(page)
+            # Only accept a pane that actually CHANGED — otherwise a stale read would
+            # cross-contaminate this card with the previous card's description.
+            if cur and cur != prev and len(cur) > 100:
+                return _clean_description(cur[:5000])
+        return ""
+
+    async def _dump_pane(self, page: Page) -> None:
+        """Save the live detail-pane DOM when no full description could be loaded, so the
+        ``_DESC_SELECTORS`` can be fixed against the real page. Best-effort — never raises."""
+        try:
+            _DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+            (_DEBUG_DIR / "indeed-last-desc.html").write_text(
+                await page.content(), encoding="utf-8"
+            )
+            logger.warning("Indeed detail-pane dump written to %s", _DEBUG_DIR)
+        except Exception as exc:  # diagnostics never break the scrape
+            logger.warning("Could not write Indeed detail-pane dump: %s", exc)

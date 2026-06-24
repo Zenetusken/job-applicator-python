@@ -155,6 +155,7 @@ async def test_scrape_auto_retries_on_region_redirect(
         return [MagicMock()]
 
     scraper._load_results = fake_load
+    scraper._load_description = AsyncMock(return_value="")  # not under test here
 
     await scraper.scrape(SearchParams(query="python developer"))
 
@@ -176,6 +177,8 @@ async def test_scrape_emits_per_card_progress(app_settings: AppSettings, tmp_pat
     scraper._browser.persistent_context = AsyncMock(return_value=MagicMock())
     scraper._new_stealth_page = AsyncMock(return_value=AsyncMock())
     scraper._load_results = AsyncMock(return_value=[MagicMock() for _ in range(3)])
+    scraper._load_description = AsyncMock(return_value="")  # phase-2 not under test
+    scraper._dump_pane = AsyncMock()  # no real pane to dump from a mock page
 
     def _stub(n: int) -> JobListing:
         return JobListing(
@@ -187,10 +190,17 @@ async def test_scrape_emits_per_card_progress(app_settings: AppSettings, tmp_pat
     msgs: list[str] = []
     jobs = await scraper.scrape(SearchParams(query="python", board=JobBoard.INDEED), msgs.append)
 
-    assert msgs == [
+    # Phase 1 (card extraction) ticks per CARD — including the one whose extraction raises —
+    # so the count never stalls (counts cards, not jobs).
+    assert [m for m in msgs if m.startswith("Scraping job")] == [
         "Scraping job 1/3 on Indeed…",
         "Scraping job 2/3 on Indeed…",
         "Scraping job 3/3 on Indeed…",
+    ]
+    # Phase 2 (description enrichment) ticks only for the cards that actually parsed (1 and 3).
+    assert [m for m in msgs if m.startswith("Reading description")] == [
+        "Reading description 1/3 on Indeed…",
+        "Reading description 3/3 on Indeed…",
     ]
     assert [j.title for j in jobs] == ["E1", "E3"]  # 2 extracted; count still reached 3/3
 
@@ -209,6 +219,8 @@ async def test_scrape_streams_each_job_via_on_job(
     scraper._browser.persistent_context = AsyncMock(return_value=MagicMock())
     scraper._new_stealth_page = AsyncMock(return_value=AsyncMock())
     scraper._load_results = AsyncMock(return_value=[MagicMock() for _ in range(2)])
+    scraper._load_description = AsyncMock(return_value="")  # phase-2 not under test
+    scraper._dump_pane = AsyncMock()
 
     def _stub(n: int) -> JobListing:
         return JobListing(
@@ -263,3 +275,115 @@ async def test_scrape_raises_and_dumps_when_cards_present_but_none_extracted(
     summary = (Path(debug_dir) / "indeed-last-scrape.txt").read_text(encoding="utf-8")
     assert "container match counts" in summary
     assert "live card markup" in summary  # first card's inner_html, to fix field selectors
+
+
+@pytest.mark.asyncio
+async def test_extract_job_captures_card_snippet(app_settings: AppSettings) -> None:
+    """Every card carries the on-card snippet as a baseline description (no click needed), so
+    an Indeed job is never description-less even if the full pane can't be loaded."""
+    scraper = IndeedScraper(MagicMock(), app_settings)
+
+    title_el = AsyncMock()
+    title_el.inner_text = AsyncMock(return_value="Backend Engineer")
+    title_el.get_attribute = AsyncMock(return_value="/viewjob?jk=1")
+    snippet_el = AsyncMock()
+    snippet_el.inner_text = AsyncMock(return_value="Build Python APIs.\n\n\n\nAsync, Pydantic.")
+
+    async def query(selector: str) -> object | None:
+        if "jcs-JobTitle" in selector:
+            return title_el
+        if "jobsnippet" in selector or "job-snippet" in selector:
+            return snippet_el
+        return None
+
+    card = MagicMock()
+    card.query_selector = AsyncMock(side_effect=query)
+
+    job = await scraper._extract_job(card, JobBoard.INDEED)
+    assert job is not None
+    assert job.description.startswith("Build Python APIs.")
+    assert "Async, Pydantic." in job.description
+    assert "\n\n\n" not in job.description  # _clean_description collapsed the blank run
+
+
+@pytest.mark.asyncio
+async def test_load_description_accepts_only_a_changed_pane(
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_load_description returns the full text once the pane CHANGES after the click — the
+    change check stops a stale read from cross-contaminating with the prior card's text."""
+    monkeypatch.setattr("job_applicator.scrapers.indeed.random_delay", AsyncMock())
+    scraper = IndeedScraper(MagicMock(), app_settings)
+    full = "Full job posting. " * 20  # > 100 chars
+    reads = iter(["previous card text", full])  # pre-click read, then the loaded pane
+
+    async def fake_get(_page: object) -> str:
+        return next(reads)
+
+    monkeypatch.setattr(scraper, "_get_desc_text", fake_get)
+    card = AsyncMock()
+
+    desc = await scraper._load_description(AsyncMock(), card)
+    assert desc.startswith("Full job posting.")
+    card.click.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_scrape_enriches_snippet_with_full_description(
+    app_settings: AppSettings, tmp_path: object
+) -> None:
+    """The card snippet is upgraded to the full pane description when it loads (longer wins)."""
+    app_settings.target.indeed_domain = "www.indeed.com"
+    scraper = IndeedScraper(MagicMock(), app_settings)
+    scraper.COOKIE_PATH = tmp_path / "indeed.json"  # type: ignore[operator,assignment]
+    scraper._browser.persistent_context = AsyncMock(return_value=MagicMock())
+    scraper._new_stealth_page = AsyncMock(return_value=AsyncMock())
+    scraper._load_results = AsyncMock(return_value=[MagicMock()])
+    scraper._extract_job = AsyncMock(
+        return_value=JobListing(
+            title="E",
+            company="Co",
+            url="https://indeed.com/1",
+            board=JobBoard.INDEED,
+            description="short snippet",
+        )
+    )
+    full = "A much longer full description with the real posting body. " * 5
+    scraper._load_description = AsyncMock(return_value=full)
+
+    jobs = await scraper.scrape(SearchParams(query="x", board=JobBoard.INDEED))
+    assert jobs[0].description == full  # upgraded from snippet → full
+
+
+@pytest.mark.asyncio
+async def test_scrape_keeps_snippet_and_dumps_pane_when_full_fails(
+    app_settings: AppSettings, tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Best-effort: if no card's full description loads, the snippet is kept (job not dropped)
+    and the live detail pane is dumped so the _DESC_SELECTORS can be fixed against real DOM."""
+    from pathlib import Path
+
+    debug_dir = tmp_path / "debug"  # type: ignore[operator]
+    monkeypatch.setattr("job_applicator.scrapers.indeed._DEBUG_DIR", debug_dir)
+    app_settings.target.indeed_domain = "www.indeed.com"
+    scraper = IndeedScraper(MagicMock(), app_settings)
+    scraper.COOKIE_PATH = tmp_path / "indeed.json"  # type: ignore[operator,assignment]
+    scraper._browser.persistent_context = AsyncMock(return_value=MagicMock())
+    page = AsyncMock()
+    page.content = AsyncMock(return_value="<html><body>detail pane</body></html>")
+    scraper._new_stealth_page = AsyncMock(return_value=page)
+    scraper._load_results = AsyncMock(return_value=[MagicMock()])
+    scraper._extract_job = AsyncMock(
+        return_value=JobListing(
+            title="E",
+            company="Co",
+            url="https://indeed.com/1",
+            board=JobBoard.INDEED,
+            description="snippet text",
+        )
+    )
+    scraper._load_description = AsyncMock(return_value="")  # pane never loads
+
+    jobs = await scraper.scrape(SearchParams(query="x", board=JobBoard.INDEED))
+    assert jobs[0].description == "snippet text"  # snippet kept, job NOT dropped
+    assert (Path(debug_dir) / "indeed-last-desc.html").exists()  # pane dumped for diagnosis
