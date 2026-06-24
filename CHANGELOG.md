@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Universal multi-file style-guide support: `CoverLetterGenerator.load_style_guide` now accepts a comma-separated list of paths, loads `.pdf` files via `ResumeLoader`, and merges multiple examples with `StyleAnalyzer.analyze_multiple`.
+- `apply --style-guide` now loads the style guide and passes it through to `CoverLetterGenerator.generate`.
+
+### Changed
+
+- `generate-cover-letter` now uses the same shared style-guide loader as `apply`, `batch`, and `tailor`, removing the duplicated inline loading logic.
+- `config.example.toml` and `README.md` document comma-separated `--style-guide` usage.
+
 ## [0.3.3] - 2026-06-24
 
 ### Fixed

@@ -10,6 +10,8 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from job_applicator.config import LLMConfig
+from job_applicator.documents.resume import ResumeLoader
+from job_applicator.documents.style_analyzer import StyleAnalyzer
 from job_applicator.exceptions import LLMError
 from job_applicator.models import JobListing, ResumeData, StyleGuide, UserProfile
 from job_applicator.utils.llm import (
@@ -92,7 +94,6 @@ class CoverLetterGenerator:
     def __init__(self, config: LLMConfig, runtime: LLMRuntime | None = None) -> None:
         self._config = config
         self._client: Any = None
-        self._style_cache: StyleGuide | None = None
         # The breaker lives on a per-command runtime (built from config when not
         # injected) — shared across all cover-letter calls in this command (e.g.
         # every job in a batch run), with no module-global mutable state.
@@ -112,39 +113,42 @@ class CoverLetterGenerator:
                 raise LLMError("litellm or instructor not installed") from exc
         return self._client
 
-    async def load_style_guide(self, style_guide_path: str) -> StyleGuide:
-        """Load and analyze a style guide from a file.
+    async def load_style_guide(self, style_guide_path: str, ocr_mode: str = "auto") -> StyleGuide:
+        """Load and analyze one or more style-guide files into a single StyleGuide.
 
-        This reads an example resume/cover letter and extracts writing patterns
-        using the LLM. The result is cached for subsequent calls.
+        ``style_guide_path`` may be a single file or a comma-separated list. PDFs
+        are parsed with ``ResumeLoader``; all other files are read as UTF-8 text.
+        A single file is analyzed directly; multiple files are analyzed
+        individually and merged. Per-text caching lives in ``StyleAnalyzer``,
+        so repeated calls for the same path are cheap.
         """
-        if self._style_cache is not None:
-            return self._style_cache
-
         from pathlib import Path
 
-        path = Path(style_guide_path)
-        if not await asyncio.to_thread(path.exists):
-            raise LLMError(f"Style guide not found: {path}")
+        paths = [p.strip() for p in style_guide_path.split(",") if p.strip()]
+        if not paths:
+            raise LLMError("No style guide paths provided")
 
-        # Load the text content
-        if path.suffix.lower() == ".pdf":
-            from job_applicator.documents.resume import ResumeLoader
+        for path_str in paths:
+            if not await asyncio.to_thread(Path(path_str).exists):
+                raise LLMError(f"Style guide not found: {path_str}")
 
-            loader = ResumeLoader()
-            resume_data = loader.load(path)
-            text = resume_data.raw_text
-        else:
-            text = await asyncio.to_thread(path.read_text, encoding="utf-8")
-
-        # Analyze the style
-        from job_applicator.documents.style_analyzer import StyleAnalyzer
+        loader = ResumeLoader()
+        texts: list[str] = []
+        for path_str in paths:
+            path = Path(path_str)
+            if path.suffix.lower() == ".pdf":
+                resume_data = loader.load(path, ocr_mode=ocr_mode)
+                texts.append(resume_data.raw_text)
+            else:
+                texts.append(await asyncio.to_thread(path.read_text, encoding="utf-8"))
 
         analyzer = StyleAnalyzer(self._config)
-        style = await analyzer.analyze(text)
-        self._style_cache = style
+        if len(texts) == 1:
+            style = await analyzer.analyze(texts[0])
+        else:
+            style = await analyzer.analyze_multiple(texts)
 
-        logger.info("Loaded style guide from %s: tone=%s", path.name, style.tone)
+        logger.info("Loaded style guide from %s: tone=%s", style_guide_path, style.tone)
         return style
 
     def _validate_cover_letter(self, text: str) -> None:
@@ -446,8 +450,6 @@ class CoverLetterGenerator:
         if tone_section:
             parts.extend(["", tone_section])
         if style_guide:
-            from job_applicator.documents.style_analyzer import StyleAnalyzer
-
             parts.extend(["", StyleAnalyzer.format_style_for_prompt(style_guide)])
         parts.extend(
             [
@@ -530,8 +532,6 @@ class CoverLetterGenerator:
 
         # Add style guide if provided
         if style_guide:
-            from job_applicator.documents.style_analyzer import StyleAnalyzer
-
             style_section = StyleAnalyzer.format_style_for_prompt(style_guide)
             parts.extend(["", style_section])
 

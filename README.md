@@ -13,7 +13,7 @@ AI-powered job application tool using Playwright browser automation with modern 
 - **Semantic Job Matching**: Match resumes to jobs using mxbai-embed-large-v1 embeddings
 - **Resume Tailoring**: LLM-powered resume rewriting for specific jobs with hallucination guards
 - **Date Audit**: Pre-ingestion CV validation — checks ordering, staleness, timeline coherence
-- **Style Analysis**: Mimic writing style from example resumes/cover letters
+- **Style Analysis**: Mimic writing style from one or more example resumes/cover letters (comma-separated paths)
 - **ATS Compatibility Check**: Validate resumes against ATS heuristics (contact info, standard sections, length, no ASCII tables) with a score and actionable suggestions
 - **Structured Outputs**: Instructor for type-safe LLM responses
 
@@ -129,8 +129,22 @@ job-applicator batch --resume resume.pdf --query "python developer" --top-k 5 --
 job-applicator tailor --resume resume.pdf --job-title "Tech Support" --company "CGI" \
   --requirements "Troubleshooting,Windows,Office 365" --location "Montreal, QC"
 
-# Generate cover letter with style guide
+# Generate cover letter with style guide (single file or comma-separated)
 job-applicator generate-cover-letter --resume resume.pdf --style-guide example.txt
+job-applicator generate-cover-letter --resume resume.pdf \
+  --style-guide "cover_letter_example.txt,resume_example.pdf"
+
+# Apply with a style guide
+job-applicator apply --site linkedin --query "python" --limit 5 \
+  --resume resume.pdf --style-guide example.txt
+
+# Batch tailor + cover letters with a style guide
+job-applicator batch --resume resume.pdf --jobs-file jobs.json --top-k 10 \
+  --style-guide "cover_letter_example.txt,resume_example.pdf"
+
+# Tailor with a style guide
+job-applicator tailor --resume resume.pdf --job-title "Tech Support" --company "CGI" \
+  --style-guide example.txt
 
 # Detailed match report with per-skill breakdown
 python scripts/detailed_match_report.py

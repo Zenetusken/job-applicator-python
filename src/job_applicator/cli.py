@@ -816,6 +816,13 @@ def apply(
                 user_profile = _load_user_profile(settings)
 
                 generator = CoverLetterGenerator(settings.llm, runtime=_make_runtime(settings))
+                style = None
+                if settings.style_guide_path:
+                    with console.status("Analyzing writing style..."):
+                        style = await generator.load_style_guide(
+                            settings.style_guide_path, ocr_mode=effective_ocr_mode
+                        )
+                    console.print(f"[green]Style loaded: {style.tone}[/green]")
                 sem = asyncio.Semaphore(3)
 
                 async def _gen_one(
@@ -823,7 +830,9 @@ def apply(
                 ) -> tuple[str, str] | None:
                     async with sem:
                         try:
-                            letter = await generator.generate(job, user_profile, resume_data)
+                            letter = await generator.generate(
+                                job, user_profile, resume_data, style_guide=style
+                            )
                             return str(job.url), letter
                         except Exception as exc:
                             msg = f"Cover letter failed for {job.title}: {exc}"
@@ -967,34 +976,11 @@ def generate_cover_letter(
         # Load style guide if provided (supports comma-separated paths)
         style = None
         if settings.style_guide_path:
-            paths = [p.strip() for p in settings.style_guide_path.split(",") if p.strip()]
-
-            if len(paths) == 1:
-                with err_console.status("Analyzing writing style..."):
-                    style = await generator.load_style_guide(paths[0])
-                err_console.print(f"[green]Style loaded: {style.tone}[/green]")
-            elif len(paths) > 1:
-                with err_console.status(f"Analyzing {len(paths)} style examples..."):
-                    from job_applicator.documents.style_analyzer import StyleAnalyzer
-
-                    analyzer = StyleAnalyzer(settings.llm)
-
-                    texts = []
-                    for path in paths:
-                        from pathlib import Path
-
-                        p = Path(path)
-                        if await asyncio.to_thread(p.exists):
-                            if p.suffix.lower() == ".pdf":
-                                resume = loader.load(p, ocr_mode=effective_ocr_mode)
-                                texts.append(resume.raw_text)
-                            else:
-                                texts.append(await asyncio.to_thread(p.read_text, encoding="utf-8"))
-
-                    if texts:
-                        style = await analyzer.analyze_multiple(texts)
-                        msg = f"Combined style from {len(texts)} examples"
-                        err_console.print(f"[green]{msg}: {style.tone}[/green]")
+            with err_console.status("Analyzing writing style..."):
+                style = await generator.load_style_guide(
+                    settings.style_guide_path, ocr_mode=effective_ocr_mode
+                )
+            err_console.print(f"[green]Style loaded: {style.tone}[/green]")
 
         if reporter:
             reporter.record_llm_call(

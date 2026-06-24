@@ -16,6 +16,7 @@ from job_applicator.models import (
     JobBoard,
     JobListing,
     ResumeData,
+    StyleGuide,
     UserProfile,
 )
 
@@ -773,3 +774,139 @@ async def test_generate_revoice_is_graceful_on_error() -> None:
     letter = await generator.generate(*_cl_inputs())
     assert generator._complete.await_count == 2
     assert letter == CoverLetterGenerator._humanize(ROBOTIC_LETTER)  # first usable draft preserved
+
+
+# --- Multi-file style-guide loader --------------------------------------------------
+
+
+class TestLoadStyleGuide:
+    """Cycle 2b: CoverLetterGenerator.load_style_guide is the single shared helper
+    used by apply, batch, tailor, and generate-cover-letter."""
+
+    @pytest.fixture
+    def config(self) -> LLMConfig:
+        return LLMConfig(api_base="http://localhost:8000/v1", model="test-model")
+
+    @pytest.fixture
+    def generator(self, config: LLMConfig) -> CoverLetterGenerator:
+        return CoverLetterGenerator(config)
+
+    @pytest.fixture
+    def style(self) -> StyleGuide:
+        return StyleGuide(
+            tone="professional",
+            sentence_structure="varied",
+            vocabulary_level="technical",
+            paragraph_style="clear",
+            formatting_notes="",
+            sample_paragraph="",
+        )
+
+    @pytest.mark.asyncio
+    async def test_single_text_file_analyzed(
+        self,
+        generator: CoverLetterGenerator,
+        tmp_path: Path,
+        style: StyleGuide,
+    ) -> None:
+        path = tmp_path / "style.txt"
+        path.write_text("Professional cover letter tone example.", encoding="utf-8")
+
+        with patch(
+            "job_applicator.documents.cover_letter.StyleAnalyzer.analyze",
+            new_callable=AsyncMock,
+            return_value=style,
+        ) as mock_analyze:
+            result = await generator.load_style_guide(str(path))
+
+        assert result is style
+        mock_analyze.assert_awaited_once_with("Professional cover letter tone example.")
+
+    @pytest.mark.asyncio
+    async def test_single_pdf_loaded_via_resume_loader(
+        self,
+        generator: CoverLetterGenerator,
+        tmp_path: Path,
+        style: StyleGuide,
+    ) -> None:
+        pdf_path = tmp_path / "style.pdf"
+        pdf_path.write_text("fake pdf", encoding="utf-8")
+        resume = ResumeData(raw_text="PDF style text", name="", email="", skills=[])
+
+        with (
+            patch(
+                "job_applicator.documents.cover_letter.ResumeLoader.load",
+                return_value=resume,
+            ) as mock_load,
+            patch(
+                "job_applicator.documents.cover_letter.StyleAnalyzer.analyze",
+                new_callable=AsyncMock,
+                return_value=style,
+            ) as mock_analyze,
+        ):
+            result = await generator.load_style_guide(str(pdf_path), ocr_mode="on")
+
+        assert result is style
+        mock_load.assert_called_once_with(pdf_path, ocr_mode="on")
+        mock_analyze.assert_awaited_once_with("PDF style text")
+
+    @pytest.mark.asyncio
+    async def test_multiple_text_files_use_analyze_multiple(
+        self,
+        generator: CoverLetterGenerator,
+        tmp_path: Path,
+        style: StyleGuide,
+    ) -> None:
+        p1 = tmp_path / "a.txt"
+        p2 = tmp_path / "b.txt"
+        p1.write_text("Tone A", encoding="utf-8")
+        p2.write_text("Tone B", encoding="utf-8")
+
+        with patch(
+            "job_applicator.documents.cover_letter.StyleAnalyzer.analyze_multiple",
+            new_callable=AsyncMock,
+            return_value=style,
+        ) as mock_multiple:
+            result = await generator.load_style_guide(f"{p1}, {p2}")
+
+        assert result is style
+        mock_multiple.assert_awaited_once_with(["Tone A", "Tone B"])
+
+    @pytest.mark.asyncio
+    async def test_mixed_pdf_and_text_use_analyze_multiple(
+        self,
+        generator: CoverLetterGenerator,
+        tmp_path: Path,
+        style: StyleGuide,
+    ) -> None:
+        txt = tmp_path / "a.txt"
+        pdf = tmp_path / "b.pdf"
+        txt.write_text("Text tone", encoding="utf-8")
+        pdf.write_text("fake", encoding="utf-8")
+        resume = ResumeData(raw_text="PDF tone", name="", email="", skills=[])
+
+        with (
+            patch(
+                "job_applicator.documents.cover_letter.ResumeLoader.load",
+                return_value=resume,
+            ),
+            patch(
+                "job_applicator.documents.cover_letter.StyleAnalyzer.analyze_multiple",
+                new_callable=AsyncMock,
+                return_value=style,
+            ) as mock_multiple,
+        ):
+            result = await generator.load_style_guide(f"{txt},{pdf}")
+
+        assert result is style
+        mock_multiple.assert_awaited_once_with(["Text tone", "PDF tone"])
+
+    @pytest.mark.asyncio
+    async def test_missing_file_raises(self, generator: CoverLetterGenerator) -> None:
+        with pytest.raises(LLMError, match="not found"):
+            await generator.load_style_guide("/nonexistent/style.txt")
+
+    @pytest.mark.asyncio
+    async def test_empty_string_raises(self, generator: CoverLetterGenerator) -> None:
+        with pytest.raises(LLMError, match="No style guide paths"):
+            await generator.load_style_guide("  ,  ")

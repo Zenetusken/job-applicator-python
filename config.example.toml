@@ -5,6 +5,7 @@ profile_name = "default"
 resume_path = "/path/to/your/resume.pdf"
 # Example résumé/cover letter(s) whose writing style the AI should mimic. Supports a single
 # file or comma-separated paths (e.g. "example1.txt,example2.pdf").
+# style_guide_path = "cover_letter_example.txt"
 style_guide_path = ""
 output_dir = "output"
 log_level = "INFO"
