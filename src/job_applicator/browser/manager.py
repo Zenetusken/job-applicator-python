@@ -50,7 +50,7 @@ class BrowserManager:
         headed, and a virtual display keeps that off-screen and server-capable.
         """
         if ephemeral_profile and profile_dir is not None:
-            raise ValueError("ephemeral_profile and profile_dir are mutually exclusive")
+            raise BrowserError("ephemeral_profile and profile_dir are mutually exclusive")
         self._config = config
         self._profile_dir = profile_dir
         self._ephemeral_profile = ephemeral_profile

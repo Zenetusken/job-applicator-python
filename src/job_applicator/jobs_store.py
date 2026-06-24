@@ -137,7 +137,7 @@ class JobStore:
                         company=excluded.company,
                         board=excluded.board,
                         location=excluded.location,
-                        salary=excluded.salary,
+                        salary=COALESCE(excluded.salary, jobs.salary),
                         seniority=excluded.seniority,
                         description=COALESCE(NULLIF(excluded.description, ''), jobs.description),
                         requirements=CASE
@@ -188,7 +188,7 @@ class JobStore:
                         company=excluded.company,
                         board=excluded.board,
                         location=excluded.location,
-                        salary=excluded.salary,
+                        salary=COALESCE(excluded.salary, jobs.salary),
                         seniority=excluded.seniority,
                         description=COALESCE(NULLIF(excluded.description, ''), jobs.description),
                         requirements=CASE
@@ -260,7 +260,7 @@ class JobStore:
                         company=excluded.company,
                         board=excluded.board,
                         location=excluded.location,
-                        salary=excluded.salary,
+                        salary=COALESCE(excluded.salary, jobs.salary),
                         seniority=excluded.seniority,
                         funnel_status=CASE
                             WHEN excluded.funnel_status = 'cover_letter'

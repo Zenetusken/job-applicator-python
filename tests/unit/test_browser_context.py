@@ -197,8 +197,9 @@ def test_virtual_display_raises_when_no_display(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_profile_dir_and_ephemeral_are_mutually_exclusive(tmp_path: Path) -> None:
-    """Setting both is a programming error and fails fast (no silent profile_dir drop)."""
-    with pytest.raises(ValueError, match="mutually exclusive"):
+    """Setting both is a programming error and fails fast (no silent profile_dir drop) — with a
+    typed BrowserError, not a bare ValueError (CLAUDE.md: every raise is a JobApplicatorError)."""
+    with pytest.raises(BrowserError, match="mutually exclusive"):
         BrowserManager(BrowserConfig(), profile_dir=tmp_path, ephemeral_profile=True)
 
 
