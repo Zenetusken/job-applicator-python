@@ -390,6 +390,16 @@ class LinkedInScraper(BaseScraper):
         location_el = await card.query_selector(".artdeco-entity-lockup__caption")
         location = (await location_el.inner_text()).strip() if location_el else ""
 
+        # Salary on the card (best-effort; LinkedIn shows it on a minority of postings). These
+        # selectors are UNVERIFIED against the live LinkedIn DOM — LinkedIn is the user's real
+        # account, so it is never auto-searched to capture markup; a wrong selector just yields
+        # None (no salary), never a crash. Confirm/refine on the next real LinkedIn search.
+        salary_el = await card.query_selector(
+            ".job-card-container__metadata-wrapper [class*='salary'], "
+            "[class*='job-card-container__salary'], [class*='compensation']"
+        )
+        salary = (await salary_el.inner_text()).strip() if salary_el else None
+
         url = href if href.startswith("http") else f"{LINKEDIN_BASE}{href}"
 
         return JobListing(
@@ -397,6 +407,7 @@ class LinkedInScraper(BaseScraper):
             company=company,
             url=url,  # type: ignore[arg-type]
             location=location,
+            salary=salary or None,
             board=board,
         )
 

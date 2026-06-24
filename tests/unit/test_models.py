@@ -18,6 +18,7 @@ from job_applicator.models import (
     UserProfile,
     VerboseReport,
     detect_seniority,
+    parse_salary_to_annual_min,
 )
 
 
@@ -390,3 +391,39 @@ class TestScoreFields:
         assert result.semantic_score == 0.6
         assert result.skill_score == 0.4
         assert result.match_score == pytest.approx(0.8)
+
+
+class TestParseSalaryToAnnualMin:
+    """parse_salary_to_annual_min: free-text salary → conservative annual floor (or None)."""
+
+    def test_annual_range_takes_lower_bound(self) -> None:
+        # en-dash separator is exactly what Indeed emits — the parser must handle it
+        assert parse_salary_to_annual_min("$86,000–$112,000 a year") == 86_000  # noqa: RUF001
+
+    def test_single_annual(self) -> None:
+        assert parse_salary_to_annual_min("Up to $90,000") == 90_000
+
+    def test_k_suffix_expands(self) -> None:
+        assert parse_salary_to_annual_min("$50K") == 50_000
+        assert parse_salary_to_annual_min("$120k–$150k") == 120_000  # noqa: RUF001
+
+    def test_hourly_is_annualized(self) -> None:
+        assert parse_salary_to_annual_min("$45 an hour") == 45 * 2080
+        assert parse_salary_to_annual_min("$30.50/hr") == int(30.50 * 2080)
+
+    def test_monthly_and_weekly(self) -> None:
+        assert parse_salary_to_annual_min("$8,000 per month") == 96_000
+        assert parse_salary_to_annual_min("$2,000 weekly") == 104_000
+
+    def test_ignores_non_dollar_numbers(self) -> None:
+        # The "10%" bonus and a plain year must not be mistaken for the floor.
+        assert parse_salary_to_annual_min("$100,000 a year plus 10% bonus") == 100_000
+
+    def test_unparseable_is_none(self) -> None:
+        assert parse_salary_to_annual_min("Competitive salary") is None
+        assert parse_salary_to_annual_min("") is None
+        assert parse_salary_to_annual_min(None) is None
+
+    def test_no_currency_conversion(self) -> None:
+        # A CAD figure is read as-is (numeric only) — no FX applied.
+        assert parse_salary_to_annual_min("$100,000 CAD") == 100_000

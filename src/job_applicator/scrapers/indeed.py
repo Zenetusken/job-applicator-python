@@ -387,6 +387,14 @@ class IndeedScraper(BaseScraper):
         )
         location = (await location_el.inner_text()).strip() if location_el else ""
 
+        # Salary teaser shown on the card (best-effort; most postings omit it). Selector
+        # verified against the live DOM (2026-06-24): the figure sits in a
+        # ``li.salary-snippet-container`` (its inner_text is just the "$86,000-$112,000/yr" text).
+        salary_el = await card.query_selector(
+            '[class*="salary-snippet"], [data-testid*="salary-snippet"]'
+        )
+        salary = (await salary_el.inner_text()).strip() if salary_el else None
+
         # The on-card snippet (best-effort) is the baseline description: it needs no click, so
         # every job carries SOME text even when the full-description pane can't be loaded.
         snippet = ""
@@ -402,6 +410,7 @@ class IndeedScraper(BaseScraper):
             company=company,
             url=url,  # type: ignore[arg-type]
             location=location,
+            salary=salary or None,
             board=board,
             description=snippet,
         )

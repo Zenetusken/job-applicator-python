@@ -383,6 +383,35 @@ async def test_scrape_enriches_snippet_with_full_description(
 
 
 @pytest.mark.asyncio
+async def test_extract_job_captures_salary(app_settings: AppSettings) -> None:
+    """The on-card salary teaser is captured into JobListing.salary (best-effort)."""
+    scraper = IndeedScraper(MagicMock(), app_settings)
+
+    title_el = AsyncMock()
+    title_el.inner_text = AsyncMock(return_value="Dev")
+    title_el.get_attribute = AsyncMock(
+        side_effect=lambda name: "/viewjob?jk=1" if name == "href" else None
+    )
+    salary_el = AsyncMock()
+    salary_el.inner_text = AsyncMock(return_value="$86,000–$112,000 a year")  # noqa: RUF001
+
+    async def query(selector: str) -> object | None:
+        if "jcs-JobTitle" in selector:
+            return title_el
+        if "salary" in selector:
+            return salary_el
+        return None
+
+    card = MagicMock()
+    card.query_selector = AsyncMock(side_effect=query)
+    card.get_attribute = AsyncMock(return_value=None)
+
+    job = await scraper._extract_job(card, JobBoard.INDEED)
+    assert job is not None
+    assert job.salary == "$86,000–$112,000 a year"  # noqa: RUF001
+
+
+@pytest.mark.asyncio
 async def test_extract_job_uses_data_jk_for_canonical_url(app_settings: AppSettings) -> None:
     """The job key (data-jk) yields a canonical /viewjob URL — NOT the sponsored /pagead/clk
     tracking redirect — so the ad and organic copies of one job dedupe to the same URL."""

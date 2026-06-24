@@ -23,7 +23,12 @@ from textual.widget import Widget
 from textual.widgets import DataTable, Footer, Input, LoadingIndicator, Static
 
 from job_applicator.exceptions import JobApplicatorError
-from job_applicator.models import ApplicationStatus, FunnelStatus, JobBoard
+from job_applicator.models import (
+    ApplicationStatus,
+    FunnelStatus,
+    JobBoard,
+    parse_salary_to_annual_min,
+)
 
 if TYPE_CHECKING:
     from job_applicator.config import AppSettings
@@ -56,12 +61,17 @@ _BOARD_STYLE: dict[str, str] = {"linkedin": "blue", "indeed": "yellow"}
 
 # Sort orders cycled by `S`; "match" (best opportunity first) is the default. The labels are
 # what the status line shows.
-_SORT_CYCLE: list[str] = ["match", "recent", "stage"]
+_SORT_CYCLE: list[str] = ["match", "recent", "stage", "salary"]
 _SORT_LABEL: dict[str, str] = {
     "match": "best match",
     "recent": "recent",
     "stage": "funnel stage",
+    "salary": "salary (high→low)",
 }
+
+# Minimum-salary floors cycled by `m` (annual; 0 = off). Compared against each job's parsed
+# annual minimum (see parse_salary_to_annual_min).
+_SALARY_CYCLE: list[int] = [0, 40_000, 60_000, 80_000, 100_000, 120_000, 150_000]
 
 
 def _elide(text: str, limit: int) -> str:
@@ -135,6 +145,8 @@ class JobApplicatorApp(App[None]):
         Binding("slash", "filter", "Filter"),
         Binding("f", "cycle_stage_filter", "Stage"),
         Binding("b", "cycle_board_filter", "Board"),
+        Binding("m", "cycle_min_salary", "Min $"),
+        Binding("u", "toggle_unlisted", "Unlisted", show=False),
         Binding("S", "cycle_sort", "Sort"),
         Binding("question_mark", "help", "Help"),
         Binding("escape", "clear_filter", "Clear filter", show=False),
@@ -166,6 +178,8 @@ class JobApplicatorApp(App[None]):
         self._stage_filter: str | None = None  # funnel-stage filter (None = all stages)
         self._board_filter: str | None = None  # board filter (None = all boards)
         self._sort_mode = "match"  # list sort order (see _SORT_CYCLE)
+        self._min_salary = 0  # min annual-salary floor (0 = off; see _SALARY_CYCLE)
+        self._hide_unlisted = False  # when True, hide jobs with no parseable salary
         self._load_error = ""
 
     # ------------------------------------------------------------------ layout
@@ -226,6 +240,14 @@ class JobApplicatorApp(App[None]):
                     -(s.match_score or 0.0),
                 )
             )
+        elif self._sort_mode == "salary":
+            # Highest parsed annual salary first; jobs with no listed/parseable salary sort
+            # last (the `is not None` flag dominates the descending sort).
+            def _salary_key(s: StoredJob) -> tuple[bool, int]:
+                value = parse_salary_to_annual_min(s.job.salary)
+                return (value is not None, value or 0)
+
+            self._all.sort(key=_salary_key, reverse=True)
         else:  # "match" — best opportunity first: scored desc, then unscored (newest-first).
             self._all.sort(
                 key=lambda s: (s.match_score is not None, s.match_score or 0.0), reverse=True
@@ -239,6 +261,16 @@ class JobApplicatorApp(App[None]):
             jobs = [s for s in jobs if self._effective_stage(s) == self._stage_filter]
         if self._board_filter is not None:
             jobs = [s for s in jobs if s.job.board.value == self._board_filter]
+        if self._min_salary > 0:
+            # Keep a job whose parsed salary clears the floor; jobs with no listed salary stay
+            # (they're only removed by the separate 'hide unlisted' toggle below).
+            def _clears_floor(s: StoredJob) -> bool:
+                value = parse_salary_to_annual_min(s.job.salary)
+                return value is None or value >= self._min_salary
+
+            jobs = [s for s in jobs if _clears_floor(s)]
+        if self._hide_unlisted:
+            jobs = [s for s in jobs if parse_salary_to_annual_min(s.job.salary) is not None]
         if self._filter:
             needle = self._filter.lower()
             jobs = [
@@ -310,10 +342,18 @@ class JobApplicatorApp(App[None]):
             view.append(f"stage: {self._stage_filter.replace('_', ' ')}")
         if self._board_filter is not None:
             view.append(f"board: {JobBoard(self._board_filter).display_name}")
+        if self._min_salary > 0:
+            view.append(f"min ${self._min_salary // 1000}k")
+        if self._hide_unlisted:
+            view.append("listed pay only")
         if self._filter:
             view.append(f"text: {escape(self._filter)}")
         narrowed = (
-            self._stage_filter is not None or self._board_filter is not None or bool(self._filter)
+            self._stage_filter is not None
+            or self._board_filter is not None
+            or self._min_salary > 0
+            or self._hide_unlisted
+            or bool(self._filter)
         )
         tail = f" — {len(self._visible())} shown" if narrowed else ""
         suffix = f"   [dim]({' · '.join(view)}{tail})[/dim]"
@@ -414,8 +454,20 @@ class JobApplicatorApp(App[None]):
         self._board_filter = _BOARD_CYCLE[(i + 1) % len(_BOARD_CYCLE)]
         self._repaint()
 
+    def action_cycle_min_salary(self) -> None:
+        """Cycle the minimum-salary floor (off → $40k → … → $150k → off). View-only filter;
+        jobs with no listed salary are kept unless 'hide unlisted' (u) is on."""
+        i = _SALARY_CYCLE.index(self._min_salary) if self._min_salary in _SALARY_CYCLE else 0
+        self._min_salary = _SALARY_CYCLE[(i + 1) % len(_SALARY_CYCLE)]
+        self._repaint()
+
+    def action_toggle_unlisted(self) -> None:
+        """Toggle hiding jobs that have no listed/parseable salary. View-only."""
+        self._hide_unlisted = not self._hide_unlisted
+        self._repaint()
+
     def action_cycle_sort(self) -> None:
-        """Cycle the list sort order (best match → recent → funnel stage). View-only."""
+        """Cycle the list sort order (best match → recent → funnel stage → salary). View-only."""
         i = _SORT_CYCLE.index(self._sort_mode)
         self._sort_mode = _SORT_CYCLE[(i + 1) % len(_SORT_CYCLE)]
         # Re-query store-ordered, then re-sort, so "match" keeps its newest-first tiebreak;
@@ -875,6 +927,8 @@ class JobApplicatorApp(App[None]):
         self._filter = ""
         self._stage_filter = None  # Esc resets ALL filters → back to the full list
         self._board_filter = None
+        self._min_salary = 0
+        self._hide_unlisted = False
         self._repaint()
         self.query_one("#joblist", DataTable).focus()
 

@@ -364,3 +364,54 @@ async def test_check_session_graceful_on_navigation_error(
 
     assert not health.healthy
     assert "Could not reach LinkedIn" in health.details
+
+
+@pytest.mark.asyncio
+async def test_linkedin_extract_job_captures_salary_when_present(
+    app_settings: AppSettings,
+) -> None:
+    """Best-effort LinkedIn salary capture. Selectors are unverified against the live DOM
+    (LinkedIn is never auto-searched), so this asserts the wiring: when a salary element is
+    present its text lands in JobListing.salary; when absent, salary stays None (no crash)."""
+    from job_applicator.models import JobBoard
+
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    title_el = AsyncMock()
+    title_el.inner_text = AsyncMock(return_value="Backend Engineer")
+    title_el.get_attribute = AsyncMock(return_value="/jobs/view/1")
+    salary_el = AsyncMock()
+    salary_el.inner_text = AsyncMock(return_value="$120,000/yr - $150,000/yr")
+
+    async def query(selector: str) -> object | None:
+        if "title" in selector:
+            return title_el
+        if "salary" in selector or "compensation" in selector:
+            return salary_el
+        return None
+
+    card = MagicMock()
+    card.query_selector = AsyncMock(side_effect=query)
+
+    job = await scraper._extract_job(card, JobBoard.LINKEDIN)
+    assert job is not None
+    assert job.salary == "$120,000/yr - $150,000/yr"
+
+
+@pytest.mark.asyncio
+async def test_linkedin_extract_job_salary_none_when_absent(app_settings: AppSettings) -> None:
+    from job_applicator.models import JobBoard
+
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    title_el = AsyncMock()
+    title_el.inner_text = AsyncMock(return_value="Backend Engineer")
+    title_el.get_attribute = AsyncMock(return_value="/jobs/view/1")
+
+    async def query(selector: str) -> object | None:
+        return title_el if "title" in selector else None
+
+    card = MagicMock()
+    card.query_selector = AsyncMock(side_effect=query)
+
+    job = await scraper._extract_job(card, JobBoard.LINKEDIN)
+    assert job is not None
+    assert job.salary is None

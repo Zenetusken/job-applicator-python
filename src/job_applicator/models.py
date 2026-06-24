@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
@@ -115,8 +116,6 @@ def detect_seniority(title: str, description: str = "") -> str | None:
     only consulted when the title is inconclusive (titles are terse and
     unambiguous, whereas descriptions are noisier).
     """
-    import re
-
     for text in (title, description):
         text_lower = text.lower()
         for level, keywords in _SENIORITY_KEYWORDS.items():
@@ -124,6 +123,48 @@ def detect_seniority(title: str, description: str = "") -> str | None:
                 if re.search(rf"\b{re.escape(kw)}\b", text_lower):
                     return level
     return None
+
+
+# Currency figures in a salary string, e.g. "$86,000", "$112,000", "$50K" — the leading "$"
+# is required so stray numbers (a "10%" bonus, "401k", a street number) aren't mistaken for pay.
+_SALARY_FIGURE = re.compile(r"\$\s*(\d[\d,]*(?:\.\d+)?)\s*([kK])?")
+# Map a pay-period word found in the string to an annualization factor (US/CA work-year norms).
+_SALARY_PERIODS: list[tuple[tuple[str, ...], int]] = [
+    (("hour", "/hr", "hourly", "per hour", "an hour"), 2080),
+    (("week", "weekly", "per week"), 52),
+    (("month", "/mo", "monthly", "per month"), 12),
+    (("day", "daily", "per day"), 260),
+]
+
+
+def parse_salary_to_annual_min(text: str | None) -> int | None:
+    """Parse a free-text salary into a conservative ANNUAL minimum, for sort/filter.
+
+    Returns the lower bound of any range, annualized by the pay period (hourly x 2080, etc.);
+    a ``$50K`` figure expands to 50000. Returns ``None`` when nothing parseable is found — an
+    unknown salary is never forced to a number, so callers can treat it as "unlisted". Purely
+    numeric: it does NOT convert currencies (a ca.indeed.com figure is read as-is, in CAD).
+    """
+    if not text:
+        return None
+    figures: list[float] = []
+    for match in _SALARY_FIGURE.finditer(text):
+        try:
+            value = float(match.group(1).replace(",", ""))
+        except ValueError:
+            continue
+        if match.group(2):  # a "K" suffix → thousands
+            value *= 1000
+        figures.append(value)
+    if not figures:
+        return None
+    amount = min(figures)  # the range's lower bound is the conservative floor
+    low = text.lower()
+    for words, factor in _SALARY_PERIODS:
+        if any(word in low for word in words):
+            amount *= factor
+            break
+    return int(amount)
 
 
 class UserProfile(BaseModel):
