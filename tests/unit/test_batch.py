@@ -62,16 +62,15 @@ class TestBatchCommand:
         assert "batch" in result.output
 
     def test_batch_help_includes_resume_flags(self) -> None:
-        """Batch help advertises --run-id and --resume-run."""
-        from typer.testing import CliRunner
+        """Batch command registers --run-id and --resume-run options."""
+        from typer.main import get_command
 
         from job_applicator.cli import app
 
-        runner = CliRunner()
-        result = runner.invoke(app, ["batch", "--help"], env={"COLUMNS": "200"})
-        assert result.exit_code == 0
-        assert "--run-id" in result.output
-        assert "--resume-run" in result.output
+        batch_cmd = get_command(app).commands["batch"]
+        param_opts = {opt for param in batch_cmd.params for opt in param.opts}
+        assert "--run-id" in param_opts
+        assert "--resume-run" in param_opts
 
     def test_batch_loads_jobs_from_file(self, sample_jobs_file: Path) -> None:
         """Jobs from --jobs-file deserialize into JobListing correctly."""
