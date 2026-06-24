@@ -419,6 +419,22 @@ class TestParseSalaryToAnnualMin:
         # The "10%" bonus and a plain year must not be mistaken for the floor.
         assert parse_salary_to_annual_min("$100,000 a year plus 10% bonus") == 100_000
 
+    def test_millions_suffix(self) -> None:
+        assert parse_salary_to_annual_min("$1.5M annual") == 1_500_000
+        assert parse_salary_to_annual_min("Up to $2M") == 2_000_000
+
+    def test_day_substring_does_not_inflate(self) -> None:
+        # "Saturday"/"payday" must NOT trigger the daily (x260) annualization.
+        assert parse_salary_to_annual_min("Work Saturday - $100,000 a year") == 100_000
+        assert parse_salary_to_annual_min("$90,000/yr, paid biweekly") == 90_000
+
+    def test_explicit_day_rate_is_annualized(self) -> None:
+        assert parse_salary_to_annual_min("$400 per day") == 400 * 260
+
+    def test_implausibly_small_is_none(self) -> None:
+        # A stray "$5" (street number, typo) is noise, not a $5/yr salary.
+        assert parse_salary_to_annual_min("$5 Main Street") is None
+
     def test_unparseable_is_none(self) -> None:
         assert parse_salary_to_annual_min("Competitive salary") is None
         assert parse_salary_to_annual_min("") is None
