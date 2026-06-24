@@ -1,6 +1,6 @@
 [project]
 name = "job-applicator"
-version = "0.3.1"
+version = "0.3.2"
 description = "AI-powered job application tool with browser automation"
 authors = [{name = "Drei"}]
 requires-python = ">=3.12"
