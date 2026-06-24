@@ -708,7 +708,11 @@ class JobApplicatorApp(App[None]):
             self._reload(refresh_applied=False)
 
         total = 0
-        failed: list[str] = []
+        # Per-board (name, count|None) so the summary can show EACH board's contribution —
+        # a board that returns 0 (e.g. Indeed blocked upstream of extraction → 0 cards, which
+        # is NOT an error and so isn't caught as a failure) must be visible as "Indeed: 0",
+        # never silently folded into a total that credits it as a succeeded board.
+        results: list[tuple[str, int | None]] = []
         try:
             for params in plans:
                 found = await self._run_action(
@@ -721,9 +725,8 @@ class JobApplicatorApp(App[None]):
                         on_job=on_job,
                     ),
                 )
-                if found is None:  # this board errored (already toasted); try the next
-                    failed.append(params.board.display_name)
-                else:
+                results.append((params.board.display_name, found))
+                if found is not None:  # None = this board errored (already toasted); skip it
                     total += found
         finally:
             table.loading = False
@@ -731,17 +734,17 @@ class JobApplicatorApp(App[None]):
         # Final repaint after scoring: the streamed (found) rows now carry scores and
         # re-sort best-match-first (the reorder-on-score).
         self._reload()
-        if total == 0 and failed:
+        if all(found is None for _, found in results):
             return  # every attempted board errored — _run_action already toasted each
-        # Name only the boards that succeeded in the "across" clause; failed ones go in the
-        # suffix (so a board isn't listed twice).
-        succeeded = ", ".join(
-            p.board.display_name for p in plans if p.board.display_name not in failed
+        # Per-board breakdown ("LinkedIn: 10 · Indeed: 0 · Foo: failed") so a zero/failed board
+        # is honestly surfaced instead of a lumped total that hides which board came up empty.
+        breakdown = " · ".join(
+            f"{name}: {found if found is not None else 'failed'}" for name, found in results
         )
-        suffix = f"  ({', '.join(failed)} failed)" if failed else ""
+        empty_or_failed = any(found is None or found == 0 for _, found in results)
         self.notify(
-            f"Found {total} job(s) across {succeeded}{suffix} — added to your funnel.",
-            severity="warning" if failed else "information",
+            f"Found {total} job(s) — {breakdown} — added to your funnel.",
+            severity="warning" if empty_or_failed else "information",
             timeout=8,
         )
 
