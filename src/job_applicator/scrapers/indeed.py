@@ -43,6 +43,11 @@ if TYPE_CHECKING:
 
 logger = get_logger("scrapers.indeed")
 
+# Where a 0-result scrape saves the live DOM for selector diagnosis. The TUI swallows
+# stderr logs, so this file is the only record of *why* a scrape came up empty. A module
+# constant so tests can redirect it away from the real ~/.job-applicator.
+_DEBUG_DIR = Path.home() / ".job-applicator" / "debug"
+
 
 def _is_indeed_host(host: str) -> bool:
     """True only for genuine Indeed hosts (any regional ``*.indeed.com``)."""
@@ -53,6 +58,10 @@ class IndeedScraper(BaseScraper):
     """Scrapes public job listings from Indeed."""
 
     COOKIE_PATH = Path.home() / ".job-applicator" / "cookies" / "indeed.json"
+
+    # Result-card containers, tried in order (Indeed varies by region / A/B bucket). Shared
+    # with the diagnostic dump so it reports a match count per selector.
+    _CARD_SELECTORS = ("div.job_seen_beacon", "[data-jk]", "div.cardOutline")
 
     @classmethod
     def browser_policy(cls) -> BrowserPolicy:
@@ -168,7 +177,11 @@ class IndeedScraper(BaseScraper):
                 logger.info("Indeed redirected to %s; re-issuing the search there.", self._base)
                 cards = await self._load_results(page, params)
             if not cards:
+                # 0 cards = a genuinely empty search OR stale CONTAINER selectors; we can't
+                # tell from here, so dump the live DOM (the TUI swallows logs) and return
+                # empty rather than raise (a real empty search must not error).
                 logger.warning("No Indeed job cards found (page: %s)", page.url)
+                await self._dump_debug(page, [])
                 return jobs
 
             selected = cards[: params.max_results]
@@ -188,17 +201,48 @@ class IndeedScraper(BaseScraper):
                     logger.warning("Failed to extract Indeed card: %s", exc)
 
             if not jobs:
-                # Cards were present but none parsed — almost certainly stale
-                # selectors against the live DOM, not a genuinely empty search.
-                logger.error(
-                    "Found %d Indeed card(s) but extracted 0 jobs — selectors may be "
-                    "stale against the current Indeed DOM.",
-                    len(cards),
+                # Cards were present but none parsed → stale FIELD selectors against the live
+                # DOM (a genuinely empty search returns 0 CARDS above, so this is never a real
+                # empty result). Dump the DOM and FAIL LOUDLY so the caller surfaces "Indeed
+                # extraction failed" instead of silently reporting 0 jobs (the bug that let a
+                # multi-board search quietly drop Indeed).
+                dump = await self._dump_debug(page, cards)
+                raise ScraperError(
+                    f"Found {len(cards)} Indeed card(s) but extracted 0 jobs — the field "
+                    "selectors are stale against the current Indeed DOM."
+                    + (f" Live DOM saved to {dump}." if dump else ""),
+                    context={"url": page.url, "cards": len(cards)},
                 )
             logger.info("Scraped %d jobs from Indeed", len(jobs))
             return jobs
         finally:
             await page.close()
+
+    async def _dump_debug(self, page: Page, cards: list[ElementHandle]) -> Path | None:
+        """Save the live DOM + per-container match counts (+ the first card's HTML) when a
+        scrape comes up empty, so stale selectors can be fixed against the real page. The TUI
+        swallows stderr logs, so this file is the record. Best-effort — never breaks a scrape.
+        """
+        try:
+            _DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+            (_DEBUG_DIR / "indeed-last-scrape.html").write_text(
+                await page.content(), encoding="utf-8"
+            )
+            lines = [f"url: {page.url}", "", "container match counts:"]
+            for selector in self._CARD_SELECTORS:
+                try:
+                    count = len(await page.query_selector_all(selector))
+                except Exception:  # a bad selector must not break the diagnostic
+                    count = -1
+                lines.append(f"  {selector}: {count}")
+            if cards:
+                lines += ["", "first card inner_html:", await cards[0].inner_html()]
+            (_DEBUG_DIR / "indeed-last-scrape.txt").write_text("\n".join(lines), encoding="utf-8")
+            logger.warning("Indeed debug dump written to %s", _DEBUG_DIR)
+            return _DEBUG_DIR
+        except Exception as exc:  # diagnostics never break the scrape
+            logger.warning("Could not write Indeed debug dump: %s", exc)
+            return None
 
     async def _load_results(self, page: Page, params: SearchParams) -> list[ElementHandle]:
         """Navigate to the search, fail on anti-bot, return job-card handles.
@@ -219,7 +263,7 @@ class IndeedScraper(BaseScraper):
         host = urlsplit(page.url).netloc
         if _is_indeed_host(host):
             self._resolved_base = f"https://{host}"  # pin the region we landed on
-        for selector in ("div.job_seen_beacon", "[data-jk]", "div.cardOutline"):
+        for selector in self._CARD_SELECTORS:
             if await wait_for_selector(page, selector, timeout_ms=5_000):
                 cards = await page.query_selector_all(selector)
                 if cards:

@@ -7,7 +7,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from job_applicator.config import AppSettings
-from job_applicator.models import JobBoard
+from job_applicator.exceptions import ScraperError
+from job_applicator.models import JobBoard, JobListing
 from job_applicator.scrapers.base import SearchParams
 from job_applicator.scrapers.indeed import IndeedScraper, _is_indeed_host
 
@@ -136,7 +137,13 @@ async def test_scrape_auto_retries_on_region_redirect(
     scraper.COOKIE_PATH = tmp_path / "indeed.json"  # type: ignore[assignment]
     scraper._browser.persistent_context = AsyncMock(return_value=MagicMock())
     scraper._new_stealth_page = AsyncMock(return_value=AsyncMock())
-    scraper._extract_job = AsyncMock(return_value=None)
+    # Return a real job (not None): this test is about the region retry, and a card that
+    # extracts to nothing now raises (the honest-failure path), which isn't what we're testing.
+    scraper._extract_job = AsyncMock(
+        return_value=JobListing(
+            title="E", company="Co", url="https://ca.indeed.com/jobs/1", board=JobBoard.INDEED
+        )
+    )
 
     calls: list[str] = []
 
@@ -216,3 +223,43 @@ async def test_scrape_streams_each_job_via_on_job(
     )
     assert [j.title for j in streamed] == ["E1", "E2"]
     assert [j.title for j in jobs] == ["E1", "E2"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_raises_and_dumps_when_cards_present_but_none_extracted(
+    app_settings: AppSettings,
+    tmp_path: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Honest failure: cards on the page but 0 extracted (stale FIELD selectors) raises
+    ScraperError — so a multi-board search surfaces "Indeed failed" instead of silently
+    dropping it — and dumps the live DOM for selector diagnosis. (A genuinely empty search
+    returns 0 CARDS, handled separately, so this can't false-positive.)"""
+    from pathlib import Path
+
+    debug_dir = tmp_path / "debug"  # type: ignore[operator]
+    monkeypatch.setattr("job_applicator.scrapers.indeed._DEBUG_DIR", debug_dir)
+    app_settings.target.indeed_domain = "www.indeed.com"
+    scraper = IndeedScraper(MagicMock(), app_settings)
+    scraper.COOKIE_PATH = tmp_path / "indeed.json"  # type: ignore[operator,assignment]
+    scraper._browser.persistent_context = AsyncMock(return_value=MagicMock())
+
+    page = AsyncMock()
+    page.url = "https://www.indeed.com/jobs?q=python"
+    page.content = AsyncMock(return_value="<html><body>results here</body></html>")
+    page.query_selector_all = AsyncMock(return_value=[])  # container counts for the dump
+    scraper._new_stealth_page = AsyncMock(return_value=page)
+
+    card = AsyncMock()
+    card.inner_html = AsyncMock(return_value="<div data-jk='1'>live card markup</div>")
+    scraper._load_results = AsyncMock(return_value=[card])  # a card IS present…
+    scraper._extract_job = AsyncMock(return_value=None)  # …but extraction yields nothing
+
+    with pytest.raises(ScraperError, match="extracted 0 jobs"):
+        await scraper.scrape(SearchParams(query="python", board=JobBoard.INDEED))
+
+    # The diagnostic landed in the isolated debug dir and captured what's needed to fix it.
+    assert (Path(debug_dir) / "indeed-last-scrape.html").exists()
+    summary = (Path(debug_dir) / "indeed-last-scrape.txt").read_text(encoding="utf-8")
+    assert "container match counts" in summary
+    assert "live card markup" in summary  # first card's inner_html, to fix field selectors

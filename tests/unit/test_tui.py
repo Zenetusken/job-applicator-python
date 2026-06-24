@@ -2064,7 +2064,9 @@ async def test_tui_search_worker_runs_each_selected_board(tmp_path: Path, monkey
         await app.workers.wait_for_complete()
         await pilot.pause()
     assert calls == [("linkedin", 10), ("indeed", 5)]  # both boards, in order, with counts
-    assert toasts and "LinkedIn, Indeed" in toasts[-1] and "6 job(s)" in toasts[-1]
+    # The summary breaks the total down PER BOARD (not a lumped "across LinkedIn, Indeed").
+    assert toasts and "6 job(s)" in toasts[-1]
+    assert "LinkedIn: 3" in toasts[-1] and "Indeed: 3" in toasts[-1]
 
 
 async def test_tui_search_worker_one_board_failing_does_not_abort_the_other(
@@ -2098,7 +2100,43 @@ async def test_tui_search_worker_one_board_failing_does_not_abort_the_other(
         await pilot.pause()
     # one toast for the Indeed failure, one summary naming the failed board; LinkedIn's 4 land
     assert any("Indeed" in t and "could not clear" in t for t in toasts)
-    assert any("4 job(s)" in t and "Indeed failed" in t for t in toasts)
+    assert any("4 job(s)" in t and "Indeed: failed" in t for t in toasts)
+
+
+async def test_tui_search_worker_zero_result_board_is_visible_not_credited(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
+    """The reported bug: Indeed returns 0 (blocked UPSTREAM of extraction → 0 cards, which is
+    NOT an error) while LinkedIn returns 10. The summary must show 'Indeed: 0' so the empty
+    board is visible — never fold it into a lumped total that credits Indeed as succeeded."""
+    from job_applicator.scrapers.base import SearchParams
+    from job_applicator.tui import actions
+
+    async def _fake(_s, st, params, on_progress=None, on_job=None) -> int:  # type: ignore[no-untyped-def]
+        return 10 if params.board is JobBoard.LINKEDIN else 0
+
+    monkeypatch.setattr(actions, "search_jobs", _fake)
+    app = _app(tmp_path, seed=0)
+    toasts: list[tuple[str, str]] = []
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(
+            app, "notify", lambda msg, **k: toasts.append((msg, str(k.get("severity", ""))))
+        )
+        app._search_worker(
+            [
+                SearchParams(query="x", board=JobBoard.LINKEDIN, max_results=10),
+                SearchParams(query="x", board=JobBoard.INDEED, max_results=10),
+            ]
+        )
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    summary, severity = toasts[-1]
+    assert "10 job(s)" in summary  # the running total still reflects only what actually landed
+    assert "LinkedIn: 10" in summary
+    assert "Indeed: 0" in summary  # the empty board is SURFACED, not silently dropped
+    assert severity == "warning"  # a 0-count board flags the summary so the user notices
 
 
 async def test_tui_search_modal_layout_fits_and_aligns(tmp_path: Path) -> None:
