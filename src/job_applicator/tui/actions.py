@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         ATSCompatibilityResult,
         CoverLetterResult,
         JobListing,
+        StyleGuide,
         TailoredResume,
     )
     from job_applicator.scrapers.base import SearchParams
@@ -35,9 +36,28 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-async def tailor_job(settings: AppSettings, job: JobListing) -> TailoredResume:
+async def _load_style_guide(settings: AppSettings, style_guide_path: str) -> StyleGuide | None:
+    """Analyze the configured style-guide path(s) into a ``StyleGuide``.
+
+    Returns ``None`` when no path is configured. Errors are raised as
+    ``JobApplicatorError`` subclasses so the caller can toast them.
+    """
+    if not style_guide_path:
+        return None
+    from job_applicator.documents.cover_letter import CoverLetterGenerator
+    from job_applicator.factories import _make_runtime
+
+    generator = CoverLetterGenerator(settings.llm, runtime=_make_runtime(settings))
+    return await generator.load_style_guide(style_guide_path)
+
+
+async def tailor_job(
+    settings: AppSettings, job: JobListing, *, style_guide_path: str = ""
+) -> TailoredResume:
     """Tailor the configured résumé for ``job`` (non-interactive, first version) and write
     the artifact; returns the ``TailoredResume`` with ``output_path`` set.
+
+    When ``style_guide_path`` is set, the tailored résumé mimics that style.
 
     Raises ``ResumeNotFoundError`` / ``DocumentError`` / ``LLMError`` (all
     ``JobApplicatorError`` subclasses) on failure — the caller surfaces them. LLM + local
@@ -48,15 +68,22 @@ async def tailor_job(settings: AppSettings, job: JobListing) -> TailoredResume:
     from job_applicator.factories import _make_runtime
 
     resume_data = await asyncio.to_thread(ResumeLoader().load, settings.resume_path)
+    style = await _load_style_guide(settings, style_guide_path)
     engine = ResumeTailor(settings.llm, runtime=_make_runtime(settings))
-    tailored = await engine.tailor(resume=resume_data, job=job, user_instructions="")
+    tailored = await engine.tailor(
+        resume=resume_data, job=job, user_instructions="", style_guide=style
+    )
     output_dir = await asyncio.to_thread(settings.ensure_output_dir)
     await asyncio.to_thread(write_tailored, output_dir, tailored, when=datetime.now())
     return tailored
 
 
 async def cover_letter_job(
-    settings: AppSettings, job: JobListing, tailored_resume_path: str = ""
+    settings: AppSettings,
+    job: JobListing,
+    tailored_resume_path: str = "",
+    *,
+    style_guide_path: str = "",
 ) -> CoverLetterResult:
     """Generate a cover letter for ``job`` from the configured résumé and write the
     artifact; returns the ``CoverLetterResult`` with ``output_path`` set.
@@ -64,6 +91,8 @@ async def cover_letter_job(
     When ``tailored_resume_path`` points at an existing tailored-résumé artifact, the
     letter draws on that TAILORED text (so a cover letter for a tailored job reflects it) —
     best-effort: a read failure falls back to the original résumé.
+
+    When ``style_guide_path`` is set, the letter mimics that writing style.
 
     Raises ``JobApplicatorError`` subclasses on failure. LLM + local files only; touches
     no account.
@@ -85,11 +114,13 @@ async def cover_letter_job(
         except OSError:  # artifact gone/unreadable → fall back to the original résumé
             logger.warning("cover letter: tailored résumé unreadable; using the original")
     tone_section = ToneDetector().format_for_prompt(_detect_tone(job))
+    style = await _load_style_guide(settings, style_guide_path)
     generator = CoverLetterGenerator(settings.llm, runtime=_make_runtime(settings))
     letter = await generator.generate(
         job,
         _load_user_profile(settings),
         resume_data,
+        style_guide=style,
         tone_section=tone_section,
         tailored_resume_text=tailored_text,
     )

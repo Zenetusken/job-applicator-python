@@ -13,7 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- TUI style-guide support: new `g` key opens a modal to set style-guide path(s); the path is persisted to `config.toml` and shown on the status line.
+- TUI `t` (tailor) and `c` (cover letter) now pass the configured style guide through to the LLM action layer.
 - Live end-to-end CLI tests for the universal style-guide feature in `tests/test_style_guide_e2e_live.py`, exercising real vLLM calls for `generate-cover-letter`, `batch`, `tailor`, and `apply`.
+- Pilot-driven TUI tests for the new style-guide flow: setting the path, status-line display, and style-guide forwarding for tailor/cover-letter actions.
 
 ## [0.3.5] - 2026-06-24
 

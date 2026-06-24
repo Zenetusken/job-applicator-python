@@ -139,6 +139,7 @@ class JobApplicatorApp(App[None]):
         Binding("s", "search", "Search"),
         Binding("a", "apply", "Apply"),
         Binding("e", "set_resume", "Résumé"),
+        Binding("g", "set_style_guide", "Style guide"),
         Binding("A", "ats_check", "ATS"),
         Binding("o", "open_url", "Open"),
         Binding("y", "copy_url", "Copy URL", show=False),
@@ -324,8 +325,10 @@ class JobApplicatorApp(App[None]):
         # real path, never the sentinel's own markup.
         path = self._settings.resume_path
         resume = f"[cyan]{escape(path)}[/cyan]" if path else "[dim]not set — press 'e' to set[/dim]"
+        sg_path = self._settings.style_guide_path
+        style = f"[cyan]{escape(sg_path)}[/cyan]" if sg_path else "[dim]none — press 'g'[/dim]"
         if self._busy:  # a worker is running — show live progress instead of static counts
-            return f"Résumé {resume}\n[yellow]⏳ {escape(self._busy)}[/yellow]"
+            return f"Résumé {resume}   Style: {style}\n[yellow]⏳ {escape(self._busy)}[/yellow]"
         # Compose by URL (furthest-stage-wins) so an applied job — which stays in the store
         # at its head stage — is counted once as applied, matching the CLI `status`.
         counts: dict[str, int] = {}
@@ -357,7 +360,7 @@ class JobApplicatorApp(App[None]):
         )
         tail = f" — {len(self._visible())} shown" if narrowed else ""
         suffix = f"   [dim]({' · '.join(view)}{tail})[/dim]"
-        return f"Résumé {resume}\n{' · '.join(parts)}{suffix}"
+        return f"Résumé {resume}   Style: {style}\n{' · '.join(parts)}{suffix}"
 
     def _set_busy(self, msg: str) -> None:
         """Show a live '⏳ <msg>' progress line while a worker runs (empty string clears
@@ -618,15 +621,38 @@ class JobApplicatorApp(App[None]):
                 timeout=8,
             )
 
-    def _persist_resume_path(self, path: str) -> Path | None:
-        """Best-effort: write a top-level ``resume_path`` into the config file — create it
-        if missing, else replace an ACTIVE top-level line, else prepend.
+    def action_set_style_guide(self) -> None:
+        """Set the style-guide path(s) in-app — opens a modal, saves to config."""
+        from job_applicator.tui.screens import StyleGuideScreen
+
+        self.push_screen(
+            StyleGuideScreen(self._settings.style_guide_path), self._set_style_guide_then
+        )
+
+    def _set_style_guide_then(self, path: str | None) -> None:
+        if path is None:  # cancelled (empty string is a deliberate clear)
+            return
+        self._settings.style_guide_path = path
+        saved = self._persist_style_guide_path(path)
+        self._reload()
+        if saved is not None:
+            self.notify(f"Style guide set ✓ — saved to {saved}", timeout=6)
+        else:
+            self.notify(
+                "Style guide set for this session (couldn't write config — set "
+                "style_guide_path manually to persist).",
+                severity="warning",
+                timeout=8,
+            )
+
+    def _persist_config_key(self, key: str, value: str) -> Path | None:
+        """Best-effort: write a top-level ``key = value`` into the config file.
 
         Safe over a credentialed config: the result is re-parsed and must yield exactly
-        this top-level ``resume_path`` (so a line accidentally rewritten inside a ``[table]``
-        or a duplicate key that won't parse is rejected), and the swap is ATOMIC
+        this top-level key (so a line accidentally rewritten inside a ``[table]`` or a
+        duplicate key that won't parse is rejected), and the swap is ATOMIC
         (temp file + ``os.replace``) so a torn write can never destroy the config. Returns
-        the file written, or None on any failure (caller falls back to a session-only set).
+        the file written, or None on any failure.
         """
         import json
         import os
@@ -636,20 +662,20 @@ class JobApplicatorApp(App[None]):
         from job_applicator.config import CONFIG_FILE_ENV_VAR, DEFAULT_CONFIG_FILE
 
         cfg = Path(os.environ.get(CONFIG_FILE_ENV_VAR, DEFAULT_CONFIG_FILE))
-        line = f"resume_path = {json.dumps(path)}"
+        line = f"{key} = {json.dumps(value)}"
         try:
             if cfg.exists():
                 text = cfg.read_text(encoding="utf-8")
                 # Match an ACTIVE line only (no leading '#', so we never un-comment an
                 # example into a duplicate key); else prepend at the very top (top-level).
-                pattern = re.compile(r"(?m)^[ \t]*resume_path[ \t]*=.*$")
+                pattern = re.compile(rf"(?m)^[ \t]*{re.escape(key)}[ \t]*=.*$")
                 new_text = (
                     pattern.sub(line, text, count=1) if pattern.search(text) else f"{line}\n{text}"
                 )
             else:
                 new_text = f"# job-applicator config\n{line}\n"
-            # Validate before committing: must parse AND set resume_path at top level.
-            if tomllib.loads(new_text).get("resume_path") != path:
+            # Validate before committing: must parse AND set the key at top level.
+            if tomllib.loads(new_text).get(key) != value:
                 return None
             tmp = cfg.with_name(f"{cfg.name}.tmp")
             tmp.write_text(new_text, encoding="utf-8")
@@ -657,6 +683,14 @@ class JobApplicatorApp(App[None]):
         except (OSError, ValueError):  # ValueError covers tomllib.TOMLDecodeError
             return None
         return cfg
+
+    def _persist_resume_path(self, path: str) -> Path | None:
+        """Persist ``resume_path`` to config.toml."""
+        return self._persist_config_key("resume_path", path)
+
+    def _persist_style_guide_path(self, path: str) -> Path | None:
+        """Persist ``style_guide_path`` to config.toml."""
+        return self._persist_config_key("style_guide_path", path)
 
     def _selected_job_with_resume(self) -> JobListing | None:
         """The selected job's listing, or None (with a toast) when there's no selection
@@ -681,7 +715,12 @@ class JobApplicatorApp(App[None]):
 
         self._set_busy(f"Tailoring {job.title}…")
         try:
-            tailored = await self._run_action("Tailor", actions.tailor_job(self._settings, job))
+            tailored = await self._run_action(
+                "Tailor",
+                actions.tailor_job(
+                    self._settings, job, style_guide_path=self._settings.style_guide_path
+                ),
+            )
         finally:
             self._set_busy("")
         if tailored is None:
@@ -707,7 +746,10 @@ class JobApplicatorApp(App[None]):
             result = await self._run_action(
                 "Cover letter",
                 actions.cover_letter_job(
-                    self._settings, job, tailored_resume_path=tailored_resume_path
+                    self._settings,
+                    job,
+                    tailored_resume_path=tailored_resume_path,
+                    style_guide_path=self._settings.style_guide_path,
                 ),
             )
         finally:

@@ -290,6 +290,68 @@ class SetupScreen(_FadeModalScreen[str | None]):
         self._submit()
 
 
+class StyleGuideScreen(_FadeModalScreen[str | None]):
+    """Set the style-guide path(s) in-app. Dismisses with the entered path(s) or ``None``.
+
+    Accepts a single file or a comma-separated list of résumé/cover-letter examples
+    whose writing style the LLM should mimic.
+    """
+
+    BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "cancel", "Cancel")]
+
+    CSS = """
+    StyleGuideScreen { align: center middle; }
+    #stylebox {
+        width: 72; height: auto; padding: 1 2;
+        border: thick $accent; background: $surface;
+    }
+    #stylebox Input { margin: 1 0; }
+    #hint { color: $text-muted; }
+    #buttons { height: auto; align: right middle; }
+    #buttons Button { margin-left: 2; }
+    """
+
+    def __init__(self, current: str = "") -> None:
+        super().__init__()
+        self._current = current
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="stylebox"):
+            yield Label("[bold]Set style guide[/bold]")
+            yield Input(
+                value=self._current,
+                placeholder="/path/to/example.pdf  (comma-separated for multiple)",
+                id="path",
+            )
+            yield Static(
+                "Saved to config.toml. Tailor and cover-letter actions will mimic this style.",
+                id="hint",
+            )
+            with Horizontal(id="buttons"):
+                yield Button("Save", variant="primary", id="go")
+                yield Button("Cancel", id="cancel")
+
+    def on_mount(self) -> None:
+        super().on_mount()  # fade-in
+        self.query_one("#path", Input).focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def _submit(self) -> None:
+        path = self.query_one("#path", Input).value.strip()
+        self.dismiss(path if path else None)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "go":
+            self._submit()
+        else:
+            self.dismiss(None)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self._submit()
+
+
 class AtsScreen(_FadeModalScreen[None]):
     """Read-only ATS-compatibility result for the selected job's résumé. Esc / Close
     dismisses; the body scrolls when there are many warnings."""
@@ -382,6 +444,7 @@ class HelpScreen(_FadeModalScreen[None]):
             "  c           cover letter",
             "  A           ATS-compatibility check",
             "  e           set résumé path",
+            "  g           set style-guide path",
             "",
             "[bold]Links[/bold]",
             "  o           open the posting in your browser",

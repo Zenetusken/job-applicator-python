@@ -956,7 +956,9 @@ async def test_tui_tailor_action_marks_tailored(tmp_path: Path, monkeypatch) -> 
         output_path="/out/tailored.txt",
     )
 
-    async def _fake_tailor(_settings: object, _job: object) -> TailoredResume:
+    async def _fake_tailor(
+        _settings: object, _job: object, *, style_guide_path: str = ""
+    ) -> TailoredResume:
         return fake
 
     monkeypatch.setattr(actions, "tailor_job", _fake_tailor)
@@ -993,7 +995,11 @@ async def test_tui_cover_letter_action_advances_funnel(tmp_path: Path, monkeypat
     )
 
     async def _fake_cl(
-        _settings: object, _job: object, tailored_resume_path: str = ""
+        _settings: object,
+        _job: object,
+        tailored_resume_path: str = "",
+        *,
+        style_guide_path: str = "",
     ) -> CoverLetterResult:
         return fake
 
@@ -1724,7 +1730,7 @@ async def test_tui_worker_error_does_not_crash_app(tmp_path: Path, monkeypatch) 
     store = JobStore(db_path=tmp_path / "applications.db")
     store.upsert_job(_job(1))
 
-    async def _boom(_settings: object, _job: object) -> object:
+    async def _boom(_settings: object, _job: object, *, style_guide_path: str = "") -> object:
         raise RuntimeError("kaboom")  # NOT a JobApplicatorError
 
     monkeypatch.setattr(actions, "tailor_job", _boom)
@@ -2399,3 +2405,170 @@ async def test_tui_joblist_no_overflow_with_board_column(tmp_path: Path) -> None
         t = app.query_one("#joblist", DataTable)
         assert len(t.columns) == 5  # Stage, Score, Board, Title, Company
         assert t.virtual_size.width <= t.size.width  # no horizontal overflow at 190 wide
+
+
+# ----------------------------------------------------------------- style-guide UI flow
+async def test_tui_set_style_guide_persists_config(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """`g` → style-guide modal → submit sets the session style guide AND writes config.toml."""
+    from textual.widgets import Input
+
+    cfg = tmp_path / "config.toml"
+    monkeypatch.setenv("JOB_APPLICATOR_CONFIG_FILE", str(cfg))
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))
+    app = JobApplicatorApp(
+        settings=AppSettings(),
+        store=store,
+        app_state=MagicMock(list_recent=lambda **k: []),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        app.screen.query_one("#path", Input).value = "/style/example.pdf"
+        await pilot.press("enter")
+        await pilot.pause()
+    assert app._settings.style_guide_path == "/style/example.pdf"
+    assert cfg.exists() and 'style_guide_path = "/style/example.pdf"' in cfg.read_text()
+
+
+async def test_tui_style_guide_status_line(tmp_path: Path) -> None:
+    """The status line shows the configured style guide path (or the unset hint)."""
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))
+    app = JobApplicatorApp(
+        settings=AppSettings(resume_path="/cv.pdf", style_guide_path="/style.pdf"),
+        store=store,
+        app_state=MagicMock(list_recent=lambda **k: []),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        line = app._statusline()
+        assert "Style:" in line
+        assert "/style.pdf" in line
+
+
+def test_tui_statusline_style_guide_unset_hint() -> None:
+    """When no style guide is set, the status line hints at the `g` key."""
+    app = JobApplicatorApp(settings=AppSettings(), store=MagicMock(), app_state=MagicMock())
+    line = app._statusline()
+    assert "Style:" in line
+    assert "press 'g'" in line
+
+
+async def test_tui_tailor_action_passes_style_guide(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Pressing `t` passes the configured style_guide_path into the TUI tailor action."""
+    from job_applicator.models import FunnelStatus, TailoredResume
+    from job_applicator.tui import actions
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))
+    captured: dict[str, str] = {}
+    fake = TailoredResume(
+        original_path="/r.pdf",
+        tailored_text="T",
+        job_title="Engineer 1",
+        job_company="Co1",
+        match_score=0.8,
+        semantic_score=0.8,
+        skill_score=0.8,
+        changes_summary="c",
+        output_path="/out/tailored.txt",
+    )
+
+    async def _fake_tailor(  # type: ignore[no-untyped-def]
+        settings: AppSettings,
+        job: JobListing,
+        *,
+        style_guide_path: str = "",
+    ) -> TailoredResume:
+        captured["style_guide_path"] = style_guide_path
+        return fake
+
+    monkeypatch.setattr(actions, "tailor_job", _fake_tailor)
+    app = JobApplicatorApp(
+        settings=AppSettings(resume_path="/r.pdf", style_guide_path="/style.pdf"),
+        store=store,
+        app_state=MagicMock(list_recent=lambda **k: []),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("t")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    assert captured.get("style_guide_path") == "/style.pdf"
+    got = store.get("https://linkedin.com/jobs/1")
+    assert got is not None and got.funnel_status is FunnelStatus.TAILORED
+
+
+async def test_tui_cover_letter_action_passes_style_guide(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Pressing `c` passes the configured style_guide_path into the cover-letter action."""
+    from job_applicator.models import CoverLetterResult, FunnelStatus
+    from job_applicator.tui import actions
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))
+    captured: dict[str, str] = {}
+    fake = CoverLetterResult(
+        job_title="Engineer 1",
+        job_company="Co1",
+        job_url="https://linkedin.com/jobs/1",
+        cover_letter_text="Dear hiring manager,",
+        attempt=1,
+        prompt_version="1.0",
+        output_path="/out/cover.txt",
+    )
+
+    async def _fake_cl(
+        settings: AppSettings,
+        job: JobListing,
+        tailored_resume_path: str = "",
+        *,
+        style_guide_path: str = "",
+    ) -> CoverLetterResult:
+        captured["style_guide_path"] = style_guide_path
+        return fake
+
+    monkeypatch.setattr(actions, "cover_letter_job", _fake_cl)
+    app = JobApplicatorApp(
+        settings=AppSettings(resume_path="/r.pdf", style_guide_path="/style.pdf"),
+        store=store,
+        app_state=MagicMock(list_recent=lambda **k: []),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("c")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    assert captured.get("style_guide_path") == "/style.pdf"
+    got = store.get("https://linkedin.com/jobs/1")
+    assert got is not None and got.funnel_status is FunnelStatus.COVER_LETTER
+
+
+async def test_tui_style_guide_cancel_keeps_previous(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Cancelling the style-guide modal leaves the previous path unchanged."""
+    from textual.widgets import Input
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))
+    app = JobApplicatorApp(
+        settings=AppSettings(style_guide_path="/existing.pdf"),
+        store=store,
+        app_state=MagicMock(list_recent=lambda **k: []),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        assert app.screen.query_one("#path", Input).value == "/existing.pdf"
+        await pilot.press("escape")
+        await pilot.pause()
+    assert app._settings.style_guide_path == "/existing.pdf"
+
+
+def test_tui_help_includes_style_guide_key() -> None:
+    """The in-app help references the new `g` style-guide key."""
+    from job_applicator.tui.screens import HelpScreen
+
+    screen = HelpScreen()
+    assert "set style-guide" in screen._HELP.lower()
