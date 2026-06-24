@@ -24,6 +24,9 @@ mypy src/   # strict on src/; tests are checked by ruff only
 ruff check --fix src/ tests/
 ruff format src/ tests/
 
+# Release (see RELEASING.md)
+bash scripts/release.sh <version>   # bump version, update CHANGELOG.md, tag, build dist
+
 # Tests — 817 fast unit tests (the green gate); 846 total = 817 unit + 5 integration + 24 live
 pytest -m unit -v               # or: pytest tests/unit/ -v   (auto-marked by location)
 pytest -m unit -v -k test_name  # single test
