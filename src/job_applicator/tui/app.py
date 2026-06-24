@@ -261,16 +261,16 @@ class JobApplicatorApp(App[None]):
             jobs = [s for s in jobs if self._effective_stage(s) == self._stage_filter]
         if self._board_filter is not None:
             jobs = [s for s in jobs if s.job.board.value == self._board_filter]
-        if self._min_salary > 0:
-            # Keep a job whose parsed salary clears the floor; jobs with no listed salary stay
-            # (they're only removed by the separate 'hide unlisted' toggle below).
-            def _clears_floor(s: StoredJob) -> bool:
+        if self._min_salary > 0 or self._hide_unlisted:
+            # Both salary filters in ONE pass (parse each job's salary once): an unlisted job is
+            # kept unless 'hide unlisted' is on; a listed job is kept when it clears the floor.
+            def _salary_ok(s: StoredJob) -> bool:
                 value = parse_salary_to_annual_min(s.job.salary)
-                return value is None or value >= self._min_salary
+                if value is None:
+                    return not self._hide_unlisted
+                return self._min_salary == 0 or value >= self._min_salary
 
-            jobs = [s for s in jobs if _clears_floor(s)]
-        if self._hide_unlisted:
-            jobs = [s for s in jobs if parse_salary_to_annual_min(s.job.salary) is not None]
+            jobs = [s for s in jobs if _salary_ok(s)]
         if self._filter:
             needle = self._filter.lower()
             jobs = [

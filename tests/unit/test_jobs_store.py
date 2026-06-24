@@ -61,6 +61,24 @@ def test_upsert_job_roundtrip(store: JobStore) -> None:
     assert got.match_score is None
 
 
+def test_salary_not_clobbered_by_salaryless_rescrape(store: JobStore) -> None:
+    """A re-write that lacks a salary must NOT wipe a previously-captured one — Indeed shows
+    its salary teaser inconsistently across searches, so a later salary-less scrape of the same
+    job would otherwise erase good data. Guards upsert_job / upsert_match / mark_tailored."""
+    store.upsert_job(_job(1, salary="$120,000 a year"))
+    assert store.get("1").job.salary == "$120,000 a year"  # type: ignore[union-attr]
+
+    store.upsert_job(_job(1, salary=None))  # re-discovered, no salary on the card
+    assert store.get("1").job.salary == "$120,000 a year"  # type: ignore[union-attr]
+    store.upsert_match(_match(_job(1, salary=None)))  # scored, still no salary
+    assert store.get("1").job.salary == "$120,000 a year"  # type: ignore[union-attr]
+    store.mark_tailored(_job(1, salary=None), tailored_resume_path="/tmp/r.txt")
+    assert store.get("1").job.salary == "$120,000 a year"  # type: ignore[union-attr]
+
+    store.upsert_job(_job(1, salary="$140,000 a year"))  # a NEW salary still updates
+    assert store.get("1").job.salary == "$140,000 a year"  # type: ignore[union-attr]
+
+
 def test_get_by_url_and_unknown(store: JobStore) -> None:
     store.upsert_job(_job(1))
     assert store.get("https://linkedin.com/jobs/1") is not None
