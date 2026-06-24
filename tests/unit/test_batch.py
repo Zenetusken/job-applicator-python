@@ -68,7 +68,7 @@ class TestBatchCommand:
         from job_applicator.cli import app
 
         runner = CliRunner()
-        result = runner.invoke(app, ["batch", "--help"])
+        result = runner.invoke(app, ["batch", "--help"], env={"COLUMNS": "200"})
         assert result.exit_code == 0
         assert "--run-id" in result.output
         assert "--resume-run" in result.output

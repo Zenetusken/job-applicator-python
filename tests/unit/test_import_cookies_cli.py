@@ -79,7 +79,7 @@ def test_unsupported_site_rejected(isolated_cookie_paths: Path) -> None:
 
 def test_help_shows_browser_extra_name_not_eaten_by_markup() -> None:
     """--help must show the 'browser' extra name; Rich previously ate `[browser]` → 'the  extra'."""
-    result = runner.invoke(app, ["import-cookies", "--help"])
+    result = runner.invoke(app, ["import-cookies", "--help"], env={"COLUMNS": "200"})
     assert result.exit_code == 0
     assert "the  extra" not in result.output  # the markup-eaten double-space gap is gone
     assert "'browser'" in result.output  # the quoted extra name renders (absent pre-fix)
