@@ -368,3 +368,94 @@ def test_apply_style_guide_flows_to_generator() -> None:
     cl_generator.generate.assert_awaited_once()
     call = cl_generator.generate.await_args
     assert call.kwargs.get("style_guide") is mock_style
+
+
+def test_apply_style_guide_messages_go_to_stderr_not_stdout() -> None:
+    """Progress/status messages about style loading must not corrupt --json stdout."""
+    import job_applicator.cli as cli
+
+    jobs = _jobs(1)
+    scraper = MagicMock()
+    scraper.scrape = AsyncMock(return_value=jobs)
+
+    applicator = MagicMock()
+
+    async def _default_apply(job, letter, submit=False):  # type: ignore[no-untyped-def]
+        return ApplicationResult(
+            job=job,
+            status=ApplicationStatus.PENDING,
+            cover_letter=letter,
+        )
+
+    applicator.apply = AsyncMock(side_effect=_default_apply)
+
+    browser_cm = MagicMock()
+    browser_cm.__aenter__ = AsyncMock(return_value=MagicMock())
+    browser_cm.__aexit__ = AsyncMock(return_value=False)
+
+    st = MagicMock(**{"has_applied.return_value": False, "count_today.return_value": 0})
+
+    resume_data = ResumeData(
+        raw_text="Jane Doe\njane@example.com\nSkills: Python",
+        name="Jane Doe",
+        email="jane@example.com",
+        skills=["Python"],
+    )
+    user_profile = UserProfile(
+        first_name="Jane",
+        last_name="Doe",
+        email="jane@example.com",
+        phone="",
+        resume_path="/fake/resume.pdf",
+    )
+    ats_result = ATSCompatibilityResult(score=1.0)
+
+    loader = MagicMock()
+    loader.load.return_value = resume_data
+
+    mock_style = MagicMock()
+    mock_style.tone = "professional"
+
+    cl_generator = MagicMock()
+    cl_generator.load_style_guide = AsyncMock(return_value=mock_style)
+    cl_generator.generate = AsyncMock(return_value="Styled cover letter")
+
+    with (
+        patch.object(cli, "_make_browser", return_value=browser_cm),
+        patch.object(cli, "_make_scraper", return_value=scraper),
+        patch.object(cli, "_make_applicator", return_value=applicator),
+        patch("job_applicator.workflows.apply.ApplicationState", return_value=st),
+        patch("job_applicator.documents.resume.ResumeLoader", return_value=loader),
+        patch(
+            "job_applicator.documents.cover_letter.CoverLetterGenerator",
+            return_value=cl_generator,
+        ),
+        patch.object(cli, "_load_user_profile", return_value=user_profile),
+        patch.object(cli, "_run_ats_preflight", return_value=ats_result),
+    ):
+        result = CliRunner().invoke(
+            cli.app,
+            [
+                "apply",
+                "-q",
+                "python",
+                "-n",
+                "1",
+                "--resume",
+                "/fake/resume.pdf",
+                "--style-guide",
+                "/fake/style.txt",
+                "--json",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    # Stdout should be parseable JSON starting at the first non-whitespace character.
+    stdout = result.stdout
+    stripped = stdout.lstrip()
+    assert stripped.startswith("["), f"stdout started with non-JSON: {stripped[:80]!r}"
+    # The info/status messages should be on stderr, not stdout.
+    assert "Style loaded" in result.stderr
+    assert "Dry run" in result.stderr
+    data = _extract_json_array(stdout)
+    assert len(data) == 1

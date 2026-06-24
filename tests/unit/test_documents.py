@@ -811,15 +811,25 @@ class TestLoadStyleGuide:
     ) -> None:
         path = tmp_path / "style.txt"
         path.write_text("Professional cover letter tone example.", encoding="utf-8")
+        resume = ResumeData(
+            raw_text="Professional cover letter tone example.", name="", email="", skills=[]
+        )
 
-        with patch(
-            "job_applicator.documents.cover_letter.StyleAnalyzer.analyze",
-            new_callable=AsyncMock,
-            return_value=style,
-        ) as mock_analyze:
+        with (
+            patch(
+                "job_applicator.documents.cover_letter.ResumeLoader.load",
+                return_value=resume,
+            ) as mock_load,
+            patch(
+                "job_applicator.documents.cover_letter.StyleAnalyzer.analyze",
+                new_callable=AsyncMock,
+                return_value=style,
+            ) as mock_analyze,
+        ):
             result = await generator.load_style_guide(str(path))
 
         assert result is style
+        mock_load.assert_called_once_with(path, ocr_mode="auto")
         mock_analyze.assert_awaited_once_with("Professional cover letter tone example.")
 
     @pytest.mark.asyncio
@@ -862,14 +872,25 @@ class TestLoadStyleGuide:
         p1.write_text("Tone A", encoding="utf-8")
         p2.write_text("Tone B", encoding="utf-8")
 
-        with patch(
-            "job_applicator.documents.cover_letter.StyleAnalyzer.analyze_multiple",
-            new_callable=AsyncMock,
-            return_value=style,
-        ) as mock_multiple:
+        def _fake_load(path: Path, ocr_mode: str = "auto") -> ResumeData:
+            text = "Tone A" if path.name == "a.txt" else "Tone B"
+            return ResumeData(raw_text=text, name="", email="", skills=[])
+
+        with (
+            patch(
+                "job_applicator.documents.cover_letter.ResumeLoader.load",
+                side_effect=_fake_load,
+            ) as mock_load,
+            patch(
+                "job_applicator.documents.cover_letter.StyleAnalyzer.analyze_multiple",
+                new_callable=AsyncMock,
+                return_value=style,
+            ) as mock_multiple,
+        ):
             result = await generator.load_style_guide(f"{p1}, {p2}")
 
         assert result is style
+        assert mock_load.call_count == 2
         mock_multiple.assert_awaited_once_with(["Tone A", "Tone B"])
 
     @pytest.mark.asyncio
@@ -883,13 +904,16 @@ class TestLoadStyleGuide:
         pdf = tmp_path / "b.pdf"
         txt.write_text("Text tone", encoding="utf-8")
         pdf.write_text("fake", encoding="utf-8")
-        resume = ResumeData(raw_text="PDF tone", name="", email="", skills=[])
+
+        def _fake_load(path: Path, ocr_mode: str = "auto") -> ResumeData:
+            text = "Text tone" if path.name == "a.txt" else "PDF tone"
+            return ResumeData(raw_text=text, name="", email="", skills=[])
 
         with (
             patch(
                 "job_applicator.documents.cover_letter.ResumeLoader.load",
-                return_value=resume,
-            ),
+                side_effect=_fake_load,
+            ) as mock_load,
             patch(
                 "job_applicator.documents.cover_letter.StyleAnalyzer.analyze_multiple",
                 new_callable=AsyncMock,
@@ -899,14 +923,15 @@ class TestLoadStyleGuide:
             result = await generator.load_style_guide(f"{txt},{pdf}")
 
         assert result is style
+        assert mock_load.call_count == 2
         mock_multiple.assert_awaited_once_with(["Text tone", "PDF tone"])
 
     @pytest.mark.asyncio
     async def test_missing_file_raises(self, generator: CoverLetterGenerator) -> None:
-        with pytest.raises(LLMError, match="not found"):
+        with pytest.raises(DocumentError, match="not found"):
             await generator.load_style_guide("/nonexistent/style.txt")
 
     @pytest.mark.asyncio
     async def test_empty_string_raises(self, generator: CoverLetterGenerator) -> None:
-        with pytest.raises(LLMError, match="No style guide paths"):
+        with pytest.raises(DocumentError, match="No style guide paths"):
             await generator.load_style_guide("  ,  ")

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `batch --no-cover-letter` is now respected even when `--style-guide` is provided; cover letters are no longer generated in that mode.
+- `apply`, `batch`, and `tailor` now forward `--ocr-mode` and `--force-ocr` to the style-guide loader.
+- `apply` dry-run and style-guide status messages are emitted to stderr so `--json` stdout remains clean.
+- Interactive `tailor` refinements (`[R]efine`, `[I]nput`, `[S]tyle`) now preserve the loaded style guide.
+
+### Changed
+
+- `CoverLetterGenerator.load_style_guide` uses `ResumeLoader` for all file types and raises `DocumentError` for missing or unreadable paths.
+- `CoverLetterOutput` and `StyleGuide` models now reject unknown fields (`extra="forbid"`).
+- `config-init` template now includes `style_guide_path`.
+- `AGENTS.md` now documents `--style-guide` support for `apply`, `tailor`, `generate-cover-letter`, and `batch`.
+
 ## [0.3.4] - 2026-06-24
 
 ### Added

@@ -721,11 +721,11 @@ def apply(
     """
     _merge_verbose_ctx(ctx, verbose, log_file)
     if submit:
-        console.print(
+        err_console.print(
             "[bold red]--submit set: real applications WILL be sent on your account.[/bold red]"
         )
     else:
-        console.print(
+        err_console.print(
             "[dim]Dry run: forms are filled but NOT submitted. Pass --submit to apply.[/dim]"
         )
     settings = _get_settings(headed)
@@ -818,11 +818,11 @@ def apply(
                 generator = CoverLetterGenerator(settings.llm, runtime=_make_runtime(settings))
                 style = None
                 if settings.style_guide_path:
-                    with console.status("Analyzing writing style..."):
+                    with err_console.status("Analyzing writing style..."):
                         style = await generator.load_style_guide(
                             settings.style_guide_path, ocr_mode=effective_ocr_mode
                         )
-                    console.print(f"[green]Style loaded: {style.tone}[/green]")
+                    err_console.print(f"[green]Style loaded: {style.tone}[/green]")
                 sem = asyncio.Semaphore(3)
 
                 async def _gen_one(
@@ -1602,16 +1602,16 @@ def batch(
         runtime = _make_runtime(settings)
         style = None
         cl_generator = None
-        if settings.style_guide_path:
+        if settings.style_guide_path or cover_letter:
             from job_applicator.documents.cover_letter import CoverLetterGenerator
 
             cl_generator = CoverLetterGenerator(settings.llm, runtime=runtime)
-            with console.status("Loading style guide..."):
-                style = await cl_generator.load_style_guide(settings.style_guide_path)
-        elif cover_letter:
-            from job_applicator.documents.cover_letter import CoverLetterGenerator
-
-            cl_generator = CoverLetterGenerator(settings.llm, runtime=runtime)
+            if settings.style_guide_path:
+                with err_console.status("Loading style guide..."):
+                    style = await cl_generator.load_style_guide(
+                        settings.style_guide_path, ocr_mode=effective_ocr_mode
+                    )
+                err_console.print(f"[green]Style loaded: {style.tone}[/green]")
 
         tailor_engine = ResumeTailor(settings.llm, runtime=runtime)
         user_profile = _load_user_profile(settings)
@@ -1725,7 +1725,7 @@ def batch(
                         )
                         return result
 
-                if cl_generator is not None:
+                if cl_generator is not None and cover_letter:
                     try:
                         if reporter:
                             reporter.record_llm_call(
@@ -2005,9 +2005,11 @@ def tailor(
             from job_applicator.documents.cover_letter import CoverLetterGenerator
 
             generator = CoverLetterGenerator(settings.llm, runtime=runtime)
-            with console.status("Analyzing writing style..."):
-                style = await generator.load_style_guide(settings.style_guide_path)
-            console.print(f"[green]Style loaded: {style.tone}[/green]")
+            with err_console.status("Analyzing writing style..."):
+                style = await generator.load_style_guide(
+                    settings.style_guide_path, ocr_mode=effective_ocr_mode
+                )
+            err_console.print(f"[green]Style loaded: {style.tone}[/green]")
 
         tailor_engine = ResumeTailor(settings.llm, runtime=runtime)
         user_instructions = ""
@@ -2388,6 +2390,9 @@ def config_init(
 # Profile
 profile_name = "default"
 resume_path = "/path/to/your/resume.pdf"
+# Example résumé/cover letter(s) whose writing style the AI should mimic. Supports a single
+# file or comma-separated paths (e.g. "example1.txt,example2.pdf").
+# style_guide_path = "cover_letter_example.txt"
 output_dir = "output"
 log_level = "INFO"
 

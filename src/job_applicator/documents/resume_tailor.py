@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from job_applicator.config import LLMConfig
+from job_applicator.documents.style_analyzer import StyleAnalyzer
 from job_applicator.exceptions import LLMError
 from job_applicator.models import (
     DateAuditResult,
@@ -684,8 +685,6 @@ class ResumeTailor:
         )
 
         if style_guide:
-            from job_applicator.documents.style_analyzer import StyleAnalyzer
-
             style_section = StyleAnalyzer.format_style_for_prompt(style_guide)
             prompt += f"\n\n{style_section}"
 
@@ -723,6 +722,7 @@ class ResumeTailor:
         job: JobListing,
         matcher: JobMatcher | None = None,
         tone_profile: ToneProfile | None = None,
+        style_guide: StyleGuide | None = None,
     ) -> TailoredResume:
         """Refine a tailored resume based on user feedback.
 
@@ -733,6 +733,7 @@ class ResumeTailor:
             job: Target job listing
             matcher: Optional JobMatcher instance to reuse
             tone_profile: Optional tone profile to maintain across refinements
+            style_guide: Optional style guide to maintain across refinements
 
         Returns:
             New TailoredResume with refinements applied
@@ -744,6 +745,13 @@ class ResumeTailor:
             tone_directive = (
                 f"\n\n{ToneDetector().format_for_prompt(tone_profile)}\n"
                 "Maintain this tone throughout the refined resume."
+            )
+
+        style_section = ""
+        if style_guide:
+            style_section = (
+                f"\n\n{StyleAnalyzer.format_style_for_prompt(style_guide)}\n"
+                "Maintain this writing style throughout the refined resume."
             )
 
         prompt = (
@@ -758,7 +766,8 @@ class ResumeTailor:
             f"Apply the user's feedback while keeping the resume tailored "
             f"for the job. Do NOT add skills not in the candidate's actual "
             f"skills list. Do NOT add Education if none exists in original."
-            f"{tone_directive}\n"
+            f"{tone_directive}"
+            f"{style_section}\n"
             f"Return the complete updated resume text."
         )
 

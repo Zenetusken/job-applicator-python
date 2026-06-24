@@ -75,9 +75,9 @@ content = changelog.read_text(encoding="utf-8")
 
 # Extract content between [Unreleased] header and the next ## [ header.
 match = re.search(
-    r"## \[Unreleased\]\n\n(.*?)(?=\n## \[)",
+    r"## \[Unreleased\]\n\s*\n((?:(?!^## \[).)*)",
     content,
-    re.DOTALL,
+    re.DOTALL | re.MULTILINE,
 )
 if not match:
     raise SystemExit("Error: could not parse [Unreleased] section")

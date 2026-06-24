@@ -256,6 +256,8 @@ class ResumeData(BaseModel):
 class StyleGuide(BaseModel):
     """Writing style patterns extracted from example resumes/cover letters."""
 
+    model_config = {"extra": "forbid"}
+
     # Core style dimensions
     tone: str = Field(description="Overall tone")
     sentence_structure: str = Field(description="Typical sentence patterns")

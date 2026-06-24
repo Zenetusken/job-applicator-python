@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from job_applicator.embeddings.matching import MatchResult
 from job_applicator.models import JobBoard, JobListing
 
 
@@ -228,3 +229,212 @@ class TestBatchCommand:
         assert loaded["total_jobs"] == 5
         assert loaded["results"][0]["tailored"] is True
         assert loaded["results"][0]["match_score"] == 0.75
+
+
+# --- Style-guide regression tests ---------------------------------------------------
+
+
+class TestBatchStyleGuide:
+    """Cycle 2b polish: batch respects --no-cover-letter and forwards OCR mode."""
+
+    def test_no_cover_letter_with_style_guide_skips_generation(
+        self, sample_jobs_file: Path, sample_resume_file: Path
+    ) -> None:
+        """batch --no-cover-letter --style-guide must NOT generate cover letters."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from typer.testing import CliRunner
+
+        import job_applicator.cli as cli
+        from job_applicator.cli import app
+
+        matcher = MagicMock()
+        match = MatchResult(
+            job=JobListing(
+                title="Python Developer",
+                company="TechCorp",
+                url="https://example.com/1",
+                description="Python, FastAPI",
+                requirements=["Python", "FastAPI"],
+                board=JobBoard.LINKEDIN,
+            ),
+            score=0.9,
+            semantic_score=0.8,
+            skill_score=0.7,
+            matched_skills=["Python"],
+            missing_skills=[],
+            summary="good",
+        )
+        matcher.rank_jobs.return_value = [match]
+        matcher.match_resume_to_job.return_value = match
+
+        tailor = MagicMock()
+        tailored = MagicMock()
+        tailored.tailored_text = "Tailored resume text"
+        tailored.match_score = 0.9
+        tailored.semantic_score = 0.8
+        tailored.skill_score = 0.7
+        tailored.matched_skills = ["Python"]
+        tailored.missing_skills = []
+        tailored.changes_summary = "summary"
+        tailor.tailor = AsyncMock(return_value=tailored)
+
+        style = MagicMock()
+        style.tone = "professional"
+        cl_generator = MagicMock()
+        cl_generator.load_style_guide = AsyncMock(return_value=style)
+        cl_generator.generate = AsyncMock(return_value="cover letter")
+
+        with (
+            patch.object(cli, "_get_settings", return_value=MagicMock()) as mock_settings,
+            patch("job_applicator.embeddings.matching.JobMatcher", return_value=matcher),
+            patch("job_applicator.documents.resume_tailor.ResumeTailor", return_value=tailor),
+            patch(
+                "job_applicator.documents.cover_letter.CoverLetterGenerator",
+                return_value=cl_generator,
+            ),
+            patch("job_applicator.cli._load_user_profile", return_value=MagicMock()),
+            patch("job_applicator.cli._run_ats_preflight", return_value=MagicMock(score=1.0)),
+            patch("job_applicator.cli._run_ats_post_tailor", return_value=MagicMock(score=1.0)),
+            patch("job_applicator.batch_state.BatchState") as mock_batch_state_cls,
+        ):
+            settings = mock_settings.return_value
+            settings.resume_path = str(sample_resume_file)
+            settings.style_guide_path = "style.txt"
+            settings.llm = MagicMock()
+            settings.llm.model = "test"
+            settings.llm.api_base = "http://test"
+            settings.llm.temperature = 0.7
+            settings.output_dir = str(sample_jobs_file.parent / "out")
+            Path(settings.output_dir).mkdir(parents=True, exist_ok=True)
+            settings.ensure_output_dir.return_value = Path(settings.output_dir)
+            settings.embedding = MagicMock()
+            settings.log_level = "INFO"
+            settings.browser = MagicMock()
+            settings.browser.headless = True
+
+            bs = MagicMock()
+            bs.list_completed_jobs.return_value = []
+            bs.find_existing_run.return_value = None
+            mock_batch_state_cls.return_value = bs
+
+            runner = CliRunner()
+            result = runner.invoke(
+                app,
+                [
+                    "batch",
+                    "--resume",
+                    str(sample_resume_file),
+                    "--jobs-file",
+                    str(sample_jobs_file),
+                    "--top-k",
+                    "1",
+                    "--no-cover-letter",
+                    "--style-guide",
+                    "style.txt",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        cl_generator.generate.assert_not_called()
+
+    def test_style_guide_load_receives_ocr_mode(
+        self, sample_jobs_file: Path, sample_resume_file: Path
+    ) -> None:
+        """batch --style-guide --force-ocr must pass ocr_mode='on' to the loader."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from typer.testing import CliRunner
+
+        import job_applicator.cli as cli
+        from job_applicator.cli import app
+
+        matcher = MagicMock()
+        match = MatchResult(
+            job=JobListing(
+                title="Python Developer",
+                company="TechCorp",
+                url="https://example.com/1",
+                description="Python, FastAPI",
+                requirements=["Python", "FastAPI"],
+                board=JobBoard.LINKEDIN,
+            ),
+            score=0.9,
+            semantic_score=0.8,
+            skill_score=0.7,
+            matched_skills=["Python"],
+            missing_skills=[],
+            summary="good",
+        )
+        matcher.rank_jobs.return_value = [match]
+        matcher.match_resume_to_job.return_value = match
+
+        tailor = MagicMock()
+        tailored = MagicMock()
+        tailored.tailored_text = "Tailored resume text"
+        tailored.match_score = 0.9
+        tailored.semantic_score = 0.8
+        tailored.skill_score = 0.7
+        tailored.matched_skills = ["Python"]
+        tailored.missing_skills = []
+        tailored.changes_summary = "summary"
+        tailor.tailor = AsyncMock(return_value=tailored)
+
+        style = MagicMock()
+        style.tone = "professional"
+        cl_generator = MagicMock()
+        cl_generator.load_style_guide = AsyncMock(return_value=style)
+        cl_generator.generate = AsyncMock(return_value="cover letter")
+
+        with (
+            patch.object(cli, "_get_settings", return_value=MagicMock()) as mock_settings,
+            patch("job_applicator.embeddings.matching.JobMatcher", return_value=matcher),
+            patch("job_applicator.documents.resume_tailor.ResumeTailor", return_value=tailor),
+            patch(
+                "job_applicator.documents.cover_letter.CoverLetterGenerator",
+                return_value=cl_generator,
+            ),
+            patch("job_applicator.cli._load_user_profile", return_value=MagicMock()),
+            patch("job_applicator.cli._run_ats_preflight", return_value=MagicMock(score=1.0)),
+            patch("job_applicator.cli._run_ats_post_tailor", return_value=MagicMock(score=1.0)),
+            patch("job_applicator.batch_state.BatchState") as mock_batch_state_cls,
+        ):
+            settings = mock_settings.return_value
+            settings.resume_path = str(sample_resume_file)
+            settings.style_guide_path = "style.pdf"
+            settings.llm = MagicMock()
+            settings.llm.model = "test"
+            settings.llm.api_base = "http://test"
+            settings.llm.temperature = 0.7
+            settings.output_dir = str(sample_jobs_file.parent / "out")
+            Path(settings.output_dir).mkdir(parents=True, exist_ok=True)
+            settings.ensure_output_dir.return_value = Path(settings.output_dir)
+            settings.embedding = MagicMock()
+            settings.log_level = "INFO"
+            settings.browser = MagicMock()
+            settings.browser.headless = True
+
+            bs = MagicMock()
+            bs.list_completed_jobs.return_value = []
+            bs.find_existing_run.return_value = None
+            mock_batch_state_cls.return_value = bs
+
+            runner = CliRunner()
+            result = runner.invoke(
+                app,
+                [
+                    "batch",
+                    "--resume",
+                    str(sample_resume_file),
+                    "--jobs-file",
+                    str(sample_jobs_file),
+                    "--top-k",
+                    "1",
+                    "--style-guide",
+                    "style.pdf",
+                    "--force-ocr",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        cl_generator.load_style_guide.assert_awaited_once_with("style.pdf", ocr_mode="on")

@@ -42,18 +42,18 @@ job-applicator check-session                # Verify board session is ready
 job-applicator search --site linkedin --query "python developer"
 job-applicator status                       # Show saved job funnel
 job-applicator match --resume resume.pdf --jobs-file jobs.json
-job-applicator tailor --resume resume.pdf --from <id-or-url>
-job-applicator generate-cover-letter --resume resume.pdf --job-title "..." --company "..."
+job-applicator tailor --resume resume.pdf --from <id-or-url> [--style-guide example.txt]
+job-applicator generate-cover-letter --resume resume.pdf --job-title "..." --company "..." [--style-guide example.txt]
 job-applicator ats-check --resume resume.pdf [--json] [--strict]
-job-applicator apply --query "python" --validate            # Dry-run Easy Apply and validate it reaches Submit
-job-applicator apply --query "python" --submit --limit 5    # Send real applications
-job-applicator batch --resume resume.pdf --jobs-file jobs.json --top-k 10 --resume-run
+job-applicator apply --query "python" --validate [--style-guide example.txt]            # Dry-run Easy Apply and validate it reaches Submit
+job-applicator apply --query "python" --submit --limit 5 [--style-guide example.txt]    # Send real applications
+job-applicator batch --resume resume.pdf --jobs-file jobs.json --top-k 10 --resume-run [--style-guide "ex1.txt,ex2.pdf"]
 job-applicator tui                          # Full-screen terminal UI over the funnel store
 ```
 
 Most commands that read a résumé accept `--resume`, `--ocr-mode {auto|on|off}`, and `--force-ocr`.
-`apply` is dry-run by default; real submissions require `--submit`. `batch` accepts `--run-id`,
-`--resume-run`, `--min-score`, `--top-k`, `--cover-letter/--no-cover-letter`, and `--style-guide`.
+`apply` is dry-run by default; real submissions require `--submit`. `apply`, `batch`, `tailor`, and
+`generate-cover-letter` all accept `--style-guide` with a single file or comma-separated paths.
 
 ## Architecture
 

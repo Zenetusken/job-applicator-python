@@ -194,6 +194,7 @@ async def _tailor_workflow(
                     "",
                     job,
                     tone_profile=tone_profile,
+                    style_guide=style,
                 ),
                 "Tailoring resume...",
             )
@@ -221,6 +222,7 @@ async def _tailor_workflow(
                     user_instructions,
                     job,
                     tone_profile=tone_profile,
+                    style_guide=style,
                 ),
                 "Tailoring resume...",
             )
@@ -324,6 +326,7 @@ async def _tailor_workflow(
                     user_instructions,
                     job,
                     tone_profile=tone_profile,
+                    style_guide=style,
                 ),
                 "Refining section...",
             )

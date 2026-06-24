@@ -95,3 +95,26 @@ def test_env_override(monkeypatch: object) -> None:
     monkeypatch.setenv("JOB_APPLICATOR_LOG_LEVEL", "DEBUG")  # type: ignore[attr-defined]
     settings = AppSettings()
     assert settings.log_level == "DEBUG"
+
+
+def test_version_flag() -> None:
+    """--version must report the package version and exit cleanly."""
+    from typer.testing import CliRunner
+
+    from job_applicator import __version__
+    from job_applicator.cli import app
+
+    result = CliRunner().invoke(app, ["--version"])
+    assert result.exit_code == 0
+    assert __version__ in result.output
+
+
+def test_pyproject_version_matches_runtime_version() -> None:
+    """pyproject.toml version must match the runtime __version__."""
+    import tomllib
+
+    from job_applicator import __version__
+
+    pyproject = Path("pyproject.toml").read_bytes()
+    data = tomllib.loads(pyproject.decode("utf-8"))
+    assert data["project"]["version"] == __version__

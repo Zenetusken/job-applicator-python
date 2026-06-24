@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from job_applicator.config import LLMConfig
 from job_applicator.documents.resume_tailor import (
     CHANGES_PROMPT_TEMPLATE,
     TAILOR_PROMPT_TEMPLATE,
@@ -772,3 +773,58 @@ def test_cover_letter_and_tailor_share_one_runtime_breaker() -> None:
     tailor = ResumeTailor(LLMConfig(), runtime=runtime)
     assert gen._breaker is tailor._breaker
     assert gen._breaker is runtime.breaker
+
+
+@pytest.mark.asyncio
+async def test_refine_passes_style_guide_to_prompt(sample_resume, sample_job):
+    """Cycle 2b polish: refinements must preserve the writing style guide."""
+    from job_applicator.documents.style_analyzer import StyleAnalyzer
+    from job_applicator.models import StyleGuide
+
+    config = LLMConfig(api_base="http://localhost:8000/v1", model="test")
+    tailor = ResumeTailor(config)
+
+    current = TailoredResume(
+        original_path="",
+        tailored_text="Original tailored text",
+        job_title=sample_job.title,
+        job_company=sample_job.company,
+        match_score=0.75,
+        semantic_score=0.0,
+        skill_score=0.0,
+        matched_skills=["Windows"],
+        missing_skills=[],
+        changes_summary="Initial tailoring",
+        attempt=1,
+    )
+
+    style = StyleGuide(
+        tone="casual",
+        sentence_structure="short",
+        vocabulary_level="simple",
+        paragraph_style="brief",
+        formatting_notes="",
+        sample_paragraph="",
+    )
+
+    captured_prompt = ""
+
+    async def _capture_call(prompt: str, temperature: float = 0.7):
+        nonlocal captured_prompt
+        captured_prompt = prompt
+        return "Refined text"
+
+    with patch.object(tailor, "_call_llm", side_effect=_capture_call):
+        with patch.object(tailor, "_summarize_changes", new_callable=AsyncMock) as mock_changes:
+            mock_changes.return_value = "Refined based on feedback"
+            await tailor.refine(
+                sample_resume,
+                current,
+                "Make it more concise",
+                sample_job,
+                style_guide=style,
+            )
+
+    style_section = StyleAnalyzer.format_style_for_prompt(style)
+    assert style_section in captured_prompt
+    assert "Maintain this writing style" in captured_prompt

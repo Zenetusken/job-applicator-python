@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import re
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -31,6 +30,8 @@ logger = get_logger("documents.cover_letter")
 
 class CoverLetterOutput(BaseModel):
     """Structured output from LLM for cover letter generation."""
+
+    model_config = {"extra": "forbid"}
 
     cover_letter: str = Field(description="The generated cover letter text")
     key_points: list[str] = Field(
@@ -116,31 +117,32 @@ class CoverLetterGenerator:
     async def load_style_guide(self, style_guide_path: str, ocr_mode: str = "auto") -> StyleGuide:
         """Load and analyze one or more style-guide files into a single StyleGuide.
 
-        ``style_guide_path`` may be a single file or a comma-separated list. PDFs
-        are parsed with ``ResumeLoader``; all other files are read as UTF-8 text.
-        A single file is analyzed directly; multiple files are analyzed
-        individually and merged. Per-text caching lives in ``StyleAnalyzer``,
-        so repeated calls for the same path are cheap.
+        ``style_guide_path`` may be a single file or a comma-separated list. All
+        files are parsed through ``ResumeLoader``, so PDFs, text files, DOCX, and
+        images are supported with the same OCR fallback used for résumés. A single
+        file is analyzed directly; multiple files are analyzed individually and
+        merged. Per-text caching lives in ``StyleAnalyzer``, so repeated calls for
+        the same path are cheap.
         """
         from pathlib import Path
 
+        from job_applicator.exceptions import DocumentError
+
         paths = [p.strip() for p in style_guide_path.split(",") if p.strip()]
         if not paths:
-            raise LLMError("No style guide paths provided")
-
-        for path_str in paths:
-            if not await asyncio.to_thread(Path(path_str).exists):
-                raise LLMError(f"Style guide not found: {path_str}")
+            raise DocumentError("No style guide paths provided")
 
         loader = ResumeLoader()
         texts: list[str] = []
         for path_str in paths:
             path = Path(path_str)
-            if path.suffix.lower() == ".pdf":
+            try:
                 resume_data = loader.load(path, ocr_mode=ocr_mode)
-                texts.append(resume_data.raw_text)
-            else:
-                texts.append(await asyncio.to_thread(path.read_text, encoding="utf-8"))
+            except DocumentError as exc:
+                # Re-raise with a style-guide-specific prefix so callers know
+                # which path failed without leaking raw ResumeLoader internals.
+                raise DocumentError(f"Could not load style guide {path}: {exc}") from exc
+            texts.append(resume_data.raw_text)
 
         analyzer = StyleAnalyzer(self._config)
         if len(texts) == 1:
