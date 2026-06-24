@@ -785,7 +785,7 @@ def apply(
                     max_results=limit,
                     board=JobBoard(effective_site),
                 )
-                with console.status(f"Searching {effective_site}..."):
+                with err_console.status(f"Searching {effective_site}..."):
                     jobs = await scraper.scrape(params)
             else:
                 jobs = store_jobs
@@ -836,10 +836,10 @@ def apply(
                             return str(job.url), letter
                         except Exception as exc:
                             msg = f"Cover letter failed for {job.title}: {exc}"
-                            console.print(f"[yellow]{msg}[/yellow]")
+                            err_console.print(f"[yellow]{msg}[/yellow]")
                             return None
 
-                with console.status("Generating cover letters (parallel)..."):
+                with err_console.status("Generating cover letters (parallel)..."):
                     results_cl = await asyncio.gather(*(_gen_one(j) for j in jobs[:limit]))
                     for entry in results_cl:
                         if entry is not None:
@@ -860,7 +860,7 @@ def apply(
                 submit=submit,
                 validate=validate,
                 as_json=as_json,
-                console=console,
+                console=err_console if as_json else console,
                 reporter=reporter,
             )
 

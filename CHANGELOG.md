@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `apply` cover-letter generation and search/apply status spinners are now emitted to stderr so `--json` stdout stays clean end-to-end.
+
+### Added
+
+- Live end-to-end CLI tests for the universal style-guide feature in `tests/test_style_guide_e2e_live.py`, exercising real vLLM calls for `generate-cover-letter`, `batch`, `tailor`, and `apply`.
+
 ## [0.3.5] - 2026-06-24
 
 ### Fixed
