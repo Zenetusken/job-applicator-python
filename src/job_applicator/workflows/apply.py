@@ -13,6 +13,7 @@ from collections import Counter
 from typing import TYPE_CHECKING
 
 import typer
+from rich.markup import escape
 from rich.table import Table
 
 from job_applicator.state import ApplicationState
@@ -108,6 +109,7 @@ async def _apply_to_jobs(
                 "status": r.status.value,
                 "error": r.error_message,
                 "notes": r.notes,
+                "cover_letter": r.cover_letter,
                 "dry_run": r.dry_run.model_dump() if r.dry_run else None,
             }
             for r in app_results
@@ -128,10 +130,17 @@ async def _apply_to_jobs(
                 "already_applied": "magenta",
                 "pending": "blue",
             }.get(r.status.value, "white")
-            notes = r.error_message or r.notes or ""
+            note_parts: list[str] = []
             if r.dry_run:
                 reached = "✓" if r.dry_run.reached_submit else "✗"
-                notes = f"[submit {reached}] {notes}".strip()
+                note_parts.append(f"[submit {reached}]")
+            if r.cover_letter:
+                note_parts.append(f"[cover letter: {len(r.cover_letter)} chars]")
+            if r.error_message:
+                note_parts.append(r.error_message)
+            elif r.notes:
+                note_parts.append(r.notes)
+            notes = escape(" ".join(note_parts))
             table.add_row(
                 r.job.title,
                 r.job.company,

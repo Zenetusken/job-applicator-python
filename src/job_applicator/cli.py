@@ -794,10 +794,11 @@ def apply(
                 console.print("[yellow]No jobs found to apply to.[/yellow]")
                 return
 
-            # Generate cover letters only when actually submitting — a dry run
-            # never sends them, so generating up front would waste LLM calls.
+            # Generate cover letters whenever they are requested and a résumé is
+            # available. Dry runs use them as a preview; real submissions use them
+            # in the form. LLM calls are local, so the preview is worth the cost.
             cover_letters: dict[str, str] = {}
-            if cover_letter and settings.resume_path and submit:
+            if cover_letter and settings.resume_path:
                 from job_applicator.documents.cover_letter import CoverLetterGenerator
                 from job_applicator.documents.resume import ResumeLoader
 
