@@ -314,11 +314,11 @@ async def test_extract_job_captures_card_snippet(app_settings: AppSettings) -> N
 
 
 @pytest.mark.asyncio
-async def test_load_description_accepts_only_a_changed_pane(
+async def test_load_description_change_detection_fallback_without_vjk(
     app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """_load_description returns the full text once the pane CHANGES after the click — the
-    change check stops a stale read from cross-contaminating with the prior card's text."""
+    """With no jk (href-fallback job), _load_description accepts the pane once it CHANGES from
+    the prior card — guarding against reading the previous card's still-displayed text."""
     monkeypatch.setattr("job_applicator.scrapers.indeed.random_delay", AsyncMock())
     scraper = IndeedScraper(MagicMock(), app_settings)
     full = "Full job posting. " * 20  # > 100 chars
@@ -330,9 +330,29 @@ async def test_load_description_accepts_only_a_changed_pane(
     monkeypatch.setattr(scraper, "_get_desc_text", fake_get)
     card = AsyncMock()
 
-    desc = await scraper._load_description(AsyncMock(), card)
+    desc = await scraper._load_description(AsyncMock(), card, jk=None)
     assert desc.startswith("Full job posting.")
     card.click.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_load_description_reads_preopened_first_card_via_vjk(
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The measured first-card bug: Indeed pre-opens the first result, so the pane never
+    CHANGES after the click — but the URL carries vjk=<jk>. _load_description must read that
+    description (matching vjk) even though text == prev, instead of returning ''."""
+    monkeypatch.setattr("job_applicator.scrapers.indeed.random_delay", AsyncMock())
+    scraper = IndeedScraper(MagicMock(), app_settings)
+    pane = "Pre-opened first job description. " * 10  # > 100, and UNCHANGED across the click
+    monkeypatch.setattr(scraper, "_get_desc_text", AsyncMock(return_value=pane))
+
+    page = AsyncMock()
+    page.url = "https://ca.indeed.com/jobs?q=python&vjk=abc123"  # viewed job == the clicked card
+    card = AsyncMock()
+
+    desc = await scraper._load_description(page, card, jk="abc123")
+    assert desc.startswith("Pre-opened first job description.")  # not '' despite no change
 
 
 @pytest.mark.asyncio

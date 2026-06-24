@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from playwright.async_api import BrowserContext, ElementHandle, Page
 
@@ -270,9 +270,12 @@ class IndeedScraper(BaseScraper):
             for i, card, job in parsed:
                 if on_progress is not None:
                     on_progress(f"Reading description {i}/{total} on Indeed…")
+                # The canonical URL is /viewjob?jk=<jk>; that key ties the loaded pane to this
+                # card (see _load_description). Jobs that fell back to an href have no jk.
+                jk = parse_qs(urlsplit(str(job.url)).query).get("jk", [None])[0]
                 desc = ""
                 try:
-                    desc = await self._load_description(page, card)
+                    desc = await self._load_description(page, card, jk)
                 except Exception as exc:  # enrichment is best-effort; keep the snippet
                     logger.debug("Indeed description enrichment failed (card %d): %s", i, exc)
                 if desc and len(desc) > len(job.description):
@@ -422,19 +425,31 @@ class IndeedScraper(BaseScraper):
                 return (await el.inner_text()).strip()
         return ""
 
-    async def _load_description(self, page: Page, card: ElementHandle) -> str:
-        """Click the card to load Indeed's detail pane, wait for the description to populate,
-        and return the cleaned full text (≤5k chars). Best-effort: returns '' if the pane
-        never loads, so the caller keeps the card snippet. Mirrors the LinkedIn split pane."""
+    async def _load_description(self, page: Page, card: ElementHandle, jk: str | None) -> str:
+        """Click the card and return the cleaned full detail-pane description (≤5k chars).
+
+        Indeed loads the description IN-PAGE and reflects the viewed job in the URL as
+        ``&vjk=<jk>`` (verified against the live DOM). Waiting for that key to match the
+        clicked card is what makes this reliable: it reads the right description even when the
+        pane was *pre-opened* on the first result, where change-detection alone fails (the pane
+        never "changes", so the old ``cur != prev`` check rejected a description that was right
+        there — the measured cause of the first-card miss). Change-detection stays as a fallback
+        for layouts/regions that don't put ``vjk`` in the URL. Best-effort: '' if nothing loads.
+        """
         prev = await self._get_desc_text(page)
         await card.click(timeout=5_000)
-        for _ in range(10):
+        for _ in range(12):
             await random_delay(0.3, 0.5)
-            cur = await self._get_desc_text(page)
-            # Only accept a pane that actually CHANGED — otherwise a stale read would
-            # cross-contaminate this card with the previous card's description.
-            if cur and cur != prev and len(cur) > 100:
-                return _clean_description(cur[:5000])
+            text = await self._get_desc_text(page)
+            if len(text) <= 100:
+                continue
+            # The pane belongs to THIS card once the viewed-job key in the URL matches it…
+            if jk and f"vjk={jk}" in page.url:
+                return _clean_description(text[:5000])
+            # …or, where the URL carries no vjk, once it has visibly changed from the prior card
+            # (guards against reading the previous card's still-displayed description).
+            if not jk and text != prev:
+                return _clean_description(text[:5000])
         return ""
 
     async def _dump_failed_card(self, page: Page, card: ElementHandle) -> None:
