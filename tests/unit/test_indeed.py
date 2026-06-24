@@ -100,7 +100,10 @@ async def test_extract_job_uses_legacy_fallback_selectors(app_settings: AppSetti
 
     title_el = AsyncMock()
     title_el.inner_text = AsyncMock(return_value="Backend Engineer")
-    title_el.get_attribute = AsyncMock(return_value="/viewjob?jk=1")
+    # arg-aware: an href but no data-jk on the link
+    title_el.get_attribute = AsyncMock(
+        side_effect=lambda name: "/viewjob?jk=1" if name == "href" else None
+    )
     company_el = AsyncMock()
     company_el.inner_text = AsyncMock(return_value="LegacyCo")
     location_el = AsyncMock()
@@ -117,6 +120,7 @@ async def test_extract_job_uses_legacy_fallback_selectors(app_settings: AppSetti
 
     card = MagicMock()
     card.query_selector = AsyncMock(side_effect=query)
+    card.get_attribute = AsyncMock(return_value=None)  # no data-jk on the card
 
     job = await scraper._extract_job(card, JobBoard.INDEED)
     assert job is not None
@@ -178,7 +182,7 @@ async def test_scrape_emits_per_card_progress(app_settings: AppSettings, tmp_pat
     scraper._new_stealth_page = AsyncMock(return_value=AsyncMock())
     scraper._load_results = AsyncMock(return_value=[MagicMock() for _ in range(3)])
     scraper._load_description = AsyncMock(return_value="")  # phase-2 not under test
-    scraper._dump_pane = AsyncMock()  # no real pane to dump from a mock page
+    scraper._dump_failed_card = AsyncMock()  # no real card to dump from a mock
 
     def _stub(n: int) -> JobListing:
         return JobListing(
@@ -220,7 +224,7 @@ async def test_scrape_streams_each_job_via_on_job(
     scraper._new_stealth_page = AsyncMock(return_value=AsyncMock())
     scraper._load_results = AsyncMock(return_value=[MagicMock() for _ in range(2)])
     scraper._load_description = AsyncMock(return_value="")  # phase-2 not under test
-    scraper._dump_pane = AsyncMock()
+    scraper._dump_failed_card = AsyncMock()
 
     def _stub(n: int) -> JobListing:
         return JobListing(
@@ -285,7 +289,9 @@ async def test_extract_job_captures_card_snippet(app_settings: AppSettings) -> N
 
     title_el = AsyncMock()
     title_el.inner_text = AsyncMock(return_value="Backend Engineer")
-    title_el.get_attribute = AsyncMock(return_value="/viewjob?jk=1")
+    title_el.get_attribute = AsyncMock(
+        side_effect=lambda name: "/viewjob?jk=1" if name == "href" else None
+    )
     snippet_el = AsyncMock()
     snippet_el.inner_text = AsyncMock(return_value="Build Python APIs.\n\n\n\nAsync, Pydantic.")
 
@@ -298,6 +304,7 @@ async def test_extract_job_captures_card_snippet(app_settings: AppSettings) -> N
 
     card = MagicMock()
     card.query_selector = AsyncMock(side_effect=query)
+    card.get_attribute = AsyncMock(return_value=None)
 
     job = await scraper._extract_job(card, JobBoard.INDEED)
     assert job is not None
@@ -356,11 +363,63 @@ async def test_scrape_enriches_snippet_with_full_description(
 
 
 @pytest.mark.asyncio
-async def test_scrape_keeps_snippet_and_dumps_pane_when_full_fails(
+async def test_extract_job_uses_data_jk_for_canonical_url(app_settings: AppSettings) -> None:
+    """The job key (data-jk) yields a canonical /viewjob URL — NOT the sponsored /pagead/clk
+    tracking redirect — so the ad and organic copies of one job dedupe to the same URL."""
+    app_settings.target.indeed_domain = "ca.indeed.com"
+    scraper = IndeedScraper(MagicMock(), app_settings)
+
+    title_el = AsyncMock()
+    title_el.inner_text = AsyncMock(return_value="Dev")
+    title_el.get_attribute = AsyncMock(  # an AD card: href is a tracking redirect
+        side_effect=lambda name: "/pagead/clk?ad=xyz" if name == "href" else None
+    )
+
+    async def query(selector: str) -> object | None:
+        return title_el if ("jcs-JobTitle" in selector or "h2 a" in selector) else None
+
+    card = MagicMock()
+    card.query_selector = AsyncMock(side_effect=query)
+    card.get_attribute = AsyncMock(return_value="abc123")  # data-jk on the card
+
+    job = await scraper._extract_job(card, JobBoard.INDEED)
+    assert job is not None
+    assert "viewjob?jk=abc123" in str(job.url)  # canonical, not the /pagead/clk redirect
+    assert "pagead" not in str(job.url)
+
+
+@pytest.mark.asyncio
+async def test_scrape_dedupes_a_job_listed_as_ad_and_organic(
+    app_settings: AppSettings, tmp_path: object
+) -> None:
+    """Indeed shows the same job twice (sponsored + organic); the canonical-URL dedup in pass 1
+    collapses the two cards into one job rather than storing/counting it twice."""
+    app_settings.target.indeed_domain = "www.indeed.com"
+    scraper = IndeedScraper(MagicMock(), app_settings)
+    scraper.COOKIE_PATH = tmp_path / "indeed.json"  # type: ignore[operator,assignment]
+    scraper._browser.persistent_context = AsyncMock(return_value=MagicMock())
+    scraper._new_stealth_page = AsyncMock(return_value=AsyncMock())
+    scraper._load_results = AsyncMock(return_value=[MagicMock(), MagicMock()])  # two cards…
+    scraper._extract_job = AsyncMock(  # …both resolving to the same canonical URL
+        return_value=JobListing(
+            title="E",
+            company="Co",
+            url="https://www.indeed.com/viewjob?jk=dup",
+            board=JobBoard.INDEED,
+        )
+    )
+    scraper._load_description = AsyncMock(return_value="")
+
+    jobs = await scraper.scrape(SearchParams(query="x", board=JobBoard.INDEED))
+    assert len(jobs) == 1  # the duplicate was collapsed, not stored twice
+
+
+@pytest.mark.asyncio
+async def test_scrape_keeps_snippet_and_dumps_failing_card(
     app_settings: AppSettings, tmp_path: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Best-effort: if no card's full description loads, the snippet is kept (job not dropped)
-    and the live detail pane is dumped so the _DESC_SELECTORS can be fixed against real DOM."""
+    """Best-effort: if a card's full description doesn't load, the snippet is kept (job NOT
+    dropped) and a rich failing-card diagnostic is written so ONE live run pins the cause."""
     from pathlib import Path
 
     debug_dir = tmp_path / "debug"  # type: ignore[operator]
@@ -369,10 +428,19 @@ async def test_scrape_keeps_snippet_and_dumps_pane_when_full_fails(
     scraper = IndeedScraper(MagicMock(), app_settings)
     scraper.COOKIE_PATH = tmp_path / "indeed.json"  # type: ignore[operator,assignment]
     scraper._browser.persistent_context = AsyncMock(return_value=MagicMock())
+
     page = AsyncMock()
-    page.content = AsyncMock(return_value="<html><body>detail pane</body></html>")
+    page.url = "https://www.indeed.com/jobs?q=x"
+    page.title = AsyncMock(return_value="Jobs")
+    page.content = AsyncMock(return_value="<html><body>pane</body></html>")
+    page.query_selector = AsyncMock(return_value=None)  # description pane absent
     scraper._new_stealth_page = AsyncMock(return_value=page)
-    scraper._load_results = AsyncMock(return_value=[MagicMock()])
+
+    card = AsyncMock()
+    card.query_selector_all = AsyncMock(return_value=[])
+    card.get_attribute = AsyncMock(return_value=None)
+    card.inner_html = AsyncMock(return_value="<div data-jk='1'>card</div>")
+    scraper._load_results = AsyncMock(return_value=[card])
     scraper._extract_job = AsyncMock(
         return_value=JobListing(
             title="E",
@@ -382,8 +450,11 @@ async def test_scrape_keeps_snippet_and_dumps_pane_when_full_fails(
             description="snippet text",
         )
     )
-    scraper._load_description = AsyncMock(return_value="")  # pane never loads
+    scraper._load_description = AsyncMock(return_value="")  # full description fails
 
     jobs = await scraper.scrape(SearchParams(query="x", board=JobBoard.INDEED))
     assert jobs[0].description == "snippet text"  # snippet kept, job NOT dropped
-    assert (Path(debug_dir) / "indeed-last-desc.html").exists()  # pane dumped for diagnosis
+    assert (Path(debug_dir) / "indeed-failed-card.html").exists()
+    diag = (Path(debug_dir) / "indeed-failed-card.txt").read_text(encoding="utf-8")
+    assert "page.url:" in diag  # navigated/challenged discriminator
+    assert "card data-jk attr:" in diag  # confirms whether data-jk exists for the dedup fix
