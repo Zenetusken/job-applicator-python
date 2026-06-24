@@ -24,7 +24,7 @@ mypy src/   # strict on src/; tests are checked by ruff only
 ruff check --fix src/ tests/
 ruff format src/ tests/
 
-# Tests — 813 fast unit tests (the green gate); 839 total = 813 unit + 5 integration + 21 live
+# Tests — 817 fast unit tests (the green gate); 846 total = 817 unit + 5 integration + 24 live
 pytest -m unit -v               # or: pytest tests/unit/ -v   (auto-marked by location)
 pytest -m unit -v -k test_name  # single test
 
@@ -178,6 +178,10 @@ src/job_applicator/
   reusing persisted tailored artifacts when available.
 - **`apply` is dry-run by default.** Real applications require the explicit `--submit` flag.
   Without it the Easy Apply form is filled but never submitted.
+- **Dry-run `apply` generates cover letters as a preview.** Whenever `--cover-letter` is enabled
+  (the default) and a résumé path is available, the CLI calls the LLM, fills the cover-letter field
+  in the form, and surfaces the generated text in `--json` output and in the console table notes.
+  The application is still not submitted. Use `--no-cover-letter` to skip generation.
 - **Apply dry-run validation returns an `ApplicationResult` with a `DryRunValidation` field.** The
   nested object shows whether the Easy Apply button, form fields, résumé upload, cover-letter
   field, and final Submit step were reached. `job-applicator apply --validate` exits non-zero if
@@ -215,10 +219,10 @@ that generate cover letters. The default dry-run `apply` does not run the ATS pr
 ## Testing
 
 - Tests are auto-marked by location (`tests/conftest.py`): `pytest -m unit` / `-m live` /
-  `-m integration` all work. Unit suite (`pytest -m unit`, 813) is fast — no browser/GPU; the green
+  `-m integration` all work. Unit suite (`pytest -m unit`, 817) is fast — no browser/GPU; the green
   gate.
 - 5 integration tests live in `tests/integration/` and exercise browser automation wiring.
-- The 21 live tests at `tests/` root carry `-m live`; they need vLLM (`localhost:8000`) + GPU; run
+- The 24 live tests at `tests/` root carry `-m live`; they need vLLM (`localhost:8000`) + GPU; run
   them manually.
 - Tests use fixtures from `tests/conftest.py`.
 - Embedding tests mock the model (CPU fallback).

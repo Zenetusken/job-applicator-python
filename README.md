@@ -8,7 +8,7 @@ AI-powered job application tool using Playwright browser automation with modern 
 - **Session Reuse**: Sign in once in your real browser; the tool reuses the session — it never automates login (which would trip anti-bot defenses and risk your account)
 - **Region-Aware Browser**: Auto-detects the host's locale, IANA timezone, and Chrome version so geo-aware boards serve your real region
 - **Auto-Apply**: Automatically fill and submit job applications (dry-run by default; `--submit` to send)
-- **AI Cover Letters**: Generate personalized cover letters using LLM (litellm - supports 100+ providers)
+- **AI Cover Letters**: Generate personalized cover letters using LLM (litellm - supports 100+ providers). Dry runs generate the letter as a preview before you opt in with `--submit`
 - **Resume Parsing**: Load and parse PDF/text/image resumes with intelligent skill extraction; OCR fallback for scanned PDFs
 - **Semantic Job Matching**: Match resumes to jobs using mxbai-embed-large-v1 embeddings
 - **Resume Tailoring**: LLM-powered resume rewriting for specific jobs with hallucination guards
@@ -99,10 +99,14 @@ job-applicator doctor
 job-applicator search --site linkedin --query "python developer"
 job-applicator search --site indeed --query "python developer" --location "Montreal, QC"
 
-# Auto-apply with AI cover letters (dry run — fills forms but does NOT submit)
+# Auto-apply with AI cover letters (dry run — fills forms, previews the cover letter, but does NOT submit)
 job-applicator apply --site linkedin --query "python" --limit 5
+# Preview the generated cover letter as JSON
+job-applicator apply --site linkedin --query "python" --limit 1 --resume resume.pdf --json
 # Add --submit to actually send applications
 job-applicator apply --site linkedin --query "python" --limit 5 --submit
+# Skip cover-letter generation entirely
+job-applicator apply --site linkedin --query "python" --limit 5 --no-cover-letter
 
 # Generate a cover letter
 job-applicator generate-cover-letter --job-title "Python Dev" --company "Acme"

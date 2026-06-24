@@ -78,7 +78,7 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
 - **A board declares its browser needs.** `BaseScraper.browser_policy()` (headed / ephemeral
   profile / virtual display) lives on the scraper, not the CLI, so anti-bot requirements can't drift
   and any caller builds the right browser. `_make_browser` (in `factories.py`) reads it.
-- **Easy Apply is dry-run by default;** real submission requires `apply --submit`.
+- **Easy Apply is dry-run by default;** real submission requires `apply --submit`. Dry runs generate cover letters as a preview when `--cover-letter` is enabled and a résumé path is configured; the generated letter is surfaced in `--json` and the console table.
 - **The job funnel is persisted.** `search`/`match` upsert into a SQLite `JobStore`
   (`jobs_store.py`, in `~/.job-applicator/applications.db`) so jobs flow
   search→match→tailor→cover-letter without re-typing. `ApplicationState` stays the

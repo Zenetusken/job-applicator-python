@@ -131,15 +131,16 @@ The actual job-search commands (`search`, `match`, `apply`, `batch`) need a seed
 LinkedIn session and touch the live account — out of scope for a smoke run. Seed a
 session once as a human (`job-applicator login`, headed) or import cookies
 (`job-applicator import-cookies`), then e.g. `job-applicator match --resume r.pdf`.
-Easy Apply is dry-run by default; real submission requires `apply --submit`.
+Easy Apply is dry-run by default; it fills the form and previews the generated cover
+letter, but real submission requires `apply --submit`.
 
 ## Test
 
 ```bash
-.venv/bin/python -m pytest -m unit -q      # 596 passed — the fast green gate (no browser/GPU/vLLM)
+.venv/bin/python -m pytest -m unit -q      # 817 passed — the fast green gate (no browser/GPU/vLLM)
 ```
 
-`pytest -m live` (21 tests) needs vLLM + GPU; `pytest -m integration` (5) is
+`pytest -m live` (24 tests) needs vLLM + GPU; `pytest -m integration` (5) is
 browser-wiring only. Run pytest from the repo root (it needs the repo CWD).
 
 ## Gotchas

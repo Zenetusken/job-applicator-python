@@ -3,11 +3,11 @@
 Project memory for job-applicator-python. Consolidated facts about the codebase,
 decisions, and current state. Keep under ~200 lines; prune stale entries when adding.
 
-_Last synced: 2026-06-19_
+_Last synced: 2026-06-24_
 
 ## Snapshot
 
-- **Stats:** 44 source modules (`src/job_applicator/`), 547 fast unit tests (`pytest -m unit` — the green gate, no browser/GPU); 568 total, the extra 21 are live tests (`-m live`) needing vLLM (`localhost:8000`) + GPU. Tests auto-marked by location in `tests/conftest.py`. Live tests now skip cleanly when the configured LLM endpoint is unreachable.
+- **Stats:** 44 source modules (`src/job_applicator/`), 817 fast unit tests (`pytest -m unit` — the green gate, no browser/GPU); 846 total = 817 unit + 5 integration + 24 live (`-m live`) needing vLLM (`localhost:8000`) + GPU. Tests auto-marked by location in `tests/conftest.py`. Live tests skip cleanly when the configured LLM endpoint is unreachable.
 - **Python:** 3.12+ (dev box 3.12.8). Mypy strict; ruff (100-char lines, double quotes).
 - **Quality gates (all must pass, in order):**
   `ruff check src/ tests/` → `ruff format --check src/ tests/` →
@@ -38,7 +38,7 @@ _Last synced: 2026-06-19_
 - Async for I/O, sync for CPU. Config centralized in `AppSettings`; no global mutable state.
 - Combined match score = 60% semantic + 40% skill coverage. Skill semantic threshold 0.55.
 - Skills are normalized before matching/validation (`Python 3` → `Python`, `reactjs` → `React`); generic traits (`team player`, `communication`) are hard-negative filtered so they don't distort skill scores.
-- Apply is dry-run by default; `--submit` opt-in required. `--validate` exits non-zero if a dry run doesn't reach the Submit button. `DryRunValidation` records reachability, fields filled, resume upload, and cover-letter field presence.
+- Apply is dry-run by default; `--submit` opt-in required. Dry runs generate cover letters as a preview whenever `--cover-letter` is enabled and a résumé path is configured; the generated text is surfaced in `--json` output and in the console table. `--validate` exits non-zero if a dry run doesn't reach the Submit button. `DryRunValidation` records reachability, fields filled, resume upload, and cover-letter field presence.
 - LLM via litellm + instructor; **client of an external** OpenAI-compatible endpoint (`[llm] api_base`,
   default `http://localhost:8000/v1`, model `cyankiwi/Qwen3.5-4B-AWQ-4bit`) — the app never starts one
   (optional `[serve]` extra + `scripts/serve-vllm.sh` self-host a local vLLM). `openai/` prefix for local.
@@ -91,8 +91,7 @@ Full audit produced 4 HIGH, 7 MEDIUM, 10 LOW findings. All fixed across three st
   timezone, not the often-`en_US` locale, is the geo signal. `target.indeed_domain` pins explicitly.
 - **Shared `utils/url.host_matches`** — single exact-or-subdomain matcher (strips leading `.`);
   used by the cookie look-alike filter and `_is_indeed_host`. Don't re-implement.
-- **Easy Apply is dry-run by default.** `apply` fills forms but does NOT submit unless `--submit`;
-  the final submit routes through `BaseApplicator._gated_submit`.
+- **Easy Apply is dry-run by default.** `apply` fills forms and previews the cover letter but does NOT submit unless `--submit`; the final submit routes through `BaseApplicator._gated_submit`.
 
 ## Recurring Gotchas (see AGENTS.md for the full list)
 
