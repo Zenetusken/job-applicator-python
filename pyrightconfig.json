@@ -1,0 +1,10 @@
+{
+  "include": ["src"],
+  "exclude": [".venv", "output", "logs", "build", "dist", "docs", "tests"],
+  "stubPath": "stubs",
+  "pythonVersion": "3.12",
+  "pythonPlatform": "Linux",
+  "typeCheckingMode": "standard",
+  "useLibraryCodeForTypes": true,
+  "reportMissingModuleSource": "none"
+}

@@ -2,7 +2,8 @@
 
 ## Project
 
-AI-powered job application tool. Scrapes job boards, matches jobs to resumes via embeddings, generates cover letters with LLMs.
+AI-powered job application tool. Scrapes job boards, matches jobs to résumés via embeddings,
+generates cover letters with LLMs, and supports interactive/TUI workflows.
 
 ## Commands
 
@@ -11,87 +12,183 @@ AI-powered job application tool. Scrapes job boards, matches jobs to resumes via
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
+# First-run setup
+job-applicator config-init                  # Create a starter config.toml
+
 # Lint + format + typecheck (run in this order)
 ruff check src/ tests/
 ruff format --check src/ tests/
-mypy src/   # untyped third-party imports are silenced via per-module overrides in pyproject.toml
+mypy src/   # strict on src/; tests are checked by ruff only
 
 # Auto-fix lint/format
 ruff check --fix src/ tests/
 ruff format src/ tests/
 
-# Tests — 596 fast unit tests (the green gate); 622 total = 596 unit + 5 integration + 21 live (need vLLM/GPU)
+# Tests — 813 fast unit tests (the green gate); 839 total = 813 unit + 5 integration + 21 live
 pytest -m unit -v               # or: pytest tests/unit/ -v   (auto-marked by location)
 pytest -m unit -v -k test_name  # single test
 
 # CLI
+job-applicator                              # bare tty invocation opens the TUI
 job-applicator --help
-job-applicator doctor                       # Health check: LLM, embeddings, browser, system bins, config
-job-applicator match --resume resume.pdf
+job-applicator doctor                       # Health check: LLM, embeddings, browser, system bins, config, self-host
+job-applicator config-init                  # Generate config.toml
+job-applicator login                        # Headed sign-in once; reuse session headlessly
+job-applicator import-cookies --from-browser chrome
+job-applicator check-session                # Verify board session is ready
+job-applicator search --site linkedin --query "python developer"
+job-applicator status                       # Show saved job funnel
+job-applicator match --resume resume.pdf --jobs-file jobs.json
+job-applicator tailor --resume resume.pdf --from <id-or-url>
+job-applicator generate-cover-letter --resume resume.pdf --job-title "..." --company "..."
+job-applicator ats-check --resume resume.pdf [--json] [--strict]
 job-applicator apply --query "python" --validate            # Dry-run Easy Apply and validate it reaches Submit
-job-applicator batch --jobs-file jobs.json --resume-run      # Resume an interrupted batch run
+job-applicator apply --query "python" --submit --limit 5    # Send real applications
+job-applicator batch --resume resume.pdf --jobs-file jobs.json --top-k 10 --resume-run
+job-applicator tui                          # Full-screen terminal UI over the funnel store
 ```
+
+Most commands that read a résumé accept `--resume`, `--ocr-mode {auto|on|off}`, and `--force-ocr`.
+`apply` is dry-run by default; real submissions require `--submit`. `batch` accepts `--run-id`,
+`--resume-run`, `--min-score`, `--top-k`, `--cover-letter/--no-cover-letter`, and `--style-guide`.
 
 ## Architecture
 
 ```
 src/job_applicator/
+├── __init__.py         # package version
+├── __main__.py         # python -m job_applicator
 ├── cli.py              # Typer CLI commands (interactive loops live in workflows/)
 ├── factories.py        # board/browser/scraper/applicator/runtime factories
 ├── workflows/          # interactive orchestration: cover_letter, tailor, apply
-├── config.py           # AppSettings + sub-configs (incl. LLMResilienceConfig)
+├── config.py           # AppSettings + sub-configs (BrowserConfig, LLMConfig, LLMResilienceConfig,
+│                       # EmbeddingConfig, TargetConfig)
 ├── models.py           # Shared Pydantic models
 ├── exceptions.py       # JobApplicatorError hierarchy (incl. CookieError)
 ├── diagnostics.py      # doctor health checks
 ├── state.py            # SQLite application-history store (duplicate-app prevention)
 ├── batch_state.py      # SQLite batch-progress store (crash recovery)
+├── jobs_store.py       # SQLite job-funnel store (found → matched → tailored → cover_letter)
 ├── skills/             # Skill-name normalization + hard-negative filtering
 ├── browser/            # Playwright lifecycle + low-level actions
-├── scrapers/           # base.py → linkedin.py, indeed.py
+├── scrapers/           # base.py (BrowserPolicy) → linkedin.py, indeed.py
 ├── applicators/        # base.py → linkedin.py (Easy Apply, dry-run gated), indeed.py
-├── documents/          # cover letter, resume parsing/tailoring, style/tone/ATS/OCR
+├── documents/          # cover letter, résumé parsing/tailoring, style/tone/ATS/OCR/artifacts
 ├── embeddings/         # embedding service + job matching
-└── utils/              # logging, LLM retry/breaker, cookies, console, diff, region, URL, secure store
+├── tui/                # Textual full-screen UI over the funnel store
+└── utils/              # logging, LLM retry/breaker/circuit, cookies, console, diff, region,
+                        # URL, secure store, text, verbose, profile
 ```
 
 ## Conventions
 
-- **Pydantic models cross module boundaries, dicts don't.** Shared payloads go in `models.py`.
-- **All exceptions are `JobApplicatorError` subclasses.** No bare `RuntimeError`.
-- **Async for I/O, sync for CPU.** Playwright/HTTP = async. Parsing/formatting = sync.
+- **Typed models cross module boundaries; avoid untyped `dict` for business payloads.** Shared
+  validation-heavy or serialized contracts go in `models.py` as Pydantic models. Lightweight
+  internal structures may use `@dataclass` (e.g., `SearchParams`, `BrowserPolicy`, `MatchResult`).
+- **All business-logic exceptions are `JobApplicatorError` subclasses.** A small number of built-ins
+  are intentionally raised directly (`IndexError` for out-of-range session access, `OSError` for
+  secure-store symlink refusal). No bare `RuntimeError`.
+- **Async for I/O, sync for CPU.** Playwright/HTTP = async. Parsing/formatting/embeddings = sync.
 - **Config is centralized.** `AppSettings` in `config.py`. Env prefix: `JOB_APPLICATOR_*`.
-- **No global mutable state.** Pass via config/context objects.
+- **No global mutable business state.** Pass `AppSettings`/context objects. A few module-level
+  singletons are intentional: Rich consoles (`utils/console.py`) and default DB paths
+  (`jobs_store.py`, `state.py`, `batch_state.py`).
+- **Pydantic models reject unknown fields by default.** `model_config = {"extra": "forbid"}` is the
+  norm. (`documents/cover_letter.py::CoverLetterOutput` currently lacks this.)
+- **Use `from typing import TYPE_CHECKING` for imports needed only for annotations.**
 
 ## Style
 
 - Line length: 100 chars
 - Double quotes (ruff `quote-style = "double"`)
-- `from __future__ import annotations` in all files
-- Mypy strict mode (`disallow_untyped_defs = true`)
+- `from __future__ import annotations` in all non-empty `.py` files
+- Mypy strict mode applies to `src/` (`disallow_untyped_defs = true`); the documented typecheck
+  command is `mypy src/`, so tests are ruff-checked but not mypy-checked.
 
 ## Gotchas
 
-- **LLM output has thinking process.** Qwen models prepend reasoning; suppress via litellm or strip it. See `utils/llm.py`.
-- **Resume tailoring has hallucination guards.** Skill/tool/education validation lives in `resume_tailor.py`; matching uses fuzzy, non-greedy logic in `matching.py`.
-- **Embeddings need `openai/` prefix for vLLM.** `model = f"openai/{config.model}"` when calling litellm.
-- **Resume PDF parser is fragile.** Verify parsing with `ResumeLoader.load()`; supported formats include PDF (`pdftotext -layout`), DOCX, and image OCR fallback.
-- **`sentence-transformers` needs CUDA torch.** If you get `libcudart.so` errors, reinstall: `pip install torch --index-url https://download.pytorch.org/whl/cu124`
-- **Embedding cache at `~/.job-applicator/embeddings/`.** Style cache at `~/.job-applicator/styles/`. Clear with `EmbeddingService.clear_cache()`.
-- **Tone detection is keyword-based**, not LLM-based. Tone profiles are injected into tailoring/cover-letter prompts; see `documents/tone_detector.py`.
-- **`config.toml` is actually loaded.** `AppSettings.settings_customise_sources()` adds it as the lowest-priority source; env vars override it. Point at an alternate file via `JOB_APPLICATOR_CONFIG_FILE`.
-- **LinkedIn auth = seed once, reuse the session.** Automated login is disabled for account safety. Run `job-applicator login` once (headed), complete sign-in/CAPTCHA/2FA, and the persistent browser profile retains the session.
-- **Cookie JSON is a portable auth backup.** `~/.job-applicator/cookies/{linkedin,indeed}.json` can seed or restore sessions; `import-cookies --from-browser` pulls from your everyday browser.
-- **Browser context is shared.** `BrowserManager.persistent_context()` gives one authenticated context for scraper + applicator; use `persistent_page()` for authenticated flows.
-- **Indeed requires a headed, ephemeral browser.** It is fronted by a Cloudflare managed challenge; the fix is `BrowserPolicy(headed=True, ephemeral_profile=True, virtual_display=True)`. Region is auto-detected from timezone. See `docs/compose/reports/2026-06-15-indeed-cloudflare-research.md`.
-- **Region/UA/timezone are auto-detected at launch** (`utils/region.py`). Pin `browser.timezone` if detection fails.
-- **`import-cookies` uses a per-site spec** (`utils/cookies.py`). Each board declares required/preferred cookies, session flags, and a post-import check.
-- **One host matcher: `utils/url.host_matches(host, base)`.** Use it instead of ad-hoc domain suffix checks.
-- **LinkedIn description extraction clicks cards.** Scraper clicks each card, waits for content change, clicks "show more", then extracts.
-- **`--verbose` and `--log-file` work both before and after the command.** `job-applicator --verbose match` and `job-applicator match --verbose` both work.
-- **JSON output goes to stdout, logs go to stderr.** Enables `job-applicator match --json | jq .` without Rich wrapping corruption.
-- **Batch runs persist progress for crash recovery.** State lives in `~/.job-applicator/applications.db` (tables `batch_runs`, `batch_jobs`). Re-run with the same `--resume` / `--jobs-file` / `--query` and `--resume-run` to skip already-tailored jobs. Use `--run-id` to pin or resume a specific run.
-- **Skills are normalized before matching/validation.** `src/job_applicator/skills/normalization.py` canonicalizes aliases like `Python 3` → `Python` and `reactjs` → `React`. A hard-negative list drops generic traits (`team player`, `communication skills`) from skill coverage scoring and tailored skill sections.
-- **Apply dry-run is validated.** `LinkedInApplicator` returns a `DryRunValidation` object showing whether the Easy Apply button, form fields, resume upload, cover-letter field, and final Submit step were reached. `job-applicator apply --validate` exits non-zero if any dry run fails to reach Submit.
+- **LLM output has thinking process.** Qwen models prepend reasoning. Callers suppress it at two
+  layers: `extra_body={"chat_template_kwargs": {"enable_thinking": False}}` in litellm, and
+  post-processing with `strip_thinking_process()` in `utils/llm.py`.
+- **LLM calls need an `openai/` prefix for local vLLM.** Cover-letter, style, and tailor callers
+  pass `model = f"openai/{config.model}"` when `llm.api_base` is set. Embeddings use
+  `sentence-transformers` directly and do not use this prefix.
+- **LLM resilience is configured centrally.** `LLMResilienceConfig` (in `config.py`) drives a shared
+  circuit breaker + content-retry runtime in `utils/llm.py` for all LLM consumers.
+- **litellm banners are suppressed.** `utils.llm.quiet_litellm()` runs before litellm calls to keep
+  feedback/help banners and INFO logs off stdout/stderr.
+- **Résumé tailoring has hallucination guards.** `_validate_skills()`, `_strip_hallucinated_tools()`,
+  and `_strip_hallucinated_education()` in `documents/resume_tailor.py` keep the output aligned
+  with the original résumé. Skill/tool matching uses fuzzy, non-greedy logic in
+  `embeddings/matching.py`.
+- **Tailoring includes a date audit.** `ResumeDateValidator` checks chronological ordering,
+  staleness, and education-date age before generating output.
+- **Skills are normalized and hard-negative filtered before matching/validation.**
+  `skills/normalization.py` canonicalizes aliases (`Python 3` → `Python`, `reactjs` → `React`) and
+  drops generic traits (`team player`, `communication skills`) from skill coverage scoring and
+  tailored skill sections.
+- **Skill-match threshold is 0.75.** Related-but-different tech terms score below this; genuine
+  synonyms/supersets pass. Do not lower without re-tuning against real résumé/job pairs.
+- **Default embedding model is `mixedbread-ai/mxbai-embed-large-v1`.** Embeddings default to CUDA
+  FP16 with ~1.5 GB VRAM; set `embedding.device="cpu"` for CPU-only boxes.
+- **Embedding cache at `~/.job-applicator/embeddings/`.** Style cache at
+  `~/.job-applicator/styles/`. Clear with `EmbeddingService.clear_cache()`.
+- **`sentence-transformers` needs CUDA torch.** If you get `libcudart.so` errors, reinstall:
+  `pip install torch --index-url https://download.pytorch.org/whl/cu124`
+- **Résumé PDF parser uses multi-parser consensus + OCR fallback.** Supports PDF
+  (`pdftotext -layout`), DOCX, TXT/MD, and images. `ResumeLoader.load()` dispatches by extension and
+  falls back to OCR when extracted text is short. OCR uses PaddleOCR on CPU by default.
+- **Tone detection is keyword-based**, not LLM-based. Tone profiles are injected into tailoring and
+  cover-letter prompts; see `documents/tone_detector.py`.
+- **Per-board browser requirements live in the scraper.** `BrowserPolicy` in `scrapers/base.py`
+  declares `headless`, `ephemeral_profile`, and `virtual_display` needs; `factories.py` honors them.
+  Indeed sets `headed=True, ephemeral_profile=True, virtual_display=True`. By default the headed
+  browser runs windowless via Xvfb; pass `--headed` to disable the virtual display and show a real
+  window. The `[indeed]` extra installs `pyvirtualdisplay`; the system `Xvfb` binary is also needed.
+- **LinkedIn auth = seed once, reuse the session.** Automated login is disabled for account safety.
+  `job-applicator login` opens a headed browser, pre-fills `target.linkedin_email` /
+  `target.linkedin_password`, waits for you to click Sign in and solve any CAPTCHA/2FA, then saves
+  cookies and the persistent Chrome profile.
+- **Cookie JSON is a portable session backup.** `~/.job-applicator/cookies/{linkedin,indeed}.json`
+  can seed or restore sessions. For LinkedIn the `li_at` cookie is required. For Indeed (public
+  search) the optional `cf_clearance` cookie is only a Cloudflare warm-start; there is no login
+  session.
+- **`import-cookies` uses a per-site spec with several input modes.** Each board declares required
+  and preferred cookies, session flags, and a post-import check. The command supports
+  `--from-browser <chrome|chromium|brave|edge|firefox>`, `--li-at` (LinkedIn; pass `-` for stdin),
+  `--jsessionid`, `--file <json>`, and `--verify/--no-verify`.
+- **Browser context is shared.** `BrowserManager.persistent_context()` returns a single persistent
+  context; `persistent_page()` opens pages in it. Scraper and applicator share the authenticated
+  session. Do not use `new_context()` or `new_page()` for authenticated flows.
+- **Region/UA/timezone are auto-detected at launch** (`utils/region.py`). Pin browser signals with
+  `browser.locale`, `browser.timezone`, and `browser.user_agent`. Pin the Indeed regional host with
+  `target.indeed_domain` (e.g. `ca.indeed.com`).
+- **One host matcher: `utils/url.host_matches(host, base)`.** Use it instead of ad-hoc domain
+  suffix checks. It is also used to drop look-alike hosts when importing cookies from a browser.
+- **LinkedIn description extraction clicks cards.** The scraper clicks each card, waits for content
+  change, clicks the correct "show more" button, then extracts with a 5 000-char cap.
+- **`--verbose` and `--log-file` work both before and after the command.** `--verbose` emits a
+  structured `VerboseReport`; `--log-file` persists it to disk.
+- **JSON output goes to stdout, logs go to stderr.** Enables `job-applicator match --json | jq .`
+  without Rich wrapping corruption.
+- **Batch runs persist progress for crash recovery.** State lives in
+  `~/.job-applicator/applications.db` (tables `batch_runs`, `batch_jobs`, and `applications` for
+  submitted apps). Re-run with matching parameters and `--resume-run` to skip already-completed or
+  explicitly skipped jobs. `TAILORED` jobs are re-processed so their cover letters are generated,
+  reusing persisted tailored artifacts when available.
+- **`apply` is dry-run by default.** Real applications require the explicit `--submit` flag.
+  Without it the Easy Apply form is filled but never submitted.
+- **Apply dry-run validation returns an `ApplicationResult` with a `DryRunValidation` field.** The
+  nested object shows whether the Easy Apply button, form fields, résumé upload, cover-letter
+  field, and final Submit step were reached. `job-applicator apply --validate` exits non-zero if
+  any dry run fails to reach Submit.
+- **`search` persists discovered jobs.** Discovered listings flow into `jobs_store.py` and are
+  visible via `status` and the TUI.
+- **Default `llm.max_tokens` is `4096`.** `config.example.toml` sets `max_tokens = 1024`; increase
+  it if you plan to tailor long résumés.
+- **`config.toml` is actually loaded.** `AppSettings.settings_customise_sources()` adds it as the
+  lowest-priority source; env vars override it. Point at an alternate file via
+  `JOB_APPLICATOR_CONFIG_FILE`; a missing file is a no-op.
 
 ## LLM Setup
 
@@ -100,22 +197,37 @@ Local vLLM must be running at `http://localhost:8000/v1`. Check with:
 curl -s http://localhost:8000/v1/models
 ```
 
-Default model: `cyankiwi/Qwen3.5-4B-AWQ-4bit`. Override via `JOB_APPLICATOR_LLM_MODEL` env var or `config.toml`.
+Default model: `cyankiwi/Qwen3.5-4B-AWQ-4bit`. Override via `JOB_APPLICATOR_LLM_MODEL` env var or
+`config.toml`. Default `llm.max_tokens` is `4096`.
 
 ## ATS Compatibility Checking
 
-`ATSChecker` in `documents/ats_checker.py` analyzes resumes for email/phone presence, standard sections, text length, and ASCII tables. CLI usage: `job-applicator ats-check --resume resume.pdf [--json]`. Score >= 60% = compatible; warnings are surfaced before `tailor`, `match`, `apply`, and `batch`.
+`ATSChecker` in `documents/ats_checker.py` analyzes résumés for email/phone presence, standard
+sections (`Experience`, `Education`, `Skills`), optional sections (`Certifications`, `Languages`),
+text length, and ASCII tables. CLI usage:
+`job-applicator ats-check --resume resume.pdf [--json] [--strict] [--ocr-mode auto|on|off] [--force-ocr]`.
+Score >= 60% = compatible. Use `--strict` to exit non-zero in CI when the résumé is incompatible.
+
+Warnings are surfaced before `tailor`, `match`, and `batch`, and before real `apply --submit` runs
+that generate cover letters. The default dry-run `apply` does not run the ATS preflight. After
+`tailor` and `batch`, the CLI prints a before/after ATS score comparison.
 
 ## Testing
 
-- Tests are auto-marked by location (`tests/conftest.py`): `pytest -m unit` / `-m live` / `-m integration` all work. Unit suite (`pytest -m unit`, 596) is fast — no browser/GPU; the green gate.
-- The 21 live tests at `tests/` root carry `-m live`; they need vLLM (`localhost:8000`) + GPU; run them manually.
+- Tests are auto-marked by location (`tests/conftest.py`): `pytest -m unit` / `-m live` /
+  `-m integration` all work. Unit suite (`pytest -m unit`, 813) is fast — no browser/GPU; the green
+  gate.
+- 5 integration tests live in `tests/integration/` and exercise browser automation wiring.
+- The 21 live tests at `tests/` root carry `-m live`; they need vLLM (`localhost:8000`) + GPU; run
+  them manually.
 - Tests use fixtures from `tests/conftest.py`.
 - Embedding tests mock the model (CPU fallback).
 
 ## Files Not to Commit
 
 - `config.toml` (contains credentials)
-- `.mimocode/` (local harness/tooling config — kept on disk, not tracked)
+- `.env`
+- `.mimocode/` and `.kimi-code/` (local harness/tooling config — kept on disk, not tracked)
 - `.venv/`, `__pycache__/`, `.mypy_cache/`, `.ruff_cache/`
-- `output/`, `screenshots/`, `logs/`
+- `output/`, `screenshots/`, `logs/`, `*.log`
+- `docs/comprehensive-application-audit-*.md` (generated working audit reports)

@@ -111,8 +111,10 @@ strict = true
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
-# Local stubs for otherwise-untyped third-party deps (e.g. pyvirtualdisplay).
-mypy_path = "stubs"
+# Local stubs for otherwise-untyped third-party deps (e.g. pyvirtualdisplay),
+# plus `src` so mypy resolves `job_applicator` as first-party code even when the
+# editable install hasn't been refreshed or the editor daemon has stale state.
+mypy_path = ["src", "stubs"]
 
 # Third-party packages that ship no type stubs or py.typed marker. They are
 # installed but un-annotated, so strict mypy can't analyze them; ignore the

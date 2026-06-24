@@ -44,10 +44,10 @@ async def _apply_to_jobs(
     from job_applicator.models import ApplicationResult, ApplicationStatus
 
     state = ApplicationState()
+    daily_cap = settings.target.max_applications_per_day if submit else 0
 
     if submit:
         today_count = state.count_today(board=site)
-        daily_cap = settings.target.max_applications_per_day
         if today_count >= daily_cap:
             console.print(
                 f"[yellow]Daily application cap reached ({today_count}/{daily_cap}). "

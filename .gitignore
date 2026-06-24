@@ -89,3 +89,6 @@ screenshots/
 # Generated output
 output/
 logs/
+
+# Working audit reports (generated, not tracked)
+docs/comprehensive-application-audit-2026-06-24.md

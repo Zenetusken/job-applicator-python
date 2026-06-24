@@ -306,6 +306,7 @@ class LinkedInScraper(BaseScraper):
                 "li.jobs-search-results__list-item",
             ]
             found = False
+            cards: list[ElementHandle] = []
             for selector in selectors:
                 found = await wait_for_selector(page, selector, timeout_ms=5_000)
                 if found:
