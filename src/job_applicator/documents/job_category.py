@@ -71,7 +71,7 @@ class JobCategoryDetector:
     }
 
     def detect(self, job: JobListing | None) -> str:
-        """Return the best-matching category for ``job``.
+        """Return the first matching category by priority order for ``job``.
 
         The method lowercases the job title and description and searches for whole-word
         keyword matches. The first category (in priority order) with any matching keyword
