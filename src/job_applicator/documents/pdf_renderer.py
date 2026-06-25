@@ -26,6 +26,7 @@ from job_applicator.documents.sign_off import extract_sign_off
 from job_applicator.exceptions import LLMError, PDFRenderError
 from job_applicator.models import CoverLetterResult, JobListing, TailoredResume
 from job_applicator.utils.llm import LLMRuntime, quiet_litellm
+from job_applicator.utils.path import safe_filename_slug
 
 # Characters that must be escaped when they appear unescaped in Typst source.
 # Backslash and slash are handled separately because they participate in escape
@@ -419,12 +420,16 @@ class PDFRenderer:
 
     def _resume_output_path(self, tailored: TailoredResume, template: str) -> Path:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        base = f"tailored_{_safe(tailored.job_company)}_{_safe(tailored.job_title)}_{ts}_{template}"
+        company = safe_filename_slug(tailored.job_company)
+        title = safe_filename_slug(tailored.job_title)
+        base = f"tailored_{company}_{title}_{ts}_{template}"
         return self.output_dir / f"{base}.pdf"
 
     def _cover_letter_output_path(self, result: CoverLetterResult, template: str) -> Path:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        base = f"cover_letter_{_safe(result.job_company)}_{_safe(result.job_title)}_{ts}_{template}"
+        company = safe_filename_slug(result.job_company)
+        title = safe_filename_slug(result.job_title)
+        base = f"cover_letter_{company}_{title}_{ts}_{template}"
         return self.output_dir / f"{base}.pdf"
 
 
@@ -449,8 +454,3 @@ def _compile_typst(source_path: Path, output_path: Path) -> None:
         typst.compile(str(source_path), output=str(output_path), format="pdf")
     except Exception as exc:
         raise PDFRenderError(str(exc)) from exc
-
-
-def _safe(text: str) -> str:
-    """Create a filesystem-safe slug from ``text``."""
-    return "".join(c if c.isalnum() or c in "-_" else "_" for c in text)[:30]

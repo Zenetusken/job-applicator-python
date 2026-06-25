@@ -13,15 +13,11 @@ from typing import TYPE_CHECKING
 
 from job_applicator.documents.pdf_renderer import PDFRenderer
 from job_applicator.exceptions import DocumentError, PDFRenderError
+from job_applicator.utils.path import safe_filename_slug
 
 if TYPE_CHECKING:
     from job_applicator.config import AppSettings
     from job_applicator.models import CoverLetterResult, TailoredResume
-
-
-def _safe(text: str) -> str:
-    """Filesystem-safe slug: alphanumerics/-/_ kept, everything else → '_', capped."""
-    return "".join(c if c.isalnum() or c in "-_" else "_" for c in text)[:30]
 
 
 def _write_text(path: Path, content: str) -> None:
@@ -35,7 +31,9 @@ def _write_text(path: Path, content: str) -> None:
 
 def artifact_basename(company: str, title: str, *, when: datetime) -> str:
     """`tailored_<company>_<title>_<YYYYMMDD_HHMMSS>` (no extension)."""
-    return f"tailored_{_safe(company)}_{_safe(title)}_{when.strftime('%Y%m%d_%H%M%S')}"
+    company_slug = safe_filename_slug(company)
+    title_slug = safe_filename_slug(title)
+    return f"tailored_{company_slug}_{title_slug}_{when.strftime('%Y%m%d_%H%M%S')}"
 
 
 def write_tailored(
@@ -60,7 +58,7 @@ def write_cover_letter(
 ) -> tuple[str, str]:
     """Write the cover-letter text + its ``.meta.json`` sidecar; sets ``result.output_path``."""
     base = (
-        f"cover_letter_{_safe(result.job_company)}_{_safe(result.job_title)}"
+        f"cover_letter_{safe_filename_slug(result.job_company)}_{safe_filename_slug(result.job_title)}"
         f"_{when.strftime('%Y%m%d_%H%M%S')}"
     )
     cl_path = output_dir / f"{base}.txt"
@@ -77,7 +75,9 @@ def _pdf_path(
     """Build a spec-compliant PDF artifact path with a deterministic timestamp."""
     ts = when.strftime("%Y%m%d_%H%M%S")
     us = f"{when.microsecond:06d}"
-    base = f"{prefix}_{_safe(company)}_{_safe(title)}_{ts}_{us}_{template}"
+    company_slug = safe_filename_slug(company)
+    title_slug = safe_filename_slug(title)
+    base = f"{prefix}_{company_slug}_{title_slug}_{ts}_{us}_{template}"
     return output_dir / f"{base}.pdf"
 
 
