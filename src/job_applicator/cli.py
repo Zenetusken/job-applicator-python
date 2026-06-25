@@ -2621,6 +2621,12 @@ def _render_doctor(report: DoctorReport) -> None:
             f"                 {warn} [yellow]configured resume_path does not exist[/yellow]"
         )
 
+    pdf = report.pdf_rendering
+    if pdf.ok:
+        console.print(f"  PDF rendering  {good} {escape(pdf.message)}")
+    else:
+        console.print(f"  PDF rendering  {warn} {escape(pdf.message)}")
+
     console.print()
     if report.ok and llm.model_available:
         console.print("[green]All systems go — AI features ready.[/green]\n")

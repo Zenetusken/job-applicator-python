@@ -6,7 +6,9 @@ tests (no network, no GPU, no model loads).
 
 from __future__ import annotations
 
+import builtins
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -459,6 +461,43 @@ def test_system_binaries_xvfb_run_also_counts(monkeypatch: pytest.MonkeyPatch) -
     assert not res.pdftotext_available
     assert res.xvfb_available
     assert res.xvfb_path == "/usr/bin/xvfb-run"
+
+
+# --- check_pdf_rendering: typst package + built-in template ------------------
+
+
+def test_check_pdf_rendering_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_import = builtins.__import__
+
+    def fake_import(name: str, *args: object, **kwargs: object) -> object:
+        if name == "typst":
+            mod = MagicMock()
+
+            def fake_compile(source: str, output: str, format: str | None = None) -> None:
+                Path(output).write_bytes(b"%PDF-1.4 fake")
+
+            mod.compile = fake_compile
+            return mod
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    res = diagnostics.check_pdf_rendering()
+    assert res.ok
+    assert "works" in res.message
+
+
+def test_check_pdf_rendering_import_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_import = builtins.__import__
+
+    def fake_import(name: str, *args: object, **kwargs: object) -> object:
+        if name == "typst":
+            raise ImportError("No module named 'typst'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    res = diagnostics.check_pdf_rendering()
+    assert not res.ok
+    assert "typst package not installed" in res.message
 
 
 # --- check_config: file presence, parseability, credentials ------------------

@@ -97,6 +97,21 @@ def test_env_override(monkeypatch: object) -> None:
     assert settings.log_level == "DEBUG"
 
 
+def test_output_default_format_is_txt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("JOB_APPLICATOR_CONFIG_FILE", str(tmp_path / "nonexistent.toml"))
+    settings = AppSettings()
+    assert settings.output.default_format == "txt"
+
+
+def test_output_default_format_env_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("JOB_APPLICATOR_CONFIG_FILE", str(tmp_path / "nonexistent.toml"))
+    monkeypatch.setenv("JOB_APPLICATOR_OUTPUT_DEFAULT_FORMAT", "pdf")
+    settings = AppSettings()
+    assert settings.output.default_format == "pdf"
+
+
 def test_version_flag() -> None:
     """--version must report the package version and exit cleanly."""
     from typer.testing import CliRunner

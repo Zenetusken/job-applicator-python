@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from jinja2 import Environment, PackageLoader
 
 from job_applicator.config import (
     CONFIG_FILE_ENV_VAR,
@@ -33,6 +34,12 @@ from job_applicator.config import (
     AppSettings,
     EmbeddingConfig,
     LLMConfig,
+)
+from job_applicator.documents.formatted_models import (
+    FormattedEducationEntry,
+    FormattedExperienceEntry,
+    FormattedResume,
+    FormattedSkillGroup,
 )
 from job_applicator.models import (
     BrowserCheck,
@@ -276,8 +283,68 @@ def check_config(settings: AppSettings) -> ConfigCheck:
     return result
 
 
+def _typst_escape(value: object) -> str:
+    """Minimal Typst escape for the doctor smoke-test template.
+
+    Keeps the diagnostic self-contained; the real renderer in
+    ``documents/pdf_renderer.py`` implements the full idempotent filter.
+    """
+    text = str(value)
+    replacements = {
+        "\\": "\\\\",
+        "#": "\\#",
+        "_": "\\_",
+        "*": "\\*",
+        "$": "\\$",
+        '"': '\\"',
+        "`": "\\`",
+        "{": "\\{",
+        "}": "\\}",
+        "[": "\\[",
+        "]": "\\]",
+        "<": "\\<",
+        ">": "\\>",
+        "@": "\\@",
+        "\n": " ",
+        "\r": " ",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    return text
+
+
+def _pdf_smoke_resume() -> FormattedResume:
+    """Return a minimal ``FormattedResume`` for the PDF doctor smoke test."""
+    return FormattedResume(
+        name="Smoke Test",
+        title="PDF Rendering Check",
+        email="smoke@example.com",
+        phone="555-555-5555",
+        location="City",
+        summary="A minimal résumé used to verify the PDF rendering toolchain.",
+        experience=[
+            FormattedExperienceEntry(
+                title="Engineer",
+                company="Example Inc",
+                start_date="2020",
+                end_date="Present",
+                bullets=["Built things."],
+            )
+        ],
+        education=[
+            FormattedEducationEntry(
+                degree="BS",
+                institution="University",
+                start_date="2015",
+                end_date="2019",
+            )
+        ],
+        skills=[FormattedSkillGroup(category="Languages", skills=["Python"])],
+    )
+
+
 def check_pdf_rendering() -> PDFRenderingCheck:
-    """Smoke-test the PDF rendering toolchain (typst package + compile)."""
+    """Smoke-test the PDF rendering toolchain (typst package + built-in template)."""
     try:
         import typst
     except ImportError:
@@ -286,13 +353,26 @@ def check_pdf_rendering() -> PDFRenderingCheck:
             message="typst package not installed; run pip install 'job-applicator[pdf]'",
         )
 
+    env = Environment(
+        loader=PackageLoader("job_applicator", "templates"),
+        autoescape=False,  # noqa: S701
+    )
+    env.filters["typst_escape"] = _typst_escape
+    env.finalize = lambda x: _typst_escape(x) if x is not None else ""
+
     with tempfile.TemporaryDirectory() as tmp:
-        source = Path(tmp) / "smoke.typ"
-        output = Path(tmp) / "smoke.pdf"
-        source.write_text('#set text("Hello")\nHello', encoding="utf-8")
+        source_path = Path(tmp) / "smoke.typ"
+        output_path = Path(tmp) / "smoke.pdf"
         try:
-            typst.compile(str(source), output=str(output), format="pdf")
-            if output.exists() and output.stat().st_size > 0:
+            template = env.get_template("cv/modern.typ")
+        except Exception as exc:
+            return PDFRenderingCheck(
+                ok=False, message=f"could not load built-in CV template: {exc}"
+            )
+        source_path.write_text(template.render(resume=_pdf_smoke_resume()), encoding="utf-8")
+        try:
+            typst.compile(str(source_path), output=str(output_path), format="pdf")
+            if output_path.exists() and output_path.stat().st_size > 0:
                 return PDFRenderingCheck(ok=True, message="typst compile works")
             return PDFRenderingCheck(ok=False, message="typst produced empty PDF")
         except Exception as exc:  # pragma: no cover - typst runtime errors vary by host
