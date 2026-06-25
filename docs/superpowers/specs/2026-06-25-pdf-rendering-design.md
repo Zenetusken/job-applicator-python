@@ -62,7 +62,7 @@ Add deterministic, high-quality PDF generation for tailored résumés and cover 
                                                                          │
                                                                          ▼
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
-│  Output: output/cv_<company>_<title>_<ts>.pdf                                        │
+│  Output: output/tailored_<company>_<title>_<ts>.pdf                                  │
 │  Output: output/cover_letter_<company>_<title>_<ts>.pdf                              │
 └─────────────────────────────────────────────────────────────────────────────────────┘
                                                                          │
@@ -102,11 +102,17 @@ class FormattedSkillGroup(BaseModel):
     category: str | None = None  # e.g. "Languages", "Cloud", "Security"
     skills: list[str]
 
-class FormattedResume(BaseModel):
+class ProjectEntry(BaseModel):
     model_config = {"extra": "forbid"}
     name: str
+    description: str | None = None
+    url: str | None = None
+
+class FormattedResume(BaseModel):
+    model_config = {"extra": "forbid"}
+    name: str  # required; prompt must extract from raw_text / tailored_text
     title: str | None = None
-    email: str
+    email: str | None = None  # required if available; omit rather than fabricate
     phone: str | None = None
     location: str | None = None
     linkedin_url: str | None = None
@@ -117,7 +123,7 @@ class FormattedResume(BaseModel):
     skills: list[FormattedSkillGroup] | None = None
     certifications: list[str] | None = None
     languages: list[str] | None = None
-    projects: list[dict[str, str]] | None = None
+    projects: list[ProjectEntry] | None = None
     job_category: str | None = None
     emphasized_skills: list[str] | None = None
 ```
@@ -183,22 +189,40 @@ class PDFRenderer:
 
 1. **Categorize** the job (if not provided) from `JobListing.title` + `description` via a lightweight keyword-based heuristic. The heuristic maps title/description keywords to one of the built-in categories; if no keyword matches, use `default`.
 2. **Format** with instructor: call the LLM with a system prompt that includes the job category and asks for `FormattedResume` / `FormattedCoverLetter`.
+   - For cover letters, if the input is a plain string (`CoverLetterOutput.cover_letter`), the formatter prompt includes the full text and asks the LLM to split it into greeting, paragraphs, closing, and signature. The long-term goal is for `CoverLetterGenerator` to emit `FormattedCoverLetter` directly; the renderer must support both paths at launch.
 3. **Validate** the structured output with existing guards (sign-off validation for cover letters, skill hallucination guards for résumés).
 4. **Render** Jinja2 template with a custom `typst_escape` filter; no HTML autoescaping is used.
-5. **Compile** with `typst` Python package in `asyncio.to_thread`.
+5. **Compile** with `typst` Python package scheduled on a `ProcessPoolExecutor` (`spawn`).
 6. **Return** the PDF path and optionally run `ATSChecker` on the extracted text.
 
-### 7.3 Typst compilation backend
+### 7.3 Async / concurrency model
 
-Use the `typst` PyPI package only. The exact call will be determined during implementation; the expected shape is:
+Empirical testing showed:
+- Typst compilation is **CPU-bound and GIL-held**; `ThreadPoolExecutor` gives no parallelism.
+- A `ProcessPoolExecutor` with `mp_context="spawn"` achieves near-linear speedup for multiple renders.
+- The Rust runtime is **not fork-safe**; do not use the default `fork` start method.
+
+Therefore, `PDFRenderer` will manage a small `ProcessPoolExecutor` (spawn) and expose async methods that schedule compiles via `asyncio.get_running_loop().run_in_executor()`.
+
+### 7.4 Typst compilation backend
+
+Use the `typst` PyPI package only. Empirical testing confirmed the working API:
 
 ```python
 import typst
 
+# One-shot cold compile (≈150 ms)
 typst.compile(str(source_path), output=str(pdf_path), format="pdf")
+
+# Reusable compiler for repeated renders (≈0.5 ms after first compile)
+compiler = typst.Compiler(str(source_path))
+pdf_bytes = compiler.compile(format="pdf")
 ```
 
-If the API differs, the renderer will adapt in a single private method so the rest of the code is insulated.
+The renderer will:
+- Keep a per-template `typst.Compiler` instance for batch scenarios to amortize cold-compile cost.
+- Expose a single private `_compile(source_path, output_path)` method so the rest of the code is insulated from API details.
+- Run compilation in a `ProcessPoolExecutor` with `mp_context="spawn"` from async code, because the Typst Rust runtime is CPU-bound and not fork-safe.
 
 ## 8. Template System
 
@@ -216,7 +240,15 @@ src/job_applicator/templates/
     └── minimal.typ
 ```
 
-Templates are loaded with `importlib.resources` so they work from installed wheels.
+Templates are loaded with `importlib.resources` so they work from installed wheels. `pyproject.toml` must be updated to include non-Python files in the wheel:
+
+```toml
+[tool.hatch.build.targets.wheel]
+packages = ["src/job_applicator"]
+include = ["src/job_applicator/templates/**/*.typ"]
+```
+
+Built-in templates must use only Typst’s bundled fonts to avoid missing-font failures on headless CI or user machines.
 
 ### 8.2 Jinja2 escaping
 
@@ -268,8 +300,8 @@ The visual template does not change; only the structured content does.
 
 ### 9.3 Artifact paths
 
-- Résumé PDF: `output/cv_<safe_company>_<safe_title>_<YYYYMMDD_HHMMSS>.pdf`
-- Cover letter PDF: `output/cover_letter_<safe_company>_<safe_title>_<YYYYMMDD_HHMMSS>.pdf`
+- Résumé PDF: `output/tailored_<safe_company>_<safe_title>_<YYYYMMDD_HHMMSS>.pdf` (shares basename with `.txt` when `--format both` is used)
+- Cover letter PDF: `output/cover_letter_<safe_company>_<safe_title>_<YYYYMMDD_HHMMSS>.pdf` (shares basename with `.txt` when `--format both` is used)
 - `.meta.json` sidecars are updated to include `pdf_path` when applicable.
 
 ## 10. TUI Integration
@@ -282,8 +314,9 @@ The visual template does not change; only the structured content does.
 
 Add a rendering health check to `diagnostics.py`:
 
+- Add a `PDFRenderingCheck` Pydantic model and a `pdf_rendering` field to `DoctorReport` in `models.py` so the result surfaces in `--json` consistently.
 - Verify the `typst` Python package is importable.
-- Run a minimal compile (e.g., compile a one-line Typst file to PDF in a temp dir).
+- Run a minimal compile using a built-in Typst template in a temp dir to confirm fonts and runtime work.
 - Report success/failure in `job-applicator doctor`.
 
 ## 12. Configuration
@@ -292,20 +325,24 @@ Add to `AppSettings` / `config.py`:
 
 ```python
 class OutputConfig(BaseModel):
+    model_config = {"extra": "forbid", "env_prefix": "JOB_APPLICATOR_OUTPUT_"}
+
     default_format: Literal["txt", "pdf", "both"] = "txt"
     resume_template: str = "modern"
     cover_letter_template: str = "modern"
     template_dir: Path | None = None  # optional user templates
 ```
 
-Corresponding env vars: `JOB_APPLICATOR_OUTPUT_DEFAULT_FORMAT`, etc.
+Corresponding env vars: `JOB_APPLICATOR_OUTPUT_DEFAULT_FORMAT`, `JOB_APPLICATOR_OUTPUT_RESUME_TEMPLATE`, `JOB_APPLICATOR_OUTPUT_COVER_LETTER_TEMPLATE`, `JOB_APPLICATOR_OUTPUT_TEMPLATE_DIR`.
+
+Also add an `[output]` section to `config.example.toml` so users discover the new settings.
 
 ## 13. Error Handling
 
 - All renderer errors subclass `JobApplicatorError` (e.g., `PDFRenderError`).
 - Missing `typst` package → clear message with install instructions (`pip install job-applicator[pdf]`).
 - Template not found → `PDFRenderError` with list of built-in names.
-- Typst compilation failure → capture stderr and raise `PDFRenderError`.
+- Typst compilation failure → catch `typst.TypstError` (or `Exception` if a different exception type is used), capture the diagnostic message and the rendered Typst source path, and raise `PDFRenderError`.
 - Invalid structured output from LLM → retry via existing `LLMResilienceConfig` and circuit breaker; after exhaustion, raise `PDFRenderError`.
 
 ## 14. Testing Strategy
@@ -333,7 +370,8 @@ Corresponding env vars: `JOB_APPLICATOR_OUTPUT_DEFAULT_FORMAT`, etc.
 - `tests/integration/test_pdf_regression.py`
   - Generate PDFs for a fixed set of inputs.
   - Compare rasterized page images (not raw PDF bytes, which embed creation timestamps) against checked-in references.
-  - Marked `slow` so they run only in CI or on demand.
+  - Marked `slow` and gated behind an env var or CI flag because raster output can drift across OS, font, and HarfBuzz versions.
+  - Requires a deterministic rasterizer (e.g., PyMuPDF + pinned dependencies) and a spike to prove reproducibility before enabling in CI.
 
 ### 14.4 Property-based tests
 
@@ -353,7 +391,7 @@ Add to `pyproject.toml`:
 ```toml
 [project.optional-dependencies]
 pdf = [
-    "typst>=0.14",
+    "typst>=0.15,<0.16",
 ]
 ```
 
@@ -369,14 +407,18 @@ pdf = [
 
 | Risk | Mitigation |
 |------|------------|
-| `typst` Python package API changes or is hard to install. | Pin a minimum version; isolate the compile call behind one private method. |
+| `typst` Python package API changes or is hard to install. | Pin `>=0.15,<0.16`; isolate the compile call behind one private method. |
 | LLM emits malformed structured content. | Use instructor tool mode + existing retry/circuit breaker + Pydantic validation. |
 | Template escaping misses a Typst metacharacter. | Comprehensive unit tests + property-based fuzz tests. |
-| Batch performance degrades with PDF generation. | PDF is opt-in; rendering runs in `asyncio.to_thread`; consider content-hash caching later if needed. |
+| Batch performance degrades with PDF generation. | PDF is opt-in; rendering uses a `ProcessPoolExecutor` (`spawn`); consider content-hash caching later if needed. |
 | Cover-letter sign-off validation breaks due to layout. | Keep sign-off text block intact in the template; validate the structured `FormattedCoverLetter.signature` before rendering. |
+| Missing system fonts cause compile failures or substitutions. | Restrict built-in templates to Typst bundled fonts; verify with `doctor`. |
+| Async batch renders block the event loop. | Use `ProcessPoolExecutor` with `spawn` for PDF compilation. |
 
 ## 18. Open Questions for Implementation Plan
 
-1. Exact API of the `typst` Python package for PDF compilation.
-2. Whether to cache formatted structured output by content hash.
-3. Final list of built-in job categories and their prompt sections.
+1. Final list of built-in job categories and their keyword maps; check for overlap with `documents/tone_detector.py` categories.
+2. Whether to add content-hash caching for `FormattedResume`/`FormattedCoverLetter` in the first version or defer until batch performance is measured.
+3. Whether visual regression tests are in-scope for the first PR or deferred to a follow-up spike.
+4. Exact behavior when parser data lacks `name`/`email`/`experience` (fail fast vs. omit sections).
+5. Whether `ApplicationResult` needs a `cover_letter_pdf_path` field for the `apply` workflow.
