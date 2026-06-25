@@ -6,28 +6,42 @@ import asyncio
 import atexit
 import multiprocessing as mp
 import re
+import threading
 import uuid
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any, ClassVar, cast
 
-from jinja2 import Environment, FileSystemLoader, PackageLoader
+from jinja2 import Environment, FileSystemLoader, PackageLoader, TemplateNotFound
 
 from job_applicator.config import AppSettings
+from job_applicator.documents.cover_letter import CoverLetterOutput
 from job_applicator.documents.formatted_models import (
     FormattedCoverLetter,
     FormattedResume,
 )
 from job_applicator.documents.job_category import detect_job_category
+from job_applicator.documents.sign_off import extract_sign_off
 from job_applicator.exceptions import LLMError, PDFRenderError
 from job_applicator.models import CoverLetterResult, JobListing, TailoredResume
-from job_applicator.utils.llm import quiet_litellm
+from job_applicator.utils.llm import LLMRuntime, quiet_litellm
 
 # Characters that must be escaped when they appear unescaped in Typst source.
 # Backslash and slash are handled separately because they participate in escape
 # sequences and comments.
 _SIMPLE_METACHARS = frozenset('#_*$"`{}[]<>\n\r@')
+
+# Built-in Typst templates shipped with the package. Used for actionable
+# "template not found" error messages.
+_BUILTIN_TEMPLATES: tuple[str, ...] = (
+    "cv/modern.typ",
+    "cv/classic.typ",
+    "cv/minimal.typ",
+    "cover_letter/modern.typ",
+    "cover_letter/classic.typ",
+    "cover_letter/minimal.typ",
+)
 
 
 RESUME_SYSTEM_PROMPT = (
@@ -164,6 +178,7 @@ class PDFRenderer:
     """Render tailored résumés and cover letters to PDF via Typst."""
 
     _executor: ClassVar[ProcessPoolExecutor | None] = None
+    _executor_lock: ClassVar[threading.Lock] = threading.Lock()
 
     def __init__(
         self,
@@ -176,12 +191,16 @@ class PDFRenderer:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._env = typst_template_env(template_dir)
         self._client: Any | None = None
+        self._llm_runtime = LLMRuntime.from_config(settings.llm_resilience, name="pdf_renderer")
 
     @classmethod
     def _get_executor(cls) -> ProcessPoolExecutor:
-        if cls._executor is None or getattr(cls._executor, "_processes", None) is None:
-            cls._executor = ProcessPoolExecutor(max_workers=2, mp_context=mp.get_context("spawn"))
-        return cls._executor
+        with cls._executor_lock:
+            if cls._executor is None or getattr(cls._executor, "_processes", None) is None:
+                cls._executor = ProcessPoolExecutor(
+                    max_workers=2, mp_context=mp.get_context("spawn")
+                )
+            return cls._executor
 
     @classmethod
     def shutdown(cls) -> None:
@@ -202,6 +221,35 @@ class PDFRenderer:
                 raise LLMError("instructor or litellm not installed") from exc
         return self._client
 
+    def _validate_resume_skills(self, formatted: FormattedResume) -> None:
+        """Ensure emphasized skills are actually present in the skills list.
+
+        This is a minimal post-format guard against LLM hallucination. It does
+        not re-run the full resume-tailor validator because formatting is a
+        structural, not semantic, transformation.
+        """
+        if not formatted.emphasized_skills:
+            return
+        available: set[str] = set()
+        for group in formatted.skills or []:
+            for skill in group.skills:
+                available.add(skill.lower().strip())
+        missing = [
+            skill for skill in formatted.emphasized_skills if skill.lower().strip() not in available
+        ]
+        if missing:
+            raise PDFRenderError(
+                f"Emphasized skills not found in skills list: {', '.join(missing)}"
+            )
+
+    def _validate_cover_letter_sign_off(self, formatted: FormattedCoverLetter) -> None:
+        """Ensure the formatted cover letter ends with a recognized sign-off."""
+        closing_text = "\n".join(filter(None, [formatted.closing, formatted.signature]))
+        if extract_sign_off(closing_text) is None:
+            raise PDFRenderError(
+                f"Cover letter closing '{formatted.closing}' is not a recognized sign-off"
+            )
+
     async def _format_resume_with_instructor(
         self,
         tailored: TailoredResume,
@@ -212,24 +260,32 @@ class PDFRenderer:
         model = f"openai/{config.model}" if config.api_base else config.model
         prompt = _build_resume_format_prompt(tailored, job, category)
         client = self._get_client()
-        try:
-            response = await client.create(
-                model=model,
-                api_base=config.api_base,
-                api_key=config.api_key,
-                messages=[
-                    {"role": "system", "content": RESUME_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                response_model=FormattedResume,
-                max_retries=1,
-                max_tokens=config.max_tokens,
-                temperature=config.temperature,
-                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+
+        async def _call() -> FormattedResume:
+            return cast(
+                FormattedResume,
+                await client.create(
+                    model=model,
+                    api_base=config.api_base,
+                    api_key=config.api_key,
+                    messages=[
+                        {"role": "system", "content": RESUME_SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
+                    response_model=FormattedResume,
+                    max_retries=1,
+                    max_tokens=config.max_tokens,
+                    temperature=config.temperature,
+                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                ),
             )
+
+        try:
+            response = await self._llm_runtime.run(_call)
         except Exception as exc:
             raise PDFRenderError(f"Failed to format resume for PDF: {exc}") from exc
-        return cast(FormattedResume, response)
+        self._validate_resume_skills(response)
+        return response
 
     async def _format_cover_letter_with_instructor(
         self,
@@ -241,24 +297,45 @@ class PDFRenderer:
         model = f"openai/{config.model}" if config.api_base else config.model
         prompt = _build_cover_letter_format_prompt(result, job, category)
         client = self._get_client()
-        try:
-            response = await client.create(
-                model=model,
-                api_base=config.api_base,
-                api_key=config.api_key,
-                messages=[
-                    {"role": "system", "content": COVER_LETTER_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                response_model=FormattedCoverLetter,
-                max_retries=1,
-                max_tokens=config.max_tokens,
-                temperature=config.temperature,
-                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+
+        async def _call() -> FormattedCoverLetter:
+            return cast(
+                FormattedCoverLetter,
+                await client.create(
+                    model=model,
+                    api_base=config.api_base,
+                    api_key=config.api_key,
+                    messages=[
+                        {"role": "system", "content": COVER_LETTER_SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
+                    response_model=FormattedCoverLetter,
+                    max_retries=1,
+                    max_tokens=config.max_tokens,
+                    temperature=config.temperature,
+                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                ),
             )
+
+        try:
+            response = await self._llm_runtime.run(_call)
         except Exception as exc:
             raise PDFRenderError(f"Failed to format cover letter for PDF: {exc}") from exc
-        return cast(FormattedCoverLetter, response)
+        self._validate_cover_letter_sign_off(response)
+        return response
+
+    @staticmethod
+    def _normalize_cover_letter_input(
+        cover_letter: CoverLetterResult | CoverLetterOutput,
+    ) -> CoverLetterResult:
+        """Normalize ``CoverLetterOutput`` to ``CoverLetterResult``."""
+        if isinstance(cover_letter, CoverLetterOutput):
+            return CoverLetterResult(
+                cover_letter_text=cover_letter.cover_letter,
+                job_title="",
+                job_company="",
+            )
+        return cover_letter
 
     async def render_resume(
         self,
@@ -278,11 +355,12 @@ class PDFRenderer:
 
     async def render_cover_letter(
         self,
-        result: CoverLetterResult,
+        cover_letter: CoverLetterResult | CoverLetterOutput,
         job: JobListing | None = None,
         template: str = "modern",
         category: str | None = None,
     ) -> Path:
+        result = self._normalize_cover_letter_input(cover_letter)
         if category is None:
             category = detect_job_category(job)
         formatted = await self._format_cover_letter_with_instructor(result, job, category)
@@ -302,8 +380,20 @@ class PDFRenderer:
         output_path: Path,
     ) -> Path:
         source_path = self.output_dir / f"_tmp_{uuid.uuid4().hex}.typ"
-        rendered = self._env.get_template(template_name).render(**context)
-        source_path.write_text(rendered, encoding="utf-8")
+        try:
+            template = self._env.get_template(template_name)
+        except TemplateNotFound as exc:
+            raise PDFRenderError(
+                f"Template not found: {template_name}. "
+                f"Built-in templates: {', '.join(_BUILTIN_TEMPLATES)}"
+            ) from exc
+        rendered = template.render(**context)
+        try:
+            source_path.write_text(rendered, encoding="utf-8")
+        except Exception as exc:
+            source_path.unlink(missing_ok=True)
+            raise PDFRenderError(f"Failed to write Typst source: {exc}") from exc
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             executor = self._get_executor()
             await asyncio.get_running_loop().run_in_executor(
@@ -313,7 +403,7 @@ class PDFRenderer:
             raise PDFRenderError(
                 f"PDF compilation failed: {exc}", {"source": str(source_path)}
             ) from exc
-        else:
+        finally:
             source_path.unlink(missing_ok=True)
         return output_path
 
@@ -335,11 +425,19 @@ def _compile_typst(source_path: Path, output_path: Path) -> None:
     """Compile a Typst source file to PDF.
 
     ``typst`` is imported inside this function so the module can be loaded even
-    when the optional ``[pdf]`` extra is not installed.
+    when the optional ``[pdf]`` extra is not installed. Exceptions are re-raised
+    as plain ``RuntimeError`` so they cross the spawn process boundary cleanly.
     """
-    import typst
-
-    typst.compile(str(source_path), output=str(output_path), format="pdf")
+    try:
+        import typst
+    except ImportError as exc:
+        raise RuntimeError(
+            "typst package not installed; run: pip install 'job-applicator[pdf]'"
+        ) from exc
+    try:
+        typst.compile(str(source_path), output=str(output_path), format="pdf")
+    except Exception as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 def _safe(text: str) -> str:

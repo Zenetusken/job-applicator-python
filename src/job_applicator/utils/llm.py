@@ -357,6 +357,25 @@ class LLMRuntime:
         """A runtime with built-in defaults — for standalone/library use without config."""
         return cls(breaker=CircuitBreaker(name=name))
 
+    async def run(
+        self,
+        func: Callable[[], Awaitable[T]],
+        validator: Callable[[T], None] | None = None,
+    ) -> T:
+        """Run ``func`` under the shared circuit breaker.
+
+        If ``validator`` is supplied, retry the call (feeding back the prior
+        validation error) up to ``validation_max_retries`` times. Transport and
+        circuit errors always propagate without being fed back.
+        """
+        if validator is None:
+            return await self.breaker.call(func)
+
+        async def _call(_prev: LLMError | None) -> T:
+            return await func()
+
+        return await ValidatedOutput(max_retries=self.validation_max_retries).call(_call, validator)
+
 
 class ValidatedOutput:
     """Retry an LLM call when its output fails a validator.
