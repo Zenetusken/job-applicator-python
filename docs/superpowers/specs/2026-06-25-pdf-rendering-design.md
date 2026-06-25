@@ -102,7 +102,7 @@ class FormattedSkillGroup(BaseModel):
     category: str | None = None  # e.g. "Languages", "Cloud", "Security"
     skills: list[str]
 
-class ProjectEntry(BaseModel):
+class FormattedProjectEntry(BaseModel):
     model_config = {"extra": "forbid"}
     name: str
     description: str | None = None
@@ -123,7 +123,7 @@ class FormattedResume(BaseModel):
     skills: list[FormattedSkillGroup] | None = None
     certifications: list[str] | None = None
     languages: list[str] | None = None
-    projects: list[ProjectEntry] | None = None
+    projects: list[FormattedProjectEntry] | None = None
     job_category: str | None = None
     emphasized_skills: list[str] | None = None
 ```
