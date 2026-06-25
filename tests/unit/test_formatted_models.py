@@ -36,6 +36,21 @@ def test_resume_rejects_unknown_field() -> None:
         )
 
 
+def test_resume_rejects_invalid_nested_experience() -> None:
+    with pytest.raises(ValueError):
+        FormattedResume(
+            name="Alex Rivera",
+            experience=[
+                FormattedExperienceEntry(
+                    title="Engineer",
+                    company="Acme",
+                    start_date="2020",
+                    bullets=["Built things"],
+                ),
+            ],
+        )
+
+
 def test_cover_letter_valid() -> None:
     letter = FormattedCoverLetter(
         recipient_company="Acme",
@@ -46,3 +61,16 @@ def test_cover_letter_valid() -> None:
         signature="Alex Rivera",
     )
     assert letter.signature == "Alex Rivera"
+
+
+def test_cover_letter_rejects_unknown_field() -> None:
+    with pytest.raises(ValueError):
+        FormattedCoverLetter(
+            recipient_company="Acme",
+            date="2026-06-25",
+            greeting="Dear Hiring Manager,",
+            paragraphs=["I am excited to apply."],
+            closing="Sincerely,",
+            signature="Alex Rivera",
+            unknown_field="x",
+        )

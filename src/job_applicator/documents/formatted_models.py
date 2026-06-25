@@ -10,7 +10,7 @@ class FormattedExperienceEntry(BaseModel):
     company: str
     location: str | None = None
     start_date: str
-    end_date: str | None = None
+    end_date: str | None
     bullets: list[str]
     highlights: list[str] | None = None
 
@@ -32,7 +32,7 @@ class FormattedSkillGroup(BaseModel):
     skills: list[str]
 
 
-class ProjectEntry(BaseModel):
+class FormattedProjectEntry(BaseModel):
     model_config = {"extra": "forbid"}
 
     name: str
@@ -56,7 +56,7 @@ class FormattedResume(BaseModel):
     skills: list[FormattedSkillGroup] | None = None
     certifications: list[str] | None = None
     languages: list[str] | None = None
-    projects: list[ProjectEntry] | None = None
+    projects: list[FormattedProjectEntry] | None = None
     job_category: str | None = None
     emphasized_skills: list[str] | None = None
 
