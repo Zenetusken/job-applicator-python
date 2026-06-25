@@ -375,7 +375,7 @@ class LLMRuntime:
             return await self.breaker.call(lambda: func(None))
 
         async def _call(_prev: LLMError | None) -> T:
-            return await func(_prev)
+            return await self.breaker.call(lambda: func(_prev))
 
         return await ValidatedOutput(max_retries=self.validation_max_retries).call(_call, validator)
 
