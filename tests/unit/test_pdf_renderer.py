@@ -62,3 +62,29 @@ def test_typst_template_env_finalize_escapes_by_default(tmp_path) -> None:
     env = typst_template_env(tmp_path)
     result = env.get_template("test.typ").render(value="#_ *")
     assert result == r"\#\_ \*"
+
+
+@pytest.mark.unit
+def test_templates_load() -> None:
+    """All built-in CV and cover-letter templates load and render with minimal context."""
+    env = typst_template_env()
+    for name in [
+        "cv/modern.typ",
+        "cv/classic.typ",
+        "cv/minimal.typ",
+        "cover_letter/modern.typ",
+        "cover_letter/classic.typ",
+        "cover_letter/minimal.typ",
+    ]:
+        source = env.get_template(name).render(
+            resume={"name": "Test", "experience": []},
+            cover_letter={
+                "recipient_company": "Acme",
+                "date": "2026-06-25",
+                "greeting": "Hi",
+                "paragraphs": [],
+                "closing": "Best",
+                "signature": "Test",
+            },
+        )
+        assert source.strip()
