@@ -41,6 +41,7 @@ from job_applicator.documents.formatted_models import (
     FormattedResume,
     FormattedSkillGroup,
 )
+from job_applicator.documents.pdf_renderer import _typst_escape
 from job_applicator.models import (
     BrowserCheck,
     ConfigCheck,
@@ -283,36 +284,6 @@ def check_config(settings: AppSettings) -> ConfigCheck:
     return result
 
 
-def _typst_escape(value: object) -> str:
-    """Minimal Typst escape for the doctor smoke-test template.
-
-    Keeps the diagnostic self-contained; the real renderer in
-    ``documents/pdf_renderer.py`` implements the full idempotent filter.
-    """
-    text = str(value)
-    replacements = {
-        "\\": "\\\\",
-        "#": "\\#",
-        "_": "\\_",
-        "*": "\\*",
-        "$": "\\$",
-        '"': '\\"',
-        "`": "\\`",
-        "{": "\\{",
-        "}": "\\}",
-        "[": "\\[",
-        "]": "\\]",
-        "<": "\\<",
-        ">": "\\>",
-        "@": "\\@",
-        "\n": " ",
-        "\r": " ",
-    }
-    for old, new in replacements.items():
-        text = text.replace(old, new)
-    return text
-
-
 def _pdf_smoke_resume() -> FormattedResume:
     """Return a minimal ``FormattedResume`` for the PDF doctor smoke test."""
     return FormattedResume(
@@ -358,7 +329,6 @@ def check_pdf_rendering() -> PDFRenderingCheck:
         autoescape=False,  # noqa: S701
     )
     env.filters["typst_escape"] = _typst_escape
-    env.finalize = lambda x: _typst_escape(x) if x is not None else ""
 
     with tempfile.TemporaryDirectory() as tmp:
         source_path = Path(tmp) / "smoke.typ"

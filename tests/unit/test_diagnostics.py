@@ -486,6 +486,31 @@ def test_check_pdf_rendering_success(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "works" in res.message
 
 
+def test_check_pdf_rendering_source_escapes_email_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Built-in templates pipe every value through |typst_escape; the doctor smoke test
+    must not double-escape them (e.g. smoke@example.com → smoke\\@example.com)."""
+    captured: dict[str, str] = {}
+    real_import = builtins.__import__
+
+    def fake_import(name: str, *args: object, **kwargs: object) -> object:
+        if name == "typst":
+            mod = MagicMock()
+
+            def fake_compile(source: str, output: str, format: str | None = None) -> None:
+                captured["source"] = Path(source).read_text(encoding="utf-8")
+                Path(output).write_bytes(b"%PDF-1.4 fake")
+
+            mod.compile = fake_compile
+            return mod
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    diagnostics.check_pdf_rendering()
+    source = captured["source"]
+    assert r"smoke\@example.com" in source
+    assert r"smoke\\@" not in source
+
+
 def test_check_pdf_rendering_import_error(monkeypatch: pytest.MonkeyPatch) -> None:
     real_import = builtins.__import__
 
