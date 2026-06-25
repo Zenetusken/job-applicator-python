@@ -20,6 +20,7 @@ from rich.table import Table
 from job_applicator.documents.artifacts import write_cover_letter, write_cover_letter_pdf
 from job_applicator.documents.job_category import detect_job_category
 from job_applicator.factories import _make_runtime
+from job_applicator.models import Format
 from job_applicator.utils.diff import render_diff
 from job_applicator.utils.profile import _detect_tone, _load_user_profile
 
@@ -91,7 +92,7 @@ async def _save_cover_letter(
     job: JobListing,
     result: CoverLetterResult,
     *,
-    output_format: str = "txt",
+    output_format: Format = Format.TXT,
     template: str = "modern",
     category: str | None = None,
 ) -> Path:
@@ -104,22 +105,25 @@ async def _save_cover_letter(
     when = datetime.now()
     effective_category = category or detect_job_category(job)
 
-    if output_format == "txt":
+    if output_format == Format.TXT:
         cl_path, _meta_path = await asyncio.to_thread(
             write_cover_letter, output_dir, result, when=when
         )
+        result.output_path = cl_path
         console.print(f"\n[green]Cover letter saved: {cl_path}[/green]")
         return Path(cl_path)
 
-    if output_format == "pdf":
+    if output_format == Format.PDF:
         pdf_path = await write_cover_letter_pdf(
             output_dir, result, settings, template=template, category=effective_category, when=when
         )
+        result.output_path = str(pdf_path)
         console.print(f"\n[green]Cover letter PDF saved: {pdf_path}[/green]")
         return pdf_path
 
     # BOTH
     cl_path, _meta_path = await asyncio.to_thread(write_cover_letter, output_dir, result, when=when)
+    result.output_path = cl_path
     pdf_path = await write_cover_letter_pdf(
         output_dir, result, settings, template=template, category=effective_category, when=when
     )
@@ -189,7 +193,7 @@ async def _cover_letter_workflow(
     tone_profile: ToneProfile | None,
     tailored_resume_text: str,
     *,
-    output_format: str = "txt",
+    output_format: Format = Format.TXT,
     template: str = "modern",
     category: str | None = None,
 ) -> Path | None:

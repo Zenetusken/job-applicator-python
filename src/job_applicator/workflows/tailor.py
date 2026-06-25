@@ -19,6 +19,7 @@ from rich.table import Table
 
 from job_applicator.documents.artifacts import write_tailored, write_tailored_pdf
 from job_applicator.documents.job_category import detect_job_category
+from job_applicator.models import Format
 from job_applicator.utils.diff import render_diff
 from job_applicator.workflows.cover_letter import _cover_letter_workflow
 
@@ -51,7 +52,7 @@ async def _tailor_workflow(
     reporter: VerboseReporter | None,
     yes: bool = False,
     *,
-    output_format: str = "txt",
+    output_format: Format = Format.TXT,
     template: str = "modern",
     category: str | None = None,
 ) -> None:
@@ -136,13 +137,13 @@ async def _tailor_workflow(
             when = datetime.now()
             effective_category = category or detect_job_category(job)
 
-            if output_format == "txt":
+            if output_format == Format.TXT:
                 resume_path, _meta_path = await asyncio.to_thread(
                     write_tailored, output_dir, result, when=when
                 )
                 result.output_path = resume_path
                 files_written = [resume_path]
-            elif output_format == "pdf":
+            elif output_format == Format.PDF:
                 pdf_path = await write_tailored_pdf(
                     output_dir,
                     result,

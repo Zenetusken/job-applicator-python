@@ -32,7 +32,7 @@ from job_applicator.factories import (
     _make_runtime,
     _make_scraper,
 )
-from job_applicator.models import BatchRunSpec, DoctorReport
+from job_applicator.models import BatchRunSpec, DoctorReport, Format
 from job_applicator.utils.console import console, err_console
 from job_applicator.utils.cookies import (
     _cookies_from_browser,
@@ -112,14 +112,6 @@ class OCRMode(StrEnum):
     AUTO = "auto"
     ON = "on"
     OFF = "off"
-
-
-class Format(StrEnum):
-    """Valid --format values for artifact output."""
-
-    TXT = "txt"
-    PDF = "pdf"
-    BOTH = "both"
 
 
 def _resolve_ocr_mode(ocr_mode: OCRMode, force_ocr: bool) -> str:
@@ -1173,20 +1165,18 @@ def generate_cover_letter(
             job_url=str(job.url),
             cover_letter_text=letter,
         )
-        pdf_path: str | None = None
-        if output_format in (Format.PDF, Format.BOTH):
-            output_dir = await asyncio.to_thread(settings.ensure_output_dir)
-            effective_category = category or detect_job_category(job)
-            when = datetime.now()
-            _text_path, pdf_path = await _write_cover_letter_artifacts(
-                output_dir,
-                result,
-                settings,
-                output_format=output_format,
-                template=effective_template,
-                category=effective_category,
-                when=when,
-            )
+        output_dir = await asyncio.to_thread(settings.ensure_output_dir)
+        effective_category = category or detect_job_category(job)
+        when = datetime.now()
+        _text_path, pdf_path = await _write_cover_letter_artifacts(
+            output_dir,
+            result,
+            settings,
+            output_format=output_format,
+            template=effective_template,
+            category=effective_category,
+            when=when,
+        )
 
         if as_json:
             import json

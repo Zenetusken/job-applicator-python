@@ -49,6 +49,14 @@ class FunnelStatus(StrEnum):
     APPLIED = "applied"
 
 
+class Format(StrEnum):
+    """Valid --format values for artifact output."""
+
+    TXT = "txt"
+    PDF = "pdf"
+    BOTH = "both"
+
+
 class JobListing(BaseModel):
     """Scraped job data from a job board."""
 

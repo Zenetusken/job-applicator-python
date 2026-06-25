@@ -8,6 +8,7 @@ helpers and heavy LLM/browser dependencies.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -112,9 +113,10 @@ def test_tailor_pdf_flags_passed_to_workflow(
     assert call_kwargs["category"] == "cybersecurity"
 
 
-def test_tailor_format_both_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_tailor_format_txt_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """``tailor`` without ``--format`` defaults to ``txt`` and the configured template."""
     import job_applicator.cli as cli
+    from job_applicator.config import AppSettings
 
     _patch_tailor_stack(monkeypatch, tmp_path)
     workflow = AsyncMock()
@@ -128,7 +130,7 @@ def test_tailor_format_both_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     assert result.exit_code == 0, result.output
     call_kwargs = workflow.await_args.kwargs
     assert call_kwargs["output_format"].value == "txt"
-    assert call_kwargs["template"] == "modern"
+    assert call_kwargs["template"] == AppSettings().output.resume_template
     assert call_kwargs["category"] is None
 
 
@@ -186,6 +188,105 @@ def test_generate_cover_letter_pdf_flags(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert rendered_result.job_company == "Acme"
     assert mock_render.await_args.kwargs["template"] == "classic"
     assert mock_render.await_args.kwargs["category"] == "cybersecurity"
+
+
+def test_generate_cover_letter_default_txt_writes_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``generate-cover-letter`` (default ``--format txt``) writes a text artifact and
+    reports its path.
+    """
+    import job_applicator.cli as cli
+
+    loader = MagicMock()
+    loader.load.return_value = ResumeData(raw_text="John Doe\njohn@example.com\nPython")
+    monkeypatch.setattr("job_applicator.documents.resume.ResumeLoader", lambda: loader)
+    monkeypatch.setattr(cli, "_run_ats_preflight", lambda r: MagicMock(score=0.8))
+    monkeypatch.setattr(
+        cli, "_detect_tone", lambda job: MagicMock(primary="professional", confidence=0.9)
+    )
+
+    with patch("job_applicator.documents.cover_letter.CoverLetterGenerator") as mock_gen_cls:
+        mock_gen = mock_gen_cls.return_value
+        mock_gen.generate = AsyncMock(return_value="Dear Hiring Manager,")
+
+        result = CliRunner().invoke(
+            cli.app,
+            [
+                "generate-cover-letter",
+                "--job-title",
+                "Dev",
+                "--company",
+                "Acme",
+                "--resume",
+                "r.pdf",
+                "--json",
+            ],
+            env={"JOB_APPLICATOR_OUTPUT_DIR": str(tmp_path)},
+        )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["output_path"]
+    assert Path(payload["output_path"]).exists()
+    assert Path(payload["output_path"]).suffix == ".txt"
+    assert "pdf_path" not in payload
+
+
+def test_generate_cover_letter_both_writes_txt_and_pdf(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``generate-cover-letter --format both`` writes a text file, a PDF, and updates the
+    text sidecar with ``pdf_path``.
+    """
+    import job_applicator.cli as cli
+
+    loader = MagicMock()
+    loader.load.return_value = ResumeData(raw_text="John Doe\njohn@example.com\nPython")
+    monkeypatch.setattr("job_applicator.documents.resume.ResumeLoader", lambda: loader)
+    monkeypatch.setattr(cli, "_run_ats_preflight", lambda r: MagicMock(score=0.8))
+    monkeypatch.setattr(
+        cli, "_detect_tone", lambda job: MagicMock(primary="professional", confidence=0.9)
+    )
+
+    fake_pdf = tmp_path / "cover_letter_Acme_Dev_20260625_000000.pdf"
+    fake_pdf.write_bytes(b"pdf")
+
+    with (
+        patch("job_applicator.documents.cover_letter.CoverLetterGenerator") as mock_gen_cls,
+        patch(
+            "job_applicator.documents.pdf_renderer.PDFRenderer.render_cover_letter",
+            new=AsyncMock(return_value=fake_pdf),
+        ),
+    ):
+        mock_gen = mock_gen_cls.return_value
+        mock_gen.generate = AsyncMock(return_value="Dear Hiring Manager,")
+
+        result = CliRunner().invoke(
+            cli.app,
+            [
+                "generate-cover-letter",
+                "--job-title",
+                "Dev",
+                "--company",
+                "Acme",
+                "--resume",
+                "r.pdf",
+                "--format",
+                "both",
+                "--json",
+            ],
+            env={"JOB_APPLICATOR_OUTPUT_DIR": str(tmp_path)},
+        )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["output_path"]
+    assert payload["pdf_path"] == str(fake_pdf)
+    meta_path = Path(payload["output_path"]).with_suffix(".meta.json")
+    assert meta_path.exists()
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert meta["pdf_path"] == str(fake_pdf)
 
 
 def test_batch_pdf_flags_accepted(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
