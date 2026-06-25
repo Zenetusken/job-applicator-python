@@ -223,6 +223,51 @@ async def test_render_resume_propagates_compile_error(app_settings, tmp_path):
 
 
 @pytest.mark.unit
+async def test_render_cover_letter_propagates_format_error(app_settings, tmp_path):
+    """A failure in the cover-letter formatter is wrapped as a PDFRenderError."""
+    renderer = PDFRenderer(settings=app_settings, output_dir=tmp_path)
+    result = CoverLetterResult(
+        job_title="Engineer",
+        job_company="Acme",
+        cover_letter_text="text",
+    )
+    fake_client = MagicMock()
+    fake_client.create = AsyncMock(side_effect=RuntimeError("model down"))
+    with patch.object(renderer, "_get_client", return_value=fake_client):
+        with pytest.raises(PDFRenderError):
+            await renderer.render_cover_letter(result)
+
+
+@pytest.mark.unit
+async def test_render_cover_letter_propagates_compile_error(app_settings, tmp_path):
+    """A Typst compilation failure is wrapped as a PDFRenderError."""
+    renderer = PDFRenderer(settings=app_settings, output_dir=tmp_path)
+    result = CoverLetterResult(
+        job_title="Engineer",
+        job_company="Acme",
+        cover_letter_text="Dear Hiring Manager,\n\nI am excited.\n\nSincerely,\nAlex",
+    )
+
+    def _failing_compile(source_path: Path, output_path: Path) -> None:
+        raise RuntimeError("compile failed")
+
+    with patch("job_applicator.documents.pdf_renderer._compile_typst", _failing_compile):
+        with patch.object(
+            renderer, "_format_cover_letter_with_instructor", new_callable=AsyncMock
+        ) as mock_fmt:
+            mock_fmt.return_value = FormattedCoverLetter(
+                recipient_company="Acme",
+                date="2026-06-25",
+                greeting="Dear Hiring Manager,",
+                paragraphs=["I am excited."],
+                closing="Sincerely",
+                signature="Alex Rivera",
+            )
+            with pytest.raises(PDFRenderError):
+                await renderer.render_cover_letter(result)
+
+
+@pytest.mark.unit
 def test_pdf_renderer_get_client_caches(app_settings, tmp_path):
     """The instructor client is lazily constructed and cached."""
     renderer = PDFRenderer(settings=app_settings, output_dir=tmp_path)

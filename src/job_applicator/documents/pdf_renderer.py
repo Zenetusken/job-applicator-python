@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import multiprocessing as mp
 import re
 import uuid
@@ -182,6 +183,13 @@ class PDFRenderer:
             cls._executor = ProcessPoolExecutor(max_workers=2, mp_context=mp.get_context("spawn"))
         return cls._executor
 
+    @classmethod
+    def shutdown(cls) -> None:
+        """Shut down the shared process pool, if any."""
+        if cls._executor is not None:
+            cls._executor.shutdown(wait=True)
+            cls._executor = None
+
     def _get_client(self) -> Any:
         if self._client is None:
             try:
@@ -294,9 +302,9 @@ class PDFRenderer:
         output_path: Path,
     ) -> Path:
         source_path = self.output_dir / f"_tmp_{uuid.uuid4().hex}.typ"
+        rendered = self._env.get_template(template_name).render(**context)
+        source_path.write_text(rendered, encoding="utf-8")
         try:
-            rendered = self._env.get_template(template_name).render(**context)
-            source_path.write_text(rendered, encoding="utf-8")
             executor = self._get_executor()
             await asyncio.get_running_loop().run_in_executor(
                 executor, _compile_typst, source_path, output_path
@@ -305,23 +313,22 @@ class PDFRenderer:
             raise PDFRenderError(
                 f"PDF compilation failed: {exc}", {"source": str(source_path)}
             ) from exc
-        finally:
+        else:
             source_path.unlink(missing_ok=True)
         return output_path
 
     def _resume_output_path(self, tailored: TailoredResume, template: str) -> Path:
-        base = (
-            f"tailored_{_safe(tailored.job_company)}_{_safe(tailored.job_title)}_"
-            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        )
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        base = f"tailored_{_safe(tailored.job_company)}_{_safe(tailored.job_title)}_{ts}_{template}"
         return self.output_dir / f"{base}.pdf"
 
     def _cover_letter_output_path(self, result: CoverLetterResult, template: str) -> Path:
-        base = (
-            f"cover_letter_{_safe(result.job_company)}_{_safe(result.job_title)}_"
-            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        )
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        base = f"cover_letter_{_safe(result.job_company)}_{_safe(result.job_title)}_{ts}_{template}"
         return self.output_dir / f"{base}.pdf"
+
+
+atexit.register(PDFRenderer.shutdown)
 
 
 def _compile_typst(source_path: Path, output_path: Path) -> None:
