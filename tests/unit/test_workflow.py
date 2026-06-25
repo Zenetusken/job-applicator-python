@@ -391,7 +391,8 @@ class TestSaveCoverLetter:
 
         assert path.exists()
         assert path.parent == tmp_path
-        assert "cover_letter_TechCorp_Senior_Dev" in path.name
+        # write_cover_letter names files from result.job_company / result.job_title.
+        assert "cover_letter_Acme_Dev" in path.name
         assert path.suffix == ".txt"
         assert path.read_text(encoding="utf-8") == "My cover letter"
 

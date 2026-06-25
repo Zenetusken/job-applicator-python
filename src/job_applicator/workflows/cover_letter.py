@@ -9,6 +9,7 @@ runtime. The shared ``_detect_tone`` / ``_load_user_profile`` helpers come from
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -16,6 +17,8 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
+from job_applicator.documents.artifacts import write_cover_letter, write_cover_letter_pdf
+from job_applicator.documents.job_category import detect_job_category
 from job_applicator.factories import _make_runtime
 from job_applicator.utils.diff import render_diff
 from job_applicator.utils.profile import _detect_tone, _load_user_profile
@@ -87,24 +90,47 @@ async def _save_cover_letter(
     settings: AppSettings,
     job: JobListing,
     result: CoverLetterResult,
+    *,
+    output_format: str = "txt",
+    template: str = "modern",
+    category: str | None = None,
 ) -> Path:
-    """Save cover letter to disk and return the path."""
-    from datetime import datetime as dt
+    """Save cover letter to disk and return the primary path.
 
+    The primary path is the text path for ``txt``/``both`` and the PDF path for
+    ``pdf``. The returned path is what callers record as the cover-letter artifact.
+    """
     output_dir = await asyncio.to_thread(settings.ensure_output_dir)
-    safe_company = job.company.replace(" ", "_").replace("/", "_")
-    safe_title = job.title.replace(" ", "_").replace("/", "_")
-    timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
-    cl_filename = f"cover_letter_{safe_company}_{safe_title}_{timestamp}.txt"
-    cl_path = output_dir / cl_filename
-    await asyncio.to_thread(cl_path.write_text, result.cover_letter_text, encoding="utf-8")
-    result.output_path = str(cl_path)
-    cl_meta_path = cl_path.with_suffix(".meta.json")
+    when = datetime.now()
+    effective_category = category or detect_job_category(job)
+
+    if output_format == "txt":
+        cl_path, _meta_path = await asyncio.to_thread(
+            write_cover_letter, output_dir, result, when=when
+        )
+        console.print(f"\n[green]Cover letter saved: {cl_path}[/green]")
+        return Path(cl_path)
+
+    if output_format == "pdf":
+        pdf_path = await write_cover_letter_pdf(
+            output_dir, result, settings, template=template, category=effective_category, when=when
+        )
+        console.print(f"\n[green]Cover letter PDF saved: {pdf_path}[/green]")
+        return pdf_path
+
+    # BOTH
+    cl_path, _meta_path = await asyncio.to_thread(write_cover_letter, output_dir, result, when=when)
+    pdf_path = await write_cover_letter_pdf(
+        output_dir, result, settings, template=template, category=effective_category, when=when
+    )
+    result.pdf_path = str(pdf_path)
+    meta_path = Path(cl_path).with_suffix(".meta.json")
     await asyncio.to_thread(
-        cl_meta_path.write_text, result.model_dump_json(indent=2), encoding="utf-8"
+        meta_path.write_text, result.model_dump_json(indent=2), encoding="utf-8"
     )
     console.print(f"\n[green]Cover letter saved: {cl_path}[/green]")
-    return cl_path
+    console.print(f"[green]Cover letter PDF saved: {pdf_path}[/green]")
+    return Path(cl_path)
 
 
 async def _refine_cover_letter(
@@ -162,6 +188,10 @@ async def _cover_letter_workflow(
     style: StyleGuide | None,
     tone_profile: ToneProfile | None,
     tailored_resume_text: str,
+    *,
+    output_format: str = "txt",
+    template: str = "modern",
+    category: str | None = None,
 ) -> Path | None:
     """Generate and save a cover letter with accept/retry workflow.
 
@@ -252,7 +282,15 @@ async def _cover_letter_workflow(
         )
 
         if choice == "A":
-            return await _save_cover_letter(console, settings, job, result)
+            return await _save_cover_letter(
+                console,
+                settings,
+                job,
+                result,
+                output_format=output_format,
+                template=template,
+                category=category,
+            )
 
         elif choice == "R":
             console.print("[yellow]Regenerating...[/yellow]")

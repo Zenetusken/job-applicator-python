@@ -40,6 +40,7 @@ async def _apply_to_jobs(
     as_json: bool,
     console: Console,
     reporter: VerboseReporter | None,
+    cover_letter_pdf_paths: dict[str, str] | None = None,
 ) -> None:
     """Apply to each job (dry-run unless ``submit``) and render results."""
     from job_applicator.models import ApplicationResult, ApplicationStatus
@@ -110,6 +111,9 @@ async def _apply_to_jobs(
                 "error": r.error_message,
                 "notes": r.notes,
                 "cover_letter": r.cover_letter,
+                "cover_letter_pdf_path": cover_letter_pdf_paths.get(str(r.job.url))
+                if cover_letter_pdf_paths
+                else None,
                 "dry_run": r.dry_run.model_dump() if r.dry_run else None,
             }
             for r in app_results
@@ -136,6 +140,9 @@ async def _apply_to_jobs(
                 note_parts.append(f"[submit {reached}]")
             if r.cover_letter:
                 note_parts.append(f"[cover letter: {len(r.cover_letter)} chars]")
+            job_url = str(r.job.url)
+            if cover_letter_pdf_paths and job_url in cover_letter_pdf_paths:
+                note_parts.append("[PDF cover letter]")
             if r.error_message:
                 note_parts.append(r.error_message)
             elif r.notes:

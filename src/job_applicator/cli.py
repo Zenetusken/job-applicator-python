@@ -6,6 +6,7 @@ import asyncio
 import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -18,6 +19,12 @@ from rich.table import Table
 
 from job_applicator import __version__
 from job_applicator.config import AppSettings, LLMConfig, OutputConfig
+from job_applicator.documents.artifacts import (
+    write_cover_letter,
+    write_cover_letter_pdf,
+    write_tailored,
+    write_tailored_pdf,
+)
 from job_applicator.exceptions import CookieError, JobApplicatorError
 from job_applicator.factories import (
     _make_applicator,
@@ -45,6 +52,7 @@ if TYPE_CHECKING:
     from job_applicator.jobs_store import JobStore
     from job_applicator.models import (
         ATSCompatibilityResult,
+        CoverLetterResult,
         JobListing,
         ResumeData,
         TailoredResume,
@@ -104,6 +112,14 @@ class OCRMode(StrEnum):
     AUTO = "auto"
     ON = "on"
     OFF = "off"
+
+
+class Format(StrEnum):
+    """Valid --format values for artifact output."""
+
+    TXT = "txt"
+    PDF = "pdf"
+    BOTH = "both"
 
 
 def _resolve_ocr_mode(ocr_mode: OCRMode, force_ocr: bool) -> str:
@@ -174,6 +190,83 @@ def _get_jobs_store() -> JobStore:
     from job_applicator.jobs_store import JobStore
 
     return JobStore()
+
+
+async def _write_tailored_artifacts(
+    output_dir: Path,
+    tailored: TailoredResume,
+    settings: AppSettings,
+    *,
+    output_format: Format,
+    template: str,
+    category: str | None,
+    when: datetime,
+) -> tuple[str | None, str | None]:
+    """Write tailored résumé artifacts according to ``output_format``.
+
+    Returns ``(text_path, pdf_path)``. Either value may be ``None`` depending on
+    the requested format. For ``both`` the text sidecar is updated to reference
+    the generated PDF.
+    """
+    if output_format == Format.TXT:
+        resume_path, _meta_path = await asyncio.to_thread(
+            write_tailored, output_dir, tailored, when=when
+        )
+        return resume_path, None
+
+    if output_format == Format.PDF:
+        pdf_path = await write_tailored_pdf(
+            output_dir, tailored, settings, template=template, category=category, when=when
+        )
+        return None, str(pdf_path)
+
+    # BOTH: write text first, then PDF, then update the text sidecar with pdf_path.
+    resume_path, meta_path = await asyncio.to_thread(
+        write_tailored, output_dir, tailored, when=when
+    )
+    pdf_path = await write_tailored_pdf(
+        output_dir, tailored, settings, template=template, category=category, when=when
+    )
+    tailored.pdf_path = str(pdf_path)
+    await asyncio.to_thread(Path(meta_path).write_text, tailored.model_dump_json(indent=2))
+    return resume_path, str(pdf_path)
+
+
+async def _write_cover_letter_artifacts(
+    output_dir: Path,
+    result: CoverLetterResult,
+    settings: AppSettings,
+    *,
+    output_format: Format,
+    template: str,
+    category: str | None,
+    when: datetime,
+) -> tuple[str | None, str | None]:
+    """Write cover-letter artifacts according to ``output_format``.
+
+    Returns ``(text_path, pdf_path)`` with the same conventions as
+    :func:`_write_tailored_artifacts`.
+    """
+    if output_format == Format.TXT:
+        cl_path, _meta_path = await asyncio.to_thread(
+            write_cover_letter, output_dir, result, when=when
+        )
+        return cl_path, None
+
+    if output_format == Format.PDF:
+        pdf_path = await write_cover_letter_pdf(
+            output_dir, result, settings, template=template, category=category, when=when
+        )
+        return None, str(pdf_path)
+
+    # BOTH: write text first, then PDF, then update the text sidecar with pdf_path.
+    cl_path, meta_path = await asyncio.to_thread(write_cover_letter, output_dir, result, when=when)
+    pdf_path = await write_cover_letter_pdf(
+        output_dir, result, settings, template=template, category=category, when=when
+    )
+    result.pdf_path = str(pdf_path)
+    await asyncio.to_thread(Path(meta_path).write_text, result.model_dump_json(indent=2))
+    return cl_path, str(pdf_path)
 
 
 def _run_ats_preflight(resume: ResumeData) -> ATSCompatibilityResult:
@@ -710,6 +803,21 @@ def apply(
         "--validate",
         help="Exit non-zero if a dry run does not reach the Submit button.",
     ),
+    output_format: Format = typer.Option(
+        Format.TXT,
+        "--format",
+        help="Output format for generated cover letters: txt, pdf, or both.",
+    ),
+    template: str | None = typer.Option(
+        None,
+        "--template",
+        help="PDF template for cover letters (default: output.cover_letter_template).",
+    ),
+    category: str | None = typer.Option(
+        None,
+        "--category",
+        help="Job category for PDF content tailoring (default: auto-detect).",
+    ),
     verbose: bool = _verbose_option(),
     log_file: str | None = _log_file_option(),
 ) -> None:
@@ -735,11 +843,19 @@ def apply(
         settings.style_guide_path = style_guide
     setup_logging(settings.log_level)
     effective_ocr_mode = _resolve_ocr_mode(ocr_mode, force_ocr)
+    effective_template = template or settings.output.cover_letter_template
 
     reporter = _get_reporter(
         ctx=ctx,
         command="apply",
-        args={"resume": settings.resume_path, "jobs_file": "", "limit": limit},
+        args={
+            "resume": settings.resume_path,
+            "jobs_file": "",
+            "limit": limit,
+            "format": output_format.value,
+            "template": effective_template,
+            "category": category,
+        },
         config=_sanitize_config(settings),
     )
 
@@ -798,9 +914,12 @@ def apply(
             # available. Dry runs use them as a preview; real submissions use them
             # in the form. LLM calls are local, so the preview is worth the cost.
             cover_letters: dict[str, str] = {}
+            cover_letter_pdf_paths: dict[str, str] = {}
             if cover_letter and settings.resume_path:
                 from job_applicator.documents.cover_letter import CoverLetterGenerator
+                from job_applicator.documents.job_category import detect_job_category
                 from job_applicator.documents.resume import ResumeLoader
+                from job_applicator.models import CoverLetterResult
 
                 loader = ResumeLoader()
                 resume_data = loader.load(settings.resume_path, ocr_mode=effective_ocr_mode)
@@ -824,16 +943,42 @@ def apply(
                         )
                     err_console.print(f"[green]Style loaded: {style.tone}[/green]")
                 sem = asyncio.Semaphore(3)
+                output_dir = await asyncio.to_thread(settings.ensure_output_dir)
 
                 async def _gen_one(
                     job: JobListing,
-                ) -> tuple[str, str] | None:
+                ) -> tuple[str, str, str | None] | None:
                     async with sem:
                         try:
                             letter = await generator.generate(
                                 job, user_profile, resume_data, style_guide=style
                             )
-                            return str(job.url), letter
+                            pdf_path: str | None = None
+                            if output_format in (Format.PDF, Format.BOTH):
+                                when = datetime.now()
+                                cl_result = CoverLetterResult(
+                                    job_title=job.title,
+                                    job_company=job.company,
+                                    job_url=str(job.url),
+                                    cover_letter_text=letter,
+                                )
+                                effective_category = category or detect_job_category(job)
+                                try:
+                                    _text_path, pdf_path = await _write_cover_letter_artifacts(
+                                        output_dir,
+                                        cl_result,
+                                        settings,
+                                        output_format=output_format,
+                                        template=effective_template,
+                                        category=effective_category,
+                                        when=when,
+                                    )
+                                except Exception as exc:
+                                    err_console.print(
+                                        f"[yellow]PDF cover letter failed for {job.title}: "
+                                        f"{exc}[/yellow]"
+                                    )
+                            return str(job.url), letter, pdf_path
                         except Exception as exc:
                             msg = f"Cover letter failed for {job.title}: {exc}"
                             err_console.print(f"[yellow]{msg}[/yellow]")
@@ -843,8 +988,10 @@ def apply(
                     results_cl = await asyncio.gather(*(_gen_one(j) for j in jobs[:limit]))
                     for entry in results_cl:
                         if entry is not None:
-                            url, letter = entry
+                            url, letter, pdf_path = entry
                             cover_letters[url] = letter
+                            if pdf_path:
+                                cover_letter_pdf_paths[url] = pdf_path
 
             # Apply to jobs
 
@@ -862,6 +1009,7 @@ def apply(
                 as_json=as_json,
                 console=err_console if as_json else console,
                 reporter=reporter,
+                cover_letter_pdf_paths=cover_letter_pdf_paths,
             )
 
     try:
@@ -906,6 +1054,21 @@ def generate_cover_letter(
         "--force-ocr",
         help="Force OCR; equivalent to --ocr-mode on.",
     ),
+    output_format: Format = typer.Option(
+        Format.TXT,
+        "--format",
+        help="Output format for the cover letter: txt, pdf, or both.",
+    ),
+    template: str | None = typer.Option(
+        None,
+        "--template",
+        help="PDF template for the cover letter (default: output.cover_letter_template).",
+    ),
+    category: str | None = typer.Option(
+        None,
+        "--category",
+        help="Job category for PDF content tailoring (default: auto-detect).",
+    ),
     verbose: bool = _verbose_option(),
     log_file: str | None = _log_file_option(),
 ) -> None:
@@ -918,6 +1081,7 @@ def generate_cover_letter(
         settings.style_guide_path = style_guide
     setup_logging(settings.log_level)
     effective_ocr_mode = _resolve_ocr_mode(ocr_mode, force_ocr)
+    effective_template = template or settings.output.cover_letter_template
 
     reporter = _get_reporter(
         ctx=ctx,
@@ -927,6 +1091,9 @@ def generate_cover_letter(
             "job_title": job_title,
             "company": company,
             "style_guide": settings.style_guide_path,
+            "format": output_format.value,
+            "template": effective_template,
+            "category": category,
         },
         config=_sanitize_config(settings),
     )
@@ -935,8 +1102,9 @@ def generate_cover_letter(
         from pydantic import HttpUrl
 
         from job_applicator.documents.cover_letter import CoverLetterGenerator
+        from job_applicator.documents.job_category import detect_job_category
         from job_applicator.documents.resume import ResumeLoader
-        from job_applicator.models import JobBoard, JobListing
+        from job_applicator.models import CoverLetterResult, JobBoard, JobListing
 
         if not settings.resume_path:
             err_console.print("[red]Resume path required. Use --resume or set RESUME_PATH.[/red]")
@@ -999,18 +1167,47 @@ def generate_cover_letter(
                 job, user_profile, resume_data, style, tone_section=tone_section
             )
 
+        result = CoverLetterResult(
+            job_title=job.title,
+            job_company=job.company,
+            job_url=str(job.url),
+            cover_letter_text=letter,
+        )
+        pdf_path: str | None = None
+        if output_format in (Format.PDF, Format.BOTH):
+            output_dir = await asyncio.to_thread(settings.ensure_output_dir)
+            effective_category = category or detect_job_category(job)
+            when = datetime.now()
+            _text_path, pdf_path = await _write_cover_letter_artifacts(
+                output_dir,
+                result,
+                settings,
+                output_format=output_format,
+                template=effective_template,
+                category=effective_category,
+                when=when,
+            )
+
         if as_json:
             import json
 
-            sys.stdout.write(
-                json.dumps(
-                    {"cover_letter": letter, "job_title": job_title, "company": company}, indent=2
-                )
-                + "\n"
-            )
+            payload: dict[str, object] = {
+                "cover_letter": letter,
+                "job_title": job_title,
+                "company": company,
+            }
+            if result.output_path:
+                payload["output_path"] = result.output_path
+            if pdf_path:
+                payload["pdf_path"] = pdf_path
+            sys.stdout.write(json.dumps(payload, indent=2) + "\n")
         else:
             console.print("\n[bold]Generated Cover Letter:[/bold]\n")
             console.print(letter)
+            if result.output_path:
+                console.print(f"\n[green]Cover letter saved: {result.output_path}[/green]")
+            if pdf_path:
+                console.print(f"[green]PDF cover letter saved: {pdf_path}[/green]")
 
     try:
         asyncio.run(_run())
@@ -1421,6 +1618,21 @@ def batch(
         "--resume-run",
         help="Resume an existing incomplete batch run with matching parameters.",
     ),
+    output_format: Format = typer.Option(
+        Format.TXT,
+        "--format",
+        help="Output format for résumé/cover-letter artifacts: txt, pdf, or both.",
+    ),
+    template: str | None = typer.Option(
+        None,
+        "--template",
+        help="PDF template for résumés and cover letters (default: output.*_template).",
+    ),
+    category: str | None = typer.Option(
+        None,
+        "--category",
+        help="Job category for PDF content tailoring (default: auto-detect per job).",
+    ),
     verbose: bool = _verbose_option(),
     log_file: str | None = _log_file_option(),
 ) -> None:
@@ -1433,6 +1645,8 @@ def batch(
         settings.style_guide_path = style_guide
     setup_logging(settings.log_level)
     effective_ocr_mode = _resolve_ocr_mode(ocr_mode, force_ocr)
+    effective_resume_template = template or settings.output.resume_template
+    effective_cl_template = template or settings.output.cover_letter_template
 
     reporter = _get_reporter(
         ctx=ctx,
@@ -1445,6 +1659,9 @@ def batch(
             "cover_letter": cover_letter,
             "run_id": run_id or "auto",
             "resume_run": resume_run,
+            "format": output_format.value,
+            "template": template or "default",
+            "category": category,
         },
         config=_sanitize_config(settings),
     )
@@ -1456,10 +1673,11 @@ def batch(
         from pathlib import Path
 
         from job_applicator.batch_state import BatchJobStatus, BatchState
+        from job_applicator.documents.job_category import detect_job_category
         from job_applicator.documents.resume import ResumeLoader
         from job_applicator.documents.resume_tailor import ResumeTailor
         from job_applicator.embeddings.matching import JobMatcher, MatchResult
-        from job_applicator.models import JobBoard, TailoringReport
+        from job_applicator.models import CoverLetterResult, JobBoard, TailoringReport
 
         if not settings.resume_path:
             err_console.print("[red]Resume path required. Use --resume.[/red]")
@@ -1624,9 +1842,9 @@ def batch(
 
         async def _process_one(match_result: MatchResult) -> dict[str, object]:
             job = match_result.job
-            safe_company = "".join(c if c.isalnum() or c in "-_" else "_" for c in job.company)[:30]
-            safe_title = "".join(c if c.isalnum() or c in "-_" else "_" for c in job.title)[:30]
             user_instructions = ""
+            when = dt.now()
+            resume_pdf_path: str | None = None
 
             async with sem:
                 result: dict[str, object] = {
@@ -1646,9 +1864,30 @@ def batch(
                     result["match_score"] = round(tailored.match_score, 4)
                     result["semantic_score"] = round(tailored.semantic_score, 4)
                     result["skill_score"] = round(tailored.skill_score, 4)
-                    result["resume_path"] = resume_path_out
                     result["tailored"] = True
                     result["resumed"] = True
+                    if output_format in (Format.PDF, Format.BOTH):
+                        try:
+                            _text_path, resume_pdf_path = await _write_tailored_artifacts(
+                                Path(output_dir),
+                                tailored,
+                                settings,
+                                output_format=output_format,
+                                template=effective_resume_template,
+                                category=category or detect_job_category(job),
+                                when=when,
+                            )
+                            if _text_path:
+                                written_paths.append(_text_path)
+                            if resume_pdf_path:
+                                written_paths.append(resume_pdf_path)
+                            meta_path = str(Path(resume_path_out).with_suffix(".meta.json"))
+                        except Exception as exc:
+                            err_console.print(
+                                f"[yellow]PDF résumé failed for {job.title}: {exc}[/yellow]"
+                            )
+                    result["resume_path"] = resume_path_out
+                    result["pdf_path"] = resume_pdf_path
                 else:
                     try:
                         tone_profile = _detect_tone(job)
@@ -1692,27 +1931,30 @@ def batch(
                             )
                         )
 
-                        resume_filename = f"tailored_{safe_company}_{safe_title}_{timestamp}.txt"
-                        resume_path_out = str(Path(output_dir) / resume_filename)
-                        await asyncio.to_thread(
-                            Path(resume_path_out).write_text, tailored.tailored_text
+                        text_path, resume_pdf_path = await _write_tailored_artifacts(
+                            Path(output_dir),
+                            tailored,
+                            settings,
+                            output_format=output_format,
+                            template=effective_resume_template,
+                            category=category or detect_job_category(job),
+                            when=when,
                         )
-                        written_paths.append(resume_path_out)
-
-                        meta_filename = f"{resume_filename.rsplit('.', 1)[0]}.meta.json"
-                        meta_path = str(Path(output_dir) / meta_filename)
-                        tailored.output_path = resume_path_out
-                        await asyncio.to_thread(
-                            Path(meta_path).write_text, tailored.model_dump_json(indent=2)
-                        )
-                        written_paths.append(meta_path)
+                        resume_path_out = text_path or resume_pdf_path or ""
+                        if text_path:
+                            written_paths.append(text_path)
+                        if resume_pdf_path:
+                            written_paths.append(resume_pdf_path)
+                        meta_path = str(Path(resume_path_out).with_suffix(".meta.json"))
                         result["resume_path"] = resume_path_out
+                        result["pdf_path"] = resume_pdf_path
                         result["tailored"] = True
                         batch_state.record_job(
                             effective_run_id,
                             job,
                             BatchJobStatus.TAILORED,
                             resume_path=resume_path_out,
+                            pdf_path=resume_pdf_path,
                         )
                     except Exception as exc:
                         result["tailored"] = False
@@ -1745,14 +1987,31 @@ def batch(
                             style_guide=style,
                             tailored_resume_text=tailored.tailored_text,
                         )
-                        cl_filename = f"cover_letter_{safe_company}_{safe_title}_{timestamp}.txt"
-                        cl_path = str(Path(output_dir) / cl_filename)
-                        await asyncio.to_thread(Path(cl_path).write_text, letter)
-                        written_paths.append(cl_path)
+                        cl_result = CoverLetterResult(
+                            job_title=job.title,
+                            job_company=job.company,
+                            job_url=str(job.url),
+                            cover_letter_text=letter,
+                        )
+                        cl_text_path, cl_pdf_path = await _write_cover_letter_artifacts(
+                            Path(output_dir),
+                            cl_result,
+                            settings,
+                            output_format=output_format,
+                            template=effective_cl_template,
+                            category=category or detect_job_category(job),
+                            when=when,
+                        )
+                        cl_path = cl_text_path or cl_pdf_path or ""
+                        if cl_text_path:
+                            written_paths.append(cl_text_path)
+                        if cl_pdf_path:
+                            written_paths.append(cl_pdf_path)
                         tailored.cover_letter_path = cl_path
                         result["cover_letter_path"] = cl_path
+                        result["cover_letter_pdf_path"] = cl_pdf_path
                         result["cover_letter"] = True
-                        # Re-write meta.json with cover_letter_path
+                        # Re-write meta.json with cover_letter_path (and pdf_path if set).
                         await asyncio.to_thread(
                             Path(meta_path).write_text, tailored.model_dump_json(indent=2)
                         )
@@ -1762,6 +2021,7 @@ def batch(
                             BatchJobStatus.COMPLETED,
                             resume_path=resume_path_out,
                             cover_letter_path=cl_path,
+                            pdf_path=cl_pdf_path or resume_pdf_path,
                         )
                     except Exception as exc:
                         result["cover_letter"] = False
@@ -1779,6 +2039,7 @@ def batch(
                         job,
                         BatchJobStatus.COMPLETED,
                         resume_path=resume_path_out,
+                        pdf_path=resume_pdf_path,
                     )
 
                 return result
@@ -1902,6 +2163,21 @@ def tailor(
         "--force-ocr",
         help="Force OCR; equivalent to --ocr-mode on.",
     ),
+    output_format: Format = typer.Option(
+        Format.TXT,
+        "--format",
+        help="Output format for the tailored résumé: txt, pdf, or both.",
+    ),
+    template: str | None = typer.Option(
+        None,
+        "--template",
+        help="PDF template for the résumé (default: output.resume_template).",
+    ),
+    category: str | None = typer.Option(
+        None,
+        "--category",
+        help="Job category for PDF content tailoring (default: auto-detect).",
+    ),
     verbose: bool = _verbose_option(),
     log_file: str | None = _log_file_option(),
 ) -> None:
@@ -1916,6 +2192,7 @@ def tailor(
         settings.style_guide_path = style_guide
     setup_logging(settings.log_level)
     effective_ocr_mode = _resolve_ocr_mode(ocr_mode, force_ocr)
+    effective_template = template or settings.output.resume_template
 
     reporter = _get_reporter(
         ctx=ctx,
@@ -1925,6 +2202,9 @@ def tailor(
             "job": job_description,
             "min_score": min_score,
             "interactive": not yes,
+            "format": output_format.value,
+            "template": effective_template,
+            "category": category,
         },
         config=_sanitize_config(settings),
     )
@@ -2153,6 +2433,9 @@ def tailor(
             result,
             reporter,
             yes=yes,
+            output_format=output_format,
+            template=effective_template,
+            category=category,
         )
 
         # Reflect an accepted tailor in the funnel store so `status` shows it — only for
@@ -2165,6 +2448,7 @@ def tailor(
                     job,
                     tailored_resume_path=result.output_path,
                     cover_letter_path=result.cover_letter_path,
+                    pdf_path=result.pdf_path,
                 )
             except JobApplicatorError as exc:
                 err_console.print(
