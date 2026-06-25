@@ -86,6 +86,7 @@ screenshots/
 .mimocode/
 .kimi-code/
 .superpowers/
+.worktrees/
 
 # Generated output
 output/
