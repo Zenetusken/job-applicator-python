@@ -15,7 +15,7 @@
     {% if resume.location %}{% set _ = contacts.append(resume.location | typst_escape) %}{% endif %}
     {% if resume.linkedin_url %}{% set _ = contacts.append(resume.linkedin_url | typst_escape) %}{% endif %}
     {% if resume.portfolio_url %}{% set _ = contacts.append(resume.portfolio_url | typst_escape) %}{% endif %}
-    {{ contacts | join(" | ") }}
+    {{ contacts | join(" | ") | typst_escape }}
   ]
 ]
 #v(12pt)
