@@ -151,7 +151,7 @@ Because the current `ResumeLoader` populates `raw_text` but not `ResumeData.expe
 1. **Parse the markdown-styled `TailoredResume.tailored_text`.** Fragile because the LLM may change header/bullet conventions between runs.
 2. **Ask the LLM to re-format the tailored text into `FormattedResume`.** Robust and deterministic; uses instructor structured output and keeps the visual template separate from content extraction.
 
-The design chooses option 2. The formatter prompt includes the full `tailored_text` and the original `ResumeData` fields, and the LLM emits a `FormattedResume` that the template consumes directly. This is a one-time structured-output call per PDF render.
+The design chooses option 2. The formatter prompt includes the full `tailored_text` and optional job details, and the LLM emits a `FormattedResume` that the template consumes directly. This is a one-time structured-output call per PDF render.
 
 ## 7. Renderer Module
 
@@ -190,10 +190,10 @@ class PDFRenderer:
 1. **Categorize** the job (if not provided) from `JobListing.title` + `description` via a lightweight keyword-based heuristic. The heuristic maps title/description keywords to one of the built-in categories; if no keyword matches, use `default`.
 2. **Format** with instructor: call the LLM with a system prompt that includes the job category and asks for `FormattedResume` / `FormattedCoverLetter`.
    - For cover letters, if the input is a plain string (`CoverLetterOutput.cover_letter`), the formatter prompt includes the full text and asks the LLM to split it into greeting, paragraphs, closing, and signature. The long-term goal is for `CoverLetterGenerator` to emit `FormattedCoverLetter` directly; the renderer must support both paths at launch.
-3. **Validate** the structured output with existing guards (sign-off validation for cover letters, skill hallucination guards for résumés).
+3. **Validate** the structured output with lightweight guards: cover letters must contain a recognized sign-off word; résumés must list emphasized skills within the skills section. Full résumé-tailor hallucination guards and ATS round-trip are deferred.
 4. **Render** Jinja2 template with a custom `typst_escape` filter; no HTML autoescaping is used.
 5. **Compile** with `typst` Python package scheduled on a `ProcessPoolExecutor` (`spawn`).
-6. **Return** the PDF path and optionally run `ATSChecker` on the extracted text.
+6. **Return** the PDF path.
 
 ### 7.3 Async / concurrency model
 
@@ -213,15 +213,11 @@ import typst
 
 # One-shot cold compile (≈150 ms)
 typst.compile(str(source_path), output=str(pdf_path), format="pdf")
-
-# Reusable compiler for repeated renders (≈0.5 ms after first compile)
-compiler = typst.Compiler(str(source_path))
-pdf_bytes = compiler.compile(format="pdf")
 ```
 
 The renderer will:
-- Keep a per-template `typst.Compiler` instance for batch scenarios to amortize cold-compile cost.
-- Expose a single private `_compile(source_path, output_path)` method so the rest of the code is insulated from API details.
+- Use one-shot `typst.compile(...)` calls. A reusable `typst.Compiler` is not used because it cannot be pickled across spawn processes and the cold-compile cost is acceptable for the first version.
+- Expose compilation through a module-level helper `_compile_typst(source_path, output_path)` so the rest of the code is insulated from API details and the optional `typst` import stays local.
 - Run compilation in a `ProcessPoolExecutor` with `mp_context="spawn"` from async code, because the Typst Rust runtime is CPU-bound and not fork-safe.
 
 ## 8. Template System
@@ -254,8 +250,9 @@ Built-in templates must use only Typst’s bundled fonts to avoid missing-font f
 
 A dedicated Jinja2 environment is used for Typst rendering:
 - `autoescape=False` because HTML escaping is wrong for Typst source.
-- A custom filter `typst_escape` that escapes Typst special characters (`#`, `_`, `*`, `$`, `"`, `\`, backticks, braces, brackets).
+- A custom filter `typst_escape` that escapes Typst special characters (`#`, `_`, `*`, `$`, `"`, `\`, backticks, braces, brackets, angle brackets, `@`, and comment-starting `//` / `/*`).
 - All variable interpolations use the typst filter: `{{ resume.name | typst_escape }}`.
+- The Jinja2 environment also sets `finalize` so unfiltered interpolations are escaped by default.
 - No raw markup from the LLM is ever injected into the template.
 
 ### 8.3 Job-category content strategy
@@ -300,9 +297,11 @@ The visual template does not change; only the structured content does.
 
 ### 9.3 Artifact paths
 
-- Résumé PDF: `output/tailored_<safe_company>_<safe_title>_<YYYYMMDD_HHMMSS>.pdf` (shares basename with `.txt` when `--format both` is used)
-- Cover letter PDF: `output/cover_letter_<safe_company>_<safe_title>_<YYYYMMDD_HHMMSS>.pdf` (shares basename with `.txt` when `--format both` is used)
+- Résumé PDF: `output/tailored_<safe_company>_<safe_title>_<YYYYMMDD_HHMMSS>_<microseconds>_<template>.pdf`
+- Cover letter PDF: `output/cover_letter_<safe_company>_<safe_title>_<YYYYMMDD_HHMMSS>_<microseconds>_<template>.pdf`
 - `.meta.json` sidecars are updated to include `pdf_path` when applicable.
+
+The microsecond timestamp and template suffix prevent collisions when multiple renders run concurrently or sequentially within the same second.
 
 ## 10. TUI Integration
 
@@ -343,7 +342,8 @@ Also add an `[output]` section to `config.example.toml` so users discover the ne
 - Missing `typst` package → clear message with install instructions (`pip install job-applicator[pdf]`).
 - Template not found → `PDFRenderError` with list of built-in names.
 - Typst compilation failure → catch `typst.TypstError` (or `Exception` if a different exception type is used), capture the diagnostic message and the rendered Typst source path, and raise `PDFRenderError`.
-- Invalid structured output from LLM → retry via existing `LLMResilienceConfig` and circuit breaker; after exhaustion, raise `PDFRenderError`.
+- Invalid structured output from LLM → instructor's own `max_retries` handles schema validation failures; transport failures are retried via the shared `LLMRuntime` circuit breaker. After exhaustion, raise `PDFRenderError`.
+- Post-format content validation failures (bad sign-off, missing emphasized skills) raise `PDFRenderError` without retry, because they indicate a content problem rather than a transient LLM error.
 
 ## 14. Testing Strategy
 
@@ -362,8 +362,8 @@ Also add an `[output]` section to `config.example.toml` so users discover the ne
 
 - `tests/integration/test_pdf_rendering.py`
   - Render a sample résumé and cover letter to real PDFs using the `typst` package.
-  - Extract text from each PDF with PyMuPDF.
-  - Run `ATSChecker` on extracted text and assert compatibility.
+  - Extract text from each PDF with PyMuPDF and assert key content is present.
+  - ATS round-trip validation is deferred to a follow-up task.
 
 ### 14.3 Visual regression tests
 
