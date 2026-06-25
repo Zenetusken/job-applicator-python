@@ -1,8 +1,18 @@
 from __future__ import annotations
 
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
-from job_applicator.documents.pdf_renderer import _typst_escape, typst_template_env
+from job_applicator.documents.formatted_models import (
+    FormattedCoverLetter,
+    FormattedExperienceEntry,
+    FormattedResume,
+)
+from job_applicator.documents.pdf_renderer import PDFRenderer, _typst_escape, typst_template_env
+from job_applicator.exceptions import PDFRenderError
+from job_applicator.models import CoverLetterResult, TailoredResume
 
 
 @pytest.mark.unit
@@ -88,3 +98,144 @@ def test_templates_load() -> None:
             },
         )
         assert source.strip()
+
+
+def _fake_compile(source_path: Path, output_path: Path) -> None:
+    """Picklable stand-in for ``typst.compile`` in unit tests."""
+    output_path.write_bytes(b"%PDF-1.4 fake")
+
+
+@pytest.mark.unit
+async def test_render_resume_calls_compile(app_settings, tmp_path):
+    """render_resume formats the résumé and compiles a PDF."""
+    renderer = PDFRenderer(settings=app_settings, output_dir=tmp_path)
+    tailored = TailoredResume(
+        original_path="r.pdf",
+        tailored_text="# Alex\n**Engineer**\n- Built things",
+        job_title="Engineer",
+        job_company="Acme",
+        match_score=0.8,
+        semantic_score=0.8,
+        skill_score=0.8,
+        changes_summary="emphasized Python",
+    )
+    with patch("job_applicator.documents.pdf_renderer._compile_typst", _fake_compile):
+        with patch.object(
+            renderer, "_format_resume_with_instructor", new_callable=AsyncMock
+        ) as mock_fmt:
+            mock_fmt.return_value = FormattedResume(
+                name="Alex",
+                experience=[
+                    FormattedExperienceEntry(
+                        title="Engineer",
+                        company="Acme",
+                        start_date="2020",
+                        bullets=["Built things"],
+                    )
+                ],
+            )
+            path = await renderer.render_resume(tailored)
+            assert path.suffix == ".pdf"
+            assert path.parent == tmp_path
+            assert path.exists()
+
+
+@pytest.mark.unit
+async def test_render_cover_letter_calls_compile(app_settings, tmp_path):
+    """render_cover_letter formats the letter and compiles a PDF."""
+    renderer = PDFRenderer(settings=app_settings, output_dir=tmp_path)
+    result = CoverLetterResult(
+        job_title="Engineer",
+        job_company="Acme",
+        cover_letter_text="Dear Hiring Manager,\n\nI am excited.\n\nSincerely,\nAlex",
+    )
+    with patch("job_applicator.documents.pdf_renderer._compile_typst", _fake_compile):
+        with patch.object(
+            renderer, "_format_cover_letter_with_instructor", new_callable=AsyncMock
+        ) as mock_fmt:
+            mock_fmt.return_value = FormattedCoverLetter(
+                recipient_company="Acme",
+                date="2026-06-25",
+                greeting="Dear Hiring Manager,",
+                paragraphs=["I am excited."],
+                closing="Sincerely",
+                signature="Alex Rivera",
+            )
+            path = await renderer.render_cover_letter(result)
+            assert path.suffix == ".pdf"
+            assert path.parent == tmp_path
+            assert path.exists()
+
+
+@pytest.mark.unit
+async def test_render_resume_propagates_format_error(app_settings, tmp_path):
+    """A failure in the LLM formatter is wrapped as a PDFRenderError."""
+    renderer = PDFRenderer(settings=app_settings, output_dir=tmp_path)
+    tailored = TailoredResume(
+        original_path="r.pdf",
+        tailored_text="text",
+        job_title="Engineer",
+        job_company="Acme",
+        match_score=0.8,
+        semantic_score=0.8,
+        skill_score=0.8,
+        changes_summary="emphasized Python",
+    )
+    fake_client = MagicMock()
+    fake_client.create = AsyncMock(side_effect=RuntimeError("model down"))
+    with patch.object(renderer, "_get_client", return_value=fake_client):
+        with pytest.raises(PDFRenderError):
+            await renderer.render_resume(tailored)
+
+
+@pytest.mark.unit
+async def test_render_resume_propagates_compile_error(app_settings, tmp_path):
+    """A Typst compilation failure is wrapped as a PDFRenderError."""
+    renderer = PDFRenderer(settings=app_settings, output_dir=tmp_path)
+    tailored = TailoredResume(
+        original_path="r.pdf",
+        tailored_text="text",
+        job_title="Engineer",
+        job_company="Acme",
+        match_score=0.8,
+        semantic_score=0.8,
+        skill_score=0.8,
+        changes_summary="emphasized Python",
+    )
+
+    def _failing_compile(source_path: Path, output_path: Path) -> None:
+        raise RuntimeError("compile failed")
+
+    with patch("job_applicator.documents.pdf_renderer._compile_typst", _failing_compile):
+        with patch.object(
+            renderer, "_format_resume_with_instructor", new_callable=AsyncMock
+        ) as mock_fmt:
+            mock_fmt.return_value = FormattedResume(
+                name="Alex",
+                experience=[
+                    FormattedExperienceEntry(
+                        title="Engineer", company="Acme", start_date="2020", bullets=["Built"]
+                    )
+                ],
+            )
+            with pytest.raises(PDFRenderError):
+                await renderer.render_resume(tailored)
+
+
+@pytest.mark.unit
+def test_pdf_renderer_get_client_caches(app_settings, tmp_path):
+    """The instructor client is lazily constructed and cached."""
+    renderer = PDFRenderer(settings=app_settings, output_dir=tmp_path)
+    assert renderer._client is None
+    fake_client = MagicMock()
+    with patch("job_applicator.documents.pdf_renderer.quiet_litellm") as mock_quiet:
+        with patch("instructor.from_litellm", return_value=fake_client) as mock_from:
+            client = renderer._get_client()
+            assert client is fake_client
+            assert renderer._client is fake_client
+            mock_quiet.assert_called_once()
+            mock_from.assert_called_once()
+            # Second call returns cached client without re-importing.
+            client2 = renderer._get_client()
+            assert client2 is fake_client
+            mock_from.assert_called_once()
