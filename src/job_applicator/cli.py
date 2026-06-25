@@ -2182,7 +2182,8 @@ def tailor(
         settings.style_guide_path = style_guide
     setup_logging(settings.log_level)
     effective_ocr_mode = _resolve_ocr_mode(ocr_mode, force_ocr)
-    effective_template = template or settings.output.resume_template
+    resume_template = template or settings.output.resume_template
+    cover_letter_template = template or settings.output.cover_letter_template
 
     reporter = _get_reporter(
         ctx=ctx,
@@ -2193,7 +2194,7 @@ def tailor(
             "min_score": min_score,
             "interactive": not yes,
             "format": output_format.value,
-            "template": effective_template,
+            "template": resume_template,
             "category": category,
         },
         config=_sanitize_config(settings),
@@ -2424,7 +2425,8 @@ def tailor(
             reporter,
             yes=yes,
             output_format=output_format,
-            template=effective_template,
+            resume_template=resume_template,
+            cover_letter_template=cover_letter_template,
             category=category,
         )
 

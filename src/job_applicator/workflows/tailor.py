@@ -53,7 +53,8 @@ async def _tailor_workflow(
     yes: bool = False,
     *,
     output_format: Format = Format.TXT,
-    template: str = "modern",
+    resume_template: str = "modern",
+    cover_letter_template: str = "modern",
     category: str | None = None,
 ) -> None:
     """Run the interactive tailor loop until the user accepts ([A]) or quits ([Q]).
@@ -138,7 +139,7 @@ async def _tailor_workflow(
             effective_category = category or detect_job_category(job)
 
             if output_format == Format.TXT:
-                resume_path, _meta_path = await asyncio.to_thread(
+                resume_path, meta_path = await asyncio.to_thread(
                     write_tailored, output_dir, result, when=when
                 )
                 result.output_path = resume_path
@@ -148,7 +149,7 @@ async def _tailor_workflow(
                     output_dir,
                     result,
                     settings,
-                    template=template,
+                    template=resume_template,
                     category=effective_category,
                     when=when,
                 )
@@ -156,23 +157,22 @@ async def _tailor_workflow(
                 result.pdf_path = str(pdf_path)
                 files_written = [str(pdf_path)]
             else:  # both
-                resume_path, _meta_path = await asyncio.to_thread(
+                resume_path, meta_path = await asyncio.to_thread(
                     write_tailored, output_dir, result, when=when
                 )
                 pdf_path = await write_tailored_pdf(
                     output_dir,
                     result,
                     settings,
-                    template=template,
+                    template=resume_template,
                     category=effective_category,
                     when=when,
                 )
                 result.output_path = resume_path
                 result.pdf_path = str(pdf_path)
                 # Update the text sidecar to reference the PDF.
-                meta_path = Path(resume_path).with_suffix(".meta.json")
                 await asyncio.to_thread(
-                    meta_path.write_text, result.model_dump_json(indent=2), encoding="utf-8"
+                    Path(meta_path).write_text, result.model_dump_json(indent=2), encoding="utf-8"
                 )
                 files_written = [resume_path, str(pdf_path)]
 
@@ -183,7 +183,7 @@ async def _tailor_workflow(
             console.print(f"[dim]Attempt #{attempt} | Score: {result.match_score:.0%}[/dim]")
 
             # Offer cover letter generation
-            cover_letter_path = None
+            cover_letter_path: Path | None = None
             if yes:
                 # Non-interactive: skip the offer — _cover_letter_workflow is itself
                 # interactive. Use `generate-cover-letter` / `batch --cover-letter` for a
@@ -209,18 +209,18 @@ async def _tailor_workflow(
                     tone_profile,
                     result.tailored_text,
                     output_format=output_format,
-                    template=template,
+                    template=cover_letter_template,
                     category=category,
                 )
 
             # Write resume meta.json (with or without cover_letter_path)
             if cover_letter_path:
                 result.cover_letter_path = str(cover_letter_path)
-            meta_path = Path(result.output_path).with_suffix(".meta.json")
+            final_meta_path = Path(result.output_path).with_suffix(".meta.json")
             await asyncio.to_thread(
-                meta_path.write_text, result.model_dump_json(indent=2), encoding="utf-8"
+                final_meta_path.write_text, result.model_dump_json(indent=2), encoding="utf-8"
             )
-            console.print(f"[green]Metadata saved: {meta_path}[/green]")
+            console.print(f"[green]Metadata saved: {final_meta_path}[/green]")
 
             break
 

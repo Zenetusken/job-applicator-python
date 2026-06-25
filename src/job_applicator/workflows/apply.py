@@ -93,7 +93,10 @@ async def _apply_to_jobs(
                 state.record(ar)
 
     if reporter and app_results:
-        reporter.record_io(files_written=[])
+        written: list[str] = []
+        if cover_letter_pdf_paths:
+            written.extend(path for path in cover_letter_pdf_paths.values() if path)
+        reporter.record_io(files_written=written)
 
     # Display results
     validation_failed = any(

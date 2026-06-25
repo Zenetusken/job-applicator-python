@@ -109,12 +109,13 @@ def test_tailor_pdf_flags_passed_to_workflow(
     workflow.assert_awaited_once()
     call_kwargs = workflow.await_args.kwargs
     assert call_kwargs["output_format"].value == "pdf"
-    assert call_kwargs["template"] == "classic"
+    assert call_kwargs["resume_template"] == "classic"
+    assert call_kwargs["cover_letter_template"] == "classic"
     assert call_kwargs["category"] == "cybersecurity"
 
 
 def test_tailor_format_txt_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """``tailor`` without ``--format`` defaults to ``txt`` and the configured template."""
+    """``tailor`` without ``--format`` defaults to ``txt`` and the configured templates."""
     import job_applicator.cli as cli
     from job_applicator.config import AppSettings
 
@@ -130,7 +131,8 @@ def test_tailor_format_txt_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     assert result.exit_code == 0, result.output
     call_kwargs = workflow.await_args.kwargs
     assert call_kwargs["output_format"].value == "txt"
-    assert call_kwargs["template"] == AppSettings().output.resume_template
+    assert call_kwargs["resume_template"] == AppSettings().output.resume_template
+    assert call_kwargs["cover_letter_template"] == AppSettings().output.cover_letter_template
     assert call_kwargs["category"] is None
 
 
