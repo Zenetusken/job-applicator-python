@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -150,6 +151,7 @@ async def test_render_resume_calls_compile(app_settings, tmp_path):
             assert path.suffix == ".pdf"
             assert path.parent == tmp_path
             assert path.exists()
+            assert re.fullmatch(r"tailored_Acme_Engineer_\d{8}_\d{6}\.pdf", path.name)
 
 
 @pytest.mark.unit
@@ -177,6 +179,7 @@ async def test_render_cover_letter_calls_compile(app_settings, tmp_path):
             assert path.suffix == ".pdf"
             assert path.parent == tmp_path
             assert path.exists()
+            assert re.fullmatch(r"cover_letter_Acme_Engineer_\d{8}_\d{6}\.pdf", path.name)
 
 
 @pytest.mark.unit
@@ -354,6 +357,65 @@ async def test_render_cover_letter_accepts_cover_letter_output(app_settings, tmp
             assert passed.cover_letter_text == output.cover_letter
             assert passed.job_title == ""
             assert passed.job_company == ""
+
+
+@pytest.mark.unit
+async def test_render_resume_uses_explicit_output_path(app_settings, tmp_path) -> None:
+    """render_resume writes to the supplied output_path when provided."""
+    renderer = PDFRenderer(settings=app_settings, output_dir=tmp_path)
+    tailored = TailoredResume(
+        original_path="r.pdf",
+        tailored_text="text",
+        job_title="Engineer",
+        job_company="Acme",
+        match_score=0.8,
+        semantic_score=0.8,
+        skill_score=0.8,
+        changes_summary="emphasized Python",
+    )
+    explicit = tmp_path / "custom" / "resume.pdf"
+    with patch("job_applicator.documents.pdf_renderer._compile_typst", _fake_compile):
+        with patch.object(
+            renderer, "_format_resume_with_instructor", new_callable=AsyncMock
+        ) as mock_fmt:
+            mock_fmt.return_value = FormattedResume(
+                name="Alex",
+                experience=[
+                    FormattedExperienceEntry(
+                        title="Engineer", company="Acme", start_date="2020", bullets=["Built"]
+                    )
+                ],
+            )
+            path = await renderer.render_resume(tailored, output_path=explicit)
+            assert path == explicit
+            assert path.exists()
+
+
+@pytest.mark.unit
+async def test_render_cover_letter_uses_explicit_output_path(app_settings, tmp_path) -> None:
+    """render_cover_letter writes to the supplied output_path when provided."""
+    renderer = PDFRenderer(settings=app_settings, output_dir=tmp_path)
+    result = CoverLetterResult(
+        job_title="Engineer",
+        job_company="Acme",
+        cover_letter_text="Dear Hiring Manager,\n\nI am excited.\n\nSincerely,\nAlex",
+    )
+    explicit = tmp_path / "custom" / "cl.pdf"
+    with patch("job_applicator.documents.pdf_renderer._compile_typst", _fake_compile):
+        with patch.object(
+            renderer, "_format_cover_letter_with_instructor", new_callable=AsyncMock
+        ) as mock_fmt:
+            mock_fmt.return_value = FormattedCoverLetter(
+                recipient_company="Acme",
+                date="2026-06-25",
+                greeting="Dear Hiring Manager,",
+                paragraphs=["I am excited."],
+                closing="Sincerely",
+                signature="Alex Rivera",
+            )
+            path = await renderer.render_cover_letter(result, output_path=explicit)
+            assert path == explicit
+            assert path.exists()
 
 
 @pytest.mark.unit

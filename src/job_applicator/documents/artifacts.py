@@ -69,48 +69,6 @@ def write_cover_letter(
     return str(cl_path), str(meta_path)
 
 
-def _pdf_path(
-    output_dir: Path, prefix: str, company: str, title: str, template: str, when: datetime
-) -> Path:
-    """Build a spec-compliant PDF artifact path with a deterministic timestamp."""
-    ts = when.strftime("%Y%m%d_%H%M%S")
-    us = f"{when.microsecond:06d}"
-    company_slug = safe_filename_slug(company)
-    title_slug = safe_filename_slug(title)
-    base = f"{prefix}_{company_slug}_{title_slug}_{ts}_{us}_{template}"
-    return output_dir / f"{base}.pdf"
-
-
-def _ensure_pdf_path(rendered: Path, target: Path) -> Path:
-    """Ensure the rendered PDF ends up at the deterministic ``target`` path.
-
-    ``PDFRenderer`` selects its own filename from the current clock; the helpers
-    use a caller-supplied ``when`` for testability and stable output names. If
-    the renderer wrote the file elsewhere, move it into place.
-
-    Raises:
-        PDFRenderError: if the renderer did not write a PDF.
-        DocumentError: if the PDF cannot be moved to ``target``.
-    """
-    if rendered == target:
-        if rendered.exists():
-            return target
-        raise PDFRenderError(f"Renderer returned expected path but no PDF was written: {rendered}")
-    if rendered.exists():
-        if target.exists():
-            raise DocumentError(f"Target PDF already exists: {target}")
-        try:
-            rendered.rename(target)
-        except FileExistsError as exc:
-            raise DocumentError(f"Target PDF already exists: {target}") from exc
-        except OSError as exc:
-            raise DocumentError(
-                f"Cannot rename rendered PDF {rendered} to {target}: {exc}"
-            ) from exc
-        return target
-    raise PDFRenderError(f"Renderer did not write a PDF at {rendered}")
-
-
 async def write_tailored_pdf(
     output_dir: Path,
     tailored: TailoredResume,
@@ -128,25 +86,24 @@ async def write_tailored_pdf(
 
     Raises:
         PDFRenderError: if rendering fails or the renderer did not produce a PDF.
-        DocumentError: if the rendered PDF cannot be moved or the sidecar cannot
-            be written.
+        DocumentError: if the sidecar cannot be written.
     """
     renderer = PDFRenderer(settings, output_dir=output_dir)
-    target = _pdf_path(
-        output_dir, "tailored", tailored.job_company, tailored.job_title, template, when
-    )
+    base = artifact_basename(tailored.job_company, tailored.job_title, when=when)
+    target = output_dir / f"{base}.pdf"
     try:
         rendered = await renderer.render_resume(
-            tailored, job=None, template=template, category=category
+            tailored, job=None, template=template, category=category, output_path=target
         )
     except (PDFRenderError, DocumentError):
         raise
     except Exception as exc:
         raise PDFRenderError(f"Failed to render tailored PDF: {exc}") from exc
-    final = _ensure_pdf_path(rendered, target)
-    tailored.pdf_path = str(final)
-    _write_text(final.with_suffix(".meta.json"), tailored.model_dump_json(indent=2))
-    return final
+    if not rendered.exists():
+        raise PDFRenderError(f"Renderer did not write a PDF at {rendered}")
+    tailored.pdf_path = str(rendered)
+    _write_text(rendered.with_suffix(".meta.json"), tailored.model_dump_json(indent=2))
+    return rendered
 
 
 async def write_cover_letter_pdf(
@@ -166,22 +123,23 @@ async def write_cover_letter_pdf(
 
     Raises:
         PDFRenderError: if rendering fails or the renderer did not produce a PDF.
-        DocumentError: if the rendered PDF cannot be moved or the sidecar cannot
-            be written.
+        DocumentError: if the sidecar cannot be written.
     """
     renderer = PDFRenderer(settings, output_dir=output_dir)
-    target = _pdf_path(
-        output_dir, "cover_letter", result.job_company, result.job_title, template, when
+    target = output_dir / (
+        f"cover_letter_{safe_filename_slug(result.job_company)}_{safe_filename_slug(result.job_title)}"
+        f"_{when.strftime('%Y%m%d_%H%M%S')}.pdf"
     )
     try:
         rendered = await renderer.render_cover_letter(
-            result, job=None, template=template, category=category
+            result, job=None, template=template, category=category, output_path=target
         )
     except (PDFRenderError, DocumentError):
         raise
     except Exception as exc:
         raise PDFRenderError(f"Failed to render cover-letter PDF: {exc}") from exc
-    final = _ensure_pdf_path(rendered, target)
-    result.pdf_path = str(final)
-    _write_text(final.with_suffix(".meta.json"), result.model_dump_json(indent=2))
-    return final
+    if not rendered.exists():
+        raise PDFRenderError(f"Renderer did not write a PDF at {rendered}")
+    result.pdf_path = str(rendered)
+    _write_text(rendered.with_suffix(".meta.json"), result.model_dump_json(indent=2))
+    return rendered

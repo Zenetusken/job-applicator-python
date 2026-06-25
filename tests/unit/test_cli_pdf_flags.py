@@ -146,7 +146,7 @@ def test_generate_cover_letter_pdf_flags(monkeypatch: pytest.MonkeyPatch, tmp_pa
         cli, "_detect_tone", lambda job: MagicMock(primary="professional", confidence=0.9)
     )
 
-    fake_pdf = tmp_path / "cover_letter_Acme_Dev_20260625_000000_000000_classic.pdf"
+    fake_pdf = tmp_path / "cover_letter_Acme_Dev_20260625_000000.pdf"
     fake_pdf.write_bytes(b"pdf")
 
     with (
@@ -233,7 +233,7 @@ def test_batch_pdf_flags_accepted(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
         "job_applicator.documents.resume_tailor.ResumeTailor", lambda *a, **k: engine
     )
 
-    fake_pdf = tmp_path / "tailored_Acme_Dev_20260625_000000_000000_classic.pdf"
+    fake_pdf = tmp_path / "tailored_Acme_Dev_20260625_000000.pdf"
     fake_pdf.write_bytes(b"pdf")
 
     with patch(
@@ -325,7 +325,7 @@ def test_apply_pdf_flags_accepted(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
         ),
     )
 
-    fake_pdf = tmp_path / "cover_letter_Acme_Dev_20260625_000000_000000_classic.pdf"
+    fake_pdf = tmp_path / "cover_letter_Acme_Dev_20260625_000000.pdf"
     fake_pdf.write_bytes(b"pdf")
 
     with (
