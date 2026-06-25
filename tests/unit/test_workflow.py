@@ -19,6 +19,7 @@ from job_applicator.models import (
     ResumeData,
     TailoredResume,
     TailorSession,
+    UserProfile,
 )
 from job_applicator.utils.llm import LLMRuntime
 
@@ -480,6 +481,12 @@ class TestRefineCoverLetter:
 
         with (
             patch("job_applicator.documents.cover_letter.CoverLetterGenerator") as mock_gen_cls,
+            patch(
+                "job_applicator.workflows.cover_letter._load_user_profile",
+                return_value=UserProfile(
+                    first_name="Dev", last_name="Person", email="d@e.com", phone=""
+                ),
+            ),
         ):
             mock_gen = mock_gen_cls.return_value
             mock_gen.refine = AsyncMock(return_value="refined letter")
@@ -517,6 +524,12 @@ class TestRefineCoverLetter:
 
         with (
             patch("job_applicator.documents.cover_letter.CoverLetterGenerator") as mock_gen_cls,
+            patch(
+                "job_applicator.workflows.cover_letter._load_user_profile",
+                return_value=UserProfile(
+                    first_name="Dev", last_name="Person", email="d@e.com", phone=""
+                ),
+            ),
         ):
             mock_gen = mock_gen_cls.return_value
             mock_gen.refine = AsyncMock(side_effect=RuntimeError("fail"))

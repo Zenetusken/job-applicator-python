@@ -137,9 +137,10 @@ class ApplicationState:
         if since is not None:
             since_clause = " AND applied_at >= ?"
             params.append(since.isoformat())
-        # Parameter order matches: url, [since], status_values.
+        # Parameter order matches: url, [since], status_values. The only dynamic
+        # fragments are comma-separated placeholders and a constant since clause.
         sql = (
-            "SELECT 1 FROM applications WHERE job_url = ?"
+            "SELECT 1 FROM applications WHERE job_url = ?"  # nosec B608
             + since_clause
             + " AND status IN ("
             + status_placeholders
@@ -160,14 +161,15 @@ class ApplicationState:
         rows count — dry-run/skipped/failed attempts don't consume the daily cap.
         """
         today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-        board_clause = ""
         params: list[Any] = [today.isoformat(), ApplicationStatus.SUBMITTED.value]
         if board:
-            board_clause = " AND board = ?"
+            sql = (
+                "SELECT COUNT(*) FROM applications WHERE applied_at >= ? "
+                "AND status = ? AND board = ?"
+            )
             params.append(board)
-        sql = (
-            "SELECT COUNT(*) FROM applications WHERE applied_at >= ? AND status = ?" + board_clause
-        )
+        else:
+            sql = "SELECT COUNT(*) FROM applications WHERE applied_at >= ? AND status = ?"
         try:
             with self._connect() as conn:
                 row = conn.execute(sql, params).fetchone()

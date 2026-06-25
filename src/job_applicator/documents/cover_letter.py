@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import re
 from collections.abc import Awaitable, Callable
+from functools import partial
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from job_applicator.config import LLMConfig
 from job_applicator.documents.resume import ResumeLoader
+from job_applicator.documents.sign_off import extract_sign_off, validate_sign_off
 from job_applicator.documents.style_analyzer import StyleAnalyzer
 from job_applicator.exceptions import LLMError
 from job_applicator.models import JobListing, ResumeData, StyleGuide, UserProfile
@@ -70,7 +72,9 @@ invent metrics, employers, problem domains, or qualifications not in the resume.
 - Include exactly ONE concrete, specific detail that ties this applicant to THIS company or role.
 - Keep it to 3-4 paragraphs (250-350 words), first person.
 - Do not use placeholder text like [Company Name] or [Date]; use the real values provided.
-- End with a brief, direct call to action.
+- Sign the letter using the applicant's name exactly as provided in the Applicant Profile. Do not \
+invent or abbreviate a different name in the signature.
+- Before the sign-off, include a brief, direct call to action.
 
 Voice rules — these are what separate human writing from AI writing, follow them strictly:
 - Vary sentence length. Include at least one short sentence (under eight words). Never write \
@@ -153,14 +157,22 @@ class CoverLetterGenerator:
         logger.info("Loaded style guide from %s: tone=%s", style_guide_path, style.tone)
         return style
 
-    def _validate_cover_letter(self, text: str) -> None:
-        """Validate a generated cover letter. Raises LLMError if unusable."""
-        if not text.strip():
+    def _validate_output(self, text: str, user: UserProfile) -> None:
+        """Validate a generated cover letter.
+
+        Checks for empty output, placeholder text, and a valid sign-off signed
+        with the applicant's name. Raises ``LLMError`` if unusable.
+        """
+        stripped = text.strip()
+        if not stripped:
             raise LLMError("Generated cover letter is empty")
+        if len(stripped) < 50:
+            raise LLMError("Generated cover letter is too short")
         placeholders = r"company\s*name|hiring\s*manager|position\s*title|your\s*name|date|address"
         placeholder_pattern = rf"\[\s*(?:{placeholders})\s*\]"
         if re.search(placeholder_pattern, text, re.IGNORECASE):
             raise LLMError("Generated cover letter contains placeholder text")
+        validate_sign_off(text, user)
 
     @staticmethod
     def _humanize(text: str) -> str:
@@ -189,17 +201,31 @@ class CoverLetterGenerator:
         signal): the more tells, the more the draft reads as AI-generated.
 
         High-precision by design — conservative thresholds so short or mocked text
-        does not false-positive.
+        does not false-positive. The sign-off block is excluded from sentence-length
+        analysis so a valid closing like ``Sincerely,\\nJ D`` does not suppress the
+        short-sentence tell.
         """
         tells: list[str] = []
         if "`" in text or "**" in text:
             tells.append("markdown")
         low = text.lower()
         tells.extend(f"cliche:{c}" for c in _CLICHES if c in low)
+
+        # Exclude the trailing sign-off block from sentence analysis.
+        text_for_sentences = text
+        lines = text.splitlines()
+        sign_off = extract_sign_off(text)
+        if sign_off:
+            closing_word, _signature = sign_off
+            for i in range(len(lines) - 1, -1, -1):
+                if lines[i].strip().lower().rstrip(",") == closing_word:
+                    text_for_sentences = "\n".join(lines[:i])
+                    break
+
         # Split on sentence-ending punctuation followed by whitespace or end-of-text,
         # so a decimal ("3.5 years", "99.9%") is NOT treated as a sentence boundary —
         # which would inject a phantom short fragment and suppress no_short_sentences.
-        sentences = [s for s in re.split(r"[.!?]+(?:\s|$)", text) if s.strip()]
+        sentences = [s for s in re.split(r"[.!?]+(?:\s|$)", text_for_sentences) if s.strip()]
         if len(sentences) >= 4 and not any(len(s.split()) < 8 for s in sentences):
             tells.append("no_short_sentences")
         if len(re.findall(r",\s+\w+ing\b", text)) >= 3:
@@ -257,7 +283,9 @@ class CoverLetterGenerator:
             + ". Keep the same facts and structure; change only the wording."
         )
 
-    async def _devoice(self, letter: str, regen: Callable[[str], Awaitable[str]]) -> str:
+    async def _devoice(
+        self, letter: str, regen: Callable[[str], Awaitable[str]], user: UserProfile
+    ) -> str:
         """Graceful, single-shot voice backstop.
 
         If the (already hard-validated, humanized) draft still trips ``_voice_tells``,
@@ -270,7 +298,7 @@ class CoverLetterGenerator:
             return letter
         try:
             retry = self._humanize(await regen(self._voice_correction(tells)))
-            self._validate_cover_letter(retry)
+            self._validate_output(retry, user)
         except (LLMError, CircuitOpenError):
             return letter
         return retry if len(self._voice_tells(retry)) < len(tells) else letter
@@ -400,7 +428,7 @@ class CoverLetterGenerator:
             )
 
         letter = await ValidatedOutput(max_retries=self._runtime.validation_max_retries).call(
-            _call, self._validate_cover_letter
+            _call, partial(self._validate_output, user=user)
         )
         # Keep the validated draft if _humanize strips it to nothing (all-markdown
         # input) — never return empty past the ValidatedOutput empty-letter guard.
@@ -417,7 +445,7 @@ class CoverLetterGenerator:
                 correction=correction,
             )
 
-        letter = await self._devoice(letter, _regen)
+        letter = await self._devoice(letter, _regen, user)
 
         logger.info(
             "Generated cover letter for %s at %s (%d chars)",
@@ -430,6 +458,7 @@ class CoverLetterGenerator:
     async def refine(
         self,
         job: JobListing,
+        user: UserProfile,
         resume: ResumeData,
         current_text: str,
         user_feedback: str,
@@ -456,6 +485,16 @@ class CoverLetterGenerator:
         parts.extend(
             [
                 "",
+                "Applicant Profile:",
+                f"Name: {user.first_name} {user.last_name}",
+                f"Email: {user.email}",
+                "",
+                f"Sign the refined letter as: {user.first_name} {user.last_name}",
+                "",
+                "The updated letter must end with a recognized sign-off line followed by "
+                f"the applicant's name (e.g. 'Sincerely,\\n{user.first_name} {user.last_name}'). "
+                "The sign-off must be the very last text in the letter.",
+                "",
                 "Current cover letter:",
                 current_text,
                 "",
@@ -473,14 +512,14 @@ class CoverLetterGenerator:
             return await self._complete(msg)
 
         validated = await ValidatedOutput(max_retries=self._runtime.validation_max_retries).call(
-            _call, self._validate_cover_letter
+            _call, partial(self._validate_output, user=user)
         )
         letter = self._humanize(validated) or validated
 
         async def _regen(correction: str) -> str:
             return await self._complete(user_message + correction)
 
-        return await self._devoice(letter, _regen)
+        return await self._devoice(letter, _regen, user)
 
     def _build_prompt(
         self,
@@ -520,6 +559,13 @@ class CoverLetterGenerator:
                 "Applicant Profile:",
                 f"Name: {user.first_name} {user.last_name}",
                 f"Email: {user.email}",
+                "",
+                f"Sign the letter as: {user.first_name} {user.last_name}",
+                "",
+                "End the letter with a recognized sign-off line followed by the applicant's name. "
+                "The sign-off must be the very last text in the letter, for example:",
+                "",
+                f"Sincerely,\n{user.first_name} {user.last_name}",
             ]
         )
 
@@ -535,7 +581,16 @@ class CoverLetterGenerator:
         # Add style guide if provided
         if style_guide:
             style_section = StyleAnalyzer.format_style_for_prompt(style_guide)
+            closing = style_guide.closing_style or "Sincerely"
             parts.extend(["", style_section])
+            parts.extend(
+                [
+                    "",
+                    "Follow the style guide's voice. The letter MUST still end with a "
+                    f"recognized sign-off line (preferably '{closing}') followed by the "
+                    "applicant's name.",
+                ]
+            )
 
         if tailored_resume_text:
             from datetime import datetime as dt

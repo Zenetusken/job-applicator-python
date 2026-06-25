@@ -34,6 +34,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             item.add_marker(pytest.mark.integration)
         elif len(rel.parts) == 1:  # a test file directly under tests/ root
             item.add_marker(pytest.mark.live)
+            item.add_marker(pytest.mark.flaky(reruns=2))
 
 
 def _vllm_endpoint_reachable() -> bool:

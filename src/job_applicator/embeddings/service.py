@@ -75,7 +75,7 @@ class EmbeddingService:
     def _get_cache_key(self, text: str) -> str:
         """Generate cache key for text, including model and config."""
         content = f"{self._config.model_name}:{self._config.normalize_embeddings}:{text}"
-        return hashlib.md5(content.encode()).hexdigest()  # noqa: S324
+        return hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()
 
     def _get_cache_path(self, text: str) -> Path:
         """Get cache file path for text embedding."""

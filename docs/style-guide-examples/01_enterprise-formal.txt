@@ -1,0 +1,14 @@
+Dear Hiring Manager,
+
+I am writing to express my strong interest in the Senior IT Support Specialist position at GlobalTech Solutions. With more than six years of experience delivering enterprise-level technical support, I have developed a disciplined, process-driven approach to incident resolution that aligns with the scale and standards of your organization.
+
+In my current role at Meridian Systems, I lead a team of four support technicians responsible for a 2,500-seat Windows and Office 365 environment. Over the past eighteen months, we reduced mean time to resolution by 34% and improved first-call resolution from 71% to 89% by standardizing ticket triage, refining knowledge-base articles, and introducing proactive monitoring alerts. I take pride in transforming repetitive escalations into repeatable procedures.
+
+My technical foundation includes Active Directory, Microsoft Endpoint Manager, ServiceNow, and PowerShell automation for onboarding and asset management. Equally important, I bring a calm, methodical presence during high-severity outages and a consistent record of communicating clearly with both technical teams and non-technical stakeholders.
+
+I am drawn to GlobalTech because of your commitment to operational excellence and your investment in employee development. I would welcome the opportunity to bring my structured support methodology to your team and to help maintain the high availability your users expect.
+
+Thank you for considering my application. I look forward to the opportunity to discuss how my background in enterprise support can contribute to your continued success.
+
+Sincerely,
+Alexandra Chen

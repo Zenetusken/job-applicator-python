@@ -7,6 +7,12 @@ implement → gate (`ruff` · `ruff format --check` · `mypy src/` · `pytest -m
 
 ## Shipped
 
+- **Style-guide + sign-off release** (PR #35 / v0.3.6): structured cover-letter sign-off
+  extraction/validation (`documents/sign_off.py`), applicant-name fallback from the parsed
+  résumé, style-guide modal in the TUI (`g` key), and example guides in
+  `docs/style-guide-examples/`. Includes adversarial review by architecture, lead-dev, QA,
+  product/UX, and HR-domain subagents; all findings fixed. Gate: unit 871 · integration 5 ·
+  live 34.
 - **Hardening-arc audit follow-up** (PR #24): clusters 1–3 audit fixes + the six deferred
   design enhancements — half-open circuit breaker, `LLMRuntime` DI, `LLMResilienceConfig`
   policy, `ValidatedOutput` error-feedback, `StyleAnalyzer.format` staticmethod,

@@ -16,7 +16,7 @@ from typer.testing import CliRunner
 import job_applicator.cli as cli
 from job_applicator.config import AppSettings
 from job_applicator.jobs_store import JobStore, JobStoreError
-from job_applicator.models import JobBoard, JobListing
+from job_applicator.models import JobBoard, JobListing, ResumeData, UserProfile
 from job_applicator.tui.app import JobApplicatorApp
 
 
@@ -1048,13 +1048,58 @@ async def test_cover_letter_job_uses_tailored_resume_text(tmp_path: Path, monkey
         lambda: MagicMock(format_for_prompt=lambda t: ""),
     )
     monkeypatch.setattr("job_applicator.utils.profile._detect_tone", lambda job: MagicMock())
-    monkeypatch.setattr("job_applicator.utils.profile._load_user_profile", lambda s: MagicMock())
+    monkeypatch.setattr(
+        "job_applicator.utils.profile._load_user_profile",
+        lambda s, *, resume_name="": MagicMock(),
+    )
     settings = AppSettings(resume_path="/r.pdf", output_dir=str(tmp_path / "out"))
 
     await actions.cover_letter_job(settings, _job(1), tailored_resume_path=str(tailored))
     assert captured["tailored"] == "TAILORED RESUME BODY"  # tailored text read + passed
     await actions.cover_letter_job(settings, _job(1))  # no tailored path
     assert captured["tailored"] == ""  # falls back to the original résumé
+
+
+async def test_cover_letter_job_uses_resume_name_for_sign_off(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """cover_letter_job resolves the applicant name from the parsed résumé so the
+    generated cover letter is signed correctly."""
+    from job_applicator.tui import actions
+
+    captured: dict[str, str] = {}
+
+    async def _generate(
+        job, user, resume, style_guide=None, tone_section="", tailored_resume_text=""
+    ):  # type: ignore[no-untyped-def]
+        return f"Dear hiring manager,\n\nLetter.\n\nSincerely,\n{user.first_name} {user.last_name}"
+
+    monkeypatch.setattr(
+        "job_applicator.documents.cover_letter.CoverLetterGenerator",
+        lambda *a, **k: MagicMock(generate=_generate),
+    )
+    monkeypatch.setattr(
+        "job_applicator.documents.resume.ResumeLoader",
+        lambda: MagicMock(load=lambda p: ResumeData(raw_text="resume text", name="Sam Sample")),
+    )
+    monkeypatch.setattr("job_applicator.factories._make_runtime", lambda s: MagicMock())
+    monkeypatch.setattr(
+        "job_applicator.documents.tone_detector.ToneDetector",
+        lambda: MagicMock(format_for_prompt=lambda t: ""),
+    )
+    monkeypatch.setattr("job_applicator.utils.profile._detect_tone", lambda job: MagicMock())
+
+    def _capture_load(s, *, resume_name="") -> UserProfile:  # type: ignore[no-untyped-def]
+        captured["resume_name"] = resume_name
+        return UserProfile(first_name="Sam", last_name="Sample", email="s@e.com", phone="")
+
+    monkeypatch.setattr(
+        "job_applicator.utils.profile._load_user_profile",
+        _capture_load,
+    )
+    settings = AppSettings(resume_path="/r.pdf", output_dir=str(tmp_path / "out"))
+
+    result = await actions.cover_letter_job(settings, _job(1))
+    assert captured["resume_name"] == "Sam Sample"
+    assert "Sam Sample" in result.cover_letter_text
 
 
 async def test_ats_check_runs_checker_on_resume(monkeypatch) -> None:  # type: ignore[no-untyped-def]

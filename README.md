@@ -13,7 +13,8 @@ AI-powered job application tool using Playwright browser automation with modern 
 - **Semantic Job Matching**: Match resumes to jobs using mxbai-embed-large-v1 embeddings
 - **Resume Tailoring**: LLM-powered resume rewriting for specific jobs with hallucination guards
 - **Date Audit**: Pre-ingestion CV validation — checks ordering, staleness, timeline coherence
-- **Style Analysis**: Mimic writing style from one or more example resumes/cover letters (comma-separated paths)
+- **Style Analysis**: Mimic writing style from one or more example resumes/cover letters (comma-separated paths); example guides in `docs/style-guide-examples/`
+- **Cover-Letter Sign-Off Enforcement**: Every generated cover letter is validated for a recognized closing word and a signature matching the applicant's name
 - **ATS Compatibility Check**: Validate resumes against ATS heuristics (contact info, standard sections, length, no ASCII tables) with a score and actionable suggestions
 - **Structured Outputs**: Instructor for type-safe LLM responses
 
@@ -109,7 +110,7 @@ job-applicator apply --site linkedin --query "python" --limit 5 --submit
 job-applicator apply --site linkedin --query "python" --limit 5 --no-cover-letter
 
 # Generate a cover letter
-job-applicator generate-cover-letter --job-title "Python Dev" --company "Acme"
+job-applicator generate-cover-letter --resume resume.pdf --job-title "Python Dev" --company "Acme"
 
 # Check resume ATS compatibility (score >= 60% = compatible)
 job-applicator ats-check --resume resume.pdf
@@ -218,6 +219,14 @@ job-applicator batch --resume resume.pdf --jobs-file jobs.json --no-cover-letter
 ## Configuration
 
 Copy `config.example.toml` to `config.toml` and fill in your details, or use environment variables with `JOB_APPLICATOR_*` prefix.
+
+### Profile Configuration
+
+```toml
+profile_name = "default"   # leave as "default"/empty to derive from the parsed résumé
+resume_path = "/path/to/your/resume.pdf"
+# style_guide_path = "docs/style-guide-examples/01_enterprise-formal.txt"
+```
 
 ### LLM Configuration
 

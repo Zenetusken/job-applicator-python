@@ -22,7 +22,7 @@ import os
 import platform
 import re
 import shutil
-import subprocess
+import subprocess  # nosec B404
 from collections.abc import Iterator
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -261,7 +261,7 @@ def _detect_chrome_major() -> str | None:
         if not path:
             continue
         try:
-            result = subprocess.run(  # noqa: S603 - fixed args, resolved executable path
+            result = subprocess.run(  # noqa: S603 # nosec B603
                 [path, "--version"], capture_output=True, text=True, timeout=5, check=False
             )
         except (OSError, subprocess.SubprocessError):

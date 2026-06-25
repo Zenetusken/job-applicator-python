@@ -339,8 +339,8 @@ class StyleGuideScreen(_FadeModalScreen[str | None]):
         self.dismiss(None)
 
     def _submit(self) -> None:
-        path = self.query_one("#path", Input).value.strip()
-        self.dismiss(path if path else None)
+        # Empty string is a deliberate clear; None means Cancel.
+        self.dismiss(self.query_one("#path", Input).value.strip())
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "go":

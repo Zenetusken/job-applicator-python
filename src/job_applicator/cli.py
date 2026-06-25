@@ -240,7 +240,7 @@ def version_callback(value: bool) -> None:
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
-    version: bool = typer.Option(
+    _version: bool = typer.Option(
         False,
         "--version",
         "-v",
@@ -813,7 +813,7 @@ def apply(
                         suggestions=ats_result.suggestions,
                     )
 
-                user_profile = _load_user_profile(settings)
+                user_profile = _load_user_profile(settings, resume_name=resume_data.name)
 
                 generator = CoverLetterGenerator(settings.llm, runtime=_make_runtime(settings))
                 style = None
@@ -955,7 +955,7 @@ def generate_cover_letter(
                 parsed_skills=resume_data.skills,
                 parsed_summary_preview=resume_data.summary[:200] if resume_data.summary else "",
             )
-        user_profile = _load_user_profile(settings)
+        user_profile = _load_user_profile(settings, resume_name=resume_data.name)
 
         job = JobListing(
             title=job_title,
@@ -1614,7 +1614,7 @@ def batch(
                 err_console.print(f"[green]Style loaded: {style.tone}[/green]")
 
         tailor_engine = ResumeTailor(settings.llm, runtime=runtime)
-        user_profile = _load_user_profile(settings)
+        user_profile = _load_user_profile(settings, resume_name=resume_data.name)
         sem = asyncio.Semaphore(3)
         timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
         output_dir = settings.output_dir

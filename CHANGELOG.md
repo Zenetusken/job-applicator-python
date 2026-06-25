@@ -7,16 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-06-24
+
 ### Fixed
 
-- `apply` cover-letter generation and search/apply status spinners are now emitted to stderr so `--json` stdout stays clean end-to-end.
+- Cover letters no longer sign off as the placeholder `default` or invent alternate names. The applicant name now falls back to the parsed résumé name when `profile_name` is unset or left as the default placeholder.
+- `_voice_tells` ignores the trailing sign-off block so a valid `Sincerely,\n<name>` closing does not suppress the short-sentence robotic-writing tell.
+- Token-level signature matching rejects names that only appear as substrings of other words (e.g. `Sam` inside `Samantha`).
+- The TUI style-guide modal now correctly clears the configured style guide when the user saves an empty path.
+- `profile_name` handling now strips whitespace and treats `default` case-insensitively as the unset sentinel.
+- The `refine()` prompt now includes the applicant profile and an explicit sign-off requirement, matching the generation path.
+- The startup-warm style-guide example now uses a closing (`Best,`) that the validator recognizes.
+- Security hardening: replaced `random` with `secrets.SystemRandom` for jitter/backoff and browser typing delays; resolved `pdftotext` and browser-version probes via full executable paths; marked cache-key MD5 uses as non-security.
+- Removed all pre-existing `vulture` dead-code findings.
 
 ### Added
 
-- TUI style-guide support: new `g` key opens a modal to set style-guide path(s); the path is persisted to `config.toml` and shown on the status line.
-- TUI `t` (tailor) and `c` (cover letter) now pass the configured style guide through to the LLM action layer.
-- Live end-to-end CLI tests for the universal style-guide feature in `tests/test_style_guide_e2e_live.py`, exercising real vLLM calls for `generate-cover-letter`, `batch`, `tailor`, and `apply`.
-- Pilot-driven TUI tests for the new style-guide flow: setting the path, status-line display, and style-guide forwarding for tailor/cover-letter actions.
+- `documents/sign_off.py`: structured sign-off extraction and validation. Generated cover letters are now hard-validated for a recognized closing word plus a signature matching the applicant's full name (or the single known part when only one is available).
+- Explicit sign-off instruction in the cover-letter prompt, including an example block and a note that the sign-off must be the very last text in the letter.
+- Style-guide prompts now include a reminder that the letter must still end with a sign-off and the applicant's name, preserving voice while enforcing the signature rule.
+- `_load_user_profile` accepts an optional `resume_name` fallback and all cover-letter call sites (CLI `generate-cover-letter`, `batch`, `apply`; TUI actions; interactive workflow `refine`) pass the parsed résumé name.
+- Empirical test-first coverage: `tests/unit/test_sign_off.py` pins extraction, validation, name-fallback behavior, style-guide example closings, and substring false-positives.
+- Live end-to-end sign-off tests in `tests/test_sign_off_e2e_live.py` validate real CLI cover letters are signed with the résumé name and respect a configured `profile_name` override.
+- TUI action test verifies `cover_letter_job` resolves the applicant name from the parsed résumé for correct signing.
+- Added `pytest-rerunfailures` to the dev dependencies; live tests that depend on the small local vLLM model are auto-retried up to 2 times to keep CI stable without masking real failures.
 
 ## [0.3.5] - 2026-06-24
 
@@ -83,8 +97,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial structured release baseline.
 
 [0.3.4]: https://github.com/Zenetusken/job-applicator-python/compare/v0.3.3...v0.3.4
+[0.3.6]: https://github.com/Zenetusken/job-applicator-python/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/Zenetusken/job-applicator-python/compare/v0.3.4...v0.3.5
-[Unreleased]: https://github.com/Zenetusken/job-applicator-python/compare/v0.3.5...HEAD
+[Unreleased]: https://github.com/Zenetusken/job-applicator-python/compare/v0.3.6...HEAD
 [0.3.3]: https://github.com/Zenetusken/job-applicator-python/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/Zenetusken/job-applicator-python/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/Zenetusken/job-applicator-python/compare/v0.3.0...v0.3.1

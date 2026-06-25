@@ -1,6 +1,8 @@
 # Job Applicator Configuration
 
 # Profile
+# Your name as it should appear in cover-letter signatures. Leave as "default" or empty
+# to derive it automatically from the parsed résumé.
 profile_name = "default"
 resume_path = "/path/to/your/resume.pdf"
 # Example résumé/cover letter(s) whose writing style the AI should mimic. Supports a single

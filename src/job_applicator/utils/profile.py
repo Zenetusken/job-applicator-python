@@ -29,9 +29,17 @@ def _detect_tone(job: JobListing) -> ToneProfile:
     )
 
 
-def _load_user_profile(settings: AppSettings) -> UserProfile:
-    """Load user profile from settings."""
-    name_parts = settings.profile_name.split() if settings.profile_name else ["User"]
+def _load_user_profile(settings: AppSettings, *, resume_name: str = "") -> UserProfile:
+    """Load user profile from settings, falling back to the parsed résumé name.
+
+    The default ``profile_name = "default"`` is treated as unset so that users
+    who haven't configured it still get a correctly signed cover letter derived
+    from their actual résumé.
+    """
+    raw_name = (settings.profile_name or "").strip()
+    # The shipped default value "default" is a sentinel meaning "not configured".
+    name = resume_name if (not raw_name or raw_name.lower() == "default") else raw_name
+    name_parts = name.split() if name else ["User"]
     return UserProfile(
         first_name=name_parts[0],
         last_name=name_parts[-1] if len(name_parts) > 1 else "",

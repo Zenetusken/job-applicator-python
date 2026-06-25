@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import random
 from collections.abc import Callable
+from secrets import SystemRandom
 from typing import Any, TypeVar
 
 from job_applicator.utils.logging import get_logger
 
 logger = get_logger("retry")
+_random = SystemRandom()
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -35,7 +36,7 @@ def retry(
                     if attempt == max_attempts:
                         break
                     delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
-                    delay *= 0.5 + random.random()  # noqa: S311 - jitter
+                    delay *= 0.5 + _random.random()
                     logger.warning(
                         "Retry %d/%d for %s after %.1fs: %s",
                         attempt,
@@ -82,7 +83,7 @@ def async_retry(
                     if attempt == max_attempts:
                         break
                     delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
-                    delay *= 0.5 + random.random()  # noqa: S311 - jitter
+                    delay *= 0.5 + _random.random()
                     logger.warning(
                         "Retry %d/%d for %s after %.1fs: %s",
                         attempt,

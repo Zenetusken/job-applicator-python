@@ -277,13 +277,12 @@ class BatchState:
             BatchJobStatus.COMPLETED,
             BatchJobStatus.SKIPPED,
         }
-        placeholders = ", ".join(["?"] * len(completed))
         try:
             with self._connect() as conn:
                 rows = conn.execute(
-                    f"""
+                    """
                     SELECT job_url FROM batch_jobs
-                    WHERE run_id = ? AND status IN ({placeholders})
+                    WHERE run_id = ? AND status IN (?, ?)
                     """,
                     (run_id, *(s.value for s in completed)),
                 ).fetchall()

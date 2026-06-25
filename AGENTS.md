@@ -27,7 +27,7 @@ ruff format src/ tests/
 # Release (see RELEASING.md)
 bash scripts/release.sh <version>   # bump version, update CHANGELOG.md, tag, build dist
 
-# Tests — 817 fast unit tests (the green gate); 846 total = 817 unit + 5 integration + 24 live
+# Tests — 871 fast unit tests (the green gate); 910 total = 871 unit + 5 integration + 34 live
 pytest -m unit -v               # or: pytest tests/unit/ -v   (auto-marked by location)
 pytest -m unit -v -k test_name  # single test
 
@@ -54,6 +54,13 @@ job-applicator tui                          # Full-screen terminal UI over the f
 Most commands that read a résumé accept `--resume`, `--ocr-mode {auto|on|off}`, and `--force-ocr`.
 `apply` is dry-run by default; real submissions require `--submit`. `apply`, `batch`, `tailor`, and
 `generate-cover-letter` all accept `--style-guide` with a single file or comma-separated paths.
+Example style guides live in `docs/style-guide-examples/`.
+
+- **Cover letters are hard-validated for a proper sign-off.** `documents/sign_off.py` extracts the
+  closing word and signature; the signature must match the applicant's full name (or the single known
+  part if only one is available). Token-level matching prevents substring false positives like
+  `Sam` matching `Samantha`. The name is taken from `profile_name` when set, otherwise from the
+  parsed résumé name. Set `profile_name` in `config.toml` if the parsed name is wrong.
 
 ## Architecture
 
@@ -76,7 +83,7 @@ src/job_applicator/
 ├── browser/            # Playwright lifecycle + low-level actions
 ├── scrapers/           # base.py (BrowserPolicy) → linkedin.py, indeed.py
 ├── applicators/        # base.py → linkedin.py (Easy Apply, dry-run gated), indeed.py
-├── documents/          # cover letter, résumé parsing/tailoring, style/tone/ATS/OCR/artifacts
+├── documents/          # cover letter, résumé parsing/tailoring, style/tone/ATS/OCR/sign-off/artifacts
 ├── embeddings/         # embedding service + job matching
 ├── tui/                # Textual full-screen UI over the funnel store
 └── utils/              # logging, LLM retry/breaker/circuit, cookies, console, diff, region,
@@ -222,10 +229,10 @@ that generate cover letters. The default dry-run `apply` does not run the ATS pr
 ## Testing
 
 - Tests are auto-marked by location (`tests/conftest.py`): `pytest -m unit` / `-m live` /
-  `-m integration` all work. Unit suite (`pytest -m unit`, 817) is fast — no browser/GPU; the green
+  `-m integration` all work. Unit suite (`pytest -m unit`, 871) is fast — no browser/GPU; the green
   gate.
 - 5 integration tests live in `tests/integration/` and exercise browser automation wiring.
-- The 24 live tests at `tests/` root carry `-m live`; they need vLLM (`localhost:8000`) + GPU; run
+- The 34 live tests at `tests/` root carry `-m live`; they need vLLM (`localhost:8000`) + GPU; run
   them manually.
 - Tests use fixtures from `tests/conftest.py`.
 - Embedding tests mock the model (CPU fallback).

@@ -127,7 +127,7 @@ class StyleAnalyzer:
     def _get_cache_key(self, text: str) -> str:
         """Generate cache key from text hash + model name."""
         content = f"{self._config.model}:{text}"
-        return hashlib.md5(content.encode()).hexdigest()[:16]  # noqa: S324
+        return hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()[:16]
 
     def _get_cache_path(self, text: str) -> Path:
         """Get cache file path for text."""

@@ -119,12 +119,12 @@ def test_gcl_json_stdout_is_pure_json(monkeypatch: pytest.MonkeyPatch, tmp_path:
     monkeypatch.setattr(
         "job_applicator.documents.cover_letter.CoverLetterGenerator", lambda *a, **k: gen
     )
-    monkeypatch.setattr(cli, "_load_user_profile", lambda settings: MagicMock())
+    monkeypatch.setattr(cli, "_load_user_profile", lambda settings, *, resume_name="": MagicMock())
     monkeypatch.setattr(cli, "_detect_tone", lambda job: tone)
     monkeypatch.setattr(cli, "_make_runtime", lambda settings: MagicMock())
     monkeypatch.setattr(
         "job_applicator.documents.tone_detector.ToneDetector",
-        lambda: MagicMock(format_for_prompt=lambda tp: ""),
+        lambda: MagicMock(format_for_prompt=lambda _tp: ""),
     )
 
     resume = tmp_path / "r.txt"

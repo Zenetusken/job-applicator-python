@@ -61,7 +61,7 @@ async def _generate_cover_letter(
         with console.status("Generating cover letter..."):
             letter = await generator.generate(
                 job,
-                _load_user_profile(settings),
+                _load_user_profile(settings, resume_name=resume_data.name),
                 resume_data,
                 style_guide=style,
                 tone_section=tone_section,
@@ -128,9 +128,11 @@ async def _refine_cover_letter(
 
     try:
         generator = CoverLetterGenerator(settings.llm, runtime=runtime)
+        user = _load_user_profile(settings, resume_name=resume_data.name if resume_data else "")
         with console.status("Refining cover letter..."):
             refined = await generator.refine(
                 job=job,
+                user=user,
                 resume=resume_data or ResumeData(raw_text=""),
                 current_text=result.cover_letter_text,
                 user_feedback=user_instructions,

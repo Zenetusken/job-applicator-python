@@ -368,15 +368,30 @@ def test_resume_loader_directory_path_names_the_target(tmp_path: Path) -> None:
 def test_cover_letter_validation_rejects_empty() -> None:
     config = LLMConfig()
     generator = CoverLetterGenerator(config)
+    user = UserProfile(first_name="John", last_name="Doe", email="j@e.com", phone="")
     with pytest.raises(LLMError, match="empty"):
-        generator._validate_cover_letter("   ")
+        generator._validate_output("   ", user)
+
+
+def test_cover_letter_validation_rejects_too_short() -> None:
+    config = LLMConfig()
+    generator = CoverLetterGenerator(config)
+    user = UserProfile(first_name="John", last_name="Doe", email="j@e.com", phone="")
+    with pytest.raises(LLMError, match="too short"):
+        generator._validate_output("Sincerely,\nJohn Doe", user)
 
 
 def test_cover_letter_validation_rejects_placeholders() -> None:
     config = LLMConfig()
     generator = CoverLetterGenerator(config)
+    user = UserProfile(first_name="John", last_name="Doe", email="j@e.com", phone="")
     with pytest.raises(LLMError, match="placeholder"):
-        generator._validate_cover_letter("Dear [Hiring Manager],")
+        generator._validate_output(
+            "Dear [Hiring Manager],\n\nBody text that is long enough to pass the length check. "
+            "It keeps going so the validator does not reject it for being too short.\n\n"
+            "Sincerely,\nJohn Doe",
+            user,
+        )
 
 
 def test_cover_letter_generator_template() -> None:
@@ -465,7 +480,9 @@ class TestCoverLetterWithTone:
 
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "Dear Hiring Manager,\n\nCover letter text."
+        mock_response.choices[
+            0
+        ].message.content = "Dear Hiring Manager,\n\nCover letter text.\n\nSincerely,\nJohn Doe"
 
         job = JobListing(
             title="Dev",
@@ -495,7 +512,9 @@ class TestCoverLetterWithTone:
 
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "Dear Hiring Manager,\n\nCover letter."
+        mock_response.choices[
+            0
+        ].message.content = "Dear Hiring Manager,\n\nCover letter.\n\nSincerely,\nJohn Doe"
 
         job = JobListing(
             title="Dev",
@@ -528,7 +547,9 @@ class TestCoverLetterWithTone:
         generator = CoverLetterGenerator(config)
 
         mock_output = MagicMock()
-        mock_output.cover_letter = "Dear Hiring Manager,\n\nRefined cover letter."
+        mock_output.cover_letter = (
+            "Dear Hiring Manager,\n\nRefined cover letter.\n\nSincerely,\nJohn Doe"
+        )
         mock_client = MagicMock()
         mock_client.create = AsyncMock(return_value=mock_output)
 
@@ -538,11 +559,13 @@ class TestCoverLetterWithTone:
             url="https://example.com",
             board=JobBoard.INDEED,
         )
+        user = UserProfile(first_name="John", last_name="Doe", email="j@e.com", phone="123")
         resume = ResumeData(raw_text="Resume text", skills=["Python"])
 
         with patch.object(generator, "_get_client", return_value=mock_client):
             await generator.refine(
                 job,
+                user,
                 resume,
                 current_text="Old cover letter.",
                 user_feedback="Make it punchier.",
@@ -620,7 +643,8 @@ ROBOTIC_LETTER = (
     "I automated deployment workflows on AWS, creating a seamless environment "
     "for high availability. "
     "I have a proven track record of delivering resilient services, scaling rapidly "
-    "across every region, and I look forward to hearing from you."
+    "across every region, and I sincerely look forward to hearing from you and your team soon.\n\n"
+    "Sincerely,\nJ D"
 )
 
 # A human-sounding draft: varied cadence (short sentences present), no clichés,
@@ -629,7 +653,8 @@ HUMAN_LETTER = (
     "I built Globex's billing pipeline three years ago. It still runs. "
     "Now you want someone to scale it past two billion events a day, and I want that job. "
     "At Acme I halved ingestion latency by rewriting the consumer in asyncio. "
-    "I know your stack. Let's talk."
+    "I know your stack. Let's talk.\n\n"
+    "Sincerely,\nJ D"
 )
 
 
@@ -689,6 +714,19 @@ def test_voice_tells_ignores_trivial_text() -> None:
     assert CoverLetterGenerator._voice_tells("Dear Hiring Manager,\n\nCover letter text.") == []
 
 
+def test_voice_tells_excludes_trailing_sign_off_block() -> None:
+    """A valid sign-off block must not suppress the short-sentence tell."""
+    body = (
+        "Sentence one has many words to exceed the short sentence threshold. "
+        "Sentence two also has more than eight words to avoid the short tell. "
+        "Sentence three continues the pattern with plenty of words included. "
+        "Sentence four is similarly long and descriptive enough to qualify."
+    )
+    letter = f"{body}\n\nSincerely,\nJohn Doe"
+    tells = CoverLetterGenerator._voice_tells(letter)
+    assert "no_short_sentences" in tells
+
+
 def test_company_in_resume_matches_structured_employer() -> None:
     resume = ResumeData(raw_text="...", experience=[ExperienceEntry(company="Globex")])
     assert CoverLetterGenerator._company_in_resume("Globex", resume) is True
@@ -735,8 +773,8 @@ async def test_generate_revoices_when_first_draft_is_robotic() -> None:
 # Two DISTINCT robotic drafts with EQUAL tell counts (one cliché each) — needed to
 # prove _devoice keeps the FIRST draft on a tie (its rule is strict `<`, not `<=`);
 # identical drafts would make the kept-draft assertion vacuous.
-_TIE_FIRST = "I have a proven track record. I ship fast. Hire me today."
-_TIE_RETRY = "I am a perfect fit for this. I work hard. Pick me now."
+_TIE_FIRST = "I have a proven track record. I ship fast. Hire me today.\n\nSincerely,\nJ D"
+_TIE_RETRY = "I am a perfect fit for this. I work hard. Pick me now.\n\nSincerely,\nJ D"
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 
 from job_applicator.documents.ocr import OCRService
@@ -166,13 +167,17 @@ class ResumeLoader:
 
     def _run_pdftotext(self, path: Path) -> str:
         """Extract text using pdftotext; return empty string on failure."""
-        import subprocess
+        import subprocess  # nosec B404
         import tempfile
+
+        exe = shutil.which("pdftotext")
+        if not exe:
+            return ""
 
         with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as tmp:
             try:
-                result = subprocess.run(  # noqa: S603
-                    ["pdftotext", "-layout", str(path), tmp.name],  # noqa: S607
+                result = subprocess.run(  # noqa: S603 # nosec B603
+                    [exe, "-layout", str(path), tmp.name],
                     capture_output=True,
                     text=True,
                     timeout=30,

@@ -118,7 +118,7 @@ async def cover_letter_job(
     generator = CoverLetterGenerator(settings.llm, runtime=_make_runtime(settings))
     letter = await generator.generate(
         job,
-        _load_user_profile(settings),
+        _load_user_profile(settings, resume_name=resume_data.name),
         resume_data,
         style_guide=style,
         tone_section=tone_section,

@@ -1,0 +1,12 @@
+Dear Hiring Committee,
+
+Three years ago, a small non-profit called me in a panic: their donor database had crashed the night before their biggest fundraising event. By morning, I had rebuilt the corrupted index, recovered the data, and taught their team how to back it up properly. That night, they raised $180,000. That is the moment I realized support work is not about fixing computers; it is about protecting what matters to people.
+
+Since then, I have sought roles where my troubleshooting can make a tangible difference. At Riverdale Health, I supported 300 clinical staff through a major EHR rollout. There were long days, unfamiliar workflows, and plenty of stress, but I stayed because I knew that every password reset and every printer fix meant a nurse could spend more time with a patient.
+
+I am now looking for a team that values curiosity, empathy, and resilience as much as technical skill. I bring a calm head under pressure, a habit of asking the question behind the question, and a genuine belief that the best support professionals are part detective, part teacher, and part counselor.
+
+I would welcome the chance to bring that mindset to your organization and to help your users feel confident, supported, and heard.
+
+Warm regards,
+Priya Desai

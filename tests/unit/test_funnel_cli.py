@@ -312,7 +312,7 @@ def _patch_tailor_stack(
     )
 
     async def _wf(
-        console, settings, job, resume_data, style, tone, eng, session, result, reporter, yes=False
+        console, settings, job, resume_data, style, tone, _eng, session, result, reporter, yes=False
     ):  # type: ignore[no-untyped-def]
         result.output_path = "/out/tailored.txt"  # simulate the user accepting ([A])
 

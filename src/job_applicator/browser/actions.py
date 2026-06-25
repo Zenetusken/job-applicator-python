@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import random
 from pathlib import Path
+from secrets import SystemRandom
 
 from playwright.async_api import Page
 from playwright.async_api import TimeoutError as PlaywrightTimeout
@@ -12,6 +12,7 @@ from job_applicator.exceptions import ElementNotFoundError, NavigationError
 from job_applicator.utils.logging import get_logger
 
 logger = get_logger("browser.actions")
+_random = SystemRandom()
 
 
 async def navigate(page: Page, url: str, timeout_ms: int = 30_000) -> None:
@@ -55,7 +56,7 @@ async def type_human(page: Page, selector: str, value: str, timeout_ms: int = 10
     try:
         await page.click(selector, timeout=timeout_ms)
         for char in value:
-            await page.keyboard.type(char, delay=random.randint(30, 100))  # noqa: S311
+            await page.keyboard.type(char, delay=_random.randint(30, 100))
         logger.debug("Typed into %s", selector)
     except PlaywrightTimeout as exc:
         raise ElementNotFoundError(
@@ -95,5 +96,5 @@ async def random_delay(min_s: float = 0.5, max_s: float = 2.0) -> None:
     """Wait a random duration to simulate human behavior."""
     import asyncio
 
-    delay = random.uniform(min_s, max_s)  # noqa: S311
+    delay = _random.uniform(min_s, max_s)
     await asyncio.sleep(delay)

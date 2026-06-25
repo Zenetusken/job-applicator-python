@@ -92,3 +92,8 @@ logs/
 
 # Working audit reports (generated, not tracked)
 docs/comprehensive-application-audit-2026-06-24.md
+
+# Review / release working artifacts
+.pr_review_*
+*.patch
+*.tar.gz

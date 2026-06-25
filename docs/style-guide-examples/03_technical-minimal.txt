@@ -1,0 +1,21 @@
+To the Infrastructure Team,
+
+I am applying for the SRE / IT Support Engineer role. My background is in maintaining reliable systems and resolving technical incidents quickly.
+
+Current responsibilities:
+- Monitor Linux and Windows servers via Datadog and PagerDuty.
+- Respond to alerts, triage root cause, and execute runbooks.
+- Automate repetitive tasks with Bash and Python scripts.
+- Maintain documentation in Confluence.
+
+Recent results:
+- Cut alert noise by 40% through better threshold tuning.
+- Reduced onboarding ticket backlog from 120 to 15 in one quarter.
+- Built a self-service password reset tool used by 800+ employees.
+
+Skills: Linux, Windows Server, AWS, Azure AD, PowerShell, Python, Terraform, networking basics.
+
+I work best in fast-moving environments where clarity matters more than noise. Available for on-call rotation.
+
+Regards,
+Samir Patel

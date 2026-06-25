@@ -343,7 +343,7 @@ class LLMRuntime:
     """
 
     breaker: CircuitBreaker
-    validation_max_retries: int = 1
+    validation_max_retries: int = 2
 
     @classmethod
     def from_config(cls, resilience: LLMResilienceConfig, name: str = "llm") -> LLMRuntime:
