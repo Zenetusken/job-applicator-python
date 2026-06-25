@@ -85,7 +85,7 @@ class FormattedExperienceEntry(BaseModel):
     company: str
     location: str | None = None
     start_date: str
-    end_date: str | None
+    end_date: str | None = None
     bullets: list[str]
     highlights: list[str] | None = None
 
