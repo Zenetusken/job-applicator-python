@@ -191,6 +191,7 @@ class PDFRenderer:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._env = typst_template_env(template_dir)
         self._client: Any | None = None
+        self._client_lock = asyncio.Lock()
         self._llm_runtime = LLMRuntime.from_config(settings.llm_resilience, name="pdf_renderer")
 
     @classmethod
@@ -205,12 +206,17 @@ class PDFRenderer:
     @classmethod
     def shutdown(cls) -> None:
         """Shut down the shared process pool, if any."""
-        if cls._executor is not None:
-            cls._executor.shutdown(wait=True)
-            cls._executor = None
+        with cls._executor_lock:
+            if cls._executor is not None:
+                cls._executor.shutdown(wait=True)
+                cls._executor = None
 
-    def _get_client(self) -> Any:
-        if self._client is None:
+    async def _get_client(self) -> Any:
+        if self._client is not None:
+            return self._client
+        async with self._client_lock:
+            if self._client is not None:
+                return self._client
             try:
                 quiet_litellm()
                 import instructor
@@ -259,9 +265,9 @@ class PDFRenderer:
         config = self.settings.llm
         model = f"openai/{config.model}" if config.api_base else config.model
         prompt = _build_resume_format_prompt(tailored, job, category)
-        client = self._get_client()
+        client = await self._get_client()
 
-        async def _call() -> FormattedResume:
+        async def _call(_prev: LLMError | None) -> FormattedResume:
             return cast(
                 FormattedResume,
                 await client.create(
@@ -296,9 +302,9 @@ class PDFRenderer:
         config = self.settings.llm
         model = f"openai/{config.model}" if config.api_base else config.model
         prompt = _build_cover_letter_format_prompt(result, job, category)
-        client = self._get_client()
+        client = await self._get_client()
 
-        async def _call() -> FormattedCoverLetter:
+        async def _call(_prev: LLMError | None) -> FormattedCoverLetter:
             return cast(
                 FormattedCoverLetter,
                 await client.create(
@@ -393,7 +399,11 @@ class PDFRenderer:
         except Exception as exc:
             source_path.unlink(missing_ok=True)
             raise PDFRenderError(f"Failed to write Typst source: {exc}") from exc
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            source_path.unlink(missing_ok=True)
+            raise PDFRenderError(f"Failed to create output directory: {exc}") from exc
         try:
             executor = self._get_executor()
             await asyncio.get_running_loop().run_in_executor(
@@ -403,7 +413,7 @@ class PDFRenderer:
             raise PDFRenderError(
                 f"PDF compilation failed: {exc}", {"source": str(source_path)}
             ) from exc
-        finally:
+        else:
             source_path.unlink(missing_ok=True)
         return output_path
 

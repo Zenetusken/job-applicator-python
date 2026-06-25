@@ -424,3 +424,74 @@ def test_quiet_litellm_suppresses_banner_and_logs_idempotently() -> None:
         litellm.suppress_debug_info = saved[0]
         lit_logger.setLevel(saved[1])
         low_logger.setLevel(saved[2])
+
+
+async def test_llm_runtime_run_returns_success() -> None:
+    """LLMRuntime.run passes None as the previous error and returns the result."""
+    from job_applicator.utils.llm import LLMRuntime
+
+    runtime = LLMRuntime.defaults(name="test")
+
+    async def producer(prev: object) -> str:
+        assert prev is None
+        return "ok"
+
+    assert await runtime.run(producer) == "ok"
+
+
+async def test_llm_runtime_run_validator_retry_succeeds() -> None:
+    """A validation failure is retried, feeding the prior error back to the closure."""
+    from job_applicator.exceptions import LLMError
+    from job_applicator.utils.llm import LLMRuntime
+
+    runtime = LLMRuntime.defaults(name="test")
+    runtime.validation_max_retries = 2
+    seen: list[object] = []
+
+    async def producer(prev: object) -> str:
+        seen.append(prev)
+        return "good" if len(seen) > 1 else "bad"
+
+    def validator(value: str) -> None:
+        if value != "good":
+            raise LLMError("not good")
+
+    assert await runtime.run(producer, validator=validator) == "good"
+    assert seen[0] is None
+    assert isinstance(seen[1], LLMError)
+
+
+async def test_llm_runtime_run_validator_retry_exhausted() -> None:
+    """After validation_max_retries failures, the last validation error is raised."""
+    from job_applicator.exceptions import LLMError
+    from job_applicator.utils.llm import LLMRuntime
+
+    runtime = LLMRuntime.defaults(name="test")
+    runtime.validation_max_retries = 1
+
+    async def producer(prev: object) -> str:
+        return "bad"
+
+    def validator(value: str) -> None:
+        raise LLMError("always bad")
+
+    with pytest.raises(LLMError, match="always bad"):
+        await runtime.run(producer, validator=validator)
+
+
+async def test_llm_runtime_run_circuit_breaker_open() -> None:
+    """An open circuit breaker rejects the call before the closure runs."""
+    from job_applicator.exceptions import LLMError
+    from job_applicator.utils.llm import CircuitOpenError, LLMRuntime
+
+    runtime = LLMRuntime.defaults(name="test")
+    runtime.breaker.failure_threshold = 1
+    runtime.breaker.recovery_timeout_seconds = 60.0
+
+    async def fail(_prev: object) -> str:
+        raise LLMError("boom")
+
+    with pytest.raises(LLMError, match="boom"):
+        await runtime.run(fail)
+    with pytest.raises(CircuitOpenError, match="circuit breaker"):
+        await runtime.run(fail)

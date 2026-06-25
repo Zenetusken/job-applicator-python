@@ -112,6 +112,11 @@ def _fake_compile(source_path: Path, output_path: Path) -> None:
     output_path.write_bytes(b"%PDF-1.4 fake")
 
 
+def _failing_compile(source_path: Path, output_path: Path) -> None:
+    """Picklable stand-in that raises a compilation error."""
+    raise RuntimeError("compile failed")
+
+
 @pytest.mark.unit
 async def test_render_resume_calls_compile(app_settings, tmp_path):
     """render_resume formats the résumé and compiles a PDF."""
@@ -210,9 +215,6 @@ async def test_render_resume_propagates_compile_error(app_settings, tmp_path):
         changes_summary="emphasized Python",
     )
 
-    def _failing_compile(source_path: Path, output_path: Path) -> None:
-        raise RuntimeError("compile failed")
-
     with patch("job_applicator.documents.pdf_renderer._compile_typst", _failing_compile):
         with patch.object(
             renderer, "_format_resume_with_instructor", new_callable=AsyncMock
@@ -255,9 +257,6 @@ async def test_render_cover_letter_propagates_compile_error(app_settings, tmp_pa
         cover_letter_text="Dear Hiring Manager,\n\nI am excited.\n\nSincerely,\nAlex",
     )
 
-    def _failing_compile(source_path: Path, output_path: Path) -> None:
-        raise RuntimeError("compile failed")
-
     with patch("job_applicator.documents.pdf_renderer._compile_typst", _failing_compile):
         with patch.object(
             renderer, "_format_cover_letter_with_instructor", new_callable=AsyncMock
@@ -275,20 +274,20 @@ async def test_render_cover_letter_propagates_compile_error(app_settings, tmp_pa
 
 
 @pytest.mark.unit
-def test_pdf_renderer_get_client_caches(app_settings, tmp_path):
+async def test_pdf_renderer_get_client_caches(app_settings, tmp_path):
     """The instructor client is lazily constructed and cached."""
     renderer = PDFRenderer(settings=app_settings, output_dir=tmp_path)
     assert renderer._client is None
     fake_client = MagicMock()
     with patch("job_applicator.documents.pdf_renderer.quiet_litellm") as mock_quiet:
         with patch("instructor.from_litellm", return_value=fake_client) as mock_from:
-            client = renderer._get_client()
+            client = await renderer._get_client()
             assert client is fake_client
             assert renderer._client is fake_client
             mock_quiet.assert_called_once()
             mock_from.assert_called_once()
             # Second call returns cached client without re-importing.
-            client2 = renderer._get_client()
+            client2 = await renderer._get_client()
             assert client2 is fake_client
             mock_from.assert_called_once()
 
@@ -328,27 +327,6 @@ async def test_render_and_compile_template_not_found(app_settings, tmp_path) -> 
 
 
 @pytest.mark.unit
-async def test_render_and_compile_cleans_temp_source(app_settings, tmp_path) -> None:
-    """The temporary Typst source is removed after successful compilation."""
-    renderer = PDFRenderer(settings=app_settings, output_dir=tmp_path)
-    context = {
-        "resume": {"name": "A", "experience": []},
-        "cover_letter": {
-            "recipient_company": "Acme",
-            "date": "2026-06-25",
-            "greeting": "Hi",
-            "paragraphs": [],
-            "closing": "Best",
-            "signature": "A",
-        },
-    }
-    with patch("job_applicator.documents.pdf_renderer._compile_typst", _fake_compile):
-        await renderer._render_and_compile("cv/modern.typ", context, tmp_path / "out.pdf")
-    tmp_files = [p for p in tmp_path.iterdir() if p.name.startswith("_tmp_")]
-    assert not tmp_files
-
-
-@pytest.mark.unit
 async def test_render_cover_letter_accepts_cover_letter_output(app_settings, tmp_path) -> None:
     """render_cover_letter accepts a raw CoverLetterOutput from the generator."""
     renderer = PDFRenderer(settings=app_settings, output_dir=tmp_path)
@@ -376,3 +354,49 @@ async def test_render_cover_letter_accepts_cover_letter_output(app_settings, tmp
             assert passed.cover_letter_text == output.cover_letter
             assert passed.job_title == ""
             assert passed.job_company == ""
+
+
+@pytest.mark.unit
+async def test_render_and_compile_preserves_temp_source_on_failure(app_settings, tmp_path) -> None:
+    """A compilation failure leaves the temporary Typst source in place for debugging."""
+    renderer = PDFRenderer(settings=app_settings, output_dir=tmp_path)
+    context = {
+        "resume": {"name": "A", "experience": []},
+        "cover_letter": {
+            "recipient_company": "Acme",
+            "date": "2026-06-25",
+            "greeting": "Hi",
+            "paragraphs": [],
+            "closing": "Best",
+            "signature": "A",
+        },
+    }
+
+    with patch("job_applicator.documents.pdf_renderer._compile_typst", _failing_compile):
+        with pytest.raises(PDFRenderError, match="compile failed") as exc_info:
+            await renderer._render_and_compile("cv/modern.typ", context, tmp_path / "out.pdf")
+    tmp_files = [p for p in tmp_path.iterdir() if p.name.startswith("_tmp_")]
+    assert len(tmp_files) == 1
+    assert tmp_files[0].read_text(encoding="utf-8")
+    assert exc_info.value.context.get("source") == str(tmp_files[0])
+
+
+@pytest.mark.unit
+async def test_render_and_compile_cleans_temp_source_on_success(app_settings, tmp_path) -> None:
+    """The temporary Typst source is removed after successful compilation."""
+    renderer = PDFRenderer(settings=app_settings, output_dir=tmp_path)
+    context = {
+        "resume": {"name": "A", "experience": []},
+        "cover_letter": {
+            "recipient_company": "Acme",
+            "date": "2026-06-25",
+            "greeting": "Hi",
+            "paragraphs": [],
+            "closing": "Best",
+            "signature": "A",
+        },
+    }
+    with patch("job_applicator.documents.pdf_renderer._compile_typst", _fake_compile):
+        await renderer._render_and_compile("cv/modern.typ", context, tmp_path / "out.pdf")
+    tmp_files = [p for p in tmp_path.iterdir() if p.name.startswith("_tmp_")]
+    assert not tmp_files

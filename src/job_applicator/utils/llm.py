@@ -359,20 +359,23 @@ class LLMRuntime:
 
     async def run(
         self,
-        func: Callable[[], Awaitable[T]],
+        func: Callable[[LLMError | None], Awaitable[T]],
         validator: Callable[[T], None] | None = None,
     ) -> T:
         """Run ``func`` under the shared circuit breaker.
+
+        ``func`` receives the previous validation error (``None`` on the first
+        attempt and on every attempt when no validator is supplied).
 
         If ``validator`` is supplied, retry the call (feeding back the prior
         validation error) up to ``validation_max_retries`` times. Transport and
         circuit errors always propagate without being fed back.
         """
         if validator is None:
-            return await self.breaker.call(func)
+            return await self.breaker.call(lambda: func(None))
 
         async def _call(_prev: LLMError | None) -> T:
-            return await func()
+            return await func(_prev)
 
         return await ValidatedOutput(max_retries=self.validation_max_retries).call(_call, validator)
 
