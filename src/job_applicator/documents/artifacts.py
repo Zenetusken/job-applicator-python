@@ -87,17 +87,28 @@ def _ensure_pdf_path(rendered: Path, target: Path) -> Path:
     ``PDFRenderer`` selects its own filename from the current clock; the helpers
     use a caller-supplied ``when`` for testability and stable output names. If
     the renderer wrote the file elsewhere, move it into place.
+
+    Raises:
+        PDFRenderError: if the renderer did not write a PDF.
+        DocumentError: if the PDF cannot be moved to ``target``.
     """
     if rendered == target:
-        return target
+        if rendered.exists():
+            return target
+        raise PDFRenderError(f"Renderer returned expected path but no PDF was written: {rendered}")
     if rendered.exists():
+        if target.exists():
+            raise DocumentError(f"Target PDF already exists: {target}")
         try:
             rendered.rename(target)
+        except FileExistsError as exc:
+            raise DocumentError(f"Target PDF already exists: {target}") from exc
         except OSError as exc:
             raise DocumentError(
                 f"Cannot rename rendered PDF {rendered} to {target}: {exc}"
             ) from exc
-    return target
+        return target
+    raise PDFRenderError(f"Renderer did not write a PDF at {rendered}")
 
 
 async def write_tailored_pdf(
@@ -111,9 +122,14 @@ async def write_tailored_pdf(
 ) -> Path:
     """Render a tailored résumé to PDF and update its sidecar.
 
-    Sets ``tailored.pdf_path`` and writes/rewrites the ``.meta.json`` sidecar so
+    Sets ``tailored.pdf_path`` and writes a ``.meta.json`` sidecar for the PDF so
     it reflects the model including the new ``pdf_path``. Returns the path to the
     generated PDF.
+
+    Raises:
+        PDFRenderError: if rendering fails or the renderer did not produce a PDF.
+        DocumentError: if the rendered PDF cannot be moved or the sidecar cannot
+            be written.
     """
     renderer = PDFRenderer(settings, output_dir=output_dir)
     target = _pdf_path(
@@ -123,6 +139,8 @@ async def write_tailored_pdf(
         rendered = await renderer.render_resume(
             tailored, job=None, template=template, category=category
         )
+    except (PDFRenderError, DocumentError):
+        raise
     except Exception as exc:
         raise PDFRenderError(f"Failed to render tailored PDF: {exc}") from exc
     final = _ensure_pdf_path(rendered, target)
@@ -140,7 +158,17 @@ async def write_cover_letter_pdf(
     category: str | None = None,
     when: datetime,
 ) -> Path:
-    """Render a cover letter to PDF and update its sidecar."""
+    """Render a cover letter to PDF and update its sidecar.
+
+    Sets ``result.pdf_path`` and writes a ``.meta.json`` sidecar for the PDF so
+    it reflects the model including the new ``pdf_path``. Returns the path to the
+    generated PDF.
+
+    Raises:
+        PDFRenderError: if rendering fails or the renderer did not produce a PDF.
+        DocumentError: if the rendered PDF cannot be moved or the sidecar cannot
+            be written.
+    """
     renderer = PDFRenderer(settings, output_dir=output_dir)
     target = _pdf_path(
         output_dir, "cover_letter", result.job_company, result.job_title, template, when
@@ -149,6 +177,8 @@ async def write_cover_letter_pdf(
         rendered = await renderer.render_cover_letter(
             result, job=None, template=template, category=category
         )
+    except (PDFRenderError, DocumentError):
+        raise
     except Exception as exc:
         raise PDFRenderError(f"Failed to render cover-letter PDF: {exc}") from exc
     final = _ensure_pdf_path(rendered, target)

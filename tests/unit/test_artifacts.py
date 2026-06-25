@@ -97,18 +97,25 @@ def test_write_tailored_wraps_oserror_as_document_error(tmp_path: Path) -> None:
         write_tailored(not_a_dir, tailored, when=WHEN)
 
 
-async def test_write_tailored_pdf_renders_and_writes_meta(tmp_path: Path) -> None:
+async def test_write_tailored_pdf_renames_rendered_file_and_writes_meta(
+    tmp_path: Path,
+) -> None:
     output_dir = tmp_path / "pdfs"
+    output_dir.mkdir(parents=True, exist_ok=True)
     settings = AppSettings(output_dir=str(tmp_path / "out"))
     tailored = _tailored()
     expected = output_dir / "tailored_Ac_me_Inc_Sr_Eng_20260622_143000_123456_modern.pdf"
+    rendered = output_dir / "renderer_tmp_tailored.pdf"
+    rendered.write_bytes(b"fake pdf bytes")
 
     with patch.object(
-        PDFRenderer, "render_resume", new=AsyncMock(return_value=expected)
+        PDFRenderer, "render_resume", new=AsyncMock(return_value=rendered)
     ) as mock_render:
         path = await write_tailored_pdf(output_dir, tailored, settings, when=WHEN_US)
 
     assert path == expected
+    assert not rendered.exists()
+    assert expected.read_bytes() == b"fake pdf bytes"
     assert tailored.pdf_path == str(expected)
     meta_path = expected.with_suffix(".meta.json")
     assert meta_path.exists()
@@ -117,18 +124,25 @@ async def test_write_tailored_pdf_renders_and_writes_meta(tmp_path: Path) -> Non
     mock_render.assert_awaited_once_with(tailored, job=None, template="modern", category=None)
 
 
-async def test_write_cover_letter_pdf_renders_and_writes_meta(tmp_path: Path) -> None:
+async def test_write_cover_letter_pdf_renames_rendered_file_and_writes_meta(
+    tmp_path: Path,
+) -> None:
     output_dir = tmp_path / "pdfs"
+    output_dir.mkdir(parents=True, exist_ok=True)
     settings = AppSettings(output_dir=str(tmp_path / "out"))
     result = _cover_letter()
     expected = output_dir / "cover_letter_Acme_Sr_Eng_20260622_143000_123456_modern.pdf"
+    rendered = output_dir / "renderer_tmp_cl.pdf"
+    rendered.write_bytes(b"fake cl bytes")
 
     with patch.object(
-        PDFRenderer, "render_cover_letter", new=AsyncMock(return_value=expected)
+        PDFRenderer, "render_cover_letter", new=AsyncMock(return_value=rendered)
     ) as mock_render:
         path = await write_cover_letter_pdf(output_dir, result, settings, when=WHEN_US)
 
     assert path == expected
+    assert not rendered.exists()
+    assert expected.read_bytes() == b"fake cl bytes"
     assert result.pdf_path == str(expected)
     meta_path = expected.with_suffix(".meta.json")
     assert meta_path.exists()
@@ -141,12 +155,14 @@ async def test_write_tailored_pdf_uses_template_and_microseconds_in_name(
     tmp_path: Path,
 ) -> None:
     output_dir = tmp_path / "pdfs"
+    output_dir.mkdir(parents=True, exist_ok=True)
     settings = AppSettings(output_dir=str(tmp_path / "out"))
     tailored = _tailored()
     when = datetime(2026, 6, 22, 14, 30, 0, 7)
-    expected = output_dir / "tailored_Ac_me_Inc_Sr_Eng_20260622_143000_000007_classic.pdf"
+    rendered = output_dir / "renderer_tmp_classic.pdf"
+    rendered.write_bytes(b"x")
 
-    with patch.object(PDFRenderer, "render_resume", new=AsyncMock(return_value=expected)):
+    with patch.object(PDFRenderer, "render_resume", new=AsyncMock(return_value=rendered)):
         path = await write_tailored_pdf(
             output_dir, tailored, settings, template="classic", when=when
         )
@@ -156,12 +172,14 @@ async def test_write_tailored_pdf_uses_template_and_microseconds_in_name(
 
 async def test_write_tailored_pdf_passes_category_to_renderer(tmp_path: Path) -> None:
     output_dir = tmp_path / "pdfs"
+    output_dir.mkdir(parents=True, exist_ok=True)
     settings = AppSettings(output_dir=str(tmp_path / "out"))
     tailored = _tailored()
-    expected = output_dir / "tailored_Ac_me_Inc_Sr_Eng_20260622_143000_123456_modern.pdf"
+    rendered = output_dir / "renderer_tmp_cat.pdf"
+    rendered.write_bytes(b"x")
 
     with patch.object(
-        PDFRenderer, "render_resume", new=AsyncMock(return_value=expected)
+        PDFRenderer, "render_resume", new=AsyncMock(return_value=rendered)
     ) as mock_render:
         await write_tailored_pdf(
             output_dir, tailored, settings, category="tech-support", when=WHEN_US
@@ -174,6 +192,7 @@ async def test_write_tailored_pdf_passes_category_to_renderer(tmp_path: Path) ->
 
 async def test_write_tailored_pdf_wraps_render_failure(tmp_path: Path) -> None:
     output_dir = tmp_path / "pdfs"
+    output_dir.mkdir(parents=True, exist_ok=True)
     settings = AppSettings(output_dir=str(tmp_path / "out"))
     tailored = _tailored()
 
@@ -189,6 +208,7 @@ async def test_write_tailored_pdf_wraps_render_failure(tmp_path: Path) -> None:
 
 async def test_write_cover_letter_pdf_wraps_render_failure(tmp_path: Path) -> None:
     output_dir = tmp_path / "pdfs"
+    output_dir.mkdir(parents=True, exist_ok=True)
     settings = AppSettings(output_dir=str(tmp_path / "out"))
     result = _cover_letter()
 
@@ -201,3 +221,58 @@ async def test_write_cover_letter_pdf_wraps_render_failure(tmp_path: Path) -> No
             await write_cover_letter_pdf(output_dir, result, settings, when=WHEN_US)
 
     assert not result.pdf_path
+
+
+async def test_write_tailored_pdf_propagates_typed_renderer_errors(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "pdfs"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    settings = AppSettings(output_dir=str(tmp_path / "out"))
+    tailored = _tailored()
+
+    with patch.object(
+        PDFRenderer,
+        "render_resume",
+        new=AsyncMock(side_effect=PDFRenderError("template missing")),
+    ):
+        with pytest.raises(PDFRenderError, match="template missing") as exc_info:
+            await write_tailored_pdf(output_dir, tailored, settings, when=WHEN_US)
+
+    assert "Failed to render tailored PDF" not in str(exc_info.value)
+    assert not tailored.pdf_path
+
+
+async def test_write_tailored_pdf_raises_when_rendered_file_missing(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "pdfs"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    settings = AppSettings(output_dir=str(tmp_path / "out"))
+    tailored = _tailored()
+    missing = output_dir / "missing.pdf"
+
+    with patch.object(PDFRenderer, "render_resume", new=AsyncMock(return_value=missing)):
+        with pytest.raises(PDFRenderError, match="Renderer did not write a PDF"):
+            await write_tailored_pdf(output_dir, tailored, settings, when=WHEN_US)
+
+    assert not tailored.pdf_path
+    assert not list(output_dir.glob("*.meta.json"))
+
+
+async def test_write_tailored_pdf_raises_on_rename_collision(tmp_path: Path) -> None:
+    output_dir = tmp_path / "pdfs"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    settings = AppSettings(output_dir=str(tmp_path / "out"))
+    tailored = _tailored()
+    rendered = output_dir / "rendered.pdf"
+    rendered.write_bytes(b"rendered")
+    target = output_dir / "tailored_Ac_me_Inc_Sr_Eng_20260622_143000_123456_modern.pdf"
+    target.write_bytes(b"existing")
+
+    with patch.object(PDFRenderer, "render_resume", new=AsyncMock(return_value=rendered)):
+        with pytest.raises(DocumentError, match="Target PDF already exists"):
+            await write_tailored_pdf(output_dir, tailored, settings, when=WHEN_US)
+
+    assert not tailored.pdf_path
+    assert not target.with_suffix(".meta.json").exists()
