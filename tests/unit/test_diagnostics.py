@@ -20,6 +20,7 @@ from job_applicator.models import (
     DoctorReport,
     EmbeddingsCheck,
     LLMEndpointCheck,
+    PDFRenderingCheck,
     SelfHostCheck,
     SystemBinariesCheck,
 )
@@ -250,6 +251,7 @@ def _report(*, reachable: bool, http_status: int | None, model_available: bool) 
             pdftotext_available=True, xvfb_available=True, pdftotext_path="/bin/pdftotext"
         ),
         config=ConfigCheck(config_file_found=True, config_file_path="config.toml"),
+        pdf_rendering=PDFRenderingCheck(ok=False, message="not checked"),
     )
 
 
@@ -319,6 +321,7 @@ def test_render_doctor_escapes_dynamic_values(status: int | None) -> None:
             plaintext_credentials=True,
             error="boom [/]",
         ),
+        pdf_rendering=PDFRenderingCheck(ok=False, message="[red]fail[/red]"),
     )
     cli._render_doctor(rep)  # must not raise rich.markup.MarkupError
 

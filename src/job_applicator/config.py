@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import (
@@ -100,6 +101,17 @@ class TargetConfig(BaseSettings):
     indeed_domain: str = ""
 
 
+class OutputConfig(BaseSettings):
+    """Default output format and template selection for generated artifacts."""
+
+    model_config = SettingsConfigDict(env_prefix="JOB_APPLICATOR_OUTPUT_")
+
+    default_format: Literal["txt", "pdf", "both"] = "txt"
+    resume_template: str = "modern"
+    cover_letter_template: str = "modern"
+    template_dir: Path | None = None
+
+
 class AppSettings(BaseSettings):
     """Top-level application settings."""
 
@@ -121,6 +133,7 @@ class AppSettings(BaseSettings):
     llm_resilience: LLMResilienceConfig = Field(default_factory=LLMResilienceConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     target: TargetConfig = Field(default_factory=TargetConfig)
+    output: OutputConfig = Field(default_factory=OutputConfig)
 
     @classmethod
     def settings_customise_sources(

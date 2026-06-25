@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import tempfile
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,7 @@ from job_applicator.models import (
     DoctorReport,
     EmbeddingsCheck,
     LLMEndpointCheck,
+    PDFRenderingCheck,
     SelfHostCheck,
     SystemBinariesCheck,
 )
@@ -274,6 +276,29 @@ def check_config(settings: AppSettings) -> ConfigCheck:
     return result
 
 
+def check_pdf_rendering() -> PDFRenderingCheck:
+    """Smoke-test the PDF rendering toolchain (typst package + compile)."""
+    try:
+        import typst
+    except ImportError:
+        return PDFRenderingCheck(
+            ok=False,
+            message="typst package not installed; run pip install 'job-applicator[pdf]'",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        source = Path(tmp) / "smoke.typ"
+        output = Path(tmp) / "smoke.pdf"
+        source.write_text('#set text("Hello")\nHello', encoding="utf-8")
+        try:
+            typst.compile(str(source), output=str(output), format="pdf")
+            if output.exists() and output.stat().st_size > 0:
+                return PDFRenderingCheck(ok=True, message="typst compile works")
+            return PDFRenderingCheck(ok=False, message="typst produced empty PDF")
+        except Exception as exc:  # pragma: no cover - typst runtime errors vary by host
+            return PDFRenderingCheck(ok=False, message=f"typst compile failed: {exc}")
+
+
 async def run_diagnostics(settings: AppSettings) -> DoctorReport:
     """Run every check and assemble the report (only an HTTP-200 /models is blocking).
 
@@ -288,4 +313,5 @@ async def run_diagnostics(settings: AppSettings) -> DoctorReport:
         browser=browser,
         system=check_system_binaries(),
         config=check_config(settings),
+        pdf_rendering=check_pdf_rendering(),
     )
