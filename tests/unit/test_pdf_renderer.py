@@ -308,7 +308,7 @@ def test_compile_typst_missing_package_message(tmp_path: Path) -> None:
 
     with patch("builtins.__import__", side_effect=_fake_import):
         with pytest.raises(
-            RuntimeError,
+            PDFRenderError,
             match=r"typst package not installed; run: pip install 'job-applicator\[pdf\]'",
         ):
             _compile_typst(source_path, output_path)

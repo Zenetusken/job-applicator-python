@@ -17,7 +17,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from job_applicator import __version__
-from job_applicator.config import AppSettings, LLMConfig
+from job_applicator.config import AppSettings, LLMConfig, OutputConfig
 from job_applicator.exceptions import CookieError, JobApplicatorError
 from job_applicator.factories import (
     _make_applicator,
@@ -2416,8 +2416,15 @@ max_applications_per_day = 20
 delay_between_applications_s = 2.0
 # linkedin_email = "your-email@example.com"
 # linkedin_password = "your-password"
+
+# Output format and PDF templates
+[output]
+default_format = "__OUTPUT_DEFAULT_FORMAT__"
+resume_template = "__OUTPUT_RESUME_TEMPLATE__"
+cover_letter_template = "__OUTPUT_COVER_LETTER_TEMPLATE__"
+# template_dir = "/path/to/custom/templates"
 """
-    # Fill the [llm] section from the LLMConfig defaults so config-init never drifts
+    # Fill the [llm] and [output] sections from defaults so config-init never drifts
     # from the code (brace-safe placeholders → .replace, not an f-string over the template).
     for _token, _field in (
         ("__LLM_API_BASE__", "api_base"),
@@ -2427,6 +2434,15 @@ delay_between_applications_s = 2.0
         ("__LLM_TEMPERATURE__", "temperature"),
     ):
         config_content = config_content.replace(_token, str(LLMConfig.model_fields[_field].default))
+
+    for _token, _field in (
+        ("__OUTPUT_DEFAULT_FORMAT__", "default_format"),
+        ("__OUTPUT_RESUME_TEMPLATE__", "resume_template"),
+        ("__OUTPUT_COVER_LETTER_TEMPLATE__", "cover_letter_template"),
+    ):
+        config_content = config_content.replace(
+            _token, str(OutputConfig.model_fields[_field].default)
+        )
 
     config_path = Path(output_path)
     if config_path.is_dir():

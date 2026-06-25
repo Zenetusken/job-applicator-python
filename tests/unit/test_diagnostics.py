@@ -15,7 +15,7 @@ import pytest
 from litellm.exceptions import APIConnectionError, Timeout
 
 from job_applicator import cli, diagnostics
-from job_applicator.config import AppSettings, EmbeddingConfig, LLMConfig
+from job_applicator.config import AppSettings, EmbeddingConfig, LLMConfig, OutputConfig
 from job_applicator.models import (
     BrowserCheck,
     ConfigCheck,
@@ -392,6 +392,8 @@ def test_config_init_uses_llmconfig_defaults(tmp_path: Path) -> None:
     text = out.read_text()
     assert f'model = "{LLMConfig.model_fields["model"].default}"' in text
     assert f'api_base = "{LLMConfig.model_fields["api_base"].default}"' in text
+    assert "[output]" in text
+    assert f'default_format = "{OutputConfig.model_fields["default_format"].default}"' in text
 
 
 def test_config_init_unwritable_path_is_clean_error(tmp_path: Path) -> None:

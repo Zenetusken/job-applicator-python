@@ -435,19 +435,20 @@ def _compile_typst(source_path: Path, output_path: Path) -> None:
     """Compile a Typst source file to PDF.
 
     ``typst`` is imported inside this function so the module can be loaded even
-    when the optional ``[pdf]`` extra is not installed. Exceptions are re-raised
-    as plain ``RuntimeError`` so they cross the spawn process boundary cleanly.
+    when the optional ``[pdf]`` extra is not installed. ``PDFRenderError`` is a
+    normal ``JobApplicatorError`` and pickles cleanly across the spawn process
+    boundary, so typed exceptions are preserved.
     """
     try:
         import typst
     except ImportError as exc:
-        raise RuntimeError(
+        raise PDFRenderError(
             "typst package not installed; run: pip install 'job-applicator[pdf]'"
         ) from exc
     try:
         typst.compile(str(source_path), output=str(output_path), format="pdf")
     except Exception as exc:
-        raise RuntimeError(str(exc)) from exc
+        raise PDFRenderError(str(exc)) from exc
 
 
 def _safe(text: str) -> str:
