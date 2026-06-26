@@ -6,20 +6,23 @@ tests (no network, no GPU, no model loads).
 
 from __future__ import annotations
 
+import builtins
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
 from litellm.exceptions import APIConnectionError, Timeout
 
 from job_applicator import cli, diagnostics
-from job_applicator.config import AppSettings, EmbeddingConfig, LLMConfig
+from job_applicator.config import AppSettings, EmbeddingConfig, LLMConfig, OutputConfig
 from job_applicator.models import (
     BrowserCheck,
     ConfigCheck,
     DoctorReport,
     EmbeddingsCheck,
     LLMEndpointCheck,
+    PDFRenderingCheck,
     SelfHostCheck,
     SystemBinariesCheck,
 )
@@ -250,6 +253,7 @@ def _report(*, reachable: bool, http_status: int | None, model_available: bool) 
             pdftotext_available=True, xvfb_available=True, pdftotext_path="/bin/pdftotext"
         ),
         config=ConfigCheck(config_file_found=True, config_file_path="config.toml"),
+        pdf_rendering=PDFRenderingCheck(ok=False, message="not checked"),
     )
 
 
@@ -319,6 +323,7 @@ def test_render_doctor_escapes_dynamic_values(status: int | None) -> None:
             plaintext_credentials=True,
             error="boom [/]",
         ),
+        pdf_rendering=PDFRenderingCheck(ok=False, message="[red]fail[/red]"),
     )
     cli._render_doctor(rep)  # must not raise rich.markup.MarkupError
 
@@ -387,6 +392,8 @@ def test_config_init_uses_llmconfig_defaults(tmp_path: Path) -> None:
     text = out.read_text()
     assert f'model = "{LLMConfig.model_fields["model"].default}"' in text
     assert f'api_base = "{LLMConfig.model_fields["api_base"].default}"' in text
+    assert "[output]" in text
+    assert f'default_format = "{OutputConfig.model_fields["default_format"].default}"' in text
 
 
 def test_config_init_unwritable_path_is_clean_error(tmp_path: Path) -> None:
@@ -456,6 +463,68 @@ def test_system_binaries_xvfb_run_also_counts(monkeypatch: pytest.MonkeyPatch) -
     assert not res.pdftotext_available
     assert res.xvfb_available
     assert res.xvfb_path == "/usr/bin/xvfb-run"
+
+
+# --- check_pdf_rendering: typst package + built-in template ------------------
+
+
+def test_check_pdf_rendering_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_import = builtins.__import__
+
+    def fake_import(name: str, *args: object, **kwargs: object) -> object:
+        if name == "typst":
+            mod = MagicMock()
+
+            def fake_compile(source: str, output: str, format: str | None = None) -> None:
+                Path(output).write_bytes(b"%PDF-1.4 fake")
+
+            mod.compile = fake_compile
+            return mod
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    res = diagnostics.check_pdf_rendering()
+    assert res.ok
+    assert "works" in res.message
+
+
+def test_check_pdf_rendering_source_escapes_email_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Built-in templates pipe every value through |typst_escape; the doctor smoke test
+    must not double-escape them (e.g. smoke@example.com → smoke\\@example.com)."""
+    captured: dict[str, str] = {}
+    real_import = builtins.__import__
+
+    def fake_import(name: str, *args: object, **kwargs: object) -> object:
+        if name == "typst":
+            mod = MagicMock()
+
+            def fake_compile(source: str, output: str, format: str | None = None) -> None:
+                captured["source"] = Path(source).read_text(encoding="utf-8")
+                Path(output).write_bytes(b"%PDF-1.4 fake")
+
+            mod.compile = fake_compile
+            return mod
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    diagnostics.check_pdf_rendering()
+    source = captured["source"]
+    assert r"smoke\@example.com" in source
+    assert r"smoke\\@" not in source
+
+
+def test_check_pdf_rendering_import_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_import = builtins.__import__
+
+    def fake_import(name: str, *args: object, **kwargs: object) -> object:
+        if name == "typst":
+            raise ImportError("No module named 'typst'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    res = diagnostics.check_pdf_rendering()
+    assert not res.ok
+    assert "typst package not installed" in res.message
 
 
 # --- check_config: file presence, parseability, credentials ------------------

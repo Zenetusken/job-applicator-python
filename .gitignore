@@ -85,10 +85,16 @@ screenshots/
 # Local harness / tooling config — personal, not part of the public project
 .mimocode/
 .kimi-code/
+.superpowers/
+.worktrees/
 
 # Generated output
 output/
 logs/
+
+# Local SQLite databases (tests use temp files; do not commit real stores)
+*.db
+*.sqlite3
 
 # Working audit reports (generated, not tracked)
 docs/comprehensive-application-audit-2026-06-24.md

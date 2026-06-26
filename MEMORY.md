@@ -3,21 +3,21 @@
 Project memory for job-applicator-python. Consolidated facts about the codebase,
 decisions, and current state. Keep under ~200 lines; prune stale entries when adding.
 
-_Last synced: 2026-06-24_
+_Last synced: 2026-06-25_
 
 ## Snapshot
 
-- **Stats:** 44 source modules (`src/job_applicator/`), 817 fast unit tests (`pytest -m unit` — the green gate, no browser/GPU); 846 total = 817 unit + 5 integration + 24 live (`-m live`) needing vLLM (`localhost:8000`) + GPU. Tests auto-marked by location in `tests/conftest.py`. Live tests skip cleanly when the configured LLM endpoint is unreachable.
+- **Stats:** 62 source modules (`src/job_applicator/`), ~950 fast unit tests (`pytest -m unit` — the green gate, no browser/GPU); ~990 total = ~950 unit + 8 integration + 34 live (`-m live`) needing vLLM (`localhost:8000`) + GPU. Tests auto-marked by location in `tests/conftest.py`. Live tests skip cleanly when the configured LLM endpoint is unreachable.
 - **Python:** 3.12+ (dev box 3.12.8). Mypy strict; ruff (100-char lines, double quotes).
 - **Quality gates (all must pass, in order):**
   `ruff check src/ tests/` → `ruff format --check src/ tests/` →
-  `mypy src/` → `pytest -m unit`.
+  `mypy src/` → `pytest -m "unit or integration"`.
   (Untyped third-party imports — paddleocr, fitz, playwright_stealth, browser_cookie3 —
   are silenced via per-module `ignore_missing_imports` overrides in `pyproject.toml`,
   so no `--ignore-missing-imports` flag is needed.)
 - **Install:** `python3.12 -m venv .venv && pip install -e ".[dev]"`. Optional extras:
-  `[embeddings]` (sentence-transformers + CUDA torch), `[browser]` (browser-cookie3, for
-  `import-cookies --from-browser`) — neither is needed for the gates.
+  `[pdf]` (Typst PDF rendering), `[embeddings]` (sentence-transformers + CUDA torch),
+  `[browser]` (browser-cookie3, for `import-cookies --from-browser`) — none required for the gates.
 - **Browser flows:** `playwright install chromium` once.
 
 ## Architecture (single source of truth: AGENTS.md)
@@ -25,7 +25,9 @@ _Last synced: 2026-06-24_
 - `cli.py` — Typer CLI: search, login, import-cookies, apply, match, batch, generate-cover-letter, tailor, ats-check, config-init, doctor. `doctor` (→ `diagnostics.py`) probes the LLM endpoint (`/v1/models`) + embeddings cache + self-host prereqs; only endpoint reachability is blocking.
 - `config.py` — `AppSettings` + sub-configs; loads `config.toml` (lowest priority) + `JOB_APPLICATOR_*` env. `BrowserConfig` has `locale`/`timezone` (empty=auto); `TargetConfig` has `indeed_domain`.
 - `models.py` — all shared Pydantic contracts (`extra="forbid"`).
-- `documents/` — resume parsing, tailoring, cover letters, style/tone, ats_checker, ocr.
+- `documents/` — resume parsing, tailoring, cover letters, style/tone, ats_checker, ocr,
+  and PDF rendering (`pdf_renderer.py`, `formatted_models.py`, `job_category.py`,
+  `templates/` Typst templates, `artifacts.py`).
 - `browser/` `scrapers/` `applicators/` — Playwright lifecycle + LinkedIn (session) / Indeed (public, Cloudflare). Both scrapers/applicators live.
 - `embeddings/` — mxbai-embed-large-v1 service + job matching.
 - `utils/` — logging, retry, diff, verbose, **llm (strip_thinking_process + CircuitBreaker + ValidatedOutput), text (contains_word), cookies (save/load/read), region (locale/tz/UA detect), url (host_matches), secure_store (atomic 0600)**.
@@ -45,6 +47,9 @@ _Last synced: 2026-06-24_
   Suppress Qwen reasoning via `enable_thinking: False` + `strip_thinking_process()`.
 - Resume-tailoring hallucination guards must be preserved (skills/tools/education validation,
   fuzzy `_skills_match()` ratio ≥ 0.85, `KNOWN_HEADERS` frozenset). See AGENTS.md gotchas.
+- PDF rendering is opt-in via `--format {txt|pdf|both}` and the `[pdf]` extra (`typst`).
+  Built-in Typst templates are `modern`/`classic`/`minimal` for both résumés and cover letters;
+  filenames include microseconds + template suffix to prevent collisions.
 
 ## Audit (code sanity check) — status
 

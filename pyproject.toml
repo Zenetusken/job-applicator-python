@@ -39,7 +39,7 @@ serve = [
     "vllm>=0.21,<0.22",
 ]
 pdf = [
-    "pymupdf>=1.24",
+    "typst>=0.15,<0.16",
 ]
 browser = [
     # Reads/decrypts a local browser's cookie store for `import-cookies --from-browser`.
@@ -72,6 +72,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/job_applicator"]
+include = ["src/job_applicator/templates/**/*.typ"]
 
 [tool.ruff]
 target-version = "py312"

@@ -49,6 +49,14 @@ class FunnelStatus(StrEnum):
     APPLIED = "applied"
 
 
+class Format(StrEnum):
+    """Valid --format values for artifact output."""
+
+    TXT = "txt"
+    PDF = "pdf"
+    BOTH = "both"
+
+
 class JobListing(BaseModel):
     """Scraped job data from a job board."""
 
@@ -88,6 +96,8 @@ class StoredJob(BaseModel):
     missing_skills: list[str] = Field(default_factory=list)
     tailored_resume_path: str = ""
     cover_letter_path: str = ""
+    pdf_path: str = ""
+    cover_letter_pdf_path: str = ""
     source_query: str = ""
     first_seen_at: datetime
     updated_at: datetime
@@ -361,6 +371,7 @@ class TailoredResume(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     output_path: str = Field(default="", description="Path where tailored resume was saved")
     cover_letter_path: str = Field(default="", description="Path to generated cover letter, if any")
+    pdf_path: str = Field(default="", description="Path to generated PDF résumé, if any")
 
     model_config = {"extra": "forbid"}
 
@@ -411,6 +422,7 @@ class CoverLetterResult(BaseModel):
     prompt_version: str = "1.0"
     created_at: datetime = Field(default_factory=datetime.now)
     output_path: str = ""
+    pdf_path: str = Field(default="", description="Path to generated PDF cover letter, if any")
 
     model_config = {"extra": "forbid"}
 
@@ -656,6 +668,15 @@ class SessionHealth(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class PDFRenderingCheck(BaseModel):
+    """PDF rendering toolchain health (typst package + compile smoke test)."""
+
+    ok: bool
+    message: str
+
+    model_config = {"extra": "forbid"}
+
+
 class DoctorReport(BaseModel):
     """Aggregate AI-backend health check rendered by `job-applicator doctor`."""
 
@@ -665,6 +686,7 @@ class DoctorReport(BaseModel):
     browser: BrowserCheck
     system: SystemBinariesCheck
     config: ConfigCheck
+    pdf_rendering: PDFRenderingCheck
 
     @property
     def ok(self) -> bool:

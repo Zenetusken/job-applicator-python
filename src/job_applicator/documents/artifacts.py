@@ -1,8 +1,8 @@
 """Output-artifact helpers for tailored résumés / cover letters.
 
-The ``tailored_<company>_<title>_<timestamp>.txt`` + ``.meta.json`` convention in one
-place, used by the TUI action layer. (The CLI's batch/tailor paths still inline
-equivalent logic — a future cleanup could adopt these helpers to fully converge.)
+The plain-text convention is ``tailored_<company>_<title>_<YYYYMMDD_HHMMSS>.txt`` +
+``.meta.json``. PDF artifacts include microseconds and the template suffix to avoid
+collisions: ``tailored_<company>_<title>_<YYYYMMDD_HHMMSS>_<microseconds>_<template>.pdf``.
 """
 
 from __future__ import annotations
@@ -11,15 +11,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from job_applicator.exceptions import DocumentError
+from job_applicator.documents.pdf_renderer import PDFRenderer
+from job_applicator.exceptions import DocumentError, PDFRenderError
+from job_applicator.utils.path import safe_filename_slug
 
 if TYPE_CHECKING:
+    from job_applicator.config import AppSettings
     from job_applicator.models import CoverLetterResult, TailoredResume
-
-
-def _safe(text: str) -> str:
-    """Filesystem-safe slug: alphanumerics/-/_ kept, everything else → '_', capped."""
-    return "".join(c if c.isalnum() or c in "-_" else "_" for c in text)[:30]
 
 
 def _write_text(path: Path, content: str) -> None:
@@ -33,7 +31,24 @@ def _write_text(path: Path, content: str) -> None:
 
 def artifact_basename(company: str, title: str, *, when: datetime) -> str:
     """`tailored_<company>_<title>_<YYYYMMDD_HHMMSS>` (no extension)."""
-    return f"tailored_{_safe(company)}_{_safe(title)}_{when.strftime('%Y%m%d_%H%M%S')}"
+    company_slug = safe_filename_slug(company)
+    title_slug = safe_filename_slug(title)
+    return f"tailored_{company_slug}_{title_slug}_{when.strftime('%Y%m%d_%H%M%S')}"
+
+
+def pdf_artifact_basename(company: str, title: str, *, when: datetime, template: str) -> str:
+    """`tailored_<company>_<title>_<YYYYMMDD_HHMMSS>_<microseconds>_<template>` (no extension)."""
+    return f"{artifact_basename(company, title, when=when)}_{when.microsecond:06d}_{template}"
+
+
+def cover_letter_pdf_basename(company: str, title: str, *, when: datetime, template: str) -> str:
+    """`cover_letter_<company>_<title>_<YYYYMMDD_HHMMSS>_<microseconds>_<template>`."""
+    company_slug = safe_filename_slug(company)
+    title_slug = safe_filename_slug(title)
+    return (
+        f"cover_letter_{company_slug}_{title_slug}_{when.strftime('%Y%m%d_%H%M%S')}"
+        f"_{when.microsecond:06d}_{template}"
+    )
 
 
 def write_tailored(
@@ -58,7 +73,7 @@ def write_cover_letter(
 ) -> tuple[str, str]:
     """Write the cover-letter text + its ``.meta.json`` sidecar; sets ``result.output_path``."""
     base = (
-        f"cover_letter_{_safe(result.job_company)}_{_safe(result.job_title)}"
+        f"cover_letter_{safe_filename_slug(result.job_company)}_{safe_filename_slug(result.job_title)}"
         f"_{when.strftime('%Y%m%d_%H%M%S')}"
     )
     cl_path = output_dir / f"{base}.txt"
@@ -67,3 +82,85 @@ def write_cover_letter(
     meta_path = output_dir / f"{base}.meta.json"
     _write_text(meta_path, result.model_dump_json(indent=2))
     return str(cl_path), str(meta_path)
+
+
+async def write_tailored_pdf(
+    output_dir: Path,
+    tailored: TailoredResume,
+    settings: AppSettings,
+    *,
+    template: str = "modern",
+    category: str | None = None,
+    when: datetime,
+    write_meta: bool = True,
+) -> Path:
+    """Render a tailored résumé to PDF and update its sidecar.
+
+    Sets ``tailored.pdf_path`` and, unless ``write_meta`` is ``False``, writes a
+    ``.meta.json`` sidecar for the PDF so it reflects the model including the new
+    ``pdf_path``. Returns the path to the generated PDF.
+
+    Raises:
+        PDFRenderError: if rendering fails or the renderer did not produce a PDF.
+        DocumentError: if the sidecar cannot be written.
+    """
+    renderer = PDFRenderer(settings, output_dir=output_dir)
+    base = pdf_artifact_basename(
+        tailored.job_company, tailored.job_title, when=when, template=template
+    )
+    target = output_dir / f"{base}.pdf"
+    try:
+        rendered = await renderer.render_resume(
+            tailored, job=None, template=template, category=category, output_path=target
+        )
+    except (PDFRenderError, DocumentError):
+        raise
+    except Exception as exc:
+        raise PDFRenderError(f"Failed to render tailored PDF: {exc}") from exc
+    if not rendered.exists():
+        raise PDFRenderError(f"Renderer did not write a PDF at {rendered}")
+    tailored.pdf_path = str(rendered)
+    if write_meta:
+        _write_text(rendered.with_suffix(".meta.json"), tailored.model_dump_json(indent=2))
+    return rendered
+
+
+async def write_cover_letter_pdf(
+    output_dir: Path,
+    result: CoverLetterResult,
+    settings: AppSettings,
+    *,
+    template: str = "modern",
+    category: str | None = None,
+    when: datetime,
+    write_meta: bool = True,
+) -> Path:
+    """Render a cover letter to PDF and update its sidecar.
+
+    Sets ``result.pdf_path`` and, unless ``write_meta`` is ``False``, writes a
+    ``.meta.json`` sidecar for the PDF so it reflects the model including the new
+    ``pdf_path``. Returns the path to the generated PDF.
+
+    Raises:
+        PDFRenderError: if rendering fails or the renderer did not produce a PDF.
+        DocumentError: if the sidecar cannot be written.
+    """
+    renderer = PDFRenderer(settings, output_dir=output_dir)
+    base = cover_letter_pdf_basename(
+        result.job_company, result.job_title, when=when, template=template
+    )
+    target = output_dir / f"{base}.pdf"
+    try:
+        rendered = await renderer.render_cover_letter(
+            result, job=None, template=template, category=category, output_path=target
+        )
+    except (PDFRenderError, DocumentError):
+        raise
+    except Exception as exc:
+        raise PDFRenderError(f"Failed to render cover-letter PDF: {exc}") from exc
+    if not rendered.exists():
+        raise PDFRenderError(f"Renderer did not write a PDF at {rendered}")
+    result.pdf_path = str(rendered)
+    if write_meta:
+        _write_text(rendered.with_suffix(".meta.json"), result.model_dump_json(indent=2))
+    return rendered

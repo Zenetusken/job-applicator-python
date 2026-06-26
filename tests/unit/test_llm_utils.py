@@ -424,3 +424,152 @@ def test_quiet_litellm_suppresses_banner_and_logs_idempotently() -> None:
         litellm.suppress_debug_info = saved[0]
         lit_logger.setLevel(saved[1])
         low_logger.setLevel(saved[2])
+
+
+async def test_llm_runtime_run_returns_success() -> None:
+    """LLMRuntime.run passes None as the previous error and returns the result."""
+    from job_applicator.utils.llm import LLMRuntime
+
+    runtime = LLMRuntime.defaults(name="test")
+
+    async def producer(prev: object) -> str:
+        assert prev is None
+        return "ok"
+
+    assert await runtime.run(producer) == "ok"
+
+
+async def test_llm_runtime_run_validator_retry_succeeds() -> None:
+    """A validation failure is retried, feeding the prior error back to the closure."""
+    from job_applicator.exceptions import LLMError
+    from job_applicator.utils.llm import LLMRuntime
+
+    runtime = LLMRuntime.defaults(name="test")
+    runtime.validation_max_retries = 2
+    seen: list[object] = []
+
+    async def producer(prev: object) -> str:
+        seen.append(prev)
+        return "good" if len(seen) > 1 else "bad"
+
+    def validator(value: str) -> None:
+        if value != "good":
+            raise LLMError("not good")
+
+    assert await runtime.run(producer, validator=validator) == "good"
+    assert seen[0] is None
+    assert isinstance(seen[1], LLMError)
+
+
+async def test_llm_runtime_run_validator_retry_exhausted() -> None:
+    """After validation_max_retries failures, the last validation error is raised."""
+    from job_applicator.exceptions import LLMError
+    from job_applicator.utils.llm import LLMRuntime
+
+    runtime = LLMRuntime.defaults(name="test")
+    runtime.validation_max_retries = 1
+
+    async def producer(prev: object) -> str:
+        return "bad"
+
+    def validator(value: str) -> None:
+        raise LLMError("always bad")
+
+    with pytest.raises(LLMError, match="always bad"):
+        await runtime.run(producer, validator=validator)
+
+
+async def test_llm_runtime_run_circuit_breaker_open() -> None:
+    """An open circuit breaker rejects the call before the closure runs."""
+    from job_applicator.exceptions import LLMError
+    from job_applicator.utils.llm import CircuitOpenError, LLMRuntime
+
+    runtime = LLMRuntime.defaults(name="test")
+    runtime.breaker.failure_threshold = 1
+    runtime.breaker.recovery_timeout_seconds = 60.0
+
+    async def fail(_prev: object) -> str:
+        raise LLMError("boom")
+
+    with pytest.raises(LLMError, match="boom"):
+        await runtime.run(fail)
+    with pytest.raises(CircuitOpenError, match="circuit breaker"):
+        await runtime.run(fail)
+
+
+async def test_llm_runtime_run_validator_still_uses_breaker() -> None:
+    """Validator-enabled attempts still route through the circuit breaker.
+
+    A transport error on the validator path is recorded as a breaker failure,
+    and the next call is rejected with CircuitOpenError.
+    """
+    from job_applicator.exceptions import LLMError
+    from job_applicator.utils.llm import CircuitOpenError, LLMRuntime
+
+    runtime = LLMRuntime.defaults(name="test")
+    runtime.validation_max_retries = 2
+    runtime.breaker.failure_threshold = 1
+    runtime.breaker.recovery_timeout_seconds = 60.0
+
+    async def fail(_prev: object) -> str:
+        raise LLMError("transport boom")
+
+    def validator(value: str) -> None:
+        pass
+
+    with pytest.raises(LLMError, match="transport boom"):
+        await runtime.run(fail, validator=validator)
+    with pytest.raises(CircuitOpenError, match="circuit breaker"):
+        await runtime.run(fail, validator=validator)
+
+
+async def test_llm_runtime_run_validator_breaker_open_raises_circuit_open_error() -> None:
+    """A validator-enabled call is rejected fast when the breaker is already open."""
+    from job_applicator.exceptions import LLMError
+    from job_applicator.utils.llm import CircuitOpenError, LLMRuntime
+
+    runtime = LLMRuntime.defaults(name="test")
+    runtime.breaker.failure_threshold = 1
+    runtime.breaker.recovery_timeout_seconds = 60.0
+
+    async def fail(_prev: object) -> str:
+        raise LLMError("boom")
+
+    # Open the breaker on the non-validator path.
+    with pytest.raises(LLMError, match="boom"):
+        await runtime.run(fail)
+
+    async def producer(_prev: object) -> str:
+        return "ok"
+
+    def validator(value: str) -> None:
+        pass
+
+    with pytest.raises(CircuitOpenError, match="circuit breaker"):
+        await runtime.run(producer, validator=validator)
+
+
+async def test_llm_runtime_run_validator_records_transport_failure() -> None:
+    """Transport errors during validator retry are recorded by the breaker."""
+    from job_applicator.exceptions import LLMError
+    from job_applicator.utils.llm import LLMRuntime
+
+    runtime = LLMRuntime.defaults(name="test")
+    runtime.validation_max_retries = 1
+    runtime.breaker.failure_threshold = 2
+    runtime.breaker.window_seconds = 60.0
+
+    calls = 0
+
+    async def flaky(_prev: object) -> str:
+        nonlocal calls
+        calls += 1
+        raise LLMError("transport")
+
+    def validator(value: str) -> None:
+        pass
+
+    with pytest.raises(LLMError, match="transport"):
+        await runtime.run(flaky, validator=validator)
+    assert calls == 1
+    assert len(runtime.breaker._failures) == 1
