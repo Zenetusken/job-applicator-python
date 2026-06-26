@@ -215,7 +215,9 @@ async def main():
     for job in jobs:
         job_emb = matcher.compute_job_embedding(job)
         semantic_score = matcher._service.similarity(resume_emb, job_emb)
-        matched, missing = matcher._match_skills(resume.skills, job.requirements, resume.raw_text)
+        matched, missing = await matcher._match_skills(
+            resume.skills, job.requirements, resume.raw_text
+        )
         skill_score = matcher._compute_skill_score(matched, missing)
         combined = (0.6 * semantic_score) + (0.4 * skill_score)
 
