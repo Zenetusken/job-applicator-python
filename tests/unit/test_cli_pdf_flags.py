@@ -56,7 +56,7 @@ def _patch_tailor_stack(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Magi
     loader.load.return_value = ResumeData(raw_text="John Doe\njohn@example.com\nPython, SQL")
     tone = MagicMock(primary="professional", confidence=0.9)
     matcher = MagicMock()
-    matcher.match_resume_to_job.return_value = MagicMock(score=0.8)
+    matcher.match_resume_to_job = AsyncMock(return_value=MagicMock(score=0.8))
 
     monkeypatch.setattr(cli.console, "input", MagicMock(side_effect=["A", "N"]))
 

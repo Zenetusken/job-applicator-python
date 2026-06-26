@@ -97,7 +97,7 @@ Python Developer | CodeBase Corp | 2019-2021
     console.print("[bold]Step 1: Computing match scores...[/]")
     embedding_config = EmbeddingConfig()
     matcher = JobMatcher(embedding_config)
-    match_result = matcher.match_resume_to_job(resume, job)
+    match_result = await matcher.match_resume_to_job(resume, job)
     console.print(f"  Match score: {match_result.score:.3f}")
     console.print(f"  Matched skills: {match_result.matched_skills}")
     console.print(f"  Missing skills: {match_result.missing_skills}")
