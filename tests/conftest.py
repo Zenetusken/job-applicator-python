@@ -77,6 +77,21 @@ def _isolate_local_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(
         "job_applicator.scrapers.indeed._DEBUG_DIR", tmp_path / "ja-state" / "debug"
     )
+    # LLMSkillExtractor caches results under ~/.job-applicator/skill-extraction/ by default.
+    # Redirect every instance created during tests to a throwaway cache directory.
+    from job_applicator.embeddings.skill_extraction import LLMSkillExtractor
+
+    cache_dir = tmp_path / "ja-state" / "skill-extraction"
+    orig_init = LLMSkillExtractor.__init__
+
+    def _patched_init(self: LLMSkillExtractor, config: LLMConfig) -> None:
+        with monkeypatch.context() as m:
+            m.setattr("pathlib.Path.home", lambda: tmp_path / "ja-state")
+            orig_init(self, config)
+        self._cache_dir = cache_dir
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(LLMSkillExtractor, "__init__", _patched_init)
 
 
 @pytest.fixture

@@ -312,8 +312,13 @@ class TestLLMSkillExtractor:
         )
 
     @pytest.fixture
-    def extractor(self, llm_config: LLMConfig) -> LLMSkillExtractor:
-        return LLMSkillExtractor(llm_config)
+    def extractor(
+        self, llm_config: LLMConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> LLMSkillExtractor:
+        extractor = LLMSkillExtractor(llm_config)
+        monkeypatch.setattr(extractor, "_cache_dir", tmp_path / "skill-extraction")
+        extractor._cache_dir.mkdir(parents=True, exist_ok=True)
+        return extractor
 
     def test_cache_key_includes_model_and_description(self) -> None:
         """Cache key must differ when model or description changes."""

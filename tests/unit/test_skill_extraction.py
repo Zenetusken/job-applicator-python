@@ -1,4 +1,4 @@
-"""Integration tests for LLMSkillExtractor."""
+"""Unit tests for LLMSkillExtractor."""
 
 from __future__ import annotations
 
@@ -8,12 +8,19 @@ from job_applicator.config import LLMConfig
 from job_applicator.embeddings.skill_extraction import LLMSkillExtractor, _ExtractionResult
 
 
-class TestSkillExtractionIntegration:
-    async def test_extracts_python_from_description_with_mocked_llm(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        extractor = LLMSkillExtractor(LLMConfig(model="test"))
+@pytest.fixture
+def extractor(tmp_path: object, monkeypatch: pytest.MonkeyPatch) -> LLMSkillExtractor:
+    """Create an LLMSkillExtractor that writes its cache under a temp directory."""
+    inst = LLMSkillExtractor(LLMConfig(model="test"))
+    monkeypatch.setattr(inst, "_cache_dir", tmp_path / "skill-extraction")
+    inst._cache_dir.mkdir(parents=True, exist_ok=True)
+    return inst
 
+
+class TestSkillExtraction:
+    async def test_extracts_python_from_description_with_mocked_llm(
+        self, extractor: LLMSkillExtractor, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         async def fake_llm(description: str) -> _ExtractionResult:
             return _ExtractionResult(
                 skills=["Python", "FastAPI", "PostgreSQL"],
@@ -29,10 +36,8 @@ class TestSkillExtractionIntegration:
         assert set(result) == {"FastAPI", "PostgreSQL", "Python"}
 
     async def test_unmapped_skill_grounded_by_token_match(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, extractor: LLMSkillExtractor, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        extractor = LLMSkillExtractor(LLMConfig(model="test"))
-
         async def fake_llm(description: str) -> _ExtractionResult:
             return _ExtractionResult(
                 skills=["Salesforce"],
