@@ -110,6 +110,7 @@ Rules:
 - Ignore soft skills such as communication, teamwork, leadership, and problem solving.
 - Ignore seniority, work arrangement, location, and compensation.
 - Do not include generic terms like "software development" unless a specific technology is named.
+- Return the result as a JSON object with a single field "skills" containing a list of strings.
 ```
 
 User content: the first 1 500 characters of the job description.

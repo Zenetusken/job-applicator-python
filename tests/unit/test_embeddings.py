@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
@@ -385,6 +386,32 @@ class TestLLMSkillExtractor:
                 mock_call.assert_not_called()
         finally:
             cache_path.unlink(missing_ok=True)
+
+    def test_cache_miss_writes_cleaned_skills(
+        self,
+        extractor: LLMSkillExtractor,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Cache miss calls LLM, filters hard negatives, and writes cleaned skills."""
+        import asyncio
+        import json
+
+        description = "We need Python."
+        monkeypatch.setattr(extractor, "_cache_dir", tmp_path)
+
+        with patch.object(
+            extractor, "_call_llm", return_value=["Python", "team player"]
+        ) as mock_call:
+            result = asyncio.run(extractor.extract(description, use_cache=True))
+            assert "Python" in result
+            assert "team player" not in result
+            mock_call.assert_called_once()
+
+        cache_path = extractor._get_cache_path(description)
+        assert cache_path.exists()
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+        assert data["skills"] == ["Python"]
 
     def test_llm_failure_returns_empty_list(self, extractor: LLMSkillExtractor) -> None:
         """LLM failure returns [] and does not crash."""
