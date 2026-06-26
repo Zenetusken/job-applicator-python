@@ -429,6 +429,7 @@ class HelpScreen(_FadeModalScreen[None]):
             "",
             "[bold]Navigate[/bold]",
             "  ↑ ↓ · j k   move selection",
+            "  h l         scroll the job table sideways (when columns overflow)",
             "  ] \\[         scroll the posting / detail pane",  # \\[ → literal '[' (not a tag)
             "  /           filter title/company · Esc clears all filters",
             "  f           filter by funnel stage (cycles)",
