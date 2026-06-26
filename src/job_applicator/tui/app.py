@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, ClassVar, TypeVar
 from rich.markup import escape
 from rich.text import Text
 from textual import work
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, ScreenStackError
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, VerticalScroll
 from textual.css.query import NoMatches
@@ -165,7 +165,10 @@ class JobApplicatorApp(App[None]):
        OptionList default all-side border (which otherwise eats 2 rows / shrinks the list);
        keep only the right divider between the list and the detail pane. */
     #joblist { width: 45%; height: 1fr; border: none; border-right: solid $panel; padding: 0; }
-    #detail { width: 1fr; padding: 0 1; }
+    /* max-width caps the reading measure: a full-pane-wide description line (~110 cols on a
+       wide terminal) is hard to read; ~90 is a comfortable column. Narrower terminals are
+       unaffected (pane < 90). */
+    #detail { width: 1fr; max-width: 90; padding: 0 1; }
     #filter { dock: bottom; display: none; border: round $accent; }
     #filter.visible { display: block; }
     """
@@ -401,6 +404,7 @@ class JobApplicatorApp(App[None]):
         if s.job.location:
             meta += f" · {s.job.location}"
         card.append(meta, style="dim")
+        card.append("\n")  # trailing blank line → visual gap between cards
         return card
 
     def _repaint(self) -> None:
@@ -431,18 +435,32 @@ class JobApplicatorApp(App[None]):
     def _statusline(self) -> str:
         if self._load_error:
             return f"[red]⚠ {escape(self._load_error)}[/red]"
-        # Pre-styled sentinel when unset (the default first-run state); escape() only the
-        # real path, never the sentinel's own markup.
+        # Show the résumé/style-guide BASENAME (the full path is long and ate the whole line);
+        # the pre-styled sentinel stays as-is when unset (escape only the real value).
         path = self._settings.resume_path
-        resume = f"[cyan]{escape(path)}[/cyan]" if path else "[dim]not set — press 'e' to set[/dim]"
+        resume = (
+            f"[cyan]{escape(Path(path).name)}[/cyan]"
+            if path
+            else "[dim]not set — press 'e' to set[/dim]"
+        )
         sg_path = self._settings.style_guide_path
-        style = f"[cyan]{escape(sg_path)}[/cyan]" if sg_path else "[dim]none — press 'g'[/dim]"
+        style = (
+            f"[cyan]{escape(Path(sg_path).name)}[/cyan]"
+            if sg_path
+            else "[dim]none — press 'g'[/dim]"
+        )
         if self._busy:  # a worker is running — show live progress instead of static counts
             return f"Résumé {resume}   Style: {style}\n[yellow]⏳ {escape(self._busy)}[/yellow]"
-        # Line 2 carries ONLY the view controls with no other home: sort, the board/salary/text
-        # filters, and the resulting "N shown". Per-stage counts and the active stage now live on
-        # the tabs, so repeating them here would just duplicate the tab bar.
-        view = [f"sort: {_SORT_LABEL[self._sort_mode]}"]
+        # Line 2 carries the position (row N/M), the sort, the board/salary/text filters, and the
+        # resulting "N shown". Per-stage counts and the active stage live on the tabs.
+        view: list[str] = []
+        try:  # current position in the list (updates on every cursor move; see the highlight hook)
+            jobs = self.query_one("#joblist", JobList)
+            if jobs.highlighted is not None and jobs.option_count:
+                view.append(f"{jobs.highlighted + 1}/{jobs.option_count}")
+        except (NoMatches, ScreenStackError):  # not mounted yet (e.g. a unit-test _statusline call)
+            pass
+        view.append(f"sort: {_SORT_LABEL[self._sort_mode]}")
         if self._board_filter is not None:
             view.append(f"board: {JobBoard(self._board_filter).display_name}")
         if self._min_salary > 0:
@@ -552,6 +570,8 @@ class JobApplicatorApp(App[None]):
         key = event.option.id
         if key is not None:
             self._update_detail(self._by_key.get(key))
+        # Refresh the status so the "row N/M" position tracks the cursor.
+        self.query_one("#statusline", Static).update(self._statusline())
 
     def action_refresh(self) -> None:
         self._reload()

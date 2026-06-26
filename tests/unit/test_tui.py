@@ -2557,11 +2557,11 @@ async def test_tui_set_style_guide_persists_config(tmp_path: Path, monkeypatch) 
 
 
 async def test_tui_style_guide_status_line(tmp_path: Path) -> None:
-    """The status line shows the configured style guide path (or the unset hint)."""
+    """The status line shows the configured style guide (basename) or the unset hint."""
     store = JobStore(db_path=tmp_path / "applications.db")
     store.upsert_job(_job(1))
     app = JobApplicatorApp(
-        settings=AppSettings(resume_path="/cv.pdf", style_guide_path="/style.pdf"),
+        settings=AppSettings(resume_path="/docs/cv.pdf", style_guide_path="/docs/style.pdf"),
         store=store,
         app_state=MagicMock(list_recent=lambda **k: []),
     )
@@ -2569,7 +2569,7 @@ async def test_tui_style_guide_status_line(tmp_path: Path) -> None:
         await pilot.pause()
         line = app._statusline()
         assert "Style:" in line
-        assert "/style.pdf" in line
+        assert "style.pdf" in line and "/docs/" not in line  # basename only, not the full path
 
 
 def test_tui_statusline_style_guide_unset_hint() -> None:
