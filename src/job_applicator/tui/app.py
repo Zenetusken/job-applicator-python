@@ -25,6 +25,7 @@ from textual.widgets import DataTable, Footer, Input, LoadingIndicator, Static
 from job_applicator.exceptions import JobApplicatorError
 from job_applicator.models import (
     ApplicationStatus,
+    Format,
     FunnelStatus,
     JobBoard,
     parse_salary_to_annual_min,
@@ -135,7 +136,9 @@ class JobApplicatorApp(App[None]):
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh", "Refresh"),
         Binding("t", "tailor", "Tailor"),
+        Binding("T", "tailor_pdf", "Tailor PDF"),
         Binding("c", "cover_letter", "Cover letter"),
+        Binding("C", "cover_letter_pdf", "Cover PDF"),
         Binding("s", "search", "Search"),
         Binding("a", "apply", "Apply"),
         Binding("e", "set_resume", "Résumé"),
@@ -412,10 +415,21 @@ class JobApplicatorApp(App[None]):
                 f"Résumé    [@click=app.open_tailored][dim]{name}[/dim][/]"
                 "  [dim](click to open)[/dim]"
             )
+        if s.pdf_path:
+            name = escape(_elide_mid(Path(s.pdf_path).name, 40))
+            lines.append(
+                f"Résumé PDF  [@click=app.open_pdf][dim]{name}[/dim][/]  [dim](click to open)[/dim]"
+            )
         if s.cover_letter_path:
             name = escape(_elide_mid(Path(s.cover_letter_path).name, 40))
             lines.append(
                 f"Cover     [@click=app.open_cover][dim]{name}[/dim][/]  [dim](click to open)[/dim]"
+            )
+        if s.cover_letter_pdf_path:
+            name = escape(_elide_mid(Path(s.cover_letter_pdf_path).name, 40))
+            lines.append(
+                f"Cover PDF  [@click=app.open_cover_pdf][dim]{name}[/dim][/]"
+                "  [dim](click to open)[/dim]"
             )
         url = str(j.url)
         if url and "example.com/placeholder" not in url:  # hide the manual-tailor placeholder
@@ -547,6 +561,16 @@ class JobApplicatorApp(App[None]):
         """Open the cover-letter artifact for the selected job (if one was generated)."""
         s = self._current
         self._open_artifact(s.cover_letter_path if s else None, "cover letter")
+
+    def action_open_pdf(self) -> None:
+        """Open the tailored-résumé PDF for the selected job (if one was generated)."""
+        s = self._current
+        self._open_artifact(s.pdf_path if s else None, "résumé PDF")
+
+    def action_open_cover_pdf(self) -> None:
+        """Open the cover-letter PDF for the selected job (if one was generated)."""
+        s = self._current
+        self._open_artifact(s.cover_letter_pdf_path if s else None, "cover letter PDF")
 
     def _open_artifact(self, path: str | None, label: str) -> None:
         """Open a generated artifact file in YOUR default viewer (off-thread), with coherent
@@ -707,25 +731,43 @@ class JobApplicatorApp(App[None]):
         """Tailor the selected job's résumé in a background worker. Account-safe."""
         job = self._selected_job_with_resume()
         if job is not None:
-            self._tailor_worker(job)
+            self._tailor_worker(job, output_format=Format.TXT)
+
+    def action_tailor_pdf(self) -> None:
+        """Tailor and render a PDF résumé for the selected job. Account-safe."""
+        job = self._selected_job_with_resume()
+        if job is not None:
+            self._tailor_worker(job, output_format=Format.PDF)
 
     @work(exclusive=True, group="action")
-    async def _tailor_worker(self, job: JobListing) -> None:
+    async def _tailor_worker(self, job: JobListing, *, output_format: Format = Format.TXT) -> None:
         from job_applicator.tui import actions
 
-        self._set_busy(f"Tailoring {job.title}…")
+        label = (
+            f"Tailoring PDF for {job.title}…"
+            if output_format == Format.PDF
+            else f"Tailoring {job.title}…"
+        )
+        self._set_busy(label)
         try:
             tailored = await self._run_action(
                 "Tailor",
                 actions.tailor_job(
-                    self._settings, job, style_guide_path=self._settings.style_guide_path
+                    self._settings,
+                    job,
+                    style_guide_path=self._settings.style_guide_path,
+                    output_format=output_format,
                 ),
             )
         finally:
             self._set_busy("")
         if tailored is None:
             return
-        self._store.mark_tailored(job, tailored_resume_path=tailored.output_path)
+        self._store.mark_tailored(
+            job,
+            tailored_resume_path=tailored.output_path,
+            pdf_path=tailored.pdf_path,
+        )
         self._reload()
         self.notify(f"Tailored ✓  →  {tailored.output_path}", timeout=6)
 
@@ -735,13 +777,31 @@ class JobApplicatorApp(App[None]):
         job = self._selected_job_with_resume()
         if job is not None:
             tailored = self._current.tailored_resume_path if self._current else ""
-            self._cover_letter_worker(job, tailored)
+            self._cover_letter_worker(job, tailored, output_format=Format.TXT)
+
+    def action_cover_letter_pdf(self) -> None:
+        """Write a PDF cover letter for the selected job. Account-safe."""
+        job = self._selected_job_with_resume()
+        if job is not None:
+            tailored = self._current.tailored_resume_path if self._current else ""
+            self._cover_letter_worker(job, tailored, output_format=Format.PDF)
 
     @work(exclusive=True, group="action")
-    async def _cover_letter_worker(self, job: JobListing, tailored_resume_path: str) -> None:
+    async def _cover_letter_worker(
+        self,
+        job: JobListing,
+        tailored_resume_path: str,
+        *,
+        output_format: Format = Format.TXT,
+    ) -> None:
         from job_applicator.tui import actions
 
-        self._set_busy(f"Writing a cover letter for {job.title}…")
+        label = (
+            f"Writing PDF cover letter for {job.title}…"
+            if output_format == Format.PDF
+            else f"Writing a cover letter for {job.title}…"
+        )
+        self._set_busy(label)
         try:
             result = await self._run_action(
                 "Cover letter",
@@ -750,13 +810,18 @@ class JobApplicatorApp(App[None]):
                     job,
                     tailored_resume_path=tailored_resume_path,
                     style_guide_path=self._settings.style_guide_path,
+                    output_format=output_format,
                 ),
             )
         finally:
             self._set_busy("")
         if result is None:
             return
-        self._store.set_cover_letter(str(job.url), result.output_path)
+        self._store.set_cover_letter(
+            str(job.url),
+            result.output_path,
+            cover_letter_pdf_path=result.pdf_path,
+        )
         self._reload()
         self.notify(f"Cover letter ✓  →  {result.output_path}", timeout=6)
 

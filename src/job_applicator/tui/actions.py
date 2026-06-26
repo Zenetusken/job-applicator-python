@@ -15,7 +15,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from job_applicator.documents.artifacts import write_cover_letter, write_tailored
+from job_applicator.documents.artifacts import (
+    write_cover_letter,
+    write_cover_letter_pdf,
+    write_tailored,
+    write_tailored_pdf,
+)
+from job_applicator.documents.job_category import detect_job_category
+from job_applicator.models import Format
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -52,12 +59,20 @@ async def _load_style_guide(settings: AppSettings, style_guide_path: str) -> Sty
 
 
 async def tailor_job(
-    settings: AppSettings, job: JobListing, *, style_guide_path: str = ""
+    settings: AppSettings,
+    job: JobListing,
+    *,
+    style_guide_path: str = "",
+    output_format: Format = Format.TXT,
+    template: str | None = None,
 ) -> TailoredResume:
     """Tailor the configured résumé for ``job`` (non-interactive, first version) and write
     the artifact; returns the ``TailoredResume`` with ``output_path`` set.
 
     When ``style_guide_path`` is set, the tailored résumé mimics that style.
+    ``output_format`` controls whether a text, PDF, or both artifacts are written.
+    ``template`` overrides the configured résumé PDF template when ``output_format`` is
+    ``pdf`` or ``both``.
 
     Raises ``ResumeNotFoundError`` / ``DocumentError`` / ``LLMError`` (all
     ``JobApplicatorError`` subclasses) on failure — the caller surfaces them. LLM + local
@@ -74,7 +89,31 @@ async def tailor_job(
         resume=resume_data, job=job, user_instructions="", style_guide=style
     )
     output_dir = await asyncio.to_thread(settings.ensure_output_dir)
-    await asyncio.to_thread(write_tailored, output_dir, tailored, when=datetime.now())
+    when = datetime.now()
+    category = detect_job_category(job)
+    effective_template = template or settings.output.resume_template
+
+    if output_format == Format.TXT:
+        await asyncio.to_thread(write_tailored, output_dir, tailored, when=when)
+    elif output_format == Format.PDF:
+        await write_tailored_pdf(
+            output_dir,
+            tailored,
+            settings,
+            template=effective_template,
+            category=category,
+            when=when,
+        )
+    else:  # both
+        await asyncio.to_thread(write_tailored, output_dir, tailored, when=when)
+        await write_tailored_pdf(
+            output_dir,
+            tailored,
+            settings,
+            template=effective_template,
+            category=category,
+            when=when,
+        )
     return tailored
 
 
@@ -84,6 +123,8 @@ async def cover_letter_job(
     tailored_resume_path: str = "",
     *,
     style_guide_path: str = "",
+    output_format: Format = Format.TXT,
+    template: str | None = None,
 ) -> CoverLetterResult:
     """Generate a cover letter for ``job`` from the configured résumé and write the
     artifact; returns the ``CoverLetterResult`` with ``output_path`` set.
@@ -93,6 +134,9 @@ async def cover_letter_job(
     best-effort: a read failure falls back to the original résumé.
 
     When ``style_guide_path`` is set, the letter mimics that writing style.
+    ``output_format`` controls whether a text, PDF, or both artifacts are written.
+    ``template`` overrides the configured cover-letter PDF template when ``output_format``
+    is ``pdf`` or ``both``.
 
     Raises ``JobApplicatorError`` subclasses on failure. LLM + local files only; touches
     no account.
@@ -133,7 +177,21 @@ async def cover_letter_job(
         prompt_version="1.0",
     )
     output_dir = await asyncio.to_thread(settings.ensure_output_dir)
-    await asyncio.to_thread(write_cover_letter, output_dir, result, when=datetime.now())
+    when = datetime.now()
+    category = detect_job_category(job)
+    effective_template = template or settings.output.cover_letter_template
+
+    if output_format == Format.TXT:
+        await asyncio.to_thread(write_cover_letter, output_dir, result, when=when)
+    elif output_format == Format.PDF:
+        await write_cover_letter_pdf(
+            output_dir, result, settings, template=effective_template, category=category, when=when
+        )
+    else:  # both
+        await asyncio.to_thread(write_cover_letter, output_dir, result, when=when)
+        await write_cover_letter_pdf(
+            output_dir, result, settings, template=effective_template, category=category, when=when
+        )
     return result
 
 

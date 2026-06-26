@@ -97,6 +97,7 @@ class StoredJob(BaseModel):
     tailored_resume_path: str = ""
     cover_letter_path: str = ""
     pdf_path: str = ""
+    cover_letter_pdf_path: str = ""
     source_query: str = ""
     first_seen_at: datetime
     updated_at: datetime

@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     tailored_resume_path TEXT,
     cover_letter_path TEXT,
     pdf_path TEXT,
+    cover_letter_pdf_path TEXT,
     source_query TEXT,
     first_seen_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL
@@ -114,6 +115,7 @@ class JobStore:
                 conn.executescript(_CREATE_SQL)
                 # Migration: older databases were created without pdf_path.
                 self._migrate_add_pdf_path(conn)
+                self._migrate_add_cover_letter_pdf_path(conn)
         except sqlite3.Error as exc:
             raise JobStoreError(f"Cannot initialize jobs schema: {exc}") from exc
 
@@ -123,6 +125,13 @@ class JobStore:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
         if "pdf_path" not in columns:
             conn.execute("ALTER TABLE jobs ADD COLUMN pdf_path TEXT")
+
+    @staticmethod
+    def _migrate_add_cover_letter_pdf_path(conn: sqlite3.Connection) -> None:
+        """Add the ``cover_letter_pdf_path`` column to ``jobs`` if it is missing."""
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
+        if "cover_letter_pdf_path" not in columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN cover_letter_pdf_path TEXT")
 
     # ------------------------------------------------------------------ writes
     def upsert_job(self, job: JobListing, *, source_query: str = "") -> None:
@@ -245,6 +254,7 @@ class JobStore:
         tailored_resume_path: str,
         cover_letter_path: str = "",
         pdf_path: str = "",
+        cover_letter_pdf_path: str = "",
     ) -> None:
         """Record that a job has been tailored (upsert + advance the funnel stage).
 
@@ -265,8 +275,9 @@ class JobStore:
                         job_url, title, company, board, location, salary, seniority,
                         description, requirements, funnel_status,
                         tailored_resume_path, cover_letter_path, pdf_path,
+                        cover_letter_pdf_path,
                         first_seen_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(job_url) DO UPDATE SET
                         title=excluded.title,
                         company=excluded.company,
@@ -282,6 +293,8 @@ class JobStore:
                         cover_letter_path=COALESCE(
                             NULLIF(excluded.cover_letter_path, ''), jobs.cover_letter_path),
                         pdf_path=COALESCE(NULLIF(excluded.pdf_path, ''), jobs.pdf_path),
+                        cover_letter_pdf_path=COALESCE(
+                            NULLIF(excluded.cover_letter_pdf_path, ''), jobs.cover_letter_pdf_path),
                         updated_at=excluded.updated_at
                     """,
                     (
@@ -298,6 +311,7 @@ class JobStore:
                         tailored_resume_path,
                         cover_letter_path,
                         pdf_path,
+                        cover_letter_pdf_path,
                         now,
                         now,
                     ),
@@ -305,17 +319,32 @@ class JobStore:
         except sqlite3.Error as exc:
             raise JobStoreError(f"Cannot record tailored job: {exc}") from exc
 
-    def set_cover_letter(self, job_url: str, cover_letter_path: str) -> None:
+    def set_cover_letter(
+        self,
+        job_url: str,
+        cover_letter_path: str,
+        *,
+        cover_letter_pdf_path: str = "",
+    ) -> None:
         """Record a generated cover letter: store its path and advance the stage to
-        ``cover_letter`` (the furthest head stage). The job must already exist."""
+        ``cover_letter`` (the furthest head stage). The job must already exist.
+        Optionally records a cover-letter PDF path as well.
+        """
         now = _now()
         try:
             with self._connect() as conn:
-                conn.execute(
-                    "UPDATE jobs SET cover_letter_path = ?, funnel_status = 'cover_letter', "
-                    "updated_at = ? WHERE job_url = ?",
-                    (cover_letter_path, now, job_url),
-                )
+                if cover_letter_pdf_path:
+                    conn.execute(
+                        "UPDATE jobs SET cover_letter_path = ?, cover_letter_pdf_path = ?, "
+                        "funnel_status = 'cover_letter', updated_at = ? WHERE job_url = ?",
+                        (cover_letter_path, cover_letter_pdf_path, now, job_url),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE jobs SET cover_letter_path = ?, funnel_status = 'cover_letter', "
+                        "updated_at = ? WHERE job_url = ?",
+                        (cover_letter_path, now, job_url),
+                    )
         except sqlite3.Error as exc:
             raise JobStoreError(f"Cannot record cover letter: {exc}") from exc
 
@@ -404,6 +433,7 @@ class JobStore:
             tailored_resume_path=row["tailored_resume_path"] or "",
             cover_letter_path=row["cover_letter_path"] or "",
             pdf_path=row["pdf_path"] or "",
+            cover_letter_pdf_path=row["cover_letter_pdf_path"] or "",
             source_query=row["source_query"] or "",
             first_seen_at=datetime.fromisoformat(row["first_seen_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
