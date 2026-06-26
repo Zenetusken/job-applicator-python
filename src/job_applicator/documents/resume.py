@@ -325,6 +325,7 @@ class ResumeLoader:
         """Parse raw text into structured ResumeData."""
         lines = text.strip().split("\n")
         name = lines[0].strip() if lines else ""
+        name = re.sub(r"^[*_]+|[*_]+$", "", name).strip()
 
         # Extract email
         email_match = re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", text)

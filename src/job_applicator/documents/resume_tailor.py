@@ -647,8 +647,12 @@ class ResumeTailor:
         from job_applicator.embeddings.matching import JobMatcher
 
         if matcher is None:
-            matcher = JobMatcher(EmbeddingConfig(device="cpu", memory_limit_gb=0.5))
-        match_result = matcher.match_resume_to_job(resume, job)
+            matcher = JobMatcher(
+                EmbeddingConfig(device="cpu", memory_limit_gb=0.5),
+                self._config,
+                self._runtime,
+            )
+        match_result = await matcher.match_resume_to_job(resume, job)
 
         logger.info("Current match: %.0f%%", match_result.score * 100)
 
@@ -694,6 +698,7 @@ class ResumeTailor:
             tailored_text, resume.raw_text, job.requirements
         )
         tailored_text = self._strip_hallucinated_education(tailored_text, resume.raw_text)
+        tailored_text = self._strip_empty_certifications_languages(tailored_text, resume.raw_text)
         changes = await self._summarize_changes(resume.raw_text, tailored_text)
 
         return TailoredResume(
@@ -777,6 +782,9 @@ class ResumeTailor:
             refined_text, original_resume.raw_text, job.requirements
         )
         refined_text = self._strip_hallucinated_education(refined_text, original_resume.raw_text)
+        refined_text = self._strip_empty_certifications_languages(
+            refined_text, original_resume.raw_text
+        )
         changes = await self._summarize_changes(current_tailored.tailored_text, refined_text)
 
         # Recompute match scores against the refined text
@@ -784,7 +792,11 @@ class ResumeTailor:
         from job_applicator.embeddings.matching import JobMatcher
 
         if matcher is None:
-            matcher = JobMatcher(EmbeddingConfig(device="cpu", memory_limit_gb=0.5))
+            matcher = JobMatcher(
+                EmbeddingConfig(device="cpu", memory_limit_gb=0.5),
+                self._config,
+                self._runtime,
+            )
 
         synthetic_resume = ResumeData(
             raw_text=refined_text,
@@ -796,7 +808,7 @@ class ResumeTailor:
             experience=original_resume.experience,
             education=original_resume.education,
         )
-        new_match = matcher.match_resume_to_job(synthetic_resume, job)
+        new_match = await matcher.match_resume_to_job(synthetic_resume, job)
 
         return TailoredResume(
             original_path=current_tailored.original_path,
@@ -1093,6 +1105,47 @@ class ResumeTailor:
 
             # Skip education content
             if in_education:
+                continue
+
+            result_lines.append(line)
+
+        return "\n".join(result_lines)
+
+    def _strip_empty_certifications_languages(self, tailored: str, original: str) -> str:
+        """Remove Certifications/Languages sections if they weren't in the original resume."""
+        import re
+
+        sections_to_strip: list[str] = []
+        if not re.search(r"\bCERTIFICATIONS\b", original, re.IGNORECASE):
+            sections_to_strip.append("CERTIFICATIONS")
+        if not re.search(r"\bLANGUAGES\b", original, re.IGNORECASE):
+            sections_to_strip.append("LANGUAGES")
+        if not sections_to_strip:
+            return tailored
+
+        lines = tailored.split("\n")
+        result_lines: list[str] = []
+        in_section = False
+
+        for line in lines:
+            stripped = line.strip()
+
+            # Detect one of the target section headers (with optional markdown bold)
+            if any(
+                re.match(rf"^\*{{0,2}}\s*{section}\s*\*{{0,2}}$", stripped, re.IGNORECASE)
+                for section in sections_to_strip
+            ):
+                in_section = True
+                continue
+
+            # Detect next section header (end of the empty section)
+            if in_section and _looks_like_section_header(stripped):
+                in_section = False
+                result_lines.append(line)
+                continue
+
+            # Skip empty-section content
+            if in_section:
                 continue
 
             result_lines.append(line)

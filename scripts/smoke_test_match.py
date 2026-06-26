@@ -17,23 +17,48 @@ INDEED_JOBS = [
         "title": "Technical Support Specialist",
         "company": "CGI",
         "url": "https://ca.indeed.com/viewjob?jk=1234567890abc",
-        "description": "Provide technical support to clients via phone, email and chat. Troubleshoot hardware and software issues. Use ticketing systems like ServiceNow. 3+ years experience required.",
-        "requirements": ["Technical Support", "Troubleshooting", "ServiceNow", "Windows", "Office 365"],
+        "description": (
+            "Provide technical support to clients via phone, email and chat. "
+            "Troubleshoot hardware and software issues. "
+            "Use ticketing systems like ServiceNow. "
+            "3+ years experience required."
+        ),
+        "requirements": [
+            "Technical Support",
+            "Troubleshooting",
+            "ServiceNow",
+            "Windows",
+            "Office 365",
+        ],
         "location": "Montreal, QC",
     },
     {
         "title": "IT Support Analyst",
         "company": "Desjardins",
         "url": "https://ca.indeed.com/viewjob?jk=2345678901bcd",
-        "description": "Support enterprise users with Microsoft 365, Active Directory, and networking issues. Excellent communication skills required. Bilingual French/English.",
-        "requirements": ["Microsoft 365", "Active Directory", "Networking", "French", "Customer Service"],
+        "description": (
+            "Support enterprise users with Microsoft 365, Active Directory, "
+            "and networking issues. Excellent communication skills required. "
+            "Bilingual French/English."
+        ),
+        "requirements": [
+            "Microsoft 365",
+            "Active Directory",
+            "Networking",
+            "French",
+            "Customer Service",
+        ],
         "location": "Montreal, QC",
     },
     {
         "title": "Help Desk Technician",
         "company": "Bell Canada",
         "url": "https://ca.indeed.com/viewjob?jk=3456789012cde",
-        "description": "Handle inbound technical support calls. Diagnose and resolve internet, TV, and phone issues. Must meet daily KPIs.",
+        "description": (
+            "Handle inbound technical support calls. "
+            "Diagnose and resolve internet, TV, and phone issues. "
+            "Must meet daily KPIs."
+        ),
         "requirements": ["Phone Support", "Troubleshooting", "Customer Service", "KPIs", "Sales"],
         "location": "Montreal, QC",
     },
@@ -41,15 +66,29 @@ INDEED_JOBS = [
         "title": "Desktop Support Specialist",
         "company": "National Bank of Canada",
         "url": "https://ca.indeed.com/viewjob?jk=4567890123def",
-        "description": "Provide Level 1 and Level 2 desktop support. Manage Windows 10/11 deployments. Support Office 365 and Teams. On-site role.",
-        "requirements": ["Desktop Support", "Windows 10", "Office 365", "Microsoft Teams", "Active Directory"],
+        "description": (
+            "Provide Level 1 and Level 2 desktop support. "
+            "Manage Windows 10/11 deployments. "
+            "Support Office 365 and Teams. On-site role."
+        ),
+        "requirements": [
+            "Desktop Support",
+            "Windows 10",
+            "Office 365",
+            "Microsoft Teams",
+            "Active Directory",
+        ],
         "location": "Montreal, QC",
     },
     {
         "title": "Customer Service Representative - IT",
         "company": "Telus International",
         "url": "https://ca.indeed.com/viewjob?jk=5678901234efg",
-        "description": "Provide customer support for technical products. Handle calls, emails and chat. Training provided. Remote position.",
+        "description": (
+            "Provide customer support for technical products. "
+            "Handle calls, emails and chat. "
+            "Training provided. Remote position."
+        ),
         "requirements": ["Customer Service", "Communication", "Remote Work", "Computer Skills"],
         "location": "Remote, QC",
     },
@@ -57,7 +96,10 @@ INDEED_JOBS = [
         "title": "Systems Administrator",
         "company": "Ubisoft Montreal",
         "url": "https://ca.indeed.com/viewjob?jk=6789012345fgh",
-        "description": "Manage Windows and Linux servers. Monitor system performance. Implement security patches. 5+ years experience required.",
+        "description": (
+            "Manage Windows and Linux servers. Monitor system performance. "
+            "Implement security patches. 5+ years experience required."
+        ),
         "requirements": ["Windows Server", "Linux", "Networking", "Security", "Monitoring"],
         "location": "Montreal, QC",
     },
@@ -65,15 +107,27 @@ INDEED_JOBS = [
         "title": "IT Field Technician",
         "company": "Staples Business Advantage",
         "url": "https://ca.indeed.com/viewjob?jk=7890123456ghi",
-        "description": "Travel to client sites to install, configure, and troubleshoot hardware and software. Must have valid driver's license.",
-        "requirements": ["Hardware Repair", "Software Installation", "Networking", "Driver License", "Travel"],
+        "description": (
+            "Travel to client sites to install, configure, and troubleshoot "
+            "hardware and software. Must have valid driver's license."
+        ),
+        "requirements": [
+            "Hardware Repair",
+            "Software Installation",
+            "Networking",
+            "Driver License",
+            "Travel",
+        ],
         "location": "Montreal, QC",
     },
     {
         "title": "Junior Network Technician",
         "company": "Videotron",
         "url": "https://ca.indeed.com/viewjob?jk=8901234567hij",
-        "description": "Support network infrastructure. Troubleshoot connectivity issues. Work with routers, switches, and firewalls. Entry level position.",
+        "description": (
+            "Support network infrastructure. Troubleshoot connectivity issues. "
+            "Work with routers, switches, and firewalls. Entry level position."
+        ),
         "requirements": ["Networking", "TCP/IP", "Troubleshooting", "Cisco", "Customer Service"],
         "location": "Montreal, QC",
     },
@@ -132,7 +186,7 @@ async def main():
 
     try:
         matcher = JobMatcher(config)
-        matches = matcher.rank_jobs(resume, jobs, top_k=len(jobs))
+        matches = await matcher.rank_jobs(resume, jobs, top_k=len(jobs))
         print(f"  ✓ Matched {len(matches)} jobs using embeddings")
     except Exception as e:
         print(f"  ⚠ Embedding failed ({e}), using simple text matching...")
@@ -145,8 +199,8 @@ async def main():
     for i, match in enumerate(matches, 1):
         score = match.score
         job = match.job
-        matched = match.matched_skills if hasattr(match, 'matched_skills') else match.matched
-        missing = match.missing_skills if hasattr(match, 'missing_skills') else match.missing
+        matched = match.matched_skills if hasattr(match, "matched_skills") else match.matched
+        missing = match.missing_skills if hasattr(match, "missing_skills") else match.missing
 
         # Score styling
         if score >= 0.7:
@@ -190,12 +244,9 @@ def simple_text_match(resume, jobs):
 
     results = []
     resume_text = resume.raw_text.lower()
-    resume_skills = [s.lower().strip() for s in resume.skills if s.strip() and s.strip() != '•']
+    resume_skills = [s.lower().strip() for s in resume.skills if s.strip() and s.strip() != "•"]
 
     for job in jobs:
-        # Simple keyword matching
-        job_text = (job.description + " " + " ".join(job.requirements)).lower()
-
         # Count skill matches
         matched = []
         missing = []
@@ -212,12 +263,14 @@ def simple_text_match(resume, jobs):
         else:
             score = 0.5  # Default if no requirements
 
-        results.append(SimpleMatch(
-            job=job,
-            score=score,
-            matched=matched,
-            missing=missing,
-        ))
+        results.append(
+            SimpleMatch(
+                job=job,
+                score=score,
+                matched=matched,
+                missing=missing,
+            )
+        )
 
     results.sort(key=lambda x: x.score, reverse=True)
     return results

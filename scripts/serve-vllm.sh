@@ -55,6 +55,31 @@ RESTART="${RESTART:-0}"
 # extra throughput from cudagraphs.
 ENFORCE_EAGER="${ENFORCE_EAGER:-1}"
 
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+    cat <<USAGE
+Usage: scripts/serve-vllm.sh [OPTIONS]
+
+Self-host an OpenAI-compatible vLLM endpoint for job-applicator.
+
+Environment variables:
+  MODEL           model id (default: cyankiwi/Qwen3.5-4B-AWQ-4bit)
+  HOST            bind address (default: 127.0.0.1)
+  PORT            bind port (default: 8000)
+  GPU_MEM         GPU memory fraction (default: 0.70)
+  MAX_MODEL_LEN   context length (default: 8192)
+  VLLM_BIN        path to vllm executable (default: .venv/bin/vllm)
+  TOOL_CALL_PARSER tool-call parser (default: auto-detected for Qwen3/Qwen3.5)
+  ENFORCE_EAGER   disable CUDA graphs (default: 1)
+  RESTART         set to 1 to stop an existing process on PORT first
+
+Examples:
+  scripts/serve-vllm.sh
+  MODEL=meta-llama/Llama-3.1-8B-Instruct scripts/serve-vllm.sh
+  RESTART=1 scripts/serve-vllm.sh
+USAGE
+    exit 0
+fi
+
 # Default to job-applicator's own vLLM binary so we control the CUDA/runtime
 # stack independently. Override VLLM_BIN to share a distribution from another
 # venv without modifying that other project.

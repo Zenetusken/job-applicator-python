@@ -259,8 +259,8 @@ async def test_e3_pre_tailor_match_score():
         board=JobBoard.LINKEDIN,
     )
 
-    good_match = matcher.match_resume_to_job(resume, good_job)
-    bad_match = matcher.match_resume_to_job(resume, bad_job)
+    good_match = await matcher.match_resume_to_job(resume, good_job)
+    bad_match = await matcher.match_resume_to_job(resume, bad_job)
 
     report("E3", "good match score computed", good_match.score > 0, f"score={good_match.score:.3f}")
     report("E3", "bad match score computed", bad_match.score >= 0, f"score={bad_match.score:.3f}")
@@ -487,7 +487,7 @@ async def test_live_pipeline_tier2():
 
     # E3: Pre-tailor match score
     matcher = JobMatcher(embed_config)
-    match = matcher.match_resume_to_job(resume, job)
+    match = await matcher.match_resume_to_job(resume, job)
     report("LIVE", "E3: pre-tailor match score", match.score > 0, f"score={match.score:.3f}")
 
     # A9: Tailor with few-shot examples (LLM call)

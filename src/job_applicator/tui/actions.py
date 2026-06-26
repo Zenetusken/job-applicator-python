@@ -250,7 +250,7 @@ async def search_jobs(
     if settings.resume_path and jobs:
         progress(f"Scoring {len(jobs)} job(s) against your résumé…")
         try:
-            matches = await asyncio.to_thread(_score_jobs, settings, jobs)
+            matches = await _score_jobs(settings, jobs)
         except Exception:
             logger.warning("search: scoring failed; persisting jobs unscored", exc_info=True)
     if matches is not None:
@@ -265,13 +265,16 @@ async def search_jobs(
     return len(jobs)
 
 
-def _score_jobs(settings: AppSettings, jobs: list[JobListing]) -> list[MatchResult]:
-    """Load the résumé and rank ``jobs`` against it (sync, CPU/GPU — call via to_thread)."""
+async def _score_jobs(settings: AppSettings, jobs: list[JobListing]) -> list[MatchResult]:
+    """Load the résumé and rank ``jobs`` against it."""
     from job_applicator.documents.resume import ResumeLoader
     from job_applicator.embeddings.matching import JobMatcher
+    from job_applicator.factories import _make_runtime
 
-    resume = ResumeLoader().load(settings.resume_path)
-    return JobMatcher(settings.embedding).rank_jobs(resume, jobs, len(jobs))
+    resume = await asyncio.to_thread(ResumeLoader().load, settings.resume_path)
+    runtime = _make_runtime(settings, name="tui-score")
+    matcher = JobMatcher(settings.embedding, settings.llm, runtime)
+    return await matcher.rank_jobs(resume, jobs, len(jobs))
 
 
 async def apply_job(settings: AppSettings, job: JobListing, *, submit: bool) -> ApplicationResult:

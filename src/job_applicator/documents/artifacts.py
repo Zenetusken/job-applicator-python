@@ -119,7 +119,10 @@ async def write_tailored_pdf(
         raise PDFRenderError(f"Failed to render tailored PDF: {exc}") from exc
     if not rendered.exists():
         raise PDFRenderError(f"Renderer did not write a PDF at {rendered}")
-    tailored.pdf_path = str(rendered)
+    rendered_str = str(rendered)
+    tailored.pdf_path = rendered_str
+    if not tailored.output_path:
+        tailored.output_path = rendered_str
     if write_meta:
         _write_text(rendered.with_suffix(".meta.json"), tailored.model_dump_json(indent=2))
     return rendered
@@ -160,7 +163,10 @@ async def write_cover_letter_pdf(
         raise PDFRenderError(f"Failed to render cover-letter PDF: {exc}") from exc
     if not rendered.exists():
         raise PDFRenderError(f"Renderer did not write a PDF at {rendered}")
-    result.pdf_path = str(rendered)
+    rendered_str = str(rendered)
+    result.pdf_path = rendered_str
+    if not result.output_path:
+        result.output_path = rendered_str
     if write_meta:
         _write_text(rendered.with_suffix(".meta.json"), result.model_dump_json(indent=2))
     return rendered

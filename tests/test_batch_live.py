@@ -85,7 +85,7 @@ async def test_batch_live() -> bool:
     # Step 1: Match and rank
     console.print("[bold]Step 1: Match and rank[/]")
     matcher = JobMatcher(EmbeddingConfig())
-    matches = matcher.rank_jobs(resume, jobs, top_k=3)
+    matches = await matcher.rank_jobs(resume, jobs, top_k=3)
     for m in matches:
         console.print(f"  {m.job.title} at {m.job.company}: {m.score:.3f}")
 

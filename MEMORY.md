@@ -39,7 +39,7 @@ _Last synced: 2026-06-25_
 
 - Pydantic models cross module boundaries, never dicts. All exceptions subclass `JobApplicatorError`.
 - Async for I/O, sync for CPU. Config centralized in `AppSettings`; no global mutable state.
-- Combined match score = 60% semantic + 40% skill coverage. Skill semantic threshold 0.55.
+- Combined match score = 60% semantic + 40% skill coverage. Skill semantic threshold 0.75 (retuned in v0.3.5 to separate genuine synonyms from same-domain false positives).
 - Skills are normalized before matching/validation (`Python 3` → `Python`, `reactjs` → `React`); generic traits (`team player`, `communication`) are hard-negative filtered so they don't distort skill scores.
 - Apply is dry-run by default; `--submit` opt-in required. Dry runs generate cover letters as a preview whenever `--cover-letter` is enabled and a résumé path is configured; the generated text is surfaced in `--json` output and in the console table. `--validate` exits non-zero if a dry run doesn't reach the Submit button. `DryRunValidation` records reachability, fields filled, resume upload, and cover-letter field presence.
 - LLM via litellm + instructor; **client of an external** OpenAI-compatible endpoint (`[llm] api_base`,

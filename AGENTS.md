@@ -107,7 +107,7 @@ src/job_applicator/
   singletons are intentional: Rich consoles (`utils/console.py`) and default DB paths
   (`jobs_store.py`, `state.py`, `batch_state.py`).
 - **Pydantic models reject unknown fields by default.** `model_config = {"extra": "forbid"}` is the
-  norm. (`documents/cover_letter.py::CoverLetterOutput` currently lacks this.)
+  norm. (`documents/cover_letter.py::CoverLetterOutput` now uses it as of v0.3.5.)
 - **Use `from typing import TYPE_CHECKING` for imports needed only for annotations.**
 
 ## Style

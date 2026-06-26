@@ -200,7 +200,7 @@ class TestResumeTailor:
             summary="Good match",
         )
         mock_matcher = MagicMock()
-        mock_matcher.match_resume_to_job.return_value = mock_match
+        mock_matcher.match_resume_to_job = AsyncMock(return_value=mock_match)
 
         with patch(
             "litellm.acompletion",
@@ -234,7 +234,7 @@ class TestResumeTailor:
             summary="Strong match",
         )
         mock_matcher = MagicMock()
-        mock_matcher.match_resume_to_job.return_value = mock_match
+        mock_matcher.match_resume_to_job = AsyncMock(return_value=mock_match)
 
         with patch(
             "litellm.acompletion",
@@ -278,7 +278,7 @@ class TestResumeTailor:
             summary="Strong match",
         )
         mock_matcher = MagicMock()
-        mock_matcher.match_resume_to_job.return_value = mock_match
+        mock_matcher.match_resume_to_job = AsyncMock(return_value=mock_match)
 
         with patch(
             "litellm.acompletion",
@@ -828,3 +828,39 @@ async def test_refine_passes_style_guide_to_prompt(sample_resume, sample_job):
     style_section = StyleAnalyzer.format_style_for_prompt(style)
     assert style_section in captured_prompt
     assert "Maintain this writing style" in captured_prompt
+
+
+class TestEmptySectionStripping:
+    """Tests for removing empty Certifications/Languages sections."""
+
+    def test_strip_empty_certifications_languages_removes_both_when_absent(self, llm_config):
+        tailor = ResumeTailor(llm_config)
+        original = "Name\nSkills\nPython\nExperience\nJob"
+        tailored = (
+            "Name\n"
+            "Skills\nPython\n"
+            "Experience\nJob\n"
+            "**Certifications**\n"
+            "**Languages**\n"
+            "References\nAvailable"
+        )
+        result = tailor._strip_empty_certifications_languages(tailored, original)
+        assert "**Certifications**" not in result
+        assert "**Languages**" not in result
+        assert "Skills" in result
+        assert "Experience" in result
+        assert "References" in result
+
+    def test_strip_empty_certifications_keeps_section_when_original_has_it(self, llm_config):
+        tailor = ResumeTailor(llm_config)
+        original = "Name\nCertifications\nAWS CPA\n"
+        tailored = "Name\n**Certifications**\nAWS CPA\n"
+        result = tailor._strip_empty_certifications_languages(tailored, original)
+        assert "**Certifications**" in result
+
+    def test_strip_empty_languages_keeps_section_when_original_has_it(self, llm_config):
+        tailor = ResumeTailor(llm_config)
+        original = "Name\nLanguages\nEnglish, French\n"
+        tailored = "Name\n**Languages**\nEnglish, French\n"
+        result = tailor._strip_empty_certifications_languages(tailored, original)
+        assert "**Languages**" in result
