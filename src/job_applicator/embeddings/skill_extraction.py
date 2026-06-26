@@ -55,6 +55,16 @@ SKILL_USER_PROMPT = "{}"
 
 MAX_DESCRIPTION_LENGTH = 1500
 
+# Adjacent tokens that look like version numbers ("8", "18", "3.x", "3.11")
+# should not turn a single-word skill into a rejected compound.
+_VERSION_LIKE_RE = re.compile(r"^\d+(?:\.\d+)*[a-z]?$", re.IGNORECASE)
+
+
+def _is_version_like(token: str) -> bool:
+    """Return True when ``token`` is purely numeric/version-like."""
+    return bool(_VERSION_LIKE_RE.match(token))
+
+
 # Common English words that cannot form the second word of a multi-word skill
 # compound. This keeps the hallucination guard from rejecting a single-word
 # skill just because it happens to be followed by a function word in prose.
@@ -452,7 +462,7 @@ class LLMSkillExtractor:
             if i + 1 >= len(tokens):
                 continue
             next_token = tokens[i + 1]
-            if next_token.lower() in _STOPWORDS:
+            if next_token.lower() in _STOPWORDS or _is_version_like(next_token):
                 continue
             multi_word_forms.add(f"{token.lower()} {next_token.lower()}")
 
@@ -471,6 +481,8 @@ class LLMSkillExtractor:
                     next_word_match = re.match(r"\s+(\w+(?:\.\w+)*)\b", tail)
                     if next_word_match:
                         next_word = next_word_match.group(1)
+                        if _is_version_like(next_word):
+                            return True
                         compound = f"{stripped.lower()} {next_word.lower()}"
                         if compound in multi_word_forms:
                             continue
