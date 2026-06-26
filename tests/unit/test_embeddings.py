@@ -437,7 +437,7 @@ class TestLLMSkillExtractor:
         """React inside React Native is rejected; React Native explicit is kept."""
         import asyncio
 
-        description_lower = "we are hiring a react native engineer."
+        description_lower = "we are hiring a React Native engineer."
         with patch.object(
             extractor,
             "_call_llm",
@@ -456,6 +456,21 @@ class TestLLMSkillExtractor:
         ):
             result = asyncio.run(extractor.extract(description_explicit, use_cache=False))
             assert "React Native" in result
+
+    def test_common_word_after_skill_does_not_reject_it(self, extractor: LLMSkillExtractor) -> None:
+        """A lowercase common word after a skill must not create a pseudo-compound."""
+        import asyncio
+
+        description = "Experience with Kubernetes is required."
+        with patch.object(
+            extractor,
+            "_call_llm",
+            return_value=_ExtractionResult(
+                skills=["Kubernetes"], method="instructor", fallback=False
+            ),
+        ):
+            result = asyncio.run(extractor.extract(description, use_cache=False))
+            assert "Kubernetes" in result
 
     def test_single_word_skill_followed_by_common_word_is_grounded(
         self, extractor: LLMSkillExtractor

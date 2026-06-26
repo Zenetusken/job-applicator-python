@@ -464,6 +464,12 @@ class LLMSkillExtractor:
             next_token = tokens[i + 1]
             if next_token.lower() in _STOPWORDS or _is_version_like(next_token):
                 continue
+            # Only form a pseudo-compound when the following word is capitalized,
+            # which signals a proper noun / real multi-word skill (e.g. "React Native",
+            # "Azure DevOps"). Lowercase common words like "experience" or "required"
+            # should not turn a single-word skill into a rejected compound.
+            if not next_token[0].isupper():
+                continue
             multi_word_forms.add(f"{token.lower()} {next_token.lower()}")
 
         for form in surface_forms:
