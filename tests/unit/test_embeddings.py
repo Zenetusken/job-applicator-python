@@ -537,6 +537,34 @@ class TestLLMSkillExtractor:
             result = asyncio.run(extractor.extract(description, use_cache=False))
             assert "Java" in result
 
+    def test_v_prefixed_version_number_keeps_python(self, extractor: LLMSkillExtractor) -> None:
+        """A 'v' prefix on a version number should not suppress the base skill."""
+        import asyncio
+
+        description = "Experience with Python v3.11."
+        with patch.object(
+            extractor,
+            "_call_llm",
+            return_value=_ExtractionResult(skills=["Python"], method="instructor", fallback=False),
+        ):
+            result = asyncio.run(extractor.extract(description, use_cache=False))
+            assert "Python" in result
+
+    def test_v_prefixed_version_number_keeps_pydantic(self, extractor: LLMSkillExtractor) -> None:
+        """A 'v' prefix on a version number should not suppress the base skill."""
+        import asyncio
+
+        description = "Experience with Pydantic v2."
+        with patch.object(
+            extractor,
+            "_call_llm",
+            return_value=_ExtractionResult(
+                skills=["Pydantic"], method="instructor", fallback=False
+            ),
+        ):
+            result = asyncio.run(extractor.extract(description, use_cache=False))
+            assert "Pydantic" in result
+
     def test_react_native_still_rejects_base_skill(self, extractor: LLMSkillExtractor) -> None:
         """Non-version compounds still reject the bare base skill."""
         import asyncio
