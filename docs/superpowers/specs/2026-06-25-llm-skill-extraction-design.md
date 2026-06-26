@@ -65,6 +65,7 @@ Responsibilities:
 5. Drop hard negatives with `is_hard_negative()`.
 6. Run a text-grounded hallucination guard (see below).
 7. Deduplicate and return the cleaned list.
+8. Record cache hit, cache miss, LLM call, fallback, and error events through an optional `VerboseReporter` for the command's `VerboseReport`.
 
 Edge cases handled inline: empty skill strings are dropped; duplicates are removed; corrupt cache entries are treated as misses.
 
@@ -79,10 +80,13 @@ class LLMSkillExtractor:
         description: str,
         runtime: LLMRuntime | None = None,
         use_cache: bool = True,
+        reporter: VerboseReporter | None = None,
     ) -> list[str]: ...
 ```
 
 `runtime` is injected by callers (CLI/TUI/tailor) so the circuit breaker is shared across all LLM consumers in a command. When omitted, `LLMRuntime.defaults()` is used for standalone/library use.
+
+`reporter` is optional; when provided, cache hits, misses, LLM calls, fallback paths, and errors are recorded in the command's `VerboseReport`.
 
 Cache location: `~/.job-applicator/skill-extraction/`. Cache files are JSON (`{"skills": [...]}`) keyed by a truncated MD5 hash of `f"{config.model}\x00{description}"`. The null separator prevents collisions such as `model-a` + `description-b` vs `model-ab` + `description-`. The cache is ignored when `use_cache=False`.
 
@@ -110,7 +114,7 @@ Rules:
 - Ignore soft skills such as communication, teamwork, leadership, and problem solving.
 - Ignore seniority, work arrangement, location, and compensation.
 - Do not include generic terms like "software development" unless a specific technology is named.
-- Return the result as a JSON object with a single field "skills" containing a list of strings.
+- Return ONLY a JSON object in the format {"skills": ["Skill1", "Skill2"] }.
 ```
 
 User content: the first 1 500 characters of the job description.
