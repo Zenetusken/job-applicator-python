@@ -23,6 +23,11 @@ from job_applicator.utils.retry import async_retry
 
 logger = get_logger("documents.style_analyzer")
 
+# Style analysis produces a short JSON object; cap the output budget so we do not
+# reserve a 4096-token KV slot for what is normally <1 K tokens. The user's
+# configured max_tokens is still respected if it is lower.
+STYLE_MAX_TOKENS = 1024
+
 ANALYSIS_PROMPT = """Analyze this text's writing style and return a JSON object.
 
 Required fields:
@@ -175,7 +180,10 @@ class StyleAnalyzer:
 
             model = f"openai/{self._config.model}" if self._config.api_base else self._config.model
 
-            # Try instructor first (structured output with automatic retry)
+            # Try instructor first (structured output with automatic retry).
+            # instructor defaults to TOOLS mode, which uses vLLM's tool-call
+            # parser (qwen3_xml for Qwen3.5). In our vLLM 0.23 tests this is
+            # faster and more schema-accurate than json_object or guided_json.
             try:
                 client: Any = instructor.from_litellm(acompletion)
                 response = await client.create(
@@ -188,7 +196,7 @@ class StyleAnalyzer:
                     ],
                     response_model=StyleGuide,
                     max_retries=2,
-                    max_tokens=self._config.max_tokens,
+                    max_tokens=min(self._config.max_tokens, STYLE_MAX_TOKENS),
                     temperature=0.1,
                     extra_body={
                         "chat_template_kwargs": {"enable_thinking": False},

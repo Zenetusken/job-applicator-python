@@ -24,7 +24,9 @@ Paths below are relative to the repo root.
 
 The repo set up per `.claude/skills/run-job-applicator/SKILL.md` (venv + deps). The **LIVE**
 tier additionally needs vLLM at `http://localhost:8000/v1` and the embedding model cached
-(both already true on the dev box); LIVE auto-SKIPs if vLLM is down.
+(both already true on the dev box); LIVE auto-SKIPs if vLLM is down. If self-hosting, use
+`scripts/serve-vllm.sh` (vLLM 0.23.x CUDA 13.0 wheel; defaults to the project's own binary
+with `GPU_MEM=0.70` and `ENFORCE_EAGER=1` for 12 GB cards).
 
 ## Run (agent path)
 

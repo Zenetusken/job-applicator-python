@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **vLLM stack upgrade and isolation.** The `[serve]` extra now pins `vllm>=0.23,<0.24`, which
+  pulls the CUDA 13.0 wheel on modern NVIDIA drivers. `scripts/serve-vllm.sh` now defaults to
+  job-applicator's own `.venv/bin/vllm` so its CUDA/runtime configuration is fully isolated from
+  other projects; `VLLM_BIN` can still point at a shared executable if desired.
+- `scripts/serve-vllm.sh` defaults changed for 12 GB desktop GPUs:
+  - `GPU_MEM=0.70` (was `0.60`).
+  - `ENFORCE_EAGER=1` by default. vLLM 0.23's V1 engine cudagraph profiler allocates a large
+    minimal KV-cache tensor during startup that ignores `--gpu-memory-utilization`, causing an
+    OOM on 12 GB cards with Qwen3.5-style hybrid models. Eager mode avoids this and keeps the
+    server stable. Users with more VRAM can set `ENFORCE_EAGER=0` for higher throughput.
+  - `MAX_MODEL_LEN=8192` is now exposed as an env override for tuning context length vs. memory.
+- `scripts/serve-vllm.sh` exports `LD_LIBRARY_PATH` so vLLM's optional `deep_gemm` path can find
+  the CUDA 13.0 runtime libraries shipped with the vLLM cu130 wheel.
+- Documentation (`README.md`, `AGENTS.md`, `CLAUDE.md`, `MEMORY.md`) updated to reflect the new
+  vLLM version, isolated binary defaults, and realistic 12 GB VRAM allocations.
+- `StyleAnalyzer` caps its per-call output budget at 1024 tokens (down from the global 4096
+  default). Style-guide analysis produces a short JSON object, so the lower cap reduces KV
+  reservation without affecting quality.
+- Documented why instructor's default TOOLS mode is used for structured outputs: it relies on
+  vLLM's `--tool-call-parser` (auto-set to `qwen3_xml` for Qwen3.5) and is faster and more
+  schema-accurate than `json_object` or `guided_json` in our vLLM 0.23 tests.
+
 ## [0.4.0] - 2026-06-25
 
 ### Added

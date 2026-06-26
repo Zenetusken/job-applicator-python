@@ -51,6 +51,7 @@ from job_applicator.models import (
     PDFRenderingCheck,
     SelfHostCheck,
     SystemBinariesCheck,
+    VLLMProcessCheck,
 )
 from job_applicator.utils.logging import get_logger
 
@@ -314,6 +315,107 @@ def _pdf_smoke_resume() -> FormattedResume:
     )
 
 
+def _auto_tool_parser(model_tag: str) -> str | None:
+    """Mirror of serve-vllm.sh: pick a parser for known local model families."""
+    norm = model_tag.lower()
+    if "qwen3.5" in norm or "qwen3" in norm:
+        return "qwen3_xml"
+    return None
+
+
+def _parse_api_base_port(api_base: str) -> int:
+    """Extract the port from an http://host:port/v1 style api_base."""
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(api_base)
+        return parsed.port or 8000
+    except Exception:
+        return 8000
+
+
+def check_vllm_process(settings: AppSettings) -> VLLMProcessCheck:
+    """Check whether a local vLLM process is running and whether its command line
+    matches the configuration job-applicator would start it with.
+
+    This is intentionally separate from the endpoint HTTP probe: the endpoint may
+    be a remote/cloud provider, in which case there is no local process to inspect.
+    """
+    from job_applicator.models import VLLMProcessCheck
+
+    port = _parse_api_base_port(settings.llm.api_base)
+    # Only inspect local endpoints.
+    api_base = settings.llm.api_base.lower()
+    if "localhost" not in api_base and "127.0.0.1" not in api_base:
+        return VLLMProcessCheck(running=False)
+
+    pid: int | None = None
+    # Try ss first, then netstat, then lsof as a last resort.
+    for cmd in (
+        f"ss -tlnp 2>/dev/null | grep ':{port} '",
+        f"netstat -tlnp 2>/dev/null | grep ':{port} '",
+        f"lsof -i :{port} 2>/dev/null | grep LISTEN",
+    ):
+        try:
+            import subprocess  # nosec B404
+
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)  # noqa: S602
+            if result.returncode == 0 and result.stdout.strip():
+                line = result.stdout.strip().splitlines()[0]
+                # ss/netstat: pid=1234; lsof: last column is "1234/python*"
+                for token in line.replace(",", " ").split():
+                    if token.startswith("pid="):
+                        try:
+                            pid = int(token.split("=")[1])
+                        except ValueError:
+                            pass
+                    elif token.isdigit():
+                        pid = int(token)
+                if pid:
+                    break
+        except Exception as exc:
+            logger.debug("vLLM process probe command failed: %s", exc)
+            continue
+
+    if not pid or not Path(f"/proc/{pid}").exists():
+        return VLLMProcessCheck(running=False)
+
+    try:
+        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode().strip()
+    except Exception:
+        cmdline = ""
+
+    binary_path = cmdline.split()[0] if cmdline else None
+    if "vllm serve" not in cmdline:
+        return VLLMProcessCheck(
+            running=True, pid=pid, command=cmdline, binary_path=binary_path, compatible=False
+        )
+
+    model = settings.llm.model.removeprefix("openai/")
+    desired_parser = _auto_tool_parser(model)
+    reasons: list[str] = []
+
+    if model not in cmdline:
+        reasons.append(f"serving a different model than {model}")
+    if f"--port {port}" not in cmdline:
+        reasons.append(f"not listening on port {port}")
+    if desired_parser:
+        if f"--tool-call-parser {desired_parser}" not in cmdline:
+            reasons.append(f"missing --tool-call-parser {desired_parser}")
+        if "--enable-auto-tool-choice" not in cmdline:
+            reasons.append("missing --enable-auto-tool-choice")
+
+    compatible = not reasons
+    return VLLMProcessCheck(
+        running=True,
+        pid=pid,
+        command=cmdline,
+        binary_path=binary_path,
+        compatible=compatible,
+        needs_restart_reason="; ".join(reasons) if reasons else None,
+    )
+
+
 def check_pdf_rendering() -> PDFRenderingCheck:
     """Smoke-test the PDF rendering toolchain (typst package + built-in template)."""
     try:
@@ -363,5 +465,6 @@ async def run_diagnostics(settings: AppSettings) -> DoctorReport:
         browser=browser,
         system=check_system_binaries(),
         config=check_config(settings),
+        vllm_process=check_vllm_process(settings),
         pdf_rendering=check_pdf_rendering(),
     )

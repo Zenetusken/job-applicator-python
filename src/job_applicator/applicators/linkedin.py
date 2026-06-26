@@ -87,6 +87,7 @@ class LinkedInApplicator(BaseApplicator):
                 job=job,
                 status=ApplicationStatus.FAILED,
                 error_message=str(exc),
+                cover_letter=cover_letter,
             )
 
     async def _easy_apply(

@@ -83,7 +83,10 @@ class IndeedApplicator(BaseApplicator):
         except Exception as exc:
             logger.error("Failed to apply to %s at %s: %s", job.title, job.company, exc)
             return ApplicationResult(
-                job=job, status=ApplicationStatus.FAILED, error_message=str(exc)
+                job=job,
+                status=ApplicationStatus.FAILED,
+                error_message=str(exc),
+                cover_letter=cover_letter,
             )
 
     async def check_already_applied(self, job: JobListing) -> bool:

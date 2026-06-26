@@ -36,7 +36,9 @@ serve = [
     # OPTIONAL: self-host the OpenAI-compatible LLM endpoint locally (scripts/serve-vllm.sh).
     # Normally job-applicator is just a CLIENT of an existing endpoint (see [llm] api_base);
     # install this only for a standalone box with no shared/remote LLM. Large; needs a CUDA GPU.
-    "vllm>=0.21,<0.22",
+    # The CUDA 13.0 wheel is preferred on modern drivers (NVIDIA 575+); vLLM will pull the
+    # matching torch/CUDA runtime automatically.
+    "vllm>=0.23,<0.24",
 ]
 pdf = [
     "typst>=0.15,<0.16",

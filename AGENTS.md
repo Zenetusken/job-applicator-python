@@ -147,7 +147,7 @@ src/job_applicator/
 - **Embedding cache at `~/.job-applicator/embeddings/`.** Style cache at
   `~/.job-applicator/styles/`. Clear with `EmbeddingService.clear_cache()`.
 - **`sentence-transformers` needs CUDA torch.** If you get `libcudart.so` errors, reinstall:
-  `pip install torch --index-url https://download.pytorch.org/whl/cu124`
+  `pip install torch --index-url https://download.pytorch.org/whl/cu130`
 - **Résumé PDF parser uses multi-parser consensus + OCR fallback.** Supports PDF
   (`pdftotext -layout`), DOCX, TXT/MD, and images. `ResumeLoader.load()` dispatches by extension and
   falls back to OCR when extracted text is short. OCR uses PaddleOCR on CPU by default.
@@ -227,6 +227,17 @@ curl -s http://localhost:8000/v1/models
 
 Default model: `cyankiwi/Qwen3.5-4B-AWQ-4bit`. Override via `JOB_APPLICATOR_LLM_MODEL` env var or
 `config.toml`. Default `llm.max_tokens` is `4096`.
+
+To self-host, install the `[serve]` extra (vLLM 0.23.x, CUDA 13.0 wheel) and run
+`scripts/serve-vllm.sh`. The script defaults to job-applicator's own `.venv/bin/vllm`,
+`GPU_MEM=0.70`, `MAX_MODEL_LEN=8192`, and `ENFORCE_EAGER=1` (needed on 12 GB cards to
+avoid vLLM 0.23's V1 cudagraph-profiling OOM). Override with `VLLM_BIN`, `GPU_MEM`,
+`MAX_MODEL_LEN`, and `ENFORCE_EAGER` env vars.
+
+`serve-vllm.sh` auto-sets `--tool-call-parser qwen3_xml --enable-auto-tool-choice` for Qwen3.5
+(and Qwen3) models. Cover-letter and style-guide generation use instructor in TOOLS mode, which
+needs this parser; without it they still work but fall back to direct litellm completion. The
+fallback is less reliable for structured output, so keep the parser enabled for local vLLM.
 
 ## ATS Compatibility Checking
 

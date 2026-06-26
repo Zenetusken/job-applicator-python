@@ -66,6 +66,40 @@ def test_resume_loader_recognizes_technical_skills_header(tmp_path: object) -> N
     assert "Terraform" in resume.skills
 
 
+def test_resume_loader_skips_markdown_underline_in_skills(tmp_path: object) -> None:
+    """Setext/markdown underline lines under a header must not become a skill."""
+    import pathlib
+
+    p = pathlib.Path(str(tmp_path)) / "resume.txt"
+    p.write_text(
+        "Jane Smith\njane@example.com\n\n"
+        "Skills\n------\nPython, FastAPI, PostgreSQL\n\n"
+        "Experience\nSenior Engineer at Acme"
+    )
+    loader = ResumeLoader()
+    resume = loader.load(p)
+    assert "Python" in resume.skills
+    assert "FastAPI" in resume.skills
+    assert "PostgreSQL" in resume.skills
+    assert "-----" not in resume.skills
+
+
+def test_resume_loader_skips_markdown_underline_in_summary(tmp_path: object) -> None:
+    """Setext/markdown underline lines under a Summary header must not pollute summary."""
+    import pathlib
+
+    p = pathlib.Path(str(tmp_path)) / "resume.txt"
+    p.write_text(
+        "Jane Smith\njane@example.com\n\n"
+        "Summary\n-------\nSenior backend engineer with cloud experience.\n\n"
+        "Experience\nSenior Engineer at Acme"
+    )
+    loader = ResumeLoader()
+    resume = loader.load(p)
+    assert resume.summary.startswith("Senior backend engineer")
+    assert "-----" not in resume.summary
+
+
 def test_summary_fallback_keeps_substantial_first_paragraph() -> None:
     """L-7: with no Summary/Objective header, a substantial first paragraph is the summary."""
     text = (
@@ -365,33 +399,76 @@ def test_resume_loader_directory_path_names_the_target(tmp_path: Path) -> None:
     assert tmp_path.name in str(ei.value)
 
 
+def _validation_job_and_resume() -> tuple[JobListing, ResumeData]:
+    """Return a job/company that does NOT appear on the resume."""
+    job = JobListing(
+        title="Python Dev", company="Acme", url="https://example.com/1", board=JobBoard.LINKEDIN
+    )
+    resume = ResumeData(raw_text="John Doe\nBackend engineer at OtherCorp")
+    return job, resume
+
+
 def test_cover_letter_validation_rejects_empty() -> None:
     config = LLMConfig()
     generator = CoverLetterGenerator(config)
     user = UserProfile(first_name="John", last_name="Doe", email="j@e.com", phone="")
+    job, resume = _validation_job_and_resume()
     with pytest.raises(LLMError, match="empty"):
-        generator._validate_output("   ", user)
+        generator._validate_output("   ", user, job=job, resume=resume)
 
 
 def test_cover_letter_validation_rejects_too_short() -> None:
     config = LLMConfig()
     generator = CoverLetterGenerator(config)
     user = UserProfile(first_name="John", last_name="Doe", email="j@e.com", phone="")
+    job, resume = _validation_job_and_resume()
     with pytest.raises(LLMError, match="too short"):
-        generator._validate_output("Sincerely,\nJohn Doe", user)
+        generator._validate_output("Sincerely,\nJohn Doe", user, job=job, resume=resume)
 
 
 def test_cover_letter_validation_rejects_placeholders() -> None:
     config = LLMConfig()
     generator = CoverLetterGenerator(config)
     user = UserProfile(first_name="John", last_name="Doe", email="j@e.com", phone="")
+    job, resume = _validation_job_and_resume()
     with pytest.raises(LLMError, match="placeholder"):
         generator._validate_output(
             "Dear [Hiring Manager],\n\nBody text that is long enough to pass the length check. "
             "It keeps going so the validator does not reject it for being too short.\n\n"
             "Sincerely,\nJohn Doe",
             user,
+            job=job,
+            resume=resume,
         )
+
+
+def test_cover_letter_humanize_strips_sign_off_at_top() -> None:
+    """A stray sign-off before the body is removed, keeping the valid closing."""
+    bad_letter = (
+        "Sincerely,\nJohn Doe\n\n"
+        "I have ten years of experience with Python and FastAPI. "
+        "This body is long enough to pass the minimum length check.\n\n"
+        "Sincerely,\nJohn Doe"
+    )
+    cleaned = CoverLetterGenerator._humanize(bad_letter)
+    assert cleaned.startswith("I have ten years of experience")
+    assert cleaned.endswith("Sincerely,\nJohn Doe")
+
+
+def test_cover_letter_validation_rejects_invented_employment() -> None:
+    """A letter that falsely claims employment at the target company is rejected."""
+    config = LLMConfig()
+    generator = CoverLetterGenerator(config)
+    user = UserProfile(first_name="John", last_name="Doe", email="j@e.com", phone="")
+    job, resume = _validation_job_and_resume()
+    bad_letter = (
+        "Dear Hiring Team,\n\n"
+        "I previously worked at Acme, where I led the backend team. "
+        "This body is long enough to pass the minimum length check and keep going.\n\n"
+        "Sincerely,\nJohn Doe"
+    )
+    with pytest.raises(LLMError, match="falsely claims employment"):
+        generator._validate_output(bad_letter, user, job=job, resume=resume)
 
 
 def test_cover_letter_generator_template() -> None:
@@ -745,6 +822,12 @@ def test_company_in_resume_falls_back_to_raw_text() -> None:
 def test_company_in_resume_returns_false_when_absent() -> None:
     resume = ResumeData(raw_text="Backend Engineer, Acme (2017-2021)")
     assert CoverLetterGenerator._company_in_resume("Globex", resume) is False
+
+
+def test_company_in_resume_rejects_email_domain_and_school_name() -> None:
+    """A company stem like 'example' must not match an email domain or school name."""
+    resume = ResumeData(raw_text="Jane Doe\njane@example.com\nB.S., Example University")
+    assert CoverLetterGenerator._company_in_resume("Example Corp", resume) is False
 
 
 def test_company_in_resume_empty_company_is_false() -> None:

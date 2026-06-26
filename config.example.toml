@@ -25,6 +25,11 @@ timeout_ms = 30000
 # user_agent = ""   # empty = match the host's installed Chrome major version
 
 # LLM (for AI cover letters)
+# job-applicator is a client of an OpenAI-compatible endpoint. To self-host locally,
+# install the [serve] extra (vLLM 0.23.x, CUDA 13.0 wheel) and run scripts/serve-vllm.sh.
+# The script defaults to this project's own .venv/bin/vllm, GPU_MEM=0.70,
+# MAX_MODEL_LEN=8192, and ENFORCE_EAGER=1 (avoids a cudagraph-profiling OOM on
+# 12 GB desktop GPUs).
 [llm]
 api_base = "http://localhost:8000/v1"
 api_key = "not-needed-for-local"

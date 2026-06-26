@@ -603,6 +603,19 @@ class LLMEndpointCheck(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class VLLMProcessCheck(BaseModel):
+    """Status of a local vLLM server process, if one is running."""
+
+    running: bool = False
+    pid: int | None = None
+    command: str | None = None
+    binary_path: str | None = None
+    compatible: bool = False
+    needs_restart_reason: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
 class EmbeddingsCheck(BaseModel):
     """Whether the semantic-matching embedding model is already downloaded."""
 
@@ -686,6 +699,7 @@ class DoctorReport(BaseModel):
     browser: BrowserCheck
     system: SystemBinariesCheck
     config: ConfigCheck
+    vllm_process: VLLMProcessCheck = Field(default_factory=VLLMProcessCheck)
     pdf_rendering: PDFRenderingCheck
 
     @property

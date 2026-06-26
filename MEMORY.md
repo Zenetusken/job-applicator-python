@@ -17,7 +17,8 @@ _Last synced: 2026-06-25_
   so no `--ignore-missing-imports` flag is needed.)
 - **Install:** `python3.12 -m venv .venv && pip install -e ".[dev]"`. Optional extras:
   `[pdf]` (Typst PDF rendering), `[embeddings]` (sentence-transformers + CUDA torch),
-  `[browser]` (browser-cookie3, for `import-cookies --from-browser`) — none required for the gates.
+  `[browser]` (browser-cookie3, for `import-cookies --from-browser`), `[serve]`
+  (vLLM 0.23.x CUDA 13.0 wheel for self-hosting) — none required for the gates.
 - **Browser flows:** `playwright install chromium` once.
 
 ## Architecture (single source of truth: AGENTS.md)
@@ -42,9 +43,12 @@ _Last synced: 2026-06-25_
 - Skills are normalized before matching/validation (`Python 3` → `Python`, `reactjs` → `React`); generic traits (`team player`, `communication`) are hard-negative filtered so they don't distort skill scores.
 - Apply is dry-run by default; `--submit` opt-in required. Dry runs generate cover letters as a preview whenever `--cover-letter` is enabled and a résumé path is configured; the generated text is surfaced in `--json` output and in the console table. `--validate` exits non-zero if a dry run doesn't reach the Submit button. `DryRunValidation` records reachability, fields filled, resume upload, and cover-letter field presence.
 - LLM via litellm + instructor; **client of an external** OpenAI-compatible endpoint (`[llm] api_base`,
-  default `http://localhost:8000/v1`, model `cyankiwi/Qwen3.5-4B-AWQ-4bit`) — the app never starts one
-  (optional `[serve]` extra + `scripts/serve-vllm.sh` self-host a local vLLM). `openai/` prefix for local.
-  Suppress Qwen reasoning via `enable_thinking: False` + `strip_thinking_process()`.
+  default `http://localhost:8000/v1`, model `cyankiwi/Qwen3.5-4B-AWQ-4bit`) — the app never starts one.
+  Optional `[serve]` extra (vLLM 0.23.x, CUDA 13.0 wheel) + `scripts/serve-vllm.sh` self-host a local
+  vLLM. The script defaults to job-applicator's own `.venv/bin/vllm`, `GPU_MEM=0.70`,
+  `MAX_MODEL_LEN=8192`, and `ENFORCE_EAGER=1` (avoids vLLM 0.23's V1 cudagraph-profiling OOM on
+  12 GB cards). `openai/` prefix for local. Suppress Qwen reasoning via `enable_thinking: False` +
+  `strip_thinking_process()`.
 - Resume-tailoring hallucination guards must be preserved (skills/tools/education validation,
   fuzzy `_skills_match()` ratio ≥ 0.85, `KNOWN_HEADERS` frozenset). See AGENTS.md gotchas.
 - PDF rendering is opt-in via `--format {txt|pdf|both}` and the `[pdf]` extra (`typst`).

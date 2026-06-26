@@ -2874,6 +2874,24 @@ def _render_doctor(report: DoctorReport) -> None:
         if llm.error:
             console.print(f"                 [dim]{escape(llm.error)}[/dim]")
 
+    # Local vLLM process check: tell the user whether the running server matches
+    # the config job-applicator would start it with.
+    vproc = report.vllm_process
+    if vproc.running:
+        if vproc.compatible:
+            console.print(
+                f"  vLLM process   {good} pid {vproc.pid} — compatible with job-applicator config"
+            )
+        else:
+            reason = vproc.needs_restart_reason or "command line differs from job-applicator config"
+            console.print(f"  vLLM process   {warn} pid {vproc.pid} — {escape(reason)}")
+            console.print(
+                "                 → restart with: [cyan]RESTART=1 scripts/serve-vllm.sh[/cyan]"
+            )
+    elif "localhost" in api_base or "127.0.0.1" in api_base:
+        console.print(f"  vLLM process   {warn} no local vLLM process found on port 8000")
+        console.print("                 → start one: [cyan]scripts/serve-vllm.sh[/cyan]")
+
     emb = report.embeddings
     if emb.cached:
         console.print(f"  Embeddings     {good} {escape(emb.model_name)} cached")

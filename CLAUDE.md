@@ -64,8 +64,10 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
 - AI-powered cover letters via litellm (works with local vLLM or cloud APIs)
 - **LLM endpoint is external by default.** The generation features are a *client* of an
   OpenAI-compatible endpoint (`[llm] api_base`, default `localhost:8000`); the app never starts
-  one. Embeddings run in-process. Optional `[serve]` extra + `scripts/serve-vllm.sh` self-host a
-  local vLLM for standalone boxes.
+  one. Embeddings run in-process. Optional `[serve]` extra (vLLM 0.23.x, CUDA 13.0 wheel) +
+  `scripts/serve-vllm.sh` self-host a local vLLM for standalone boxes. The script defaults to
+  job-applicator's own `.venv/bin/vllm`, `GPU_MEM=0.70`, `MAX_MODEL_LEN=8192`, and
+  `ENFORCE_EAGER=1` (avoids vLLM 0.23's V1 cudagraph-profiling OOM on 12 GB cards).
 - Instructor for structured LLM outputs (Pydantic models)
 - mxbai-embed-large-v1 for semantic job matching (~1.5 GB VRAM)
 - Style analyzer with persistent cache and multi-document support
@@ -98,9 +100,9 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
 
 | Component | Allocation |
 |---|---|
-| vLLM (Qwen3.5-4B-AWQ) | ~7.2 GB |
+| vLLM (Qwen3.5-4B-AWQ, eager mode) | ~6.5 GB |
 | Embeddings (mxbai-embed-large-v1) | ~1.5 GB |
-| Free VRAM | ~3.3 GB |
+| Free VRAM | ~4.0 GB |
 
 ## Embedding Service
 

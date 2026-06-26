@@ -417,6 +417,9 @@ class ResumeLoader:
                 if len(summary) <= 50 or summary.isupper():
                     summary = ""
 
+        # Drop a leading setext/markdown underline that can follow a header.
+        summary = re.sub(r"^[\-=~*]+\s*\n?", "", summary).strip()
+
         confidence = self._compute_confidence(text)
         logger.info(
             "Parsed resume: name=%s, skills=%d, confidence=%.2f", name, len(skills), confidence
@@ -461,6 +464,10 @@ class ResumeLoader:
         # If there were inline skills after the colon, prepend them to the section
         if inline_skills:
             remaining = inline_skills + "\n" + remaining
+
+        # Strip markdown/setext underline lines (e.g. "------" or "======") that
+        # immediately follow the header, so they are not parsed as a skill.
+        remaining = re.sub(r"^[\-=~*]+\s*\n", "", remaining, count=1)
 
         # Find the next known section header (allow inline content after colon too)
         next_header = re.compile(

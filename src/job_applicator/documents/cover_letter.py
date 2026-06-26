@@ -69,12 +69,16 @@ Content rules:
 - Use only experience, skills, and facts present in the resume and job description. Do not \
 invent metrics, employers, problem domains, or qualifications not in the resume.
 - Highlight the most relevant experience; do not restate the whole resume.
-- Include exactly ONE concrete, specific detail that ties this applicant to THIS company or role.
+- Include exactly ONE concrete, specific detail FROM THE RESUME that shows the applicant's fit \
+for this role's requirements. Do NOT claim the applicant previously worked for the company \
+unless the resume explicitly lists that company as an employer.
 - Keep it to 3-4 paragraphs (250-350 words), first person.
 - Do not use placeholder text like [Company Name] or [Date]; use the real values provided.
 - Sign the letter using the applicant's name exactly as provided in the Applicant Profile. Do not \
 invent or abbreviate a different name in the signature.
-- Before the sign-off, include a brief, direct call to action.
+- The sign-off (e.g. "Sincerely, <name>") must be the VERY LAST text in the letter. Do not place \
+a sign-off at the beginning or middle of the letter.
+- Before the final sign-off, include a brief, direct call to action.
 
 Voice rules — these are what separate human writing from AI writing, follow them strictly:
 - Vary sentence length. Include at least one short sentence (under eight words). Never write \
@@ -104,15 +108,27 @@ class CoverLetterGenerator:
         # every job in a batch run), with no module-global mutable state.
         self._runtime = runtime or LLMRuntime.defaults(name="cover-letter")
         self._breaker = self._runtime.breaker
+        # None = unknown, True = usable, False = skip instructor (e.g. vLLM has no
+        # tool-call-parser). Cached per generator instance so a failed probe is not
+        # retried on every cover letter in a batch run.
+        self._instructor_usable: bool | None = None
 
     def _get_client(self) -> Any:
-        """Lazy-load instructor client."""
+        """Lazy-load instructor client.
+
+        TOOLS mode is intentionally used: it relies on vLLM's tool-call parser
+        (qwen3_xml for Qwen3.5) and is faster and more schema-accurate for this
+        model than json_object or guided_json in our vLLM 0.23 tests.
+        """
         if self._client is None:
             try:
                 quiet_litellm()
                 import instructor
                 from litellm import acompletion
 
+                # instructor defaults to TOOLS mode, which uses vLLM's tool-call
+                # parser (qwen3_xml for Qwen3.5). In our vLLM 0.23 tests this is
+                # faster and more schema-accurate than json_object or guided_json.
                 self._client = instructor.from_litellm(acompletion)
             except ImportError as exc:
                 raise LLMError("litellm or instructor not installed") from exc
@@ -157,11 +173,14 @@ class CoverLetterGenerator:
         logger.info("Loaded style guide from %s: tone=%s", style_guide_path, style.tone)
         return style
 
-    def _validate_output(self, text: str, user: UserProfile) -> None:
+    def _validate_output(
+        self, text: str, user: UserProfile, job: JobListing, resume: ResumeData
+    ) -> None:
         """Validate a generated cover letter.
 
-        Checks for empty output, placeholder text, and a valid sign-off signed
-        with the applicant's name. Raises ``LLMError`` if unusable.
+        Checks for empty output, placeholder text, hallucinated employment
+        claims, and a valid sign-off signed with the applicant's name. Raises
+        ``LLMError`` if unusable.
         """
         stripped = text.strip()
         if not stripped:
@@ -172,19 +191,101 @@ class CoverLetterGenerator:
         placeholder_pattern = rf"\[\s*(?:{placeholders})\s*\]"
         if re.search(placeholder_pattern, text, re.IGNORECASE):
             raise LLMError("Generated cover letter contains placeholder text")
+
+        # Reject invented prior-employment claims when the company is not on the
+        # resume. Small models frequently hallucinate "I previously worked at X".
+        if not self._company_in_resume(job.company, resume):
+            self._reject_invented_company_employment(text, job.company)
+
         validate_sign_off(text, user)
 
     @staticmethod
-    def _humanize(text: str) -> str:
-        """Deterministically strip markdown the LLM leaks into prose.
+    def _strip_early_sign_off(text: str) -> str:
+        """Remove a sign-off line that appears before the body of the letter.
+
+        Looks for a recognized closing word followed by the applicant's name
+        (two-line or single-line) before the final sign-off block, and removes
+        that stray block. Returns the text unchanged if no stray sign-off is found.
+        """
+        from job_applicator.documents.sign_off import _SIGN_OFF_RE, _SINGLE_LINE_SIGN_OFF_RE
+
+        lines = text.splitlines()
+        # Find the last recognized sign-off line to know where the real closing is.
+        last_sign_off_idx: int | None = None
+        for i in range(len(lines) - 1, -1, -1):
+            stripped = lines[i].strip()
+            if not stripped:
+                continue
+            if _SIGN_OFF_RE.match(stripped) or _SINGLE_LINE_SIGN_OFF_RE.match(stripped):
+                last_sign_off_idx = i
+                break
+        if last_sign_off_idx is None or last_sign_off_idx == 0:
+            return text
+
+        # Scan for a stray sign-off block strictly before the real closing.
+        stray_start: int | None = None
+        stray_end: int | None = None
+        i = 0
+        while i < last_sign_off_idx - 1:
+            stripped = lines[i].strip()
+            if not stripped:
+                i += 1
+                continue
+            if _SIGN_OFF_RE.match(stripped):
+                # Two-line closing: sign-off line + signature line.
+                if i + 1 < last_sign_off_idx and lines[i + 1].strip():
+                    stray_start = i
+                    stray_end = i + 2
+                    break
+            single = _SINGLE_LINE_SIGN_OFF_RE.match(stripped)
+            if single:
+                stray_start = i
+                stray_end = i + 1
+                break
+            i += 1
+
+        if stray_start is None:
+            return text
+
+        # Remove the stray block and collapse any excess blank lines.
+        cleaned = lines[:stray_start] + lines[stray_end:]
+        cleaned_text = "\n".join(cleaned)
+        cleaned_text = re.sub(r"\n{3,}", "\n\n", cleaned_text).strip()
+        return cleaned_text
+
+    @staticmethod
+    def _reject_invented_company_employment(text: str, company: str) -> None:
+        """Raise ``LLMError`` if ``text`` claims employment at ``company``.
+
+        Only run when the company does not appear on the resume; catches common
+        small-model hallucinations like "I previously worked at Acme".
+        """
+        norm_company = re.sub(r"[.,]", "", company.lower())
+        norm_text = re.sub(r"[.,]", "", text.lower())
+        # Phrases that strongly imply a past employment relationship.
+        employment_patterns = [
+            rf"\b(worked|employed|tenure|time) (at|for) {re.escape(norm_company)}\b",
+            rf"\b(former|previous|past|returning|my) .{{0,40}}? {re.escape(norm_company)}\b",
+            rf"\b{re.escape(norm_company)} .{{0,40}}? (employee|colleague|team member|tenure)\b",
+            rf"\b(i|my) .{{0,30}}? (built|led|worked|spent|was) .{{0,30}}? "
+            rf"{re.escape(norm_company)}\b",
+        ]
+        for pattern in employment_patterns:
+            if re.search(pattern, norm_text):
+                raise LLMError(f"Generated cover letter falsely claims employment at {company}")
+
+    @classmethod
+    def _humanize(cls, text: str) -> str:
+        """Deterministically strip artifacts the LLM leaks into prose.
 
         Conservative on purpose. Removes only formatting an applicant would never
-        type in a letter: code backticks, and markdown headings/bullets anchored at
-        the start of a line. Inline ``*``/``**`` are left ALONE — stripping them
-        would mis-pair on a literal asterisk (``2*3`` -> ``23``) and silently
-        corrupt real prose; stray emphasis is handled by the ``markdown`` voice-tell
-        and re-prompt instead. Underscores survive so identifiers like
-        ``get_user_id`` are untouched.
+        type in a letter: code backticks, markdown headings/bullets anchored at
+        the start of a line, and stray sign-off blocks that appear before the
+        body. Inline ``*``/``**`` are left ALONE — stripping them would mis-pair
+        on a literal asterisk (``2*3`` -> ``23``) and silently corrupt real prose;
+        stray emphasis is handled by the ``markdown`` voice-tell and re-prompt
+        instead. Underscores survive so identifiers like ``get_user_id`` are
+        untouched.
 
         May return an empty string for all-markdown input; callers keep the
         validated original in that case.
@@ -192,6 +293,7 @@ class CoverLetterGenerator:
         text = text.replace("`", "")
         text = re.sub(r"(?m)^[ \t]*#{1,6}[ \t]*", "", text)  # markdown headings
         text = re.sub(r"(?m)^[ \t]*[-*+][ \t]+", "", text)  # markdown bullets (line-anchored)
+        text = cls._strip_early_sign_off(text)
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text.strip()
 
@@ -256,7 +358,14 @@ class CoverLetterGenerator:
             return True
         # Whole-token match (utils.text.contains_word), NOT bare substring: "Ace"
         # must not match inside "marketplace" and inject a false returning-candidate note.
-        return contains_word(norm(resume.raw_text), target)
+        # Use the full normalized company name for the raw-text scan so a bare stem
+        # (e.g. "example" from "Example Corp") is not mistaken for an email domain
+        # or school name. The raw text is only lower-cased and de-punctuated, not
+        # stripped of legal suffixes, so "Example Corp" can still be found.
+        raw_text = re.sub(r"[\w.+-]+@[\w-]+\.[\w.-]+", " ", resume.raw_text)
+        full_target = re.sub(r"\s+", " ", re.sub(r"[.,]", "", company.lower())).strip()
+        raw_normalized = re.sub(r"\s+", " ", re.sub(r"[.,]", "", raw_text.lower())).strip()
+        return contains_word(raw_normalized, full_target)
 
     @classmethod
     def _voice_correction(cls, tells: list[str]) -> str:
@@ -284,7 +393,12 @@ class CoverLetterGenerator:
         )
 
     async def _devoice(
-        self, letter: str, regen: Callable[[str], Awaitable[str]], user: UserProfile
+        self,
+        letter: str,
+        regen: Callable[[str], Awaitable[str]],
+        user: UserProfile,
+        job: JobListing,
+        resume: ResumeData,
     ) -> str:
         """Graceful, single-shot voice backstop.
 
@@ -298,10 +412,21 @@ class CoverLetterGenerator:
             return letter
         try:
             retry = self._humanize(await regen(self._voice_correction(tells)))
-            self._validate_output(retry, user)
+            self._validate_output(retry, user, job=job, resume=resume)
         except (LLMError, CircuitOpenError):
             return letter
         return retry if len(self._voice_tells(retry)) < len(tells) else letter
+
+    @staticmethod
+    def _is_tool_call_config_error(exc: Exception) -> bool:
+        """True when the backend cannot parse tool/function calls.
+
+        vLLM without ``--tool-call-parser`` rejects instructor's function-calling
+        request with this message; treating it as a known config issue keeps the
+        logs clean and lets us skip instructor on subsequent calls.
+        """
+        msg = str(exc).lower()
+        return "tool-call-parser" in msg or "tool_call_parser" in msg
 
     async def _complete(self, user_message: str) -> str:
         """Run ONE cover-letter completion, hardened in a single place.
@@ -311,35 +436,37 @@ class CoverLetterGenerator:
         rejection (``CircuitOpenError``) is NOT retried — retrying only re-hits
         the same open breaker. Content validation is the caller's concern
         (``ValidatedOutput``), so transport and content retries never multiply.
+
+        If instructor fails because the backend lacks a tool-call parser, we
+        remember that and skip it for the rest of this generator's lifetime,
+        falling back to direct completion without noisy logs.
         """
         # For local vLLM, need "openai/" prefix
         model = f"openai/{self._config.model}" if self._config.api_base else self._config.model
 
+        async def _direct_litellm() -> str:
+            from litellm import acompletion
+
+            response = await acompletion(
+                model=model,
+                api_base=self._config.api_base,
+                api_key=self._config.api_key,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_message},
+                ],
+                max_tokens=self._config.max_tokens,
+                temperature=self._config.temperature,
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            )
+            return strip_thinking_process(response.choices[0].message.content)
+
         async def _one_call() -> str:
             # Try instructor first (structured output); fall back to direct litellm.
-            try:
-                client = self._get_client()
-                response = await client.create(
-                    model=model,
-                    api_base=self._config.api_base,
-                    api_key=self._config.api_key,
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": user_message},
-                    ],
-                    response_model=CoverLetterOutput,
-                    max_retries=1,
-                    max_tokens=self._config.max_tokens,
-                    temperature=self._config.temperature,
-                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-                )
-                return strip_thinking_process(response.cover_letter)
-            except Exception as exc:
-                logger.info("Instructor failed (%s), falling back to direct litellm", exc)
+            if self._instructor_usable is not False:
                 try:
-                    from litellm import acompletion
-
-                    response = await acompletion(
+                    client = self._get_client()
+                    response = await client.create(
                         model=model,
                         api_base=self._config.api_base,
                         api_key=self._config.api_key,
@@ -347,13 +474,28 @@ class CoverLetterGenerator:
                             {"role": "system", "content": SYSTEM_PROMPT},
                             {"role": "user", "content": user_message},
                         ],
+                        response_model=CoverLetterOutput,
+                        max_retries=1,
                         max_tokens=self._config.max_tokens,
                         temperature=self._config.temperature,
                         extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                     )
-                    return strip_thinking_process(response.choices[0].message.content)
-                except Exception as exc2:
-                    raise llm_call_error(exc2, self._config.api_base) from exc2
+                    self._instructor_usable = True
+                    return strip_thinking_process(response.cover_letter)
+                except Exception as exc:
+                    if self._is_tool_call_config_error(exc):
+                        self._instructor_usable = False
+                        logger.debug(
+                            "Instructor unavailable: backend lacks a tool-call parser; "
+                            "set --tool-call-parser on vLLM or use a compatible endpoint. "
+                            "Falling back to direct litellm."
+                        )
+                    else:
+                        logger.debug("Instructor failed (%s), falling back to direct litellm", exc)
+            try:
+                return await _direct_litellm()
+            except Exception as exc2:
+                raise llm_call_error(exc2, self._config.api_base) from exc2
 
         @async_retry(
             max_attempts=2,
@@ -428,7 +570,7 @@ class CoverLetterGenerator:
             )
 
         letter = await ValidatedOutput(max_retries=self._runtime.validation_max_retries).call(
-            _call, partial(self._validate_output, user=user)
+            _call, partial(self._validate_output, user=user, job=job, resume=resume)
         )
         # Keep the validated draft if _humanize strips it to nothing (all-markdown
         # input) — never return empty past the ValidatedOutput empty-letter guard.
@@ -445,7 +587,7 @@ class CoverLetterGenerator:
                 correction=correction,
             )
 
-        letter = await self._devoice(letter, _regen, user)
+        letter = await self._devoice(letter, _regen, user, job=job, resume=resume)
 
         logger.info(
             "Generated cover letter for %s at %s (%d chars)",
@@ -512,14 +654,14 @@ class CoverLetterGenerator:
             return await self._complete(msg)
 
         validated = await ValidatedOutput(max_retries=self._runtime.validation_max_retries).call(
-            _call, partial(self._validate_output, user=user)
+            _call, partial(self._validate_output, user=user, job=job, resume=resume)
         )
         letter = self._humanize(validated) or validated
 
         async def _regen(correction: str) -> str:
             return await self._complete(user_message + correction)
 
-        return await self._devoice(letter, _regen, user)
+        return await self._devoice(letter, _regen, user, job=job, resume=resume)
 
     def _build_prompt(
         self,
@@ -550,6 +692,15 @@ class CoverLetterGenerator:
                     f"their resume). If relevant, acknowledge this naturally as a returning "
                     f"candidate. Do NOT describe it as 'my former role at {job.company}' as if "
                     f"it were a different employer.",
+                ]
+            )
+        else:
+            parts.extend(
+                [
+                    "",
+                    f"IMPORTANT: The applicant's resume does NOT list {job.company} as a "
+                    f"previous employer. Do NOT state or imply that the applicant previously "
+                    f"worked at {job.company}.",
                 ]
             )
 

@@ -36,8 +36,9 @@ python3.12 -m venv .venv
 ```
 
 `-e ".[dev,embeddings,browser,indeed]"` pulls the test tools, the embedding model
-stack, browser-cookie import, and the Xvfb wrapper. (The heavy `serve` extra — a
-local vLLM — is only for self-hosting the LLM; skip it if you have an endpoint.)
+stack, browser-cookie import, and the Xvfb wrapper. The heavy `serve` extra installs
+vLLM 0.23.x (CUDA 13.0 wheel) and is only for self-hosting the LLM; skip it if you
+have an endpoint.
 
 The LIVE tier needs an OpenAI-compatible LLM at `http://localhost:8000/v1`. Either
 point at an existing endpoint (`[llm] api_base` in config), or self-host:
@@ -46,6 +47,11 @@ point at an existing endpoint (`[llm] api_base` in config), or self-host:
 curl -s http://localhost:8000/v1/models    # is one already up?
 bash scripts/serve-vllm.sh                 # otherwise self-host — project's own script (needs `serve` extra + GPU; not run this session)
 ```
+
+`scripts/serve-vllm.sh` defaults to job-applicator's own `.venv/bin/vllm`,
+`GPU_MEM=0.70`, `MAX_MODEL_LEN=8192`, and `ENFORCE_EAGER=1`. The eager default
+avoids a vLLM 0.23 V1 cudagraph-profiling OOM on 12 GB cards with Qwen3.5-style
+hybrid models.
 
 ## Run (agent path) — the driver
 
@@ -137,10 +143,10 @@ letter, but real submission requires `apply --submit`.
 ## Test
 
 ```bash
-.venv/bin/python -m pytest -m unit -q      # 817 passed — the fast green gate (no browser/GPU/vLLM)
+.venv/bin/python -m pytest -m unit -q      # 876 passed — the fast green gate (no browser/GPU/vLLM)
 ```
 
-`pytest -m live` (24 tests) needs vLLM + GPU; `pytest -m integration` (5) is
+`pytest -m live` (34 tests) needs vLLM + GPU; `pytest -m integration` (5) is
 browser-wiring only. Run pytest from the repo root (it needs the repo CWD).
 
 ## Gotchas

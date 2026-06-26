@@ -34,9 +34,9 @@ AI-powered job application tool using Playwright browser automation with modern 
 | Component | Allocation |
 |---|---|
 | GPU | NVIDIA RTX 4070 (12 GB VRAM) |
-| vLLM (Qwen3.5-4B) | ~7.2 GB |
+| vLLM (Qwen3.5-4B-AWQ, eager mode) | ~6.5 GB |
 | Embeddings (mxbai-embed-large-v1) | ~1.5 GB |
-| Free VRAM | ~3.3 GB |
+| Free VRAM | ~4.0 GB |
 
 ## Installation
 
@@ -67,12 +67,23 @@ model = "cyankiwi/Qwen3.5-4B-AWQ-4bit"
 ```
 
 **2. Self-host a local vLLM.** For a standalone box with no shared/remote LLM
-(needs a CUDA GPU):
+(needs a CUDA GPU). job-applicator ships with `scripts/serve-vllm.sh` which uses the
+project's own vLLM binary and CUDA 13.0 wheel, isolated from any other app:
 
 ```bash
-pip install -e ".[serve]"
-scripts/serve-vllm.sh        # serves :8000 — MODEL/HOST/PORT/GPU_MEM are env-overridable
+pip install -e ".[serve]"          # installs vLLM 0.23.x (CUDA 13.0 wheel)
+scripts/serve-vllm.sh               # serves :8000
 ```
+
+Environment overrides: `MODEL`, `HOST`, `PORT`, `GPU_MEM` (default `0.70`),
+`MAX_MODEL_LEN` (default `8192`), `ENFORCE_EAGER` (default `1`), and `VLLM_BIN`
+(default: this project's `.venv/bin/vllm`). Set `VLLM_BIN` to share a vLLM
+executable from another venv without touching that project's config.
+
+The defaults are tuned for a 12 GB desktop GPU. On tighter cards vLLM 0.23's V1
+cudagraph profiler can OOM during startup; `ENFORCE_EAGER=1` avoids that by disabling
+CUDA graphs. If you have ample VRAM you can run with `ENFORCE_EAGER=0` for higher
+throughput.
 
 The first launch **auto-downloads the model** from Hugging Face Hub (~4 GB for the
 default; cached to `~/.cache/huggingface`) — no separate step. Needs network on first
@@ -292,7 +303,7 @@ pytest -m unit
 ┌─────────────────────────────────────────────────────────────┐
 │                    GPU Memory (12 GB)                       │
 ├─────────────────────────────────────────────────────────────┤
-│  vLLM Orchestrator (Qwen3.5-4B-AWQ)     ~7.2 GB            │
+│  vLLM Orchestrator (Qwen3.5-4B-AWQ)     ~6.5 GB            │
 │  ├── Cover letter generation                               │
 │  ├── Style analysis                                        │
 │  └── Job description understanding                         │
