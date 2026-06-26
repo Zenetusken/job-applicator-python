@@ -524,6 +524,19 @@ class TestLLMSkillExtractor:
             result = asyncio.run(extractor.extract(description, use_cache=False))
             assert "Java" in result
 
+    def test_wildcard_version_number_keeps_base_skill(self, extractor: LLMSkillExtractor) -> None:
+        """Wildcard version numbers next to a skill should not suppress the base skill."""
+        import asyncio
+
+        description = "Experience with Java 3.x."
+        with patch.object(
+            extractor,
+            "_call_llm",
+            return_value=_ExtractionResult(skills=["Java"], method="instructor", fallback=False),
+        ):
+            result = asyncio.run(extractor.extract(description, use_cache=False))
+            assert "Java" in result
+
     def test_react_native_still_rejects_base_skill(self, extractor: LLMSkillExtractor) -> None:
         """Non-version compounds still reject the bare base skill."""
         import asyncio

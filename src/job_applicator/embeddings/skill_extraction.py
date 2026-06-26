@@ -57,7 +57,7 @@ MAX_DESCRIPTION_LENGTH = 1500
 
 # Adjacent tokens that look like version numbers ("8", "18", "3.x", "3.11")
 # should not turn a single-word skill into a rejected compound.
-_VERSION_LIKE_RE = re.compile(r"^\d+(?:\.\d+)*[a-z]?$", re.IGNORECASE)
+_VERSION_LIKE_RE = re.compile(r"^\d+(?:\.\d+)*(?:[a-z]|\.x)?$", re.IGNORECASE)
 
 
 def _is_version_like(token: str) -> bool:
