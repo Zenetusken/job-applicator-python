@@ -65,6 +65,12 @@ def _is_version_like(token: str) -> bool:
     return bool(_VERSION_LIKE_RE.match(token))
 
 
+def _phrase_in_description(phrase: str, description: str) -> bool:
+    """Return True when ``phrase`` appears as a whole-phrase token in ``description``."""
+    pattern = r"(?<!\w)" + re.escape(phrase.lower()) + r"(?!\w)"
+    return bool(re.search(pattern, description.lower()))
+
+
 # Common English words that cannot form the second word of a multi-word skill
 # compound. This keeps the hallucination guard from rejecting a single-word
 # skill just because it happens to be followed by a function word in prose.
@@ -157,6 +163,77 @@ _STOPWORDS: frozenset[str] = frozenset(
         "its",
         "our",
         "their",
+    }
+)
+
+# Job-description prose words that commonly follow a skill but do not form a
+# multi-word skill compound. Combined with ``_STOPWORDS`` to avoid false
+# rejections when a lowercase compound continuation is actually just prose.
+_PROSE_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "experience",
+        "experienced",
+        "experiences",
+        "required",
+        "requirement",
+        "requirements",
+        "preferred",
+        "preferreds",
+        "qualification",
+        "qualifications",
+        "responsibility",
+        "responsibilities",
+        "skill",
+        "skills",
+        "knowledge",
+        "familiarity",
+        "proficiency",
+        "expertise",
+        "background",
+        "ability",
+        "abilities",
+        "year",
+        "years",
+        "plus",
+        "nice",
+        "strong",
+        "solid",
+        "deep",
+        "working",
+        "using",
+        "based",
+        "such",
+        "including",
+        "particularly",
+        "especially",
+        "relevant",
+        "role",
+        "roles",
+        "position",
+        "positions",
+        "job",
+        "jobs",
+        "team",
+        "teams",
+        "project",
+        "projects",
+        "engineer",
+        "engineers",
+        "developer",
+        "developers",
+        "programmer",
+        "programmers",
+        "candidate",
+        "candidates",
+        "applicant",
+        "applicants",
+        "well",
+        "good",
+        "excellent",
+        "proven",
+        "demonstrated",
+        "extensive",
+        "practical",
     }
 )
 
@@ -432,9 +509,10 @@ class LLMSkillExtractor:
 
         Builds surface forms from the canonical name, its lower-case variant, and
         all known aliases from ``NORMALIZATION_MAP``. Multi-word forms must appear
-        as a contiguous phrase; single-word forms need an exact token match unless
-        the token is immediately followed by another word that continues a
-        compound present in the description.
+        as a whole-phrase token (word boundaries on both ends). Single-word forms
+        need an exact token match unless the next token in the description
+        continues a compound; common prose words are ignored so that phrases like
+        "React experience" do not reject the valid single-word skill ``React``.
         """
         if not skill or not description:
             return False
@@ -446,10 +524,12 @@ class LLMSkillExtractor:
                 surface_forms.add(alias.lower())
 
         desc_lower = description.lower()
+        non_compound = _STOPWORDS | _PROSE_STOPWORDS
 
         # Build known multi-word surface forms: explicit aliases plus compounds
         # that appear in the description where the second word is not a common
-        # function word (so "React is" is not treated as a multi-word form).
+        # function/prose word (so "React is" and "React experience" are not
+        # treated as multi-word forms).
         single_word_forms = {form for form in surface_forms if len(form.split()) == 1}
         multi_word_forms = {
             " ".join(form.split()).lower() for form in surface_forms if len(form.split()) > 1
@@ -462,13 +542,7 @@ class LLMSkillExtractor:
             if i + 1 >= len(tokens):
                 continue
             next_token = tokens[i + 1]
-            if next_token.lower() in _STOPWORDS or _is_version_like(next_token):
-                continue
-            # Only form a pseudo-compound when the following word is capitalized,
-            # which signals a proper noun / real multi-word skill (e.g. "React Native",
-            # "Azure DevOps"). Lowercase common words like "experience" or "required"
-            # should not turn a single-word skill into a rejected compound.
-            if not next_token[0].isupper():
+            if next_token.lower() in non_compound or _is_version_like(next_token):
                 continue
             multi_word_forms.add(f"{token.lower()} {next_token.lower()}")
 
@@ -478,7 +552,7 @@ class LLMSkillExtractor:
             stripped = form.strip()
             words = stripped.split()
             if len(words) > 1:
-                if " ".join(words).lower() in desc_lower:
+                if _phrase_in_description(" ".join(words), desc_lower):
                     return True
             else:
                 pattern = r"(?<!\w)" + re.escape(stripped.lower()) + r"(?!\w)"
