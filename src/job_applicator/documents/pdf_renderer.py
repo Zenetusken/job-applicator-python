@@ -355,7 +355,9 @@ class PDFRenderer:
         if category is None:
             category = detect_job_category(job)
         formatted = await self._format_resume_with_instructor(tailored, job, category)
-        target = output_path if output_path is not None else self._resume_output_path(tailored)
+        target = (
+            output_path if output_path is not None else self._resume_output_path(tailored, template)
+        )
         return await self._render_and_compile(
             template_name=f"cv/{template}.typ",
             context={"resume": formatted},
@@ -374,7 +376,11 @@ class PDFRenderer:
         if category is None:
             category = detect_job_category(job)
         formatted = await self._format_cover_letter_with_instructor(result, job, category)
-        target = output_path if output_path is not None else self._cover_letter_output_path(result)
+        target = (
+            output_path
+            if output_path is not None
+            else self._cover_letter_output_path(result, template)
+        )
         return await self._render_and_compile(
             template_name=f"cover_letter/{template}.typ",
             context={
@@ -422,18 +428,24 @@ class PDFRenderer:
             source_path.unlink(missing_ok=True)
         return output_path
 
-    def _resume_output_path(self, tailored: TailoredResume) -> Path:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    def _resume_output_path(self, tailored: TailoredResume, template: str) -> Path:
+        now = datetime.now()
         company = safe_filename_slug(tailored.job_company)
         title = safe_filename_slug(tailored.job_title)
-        base = f"tailored_{company}_{title}_{ts}"
+        base = (
+            f"tailored_{company}_{title}_{now.strftime('%Y%m%d_%H%M%S')}"
+            f"_{now.microsecond:06d}_{template}"
+        )
         return self.output_dir / f"{base}.pdf"
 
-    def _cover_letter_output_path(self, result: CoverLetterResult) -> Path:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    def _cover_letter_output_path(self, result: CoverLetterResult, template: str) -> Path:
+        now = datetime.now()
         company = safe_filename_slug(result.job_company)
         title = safe_filename_slug(result.job_title)
-        base = f"cover_letter_{company}_{title}_{ts}"
+        base = (
+            f"cover_letter_{company}_{title}_{now.strftime('%Y%m%d_%H%M%S')}"
+            f"_{now.microsecond:06d}_{template}"
+        )
         return self.output_dir / f"{base}.pdf"
 
 

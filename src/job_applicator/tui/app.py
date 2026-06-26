@@ -139,6 +139,7 @@ class JobApplicatorApp(App[None]):
         Binding("T", "tailor_pdf", "Tailor PDF"),
         Binding("c", "cover_letter", "Cover letter"),
         Binding("C", "cover_letter_pdf", "Cover PDF"),
+        Binding("p", "open_pdf", "Open PDF"),
         Binding("s", "search", "Search"),
         Binding("a", "apply", "Apply"),
         Binding("e", "set_resume", "Résumé"),
@@ -563,9 +564,18 @@ class JobApplicatorApp(App[None]):
         self._open_artifact(s.cover_letter_path if s else None, "cover letter")
 
     def action_open_pdf(self) -> None:
-        """Open the tailored-résumé PDF for the selected job (if one was generated)."""
+        """Open the selected job's generated PDF.
+
+        Prefers the tailored-résumé PDF and falls back to the cover-letter PDF so a single
+        keybinding provides a quick preview of whichever artifact exists.
+        """
         s = self._current
-        self._open_artifact(s.pdf_path if s else None, "résumé PDF")
+        path = s.pdf_path if s else None
+        label = "résumé PDF"
+        if not path and s:
+            path = s.cover_letter_pdf_path
+            label = "cover letter PDF"
+        self._open_artifact(path, label)
 
     def action_open_cover_pdf(self) -> None:
         """Open the cover-letter PDF for the selected job (if one was generated)."""

@@ -603,6 +603,66 @@ async def test_tui_open_cover_artifact(tmp_path: Path, monkeypatch) -> None:  # 
     assert opened["uri"].endswith("cover_letter_Acme.txt")  # the cover, not the résumé
 
 
+async def test_tui_open_pdf_artifact(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The `p` key opens the tailored-résumé PDF when one exists."""
+    import webbrowser
+
+    monkeypatch.setenv("DISPLAY", ":0")
+    txt = tmp_path / "tailored_Acme_Dev.txt"
+    txt.write_text("resume text", encoding="utf-8")
+    pdf = tmp_path / "tailored_Acme_Dev_20260625_120000_000000_modern.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake")
+    opened: dict[str, str] = {}
+    monkeypatch.setattr(webbrowser, "open", lambda u: opened.setdefault("uri", u) or True)
+    app = _tailored_app(tmp_path, tailored_resume_path=str(txt), pdf_path=str(pdf))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_open_pdf()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    assert opened["uri"].endswith("tailored_Acme_Dev_20260625_120000_000000_modern.pdf")
+
+
+async def test_tui_open_pdf_falls_back_to_cover_letter_pdf(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """`action_open_pdf` falls back to the cover-letter PDF when no résumé PDF exists."""
+    import webbrowser
+
+    monkeypatch.setenv("DISPLAY", ":0")
+    txt = tmp_path / "tailored_Acme_Dev.txt"
+    txt.write_text("resume text", encoding="utf-8")
+    cl_pdf = tmp_path / "cover_letter_Acme_Dev_20260625_120000_000000_modern.pdf"
+    cl_pdf.write_bytes(b"%PDF-1.4 fake")
+    opened: dict[str, str] = {}
+    monkeypatch.setattr(webbrowser, "open", lambda u: opened.setdefault("uri", u) or True)
+    app = _tailored_app(tmp_path, tailored_resume_path=str(txt), cover_letter_pdf_path=str(cl_pdf))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_open_pdf()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    assert opened["uri"].endswith("cover_letter_Acme_Dev_20260625_120000_000000_modern.pdf")
+
+
+async def test_tui_open_pdf_noop_when_absent(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A job with no generated PDF: `p` warns and launches nothing."""
+    import webbrowser
+
+    monkeypatch.setenv("DISPLAY", ":0")
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))
+    never = MagicMock()
+    monkeypatch.setattr(webbrowser, "open", never)
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_open_pdf()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    never.assert_not_called()
+
+
 async def test_tui_open_tailored_headless_does_not_launch(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """On headless Linux (no DISPLAY) opening an artifact does NOT launch a viewer."""
     import sys
@@ -2726,3 +2786,4 @@ def test_tui_help_includes_pdf_keys() -> None:
     screen = HelpScreen()
     assert "tailor résumé pdf" in screen._HELP.lower()
     assert "cover letter pdf" in screen._HELP.lower()
+    assert "open generated pdf" in screen._HELP.lower()

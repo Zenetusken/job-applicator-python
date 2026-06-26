@@ -167,6 +167,7 @@ async def _tailor_workflow(
                     template=resume_template,
                     category=effective_category,
                     when=when,
+                    write_meta=False,
                 )
                 result.output_path = resume_path
                 result.pdf_path = str(pdf_path)

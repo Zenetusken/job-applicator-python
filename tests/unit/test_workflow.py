@@ -450,6 +450,43 @@ class TestSaveCoverLetter:
         path = await _save_cover_letter(console, settings, job, result)
         assert result.output_path == str(path)
 
+    async def test_pdf_format_writes_pdf_artifact(self, tmp_path: Path) -> None:
+        from job_applicator.documents.pdf_renderer import PDFRenderer
+        from job_applicator.models import Format
+        from job_applicator.workflows.cover_letter import _save_cover_letter
+
+        console = MagicMock(spec=Console)
+        settings = MagicMock()
+        settings.output_dir = str(tmp_path)
+        settings.ensure_output_dir.return_value = tmp_path
+        job = MagicMock()
+        job.company = "TechCorp"
+        job.title = "Senior Dev"
+        result = _make_cover_letter_result("My cover letter")
+
+        fake_pdf = tmp_path / "cover_letter_Acme_Dev_20260625_120000_000000_classic.pdf"
+        fake_pdf.write_bytes(b"%PDF-1.4 fake")
+
+        with patch.object(
+            PDFRenderer, "render_cover_letter", new=AsyncMock(return_value=fake_pdf)
+        ) as mock_render:
+            path = await _save_cover_letter(
+                console,
+                settings,
+                job,
+                result,
+                output_format=Format.PDF,
+                template="classic",
+                category="cybersecurity",
+            )
+
+        assert path == fake_pdf
+        assert result.pdf_path == str(fake_pdf)
+        assert result.output_path == str(fake_pdf)
+        mock_render.assert_awaited_once()
+        assert mock_render.await_args.kwargs["template"] == "classic"
+        assert mock_render.await_args.kwargs["category"] == "cybersecurity"
+
 
 # ---------------------------------------------------------------------------
 # _refine_cover_letter

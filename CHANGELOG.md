@@ -17,7 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `ProcessPoolExecutor` compile step.
   - `--format {txt|pdf|both}`, `--template`, and `--category` flags added to
     `tailor`, `generate-cover-letter`, `batch`, and `apply`.
-  - TUI key bindings `T` (tailor résumé PDF) and `C` (cover-letter PDF).
+  - TUI key bindings `T` (tailor résumé PDF), `C` (cover-letter PDF), and `p`
+    (open the generated PDF in the default viewer).
+  - PDF filenames include microseconds and the chosen template suffix to avoid
+    collisions (e.g. `tailored_Acme_Dev_20260625_120000_123456_modern.pdf`).
+  - `--format both` writes `.txt` + `.pdf` + a single `.meta.json` sidecar.
   - `OutputConfig` in `config.toml` controls default format and templates.
   - `job-applicator doctor` verifies the PDF rendering stack.
   - Property-based fuzz tests (`tests/unit/test_pdf_renderer_fuzz.py`) verify Typst

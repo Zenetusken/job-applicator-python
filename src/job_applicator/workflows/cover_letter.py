@@ -121,11 +121,17 @@ async def _save_cover_letter(
         console.print(f"\n[green]Cover letter PDF saved: {pdf_path}[/green]")
         return pdf_path
 
-    # BOTH
+    # BOTH: generate text + PDF but only one meta sidecar (beside the text file).
     cl_path, _meta_path = await asyncio.to_thread(write_cover_letter, output_dir, result, when=when)
     result.output_path = cl_path
     pdf_path = await write_cover_letter_pdf(
-        output_dir, result, settings, template=template, category=effective_category, when=when
+        output_dir,
+        result,
+        settings,
+        template=template,
+        category=effective_category,
+        when=when,
+        write_meta=False,
     )
     result.pdf_path = str(pdf_path)
     meta_path = Path(cl_path).with_suffix(".meta.json")

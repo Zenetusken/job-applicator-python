@@ -210,11 +210,13 @@ src/job_applicator/
   `pip install -e ".[pdf]"` (pulls in `typst`). Without it, `--format pdf` produces a clear
   error message and `doctor` reports PDF rendering as unavailable.
 - **PDF templates live in `src/job_applicator/templates/`** (Typst `.typ` files) and are packaged
-  into the wheel via `[tool.setuptools.package-data]`. Built-ins: `modern`, `classic`, `minimal`.
-  Set `output.template_dir` to load custom templates by file stem.
-- **PDF artifact basenames match plain-text artifacts.** Both share `tailored_<company>_<title>_<ts>`
-  / `cover_letter_<company>_<title>_<ts>` so `--format both` produces `.txt` + `.pdf` + one
-  `.meta.json` sidecar.
+  into the wheel via `[tool.hatch.build.targets.wheel] include`. Built-ins: `modern`, `classic`,
+  `minimal`. Set `output.template_dir` to a directory containing `cv/<name>.typ` and/or
+  `cover_letter/<name>.typ`; templates are loaded by that full relative path.
+- **PDF artifact basenames include microseconds and the template suffix.** Plain text keeps
+  `tailored_<company>_<title>_<YYYYMMDD_HHMMSS>.txt`; the PDF is
+  `tailored_<company>_<title>_<YYYYMMDD_HHMMSS>_<microseconds>_<template>.pdf`. With
+  `--format both` the `.txt` + `.pdf` + one `.meta.json` sidecar (beside the `.txt`) is produced.
 
 ## LLM Setup
 

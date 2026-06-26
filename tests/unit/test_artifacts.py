@@ -110,7 +110,7 @@ async def test_write_tailored_pdf_renders_to_spec_path_and_writes_meta(
     output_dir.mkdir(parents=True, exist_ok=True)
     settings = AppSettings(output_dir=str(tmp_path / "out"))
     tailored = _tailored()
-    expected = output_dir / "tailored_Ac_me_Inc_Sr_Eng_20260622_143000.pdf"
+    expected = output_dir / "tailored_Ac_me_Inc_Sr_Eng_20260622_143000_000000_modern.pdf"
     expected.write_bytes(b"fake pdf bytes")
 
     with patch.object(
@@ -137,7 +137,7 @@ async def test_write_cover_letter_pdf_renders_to_spec_path_and_writes_meta(
     output_dir.mkdir(parents=True, exist_ok=True)
     settings = AppSettings(output_dir=str(tmp_path / "out"))
     result = _cover_letter()
-    expected = output_dir / "cover_letter_Acme_Sr_Eng_20260622_143000.pdf"
+    expected = output_dir / "cover_letter_Acme_Sr_Eng_20260622_143000_000000_modern.pdf"
     expected.write_bytes(b"fake cl bytes")
 
     with patch.object(
@@ -157,13 +157,15 @@ async def test_write_cover_letter_pdf_renders_to_spec_path_and_writes_meta(
     )
 
 
-async def test_write_tailored_pdf_uses_seconds_only_name(tmp_path: Path) -> None:
+async def test_write_tailored_pdf_includes_microseconds_and_template(
+    tmp_path: Path,
+) -> None:
     output_dir = tmp_path / "pdfs"
     output_dir.mkdir(parents=True, exist_ok=True)
     settings = AppSettings(output_dir=str(tmp_path / "out"))
     tailored = _tailored()
     when = datetime(2026, 6, 22, 14, 30, 0, 7)
-    expected = output_dir / "tailored_Ac_me_Inc_Sr_Eng_20260622_143000.pdf"
+    expected = output_dir / "tailored_Ac_me_Inc_Sr_Eng_20260622_143000_000007_classic.pdf"
     expected.write_bytes(b"x")
 
     with patch.object(PDFRenderer, "render_resume", new=AsyncMock(return_value=expected)):
@@ -171,16 +173,18 @@ async def test_write_tailored_pdf_uses_seconds_only_name(tmp_path: Path) -> None
             output_dir, tailored, settings, template="classic", when=when
         )
 
-    assert path.name == "tailored_Ac_me_Inc_Sr_Eng_20260622_143000.pdf"
+    assert path.name == "tailored_Ac_me_Inc_Sr_Eng_20260622_143000_000007_classic.pdf"
 
 
-async def test_write_cover_letter_pdf_uses_seconds_only_name(tmp_path: Path) -> None:
+async def test_write_cover_letter_pdf_includes_microseconds_and_template(
+    tmp_path: Path,
+) -> None:
     output_dir = tmp_path / "pdfs"
     output_dir.mkdir(parents=True, exist_ok=True)
     settings = AppSettings(output_dir=str(tmp_path / "out"))
     result = _cover_letter()
     when = datetime(2026, 6, 22, 14, 30, 0, 7)
-    expected = output_dir / "cover_letter_Acme_Sr_Eng_20260622_143000.pdf"
+    expected = output_dir / "cover_letter_Acme_Sr_Eng_20260622_143000_000007_classic.pdf"
     expected.write_bytes(b"x")
 
     with patch.object(PDFRenderer, "render_cover_letter", new=AsyncMock(return_value=expected)):
@@ -188,7 +192,7 @@ async def test_write_cover_letter_pdf_uses_seconds_only_name(tmp_path: Path) -> 
             output_dir, result, settings, template="classic", when=when
         )
 
-    assert path.name == "cover_letter_Acme_Sr_Eng_20260622_143000.pdf"
+    assert path.name == "cover_letter_Acme_Sr_Eng_20260622_143000_000007_classic.pdf"
 
 
 async def test_write_tailored_pdf_passes_category_to_renderer(tmp_path: Path) -> None:
@@ -196,7 +200,7 @@ async def test_write_tailored_pdf_passes_category_to_renderer(tmp_path: Path) ->
     output_dir.mkdir(parents=True, exist_ok=True)
     settings = AppSettings(output_dir=str(tmp_path / "out"))
     tailored = _tailored()
-    expected = output_dir / "tailored_Ac_me_Inc_Sr_Eng_20260622_143000.pdf"
+    expected = output_dir / "tailored_Ac_me_Inc_Sr_Eng_20260622_143000_000000_modern.pdf"
     expected.write_bytes(b"x")
 
     with patch.object(
@@ -220,7 +224,7 @@ async def test_write_cover_letter_pdf_passes_category_to_renderer(
     output_dir.mkdir(parents=True, exist_ok=True)
     settings = AppSettings(output_dir=str(tmp_path / "out"))
     result = _cover_letter()
-    expected = output_dir / "cover_letter_Acme_Sr_Eng_20260622_143000.pdf"
+    expected = output_dir / "cover_letter_Acme_Sr_Eng_20260622_143000_000000_modern.pdf"
     expected.write_bytes(b"x")
 
     with patch.object(
@@ -252,7 +256,7 @@ async def test_write_tailored_pdf_wraps_render_failure(tmp_path: Path) -> None:
             await write_tailored_pdf(output_dir, tailored, settings, when=WHEN)
 
     assert not tailored.pdf_path
-    assert not (output_dir / "tailored_Ac_me_Inc_Sr_Eng_20260622_143000.pdf").exists()
+    assert not (output_dir / "tailored_Ac_me_Inc_Sr_Eng_20260622_143000_000000_modern.pdf").exists()
 
 
 async def test_write_cover_letter_pdf_wraps_render_failure(tmp_path: Path) -> None:

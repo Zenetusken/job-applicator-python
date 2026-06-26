@@ -151,7 +151,7 @@ async def test_render_resume_calls_compile(app_settings, tmp_path):
             assert path.suffix == ".pdf"
             assert path.parent == tmp_path
             assert path.exists()
-            assert re.fullmatch(r"tailored_Acme_Engineer_\d{8}_\d{6}\.pdf", path.name)
+            assert re.fullmatch(r"tailored_Acme_Engineer_\d{8}_\d{6}_\d{6}_modern\.pdf", path.name)
 
 
 @pytest.mark.unit
@@ -179,7 +179,9 @@ async def test_render_cover_letter_calls_compile(app_settings, tmp_path):
             assert path.suffix == ".pdf"
             assert path.parent == tmp_path
             assert path.exists()
-            assert re.fullmatch(r"cover_letter_Acme_Engineer_\d{8}_\d{6}\.pdf", path.name)
+            assert re.fullmatch(
+                r"cover_letter_Acme_Engineer_\d{8}_\d{6}_\d{6}_modern\.pdf", path.name
+            )
 
 
 @pytest.mark.unit

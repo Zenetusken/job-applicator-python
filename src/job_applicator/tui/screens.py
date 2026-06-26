@@ -444,6 +444,7 @@ class HelpScreen(_FadeModalScreen[None]):
             "  T           tailor résumé PDF",
             "  c           cover letter",
             "  C           cover letter PDF",
+            "  p           open generated PDF (résumé, or cover letter as fallback)",
             "  A           ATS-compatibility check",
             "  e           set résumé path",
             "  g           set style-guide path",

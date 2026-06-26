@@ -212,12 +212,19 @@ async def _write_tailored_artifacts(
         )
         return None, str(pdf_path)
 
-    # BOTH: write text first, then PDF, then update the text sidecar with pdf_path.
+    # BOTH: write text first, then PDF (no PDF-only meta), then update the text
+    # sidecar with pdf_path so only one .meta.json is produced.
     resume_path, meta_path = await asyncio.to_thread(
         write_tailored, output_dir, tailored, when=when
     )
     pdf_path = await write_tailored_pdf(
-        output_dir, tailored, settings, template=template, category=category, when=when
+        output_dir,
+        tailored,
+        settings,
+        template=template,
+        category=category,
+        when=when,
+        write_meta=False,
     )
     tailored.pdf_path = str(pdf_path)
     await asyncio.to_thread(Path(meta_path).write_text, tailored.model_dump_json(indent=2))
@@ -251,10 +258,17 @@ async def _write_cover_letter_artifacts(
         )
         return None, str(pdf_path)
 
-    # BOTH: write text first, then PDF, then update the text sidecar with pdf_path.
+    # BOTH: write text first, then PDF (no PDF-only meta), then update the text
+    # sidecar with pdf_path so only one .meta.json is produced.
     cl_path, meta_path = await asyncio.to_thread(write_cover_letter, output_dir, result, when=when)
     pdf_path = await write_cover_letter_pdf(
-        output_dir, result, settings, template=template, category=category, when=when
+        output_dir,
+        result,
+        settings,
+        template=template,
+        category=category,
+        when=when,
+        write_meta=False,
     )
     result.pdf_path = str(pdf_path)
     await asyncio.to_thread(Path(meta_path).write_text, result.model_dump_json(indent=2))
