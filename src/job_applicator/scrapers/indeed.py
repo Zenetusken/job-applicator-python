@@ -213,12 +213,15 @@ class IndeedScraper(BaseScraper):
                 logger.info("Indeed redirected to %s; re-issuing the search there.", self._base)
                 cards = await self._load_results(page, params)
             if not cards:
-                # 0 cards = a genuinely empty search OR stale CONTAINER selectors; we can't
-                # tell from here, so dump the live DOM (the TUI swallows logs) and return
-                # empty rather than raise (a real empty search must not error).
+                # 0 cards is ambiguous (a genuinely empty search OR stale CONTAINER selectors /
+                # anti-bot block); we can't tell from here. Per the no-masking rule, dump the live
+                # DOM for diagnosis and FAIL LOUDLY rather than report a silent empty result.
                 logger.warning("No Indeed job cards found (page: %s)", page.url)
                 await self._dump_debug(page, [])
-                return jobs
+                raise ScraperError(
+                    "No Indeed job cards found on the results page — the container selectors are "
+                    "stale or the search was blocked (DOM dumped for diagnosis)."
+                )
 
             selected = cards[: params.max_results]
             total = len(selected)

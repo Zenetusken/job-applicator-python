@@ -1218,12 +1218,13 @@ class ResumeTailor:
         return await self._breaker.call(_do)
 
     async def _summarize_changes(self, original: str, tailored: str) -> str:
-        """Generate a summary of changes between original and tailored."""
-        try:
-            prompt = CHANGES_PROMPT_TEMPLATE.format(
-                original_preview=original[:500],
-                tailored_preview=tailored[:500],
-            )
-            return await self._call_llm(prompt, temperature=0.2)
-        except Exception:
-            return "Changes applied (summary generation failed)"
+        """Generate a summary of changes between original and tailored.
+
+        A failure here RAISES (via _call_llm's typed error) rather than fabricating a summary
+        string — a made-up "(summary generation failed)" value masks the failure as a real result.
+        """
+        prompt = CHANGES_PROMPT_TEMPLATE.format(
+            original_preview=original[:500],
+            tailored_preview=tailored[:500],
+        )
+        return await self._call_llm(prompt, temperature=0.2)

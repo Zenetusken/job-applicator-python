@@ -403,13 +403,16 @@ class TestLLMSkillExtractor:
         data = json.loads(cache_path.read_text(encoding="utf-8"))
         assert data["skills"] == ["Python"]
 
-    def test_llm_failure_returns_empty_list(self, extractor: LLMSkillExtractor) -> None:
-        """LLM failure returns [] and does not crash."""
+    def test_llm_failure_raises_not_empty_list(self, extractor: LLMSkillExtractor) -> None:
+        """An LLM failure must RAISE LLMError — never return [] (a masked failure indistinguishable
+        from a job genuinely listing no skills; the no-fabricated-fallback rule)."""
         import asyncio
 
+        from job_applicator.exceptions import LLMError
+
         with patch.object(extractor, "_call_llm", side_effect=RuntimeError("boom")):
-            result = asyncio.run(extractor.extract("We need Python.", use_cache=False))
-            assert result == []
+            with pytest.raises(LLMError):
+                asyncio.run(extractor.extract("We need Python.", use_cache=False))
 
     def test_hallucinated_skills_are_dropped(self, extractor: LLMSkillExtractor) -> None:
         """Skills not grounded in the description are dropped."""
@@ -578,9 +581,12 @@ class TestLLMSkillExtractor:
             result = asyncio.run(extractor.extract(description, use_cache=False))
             assert "React" not in result
 
-    def test_direct_fallback_handles_empty_content(self, extractor: LLMSkillExtractor) -> None:
-        """Direct litellm fallback returns [] when choices are empty or content is None."""
+    def test_direct_fallback_raises_on_failed_response(self, extractor: LLMSkillExtractor) -> None:
+        """The direct litellm fallback RAISES LLMError on a failed response (empty choices / None
+        content) — never returns [] (a masked failure)."""
         import asyncio
+
+        from job_applicator.exceptions import LLMError
 
         description = "We need Python."
         mock_instructor = MagicMock()
@@ -597,8 +603,8 @@ class TestLLMSkillExtractor:
                 "job_applicator.embeddings.skill_extraction.acompletion",
                 return_value=fake_response_empty,
             ):
-                result = asyncio.run(extractor.extract(description, use_cache=False))
-                assert result == []
+                with pytest.raises(LLMError):
+                    asyncio.run(extractor.extract(description, use_cache=False))
 
         # None content
         fake_response_none = AsyncMock()
@@ -610,8 +616,8 @@ class TestLLMSkillExtractor:
                 "job_applicator.embeddings.skill_extraction.acompletion",
                 return_value=fake_response_none,
             ):
-                result = asyncio.run(extractor.extract(description, use_cache=False))
-                assert result == []
+                with pytest.raises(LLMError):
+                    asyncio.run(extractor.extract(description, use_cache=False))
 
     def test_direct_fallback_parses_json_array(self, extractor: LLMSkillExtractor) -> None:
         """Direct litellm fallback parses a raw JSON array response."""
@@ -871,17 +877,20 @@ class TestLLMSkillExtractor:
             "fallback": True,
         } in details
 
-    def test_reporter_records_error(self, extractor: LLMSkillExtractor) -> None:
-        """Reporter records error event on LLM failure."""
+    def test_reporter_records_error_then_raises(self, extractor: LLMSkillExtractor) -> None:
+        """On an LLM failure the reporter records the error AND extract RAISES — it records the
+        failure for the verbose report, then still fails loudly (never silently returns [])."""
         import asyncio
 
+        from job_applicator.exceptions import LLMError
         from job_applicator.utils.verbose import VerboseReporter
 
         description = "We need Python."
         reporter = VerboseReporter(command="test", args={}, config={})
 
         with patch.object(extractor, "_call_llm", side_effect=RuntimeError("boom")):
-            asyncio.run(extractor.extract(description, use_cache=False, reporter=reporter))
+            with pytest.raises(LLMError):
+                asyncio.run(extractor.extract(description, use_cache=False, reporter=reporter))
 
         details = [call["details"] for call in reporter.report.llm.calls]
         assert any(d.get("skill_extraction") == "error" for d in details)
@@ -956,13 +965,15 @@ class TestJobMatcherAsyncExtraction:
         assert "Python" in result.matched_skills
         assert "Django" in result.missing_skills
 
-    async def test_extractor_failure_yields_neutral_skill_score(
+    async def test_no_requirements_yields_semantic_only(
         self, matcher: JobMatcher, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """A SUCCESSFUL extraction that finds no requirements → rank on semantic similarity ALONE
+        (skill_score 0.0), not the old 0.5 neutral floor (L5: no fabricated neutral)."""
         from job_applicator.models import JobBoard, JobListing
 
         async def fake_extract(*args: object, **kwargs: object) -> list[str]:
-            return []
+            return []  # a genuine, successful "no skills listed" result
 
         monkeypatch.setattr(matcher._skill_extractor, "extract", fake_extract)
 
@@ -978,7 +989,33 @@ class TestJobMatcherAsyncExtraction:
         result = await matcher.match_resume_to_job(resume, job)
         assert result.matched_skills == []
         assert result.missing_skills == []
-        assert result.skill_score == 0.5
+        assert result.skill_score == 0.0  # no floor injected
+        assert result.score == pytest.approx(result.semantic_score)  # semantic-only ranking
+
+    async def test_extractor_failure_propagates_not_neutral(
+        self, matcher: JobMatcher, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An extraction FAILURE (LLM down) must PROPAGATE as an error — the match must never
+        silently degrade to a semantic-only / neutral score (the no-masked-failure rule)."""
+        from job_applicator.exceptions import LLMError
+        from job_applicator.models import JobBoard, JobListing
+
+        async def boom_extract(*args: object, **kwargs: object) -> list[str]:
+            raise LLMError("LLM unreachable")
+
+        monkeypatch.setattr(matcher._skill_extractor, "extract", boom_extract)
+
+        resume = ResumeData(raw_text="Skills: Python", skills=["Python"])
+        job = JobListing(
+            title="Backend Dev",
+            company="Acme",
+            url="https://example.com/2",
+            board=JobBoard.LINKEDIN,
+            description="We need Python.",
+            requirements=[],
+        )
+        with pytest.raises(LLMError):
+            await matcher.match_resume_to_job(resume, job)
 
 
 class TestJobMatcherRanking:
@@ -1095,3 +1132,21 @@ async def test_match_offloads_blocking_encode_off_event_loop(monkeypatch) -> Non
     result = await matcher.match_resume_to_job(resume, job)
     assert result is not None
     assert calls  # embeddings ran off the event loop (to_thread was used)
+
+
+def test_combined_score_semantic_only_when_no_requirements() -> None:
+    """L5: with no requirements to compare (skill coverage unknown) the score is semantic-ONLY —
+    not the old 0.5 floor that added a uniform +0.2 to every such job."""
+    import pytest
+
+    from job_applicator.config import EmbeddingConfig, LLMConfig
+    from job_applicator.embeddings.matching import JobMatcher
+
+    m = JobMatcher(EmbeddingConfig(device="cpu", memory_limit_gb=0.5), LLMConfig())
+
+    combined, skill = m._combined_score(0.7, [], [])  # unknown skill coverage
+    assert combined == pytest.approx(0.7) and skill == 0.0  # semantic-only, not 0.62 (the floor)
+
+    combined2, skill2 = m._combined_score(0.7, ["python"], ["rust"])  # 1/2 covered
+    assert skill2 == pytest.approx(0.5)
+    assert combined2 == pytest.approx(0.6 * 0.7 + 0.4 * 0.5)  # normal 60/40 blend

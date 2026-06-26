@@ -415,3 +415,75 @@ async def test_linkedin_extract_job_salary_none_when_absent(app_settings: AppSet
     job = await scraper._extract_job(card, JobBoard.LINKEDIN)
     assert job is not None
     assert job.salary is None
+
+
+async def test_scrape_listings_all_cards_fail_raises_scraper_error(
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LinkedIn: cards present but EVERY extraction fails → ScraperError (stale field selectors),
+    never a silent empty list — the honest-failure twin of the Indeed guard."""
+    import job_applicator.scrapers.linkedin as lk
+    from job_applicator.exceptions import ScraperError
+    from job_applicator.models import JobBoard
+    from job_applicator.scrapers.base import SearchParams
+
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    page = MagicMock()
+    page.query_selector_all = AsyncMock(return_value=[MagicMock(), MagicMock()])
+    page.close = AsyncMock()
+
+    async def _page(_ctx: object) -> object:
+        return page
+
+    async def _noop(*_a: object, **_k: object) -> None:
+        return None
+
+    async def _wait(*_a: object, **_k: object) -> bool:
+        return True
+
+    async def _boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("stale field selector")
+
+    monkeypatch.setattr(scraper, "_new_stealth_page", _page)
+    monkeypatch.setattr(lk, "navigate", _noop)
+    monkeypatch.setattr(lk, "random_delay", _noop)
+    monkeypatch.setattr(lk, "wait_for_selector", _wait)
+    monkeypatch.setattr(scraper, "_extract_job", _boom)
+
+    params = SearchParams(query="python", max_results=5, board=JobBoard.LINKEDIN)
+    with pytest.raises(ScraperError):
+        await scraper._scrape_listings(params, MagicMock())
+
+
+async def test_scrape_listings_no_cards_raises_scraper_error(
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LinkedIn: 0 job cards found → ScraperError (0 cards is ambiguous empty-vs-blocked; fail
+    loudly), never a silent empty list."""
+    import job_applicator.scrapers.linkedin as lk
+    from job_applicator.exceptions import ScraperError
+    from job_applicator.models import JobBoard
+    from job_applicator.scrapers.base import SearchParams
+
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    page = MagicMock()
+    page.query_selector_all = AsyncMock(return_value=[])  # no cards
+    page.close = AsyncMock()
+
+    async def _page(_ctx: object) -> object:
+        return page
+
+    async def _noop(*_a: object, **_k: object) -> None:
+        return None
+
+    async def _nowait(*_a: object, **_k: object) -> bool:
+        return False  # no container selector ever resolves
+
+    monkeypatch.setattr(scraper, "_new_stealth_page", _page)
+    monkeypatch.setattr(lk, "navigate", _noop)
+    monkeypatch.setattr(lk, "random_delay", _noop)
+    monkeypatch.setattr(lk, "wait_for_selector", _nowait)
+
+    params = SearchParams(query="python", max_results=5, board=JobBoard.LINKEDIN)
+    with pytest.raises(ScraperError):
+        await scraper._scrape_listings(params, MagicMock())

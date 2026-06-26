@@ -231,39 +231,22 @@ class StyleAnalyzer:
 
             data = extract_json_from_response(content)
 
-            if data:
-                defaults = {
-                    "tone": "professional",
-                    "sentence_structure": "varied",
-                    "vocabulary_level": "professional",
-                    "paragraph_style": "clear structure",
-                    "key_phrases": [],
-                    "avoid_phrases": [],
-                    "power_words": [],
-                    "industry_jargon": [],
-                    "greeting_style": "",
-                    "closing_style": "",
-                    "use_of_metrics": "",
-                    "storytelling_approach": "",
-                    "sentence_variety": "",
-                    "personal_touch": "",
-                    "formatting_notes": "",
-                    "sample_paragraph": text[:200] if text else "",
-                }
-                for key, default in defaults.items():
-                    if key not in data:
-                        data[key] = default
+            if not data:
+                raise LLMError("Style analysis returned no parseable JSON from the model")
+            # No default-filling for missing fields: a model that omitted required fields is a
+            # failure that must surface (StyleGuide validation raises), not be papered over with
+            # invented values.
+            style = StyleGuide(**data)  # type: ignore[arg-type]
+            logger.info("Analyzed writing style: tone=%s", style.tone)
+            return style
 
-                style = StyleGuide(**data)  # type: ignore[arg-type]
-                logger.info("Analyzed writing style: tone=%s", style.tone)
-                return style
-            else:
-                logger.warning("No valid JSON in response, using default style")
-                return self._create_default_style(text)
-
+        except LLMError:
+            raise
         except Exception as exc:
-            logger.warning("Style analysis failed: %s", exc)
-            return self._create_default_style(text)
+            # NO fabricated default on failure — a dead endpoint / unparseable response must
+            # SURFACE (it is retried as LLMError by analyze()), never masquerade as a real,
+            # invented style guide that silently corrupts every cover letter downstream.
+            raise LLMError(f"Style analysis failed: {exc}") from exc
 
     def _create_default_style(self, text: str) -> StyleGuide:
         """Create a basic style guide from text analysis without LLM."""

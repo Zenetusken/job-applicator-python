@@ -218,11 +218,10 @@ class TestStyleAnalyzerInstructor:
         mock_client = MagicMock()
         mock_client.create = AsyncMock(return_value=mock_style)
 
-        with patch(
-            "job_applicator.documents.style_analyzer.instructor",
-            create=True,
-        ) as mock_instructor_mod:
-            mock_instructor_mod.from_litellm.return_value = mock_client
+        # Patch the real instructor.from_litellm (the function `_analyze_with_llm` calls after its
+        # local `import instructor`, which shadows a module-attr patch) so the instructor path
+        # genuinely returns — not a fabricated default that happens to match the assertion.
+        with patch("instructor.from_litellm", return_value=mock_client):
             with patch.object(analyzer, "_cache_dir", MagicMock()):
                 with patch.object(analyzer, "_get_cache_path") as mock_path:
                     mock_path.return_value = MagicMock(exists=MagicMock(return_value=False))
@@ -230,6 +229,27 @@ class TestStyleAnalyzerInstructor:
                         result = await analyzer.analyze("test text", use_cache=False)
 
         assert result.tone == "professional"
+
+    @pytest.mark.asyncio
+    async def test_analyze_raises_on_dead_endpoint_not_fabricated_default(self) -> None:
+        """A dead/unreachable LLM endpoint must RAISE LLMError — never fabricate a default style.
+        A hallucinated style guide that looks legit silently corrupts every cover letter and is
+        impossible to catch downstream (worse than a clean failure)."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from job_applicator.exceptions import LLMError
+
+        config = LLMConfig(api_base="http://localhost:8000/v1", model="test-model")
+        analyzer = StyleAnalyzer(config)
+
+        async def _boom(*_a: object, **_k: object) -> None:
+            raise ConnectionError("connection refused")
+
+        with patch("job_applicator.documents.style_analyzer.instructor", create=True) as mock_inst:
+            mock_inst.from_litellm.return_value = MagicMock(create=AsyncMock(side_effect=_boom))
+            with patch("litellm.acompletion", new_callable=AsyncMock, side_effect=_boom):
+                with pytest.raises(LLMError):
+                    await analyzer.analyze("some resume text here", use_cache=False)
 
 
 def test_format_style_for_prompt_is_static() -> None:

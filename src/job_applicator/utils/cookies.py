@@ -25,15 +25,23 @@ def save_cookies(path: Path, cookies: Any) -> None:
 
 
 def read_cookies(path: Path) -> list[Any]:
-    """Return the cookie list stored at ``path``, or [] if missing/unreadable."""
+    """Return the cookie list stored at ``path``, or [] ONLY if the file is genuinely absent.
+
+    A present-but-corrupt/unreadable/wrong-shape file RAISES CookieError — it must never silently
+    return [] (which degrades a seeded LinkedIn session to unauthenticated and misleads the user
+    into re-logging in when the file was merely unreadable)."""
     if not path.exists():
-        return []
+        return []  # genuinely no seeded cookies — a legitimate empty, not a failure
     try:
         data = json.loads(path.read_text())
     except (json.JSONDecodeError, OSError, ValueError) as exc:
-        logger.warning("Failed to read cookies from %s: %s", path, exc)
-        return []
-    return data.get("cookies", []) if isinstance(data, dict) else []
+        raise CookieError(f"Cookie file {path} is unreadable or corrupt: {exc}") from exc
+    if not isinstance(data, dict) or "cookies" not in data:
+        raise CookieError(f"Cookie file {path} is malformed (missing the 'cookies' envelope)")
+    cookies = data["cookies"]
+    if not isinstance(cookies, list):
+        raise CookieError(f"Cookie file {path} is malformed ('cookies' is not a list)")
+    return cookies
 
 
 async def load_cookies(context: BrowserContext, path: Path) -> int:

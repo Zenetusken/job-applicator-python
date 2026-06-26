@@ -18,7 +18,7 @@ from job_applicator.browser.actions import (
 )
 from job_applicator.browser.manager import BrowserManager
 from job_applicator.config import AppSettings
-from job_applicator.exceptions import LoginRequiredError, NavigationError
+from job_applicator.exceptions import LoginRequiredError, NavigationError, ScraperError
 from job_applicator.models import JobBoard, JobListing, SessionHealth
 from job_applicator.scrapers.base import BaseScraper, SearchParams
 from job_applicator.utils.cookies import load_cookies, save_cookies
@@ -314,8 +314,13 @@ class LinkedInScraper(BaseScraper):
                     if cards:
                         break
             if not found or not cards:
-                logger.warning("No job cards found on page")
-                return jobs
+                # 0 cards is ambiguous (genuinely-empty search vs stale container selectors /
+                # unauthenticated / anti-bot block) — FAIL LOUDLY rather than report a silent
+                # empty result that masks a probable failure.
+                raise ScraperError(
+                    "No LinkedIn job cards found on the results page — the container selectors "
+                    "are stale, the session is unauthenticated, or the search was blocked."
+                )
             failures = 0
             selected = cards[: params.max_results]
             total = len(selected)
@@ -355,6 +360,15 @@ class LinkedInScraper(BaseScraper):
                     len(jobs),
                     total,
                     failures,
+                )
+            if not jobs and failures:
+                # Cards were present but EVERY one failed to extract → stale field selectors
+                # against the live DOM (a genuinely empty search returns 0 CARDS above, handled
+                # separately). FAIL LOUDLY — mirrors the Indeed honest-failure guard — instead of
+                # silently reporting 0 jobs.
+                raise ScraperError(
+                    f"Found {total} LinkedIn job card(s) but extracted 0 jobs ({failures} failed) "
+                    "— the field selectors are stale against the current LinkedIn DOM."
                 )
             logger.info("Scraped %d jobs from LinkedIn", len(jobs))
             return jobs
