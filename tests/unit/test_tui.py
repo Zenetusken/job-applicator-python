@@ -1844,7 +1844,7 @@ async def test_apply_job_skips_over_cap_without_browser(monkeypatch) -> None:  #
     monkeypatch.setattr(
         "job_applicator.state.ApplicationState",
         lambda *a, **k: MagicMock(
-            has_applied=lambda url: False, count_today=lambda board=None: 999
+            has_applied=lambda url, **kw: False, count_today=lambda board=None: 999
         ),
     )
     result = await actions.apply_job(AppSettings(), _job(1), submit=True)
@@ -1923,10 +1923,31 @@ async def test_apply_job_skips_already_applied_without_browser(monkeypatch) -> N
     monkeypatch.setattr(factories, "_make_browser", make_browser)
     monkeypatch.setattr(
         "job_applicator.state.ApplicationState",
-        lambda *a, **k: MagicMock(has_applied=lambda url: True, count_today=lambda board=None: 0),
+        lambda *a, **k: MagicMock(
+            has_applied=lambda url, **kw: True, count_today=lambda board=None: 0
+        ),
     )
     result = await actions.apply_job(AppSettings(), _job(1), submit=True)
     assert result.status is ApplicationStatus.ALREADY_APPLIED
+    make_browser.assert_not_called()
+
+
+async def test_apply_job_dedups_already_applied_status_like_cli(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """C6: the TUI dedups on ALREADY_APPLIED too (not just SUBMITTED), matching the CLI — exercised
+    against the REAL has_applied status set, with a recorded ALREADY_APPLIED outcome."""
+    import job_applicator.factories as factories
+    from job_applicator.models import ApplicationResult, ApplicationStatus
+    from job_applicator.state import ApplicationState
+    from job_applicator.tui import actions
+
+    # A prior ALREADY_APPLIED outcome (e.g. the applicator detected an existing application).
+    ApplicationState().record(
+        ApplicationResult(job=_job(1), status=ApplicationStatus.ALREADY_APPLIED)
+    )
+    make_browser = MagicMock()
+    monkeypatch.setattr(factories, "_make_browser", make_browser)
+    result = await actions.apply_job(AppSettings(), _job(1), submit=True)
+    assert result.status is ApplicationStatus.ALREADY_APPLIED  # skipped, not re-attempted
     make_browser.assert_not_called()
 
 

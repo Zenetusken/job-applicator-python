@@ -293,7 +293,12 @@ async def apply_job(settings: AppSettings, job: JobListing, *, submit: bool) -> 
 
     state = ApplicationState()
     if submit:  # cap + dedup gates fire before we ever open a browser
-        if state.has_applied(str(job.url)):
+        # Dedup on the same statuses the CLI uses ({SUBMITTED, ALREADY_APPLIED}) so the TUI
+        # doesn't re-attempt a job the applicator already found applied.
+        if state.has_applied(
+            str(job.url),
+            statuses={ApplicationStatus.SUBMITTED, ApplicationStatus.ALREADY_APPLIED},
+        ):
             return ApplicationResult(
                 job=job, status=ApplicationStatus.ALREADY_APPLIED, timestamp=datetime.now(UTC)
             )
