@@ -77,6 +77,10 @@ def _isolate_local_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(
         "job_applicator.scrapers.indeed._DEBUG_DIR", tmp_path / "ja-state" / "debug"
     )
+    # The LinkedIn applicator writes an error screenshot under the same debug dir on failure.
+    monkeypatch.setattr(
+        "job_applicator.applicators.linkedin._DEBUG_DIR", tmp_path / "ja-state" / "debug"
+    )
     # LLMSkillExtractor caches results under ~/.job-applicator/skill-extraction/ by default.
     # Redirect every instance created during tests to a throwaway cache directory.
     from job_applicator.embeddings.skill_extraction import LLMSkillExtractor

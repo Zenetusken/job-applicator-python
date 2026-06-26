@@ -331,6 +331,32 @@ class TestBatchCommand:
 class TestBatchStyleGuide:
     """Cycle 2b polish: batch respects --no-cover-letter and forwards OCR mode."""
 
+    def test_batch_json_empty_jobs_emits_valid_json(
+        self, style_guide_batch_env: dict[str, object], tmp_path: Path
+    ) -> None:
+        """batch --json with no jobs must emit a valid JSON summary on stdout, not the human
+        'No jobs found' text (CLAUDE.md: --json output is PURE parseable stdout)."""
+        env = style_guide_batch_env
+        empty = tmp_path / "empty_jobs.json"
+        empty.write_text("[]")
+        result = env["runner"].invoke(  # type: ignore[attr-defined]
+            env["app"],
+            [
+                "batch",
+                "--resume",
+                str(env["sample_resume_file"]),
+                "--jobs-file",
+                str(empty),
+                "--json",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "No jobs found" not in result.output  # not the human message on stdout
+        data = json.loads(result.output[result.output.index("{") :])
+        assert data["results"] == [] and data["total_jobs"] == 0
+        # same key shape as a full run's summary, so a --json consumer's parser stays stable
+        assert set(data) >= {"timestamp", "resume", "total_jobs", "matched", "results"}
+
     def test_no_cover_letter_with_style_guide_skips_generation(
         self, style_guide_batch_env: dict[str, object]
     ) -> None:

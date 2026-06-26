@@ -23,8 +23,12 @@ from job_applicator.models import (
     JobListing,
 )
 from job_applicator.utils.logging import get_logger
+from job_applicator.utils.path import safe_filename_slug
 
 logger = get_logger("applicators.linkedin")
+
+# Error screenshots land here (not cwd), with slugified names — see the apply() failure path.
+_DEBUG_DIR = Path.home() / ".job-applicator" / "debug"
 
 
 class LinkedInApplicator(BaseApplicator):
@@ -80,7 +84,12 @@ class LinkedInApplicator(BaseApplicator):
                 # Capture the page in its actual failure state rather than
                 # re-navigating to a fresh page (which hid the real error).
                 try:
-                    await screenshot(page, Path(f"error_{job.company}_{job.title}.png"))
+                    _DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+                    name = (
+                        f"error_{safe_filename_slug(job.company)}_"
+                        f"{safe_filename_slug(job.title)}.png"
+                    )
+                    await screenshot(page, _DEBUG_DIR / name)
                 except Exception as e:
                     logger.debug("Screenshot failed: %s", e)
             return ApplicationResult(
@@ -105,8 +114,9 @@ class LinkedInApplicator(BaseApplicator):
         await random_delay(1.0, 2.0)
 
         # Fill contact info if present
-        fields_filled = await self._fill_form_fields(page)
+        fields_filled, fill_errors = await self._fill_form_fields(page)
         validation.fields_filled = fields_filled
+        validation.fill_errors = fill_errors
 
         # Upload resume if file input exists
         resume_input = await page.query_selector('input[type="file"]')
@@ -131,8 +141,11 @@ class LinkedInApplicator(BaseApplicator):
                 break
             await advance.click()
             await random_delay(0.5, 1.0)
-            fields_filled.extend(await self._fill_form_fields(page))
+            more_filled, more_errors = await self._fill_form_fields(page)
+            fields_filled.extend(more_filled)
+            fill_errors.extend(more_errors)
             validation.fields_filled = fields_filled
+            validation.fill_errors = fill_errors
 
         # Match the final submit by either label ("Submit application" is the
         # usual text; fall back to a bare "Submit") so a label change/locale
@@ -209,13 +222,17 @@ class LinkedInApplicator(BaseApplicator):
             notes="No apply button found",
         )
 
-    async def _fill_form_fields(self, page: Page) -> list[str]:
+    async def _fill_form_fields(self, page: Page) -> tuple[list[str], list[str]]:
         """Auto-fill common form fields from profile.
 
-        Returns the list of field selectors that were actually filled.
+        Returns ``(filled, errors)``: labels that were filled, and labels of fields that were
+        PRESENT but failed to fill (distinct from absent fields, which are silently skipped).
+        A present-but-failed field is surfaced (warned + carried into DryRunValidation) so a real
+        submit isn't sent with a silently-missing required field.
         """
         profile = self._config
         filled: list[str] = []
+        errors: list[str] = []
 
         name_parts = profile.profile_name.split() if profile.profile_name else []
         first_name = name_parts[0] if name_parts else ""
@@ -236,8 +253,11 @@ class LinkedInApplicator(BaseApplicator):
                         await el.fill(value)
                         filled.append(label)
                     except Exception as e:
-                        logger.debug("Could not fill %s: %s", selector, e)
-        return filled
+                        # Field is PRESENT but won't fill — surface it (a required one going
+                        # unfilled would otherwise reach Submit silently).
+                        logger.warning("Field %s present but could not fill: %s", label, e)
+                        errors.append(label)
+        return filled, errors
 
     async def check_already_applied(self, job: JobListing) -> bool:
         """Check if already applied to this job."""

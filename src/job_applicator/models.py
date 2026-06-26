@@ -303,6 +303,7 @@ class DryRunValidation(BaseModel):
     reached_submit: bool = False
     easy_apply_button_found: bool = False
     fields_filled: list[str] = Field(default_factory=list)
+    fill_errors: list[str] = Field(default_factory=list)  # fields present but could not be filled
     resume_uploaded: bool = False
     cover_letter_field_found: bool = False
 

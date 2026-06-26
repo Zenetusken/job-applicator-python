@@ -935,7 +935,10 @@ def apply(
                 jobs = store_jobs
 
             if not jobs:
-                console.print("[yellow]No jobs found to apply to.[/yellow]")
+                if as_json:
+                    sys.stdout.write("[]\n")  # pure-JSON contract: empty result, not prose
+                else:
+                    console.print("[yellow]No jobs found to apply to.[/yellow]")
                 return
 
             # Generate cover letters whenever they are requested and a résumé is
@@ -1758,7 +1761,24 @@ def batch(
             raise typer.Exit(1)
 
         if not jobs:
-            console.print("[yellow]No jobs found.[/yellow]")
+            if as_json:
+                import json
+
+                # Same shape as the full summary (below) so a --json consumer's parser is stable.
+                sys.stdout.write(
+                    json.dumps(
+                        {
+                            "timestamp": dt.now().strftime("%Y%m%d_%H%M%S"),
+                            "resume": settings.resume_path,
+                            "total_jobs": 0,
+                            "matched": 0,
+                            "results": [],
+                        }
+                    )
+                    + "\n"
+                )
+            else:
+                console.print("[yellow]No jobs found.[/yellow]")
             return
 
         if not as_json:
@@ -1799,7 +1819,23 @@ def batch(
                 )
 
         if not matches:
-            console.print("[yellow]No jobs above minimum score threshold.[/yellow]")
+            if as_json:
+                import json
+
+                sys.stdout.write(
+                    json.dumps(
+                        {
+                            "timestamp": dt.now().strftime("%Y%m%d_%H%M%S"),
+                            "resume": settings.resume_path,
+                            "total_jobs": len(jobs),
+                            "matched": 0,
+                            "results": [],
+                        }
+                    )
+                    + "\n"
+                )
+            else:
+                console.print("[yellow]No jobs above minimum score threshold.[/yellow]")
             return
 
         batch_state = BatchState()

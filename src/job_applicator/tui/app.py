@@ -982,12 +982,23 @@ class JobApplicatorApp(App[None]):
             self._set_busy("")
         if tailored is None:
             return
-        self._store.mark_tailored(
-            job,
-            tailored_resume_path=tailored.output_path,
-            pdf_path=tailored.pdf_path,
-        )
-        self._reload()
+        try:
+            self._store.mark_tailored(
+                job,
+                tailored_resume_path=tailored.output_path,
+                pdf_path=tailored.pdf_path,
+            )
+            self._reload()
+        except JobApplicatorError as exc:
+            # The artifact IS written; only the funnel update failed (e.g. DB locked). Surface it
+            # as a warning so the success isn't lost to a crashed worker + no toast.
+            self.notify(
+                f"Tailored ✓  →  {tailored.output_path}  "
+                f"(funnel update failed: {escape(str(exc))})",
+                severity="warning",
+                timeout=8,
+            )
+            return
         self.notify(f"Tailored ✓  →  {tailored.output_path}", timeout=6)
 
     def action_cover_letter(self) -> None:
@@ -1036,12 +1047,21 @@ class JobApplicatorApp(App[None]):
             self._set_busy("")
         if result is None:
             return
-        self._store.set_cover_letter(
-            str(job.url),
-            result.output_path,
-            cover_letter_pdf_path=result.pdf_path,
-        )
-        self._reload()
+        try:
+            self._store.set_cover_letter(
+                str(job.url),
+                result.output_path,
+                cover_letter_pdf_path=result.pdf_path,
+            )
+            self._reload()
+        except JobApplicatorError as exc:
+            self.notify(
+                f"Cover letter ✓  →  {result.output_path}  "
+                f"(funnel update failed: {escape(str(exc))})",
+                severity="warning",
+                timeout=8,
+            )
+            return
         self.notify(f"Cover letter ✓  →  {result.output_path}", timeout=6)
 
     def action_ats_check(self) -> None:

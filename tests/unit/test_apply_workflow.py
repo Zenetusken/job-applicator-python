@@ -122,6 +122,17 @@ def test_apply_json_output_lists_each_result() -> None:
     assert {d["status"] for d in data} == {"pending"}
 
 
+def test_apply_json_empty_result_emits_empty_array() -> None:
+    """--json + an empty search result must emit valid JSON ([]) on stdout, not the human
+    'No jobs found' text (CLAUDE.md: --json output is PURE parseable stdout)."""
+    import json
+
+    result, _applicator, _ = _drive(["-q", "python", "--json"], jobs=[])
+    assert result.exit_code == 0, result.output
+    assert "No jobs found" not in result.output  # fails before the fix (plain text on stdout)
+    assert json.loads(result.output[result.output.index("[") :]) == []
+
+
 def test_apply_submit_records_each_application() -> None:
     """--submit applies with submit=True and records each outcome in local state."""
     result, applicator, st = _drive(["-q", "python", "-n", "2", "--submit", "--no-cover-letter"])
