@@ -234,14 +234,16 @@ class JobApplicatorApp(App[None]):
             id="stagetabs",
         )
         with Horizontal(id="body"):
-            yield JobListTable(id="joblist", cursor_type="row", zebra_stripes=True)
+            yield JobListTable(
+                id="joblist", cursor_type="row", zebra_stripes=True, show_header=False
+            )
             yield VerticalScroll(Static(id="detail"), id="detailscroll")
         yield Input(id="filter", placeholder="filter title/company — Enter to apply, Esc to clear")
         yield Footer()
 
     def on_mount(self) -> None:
         table = self.query_one("#joblist", DataTable)
-        table.add_columns("Stage", "Score", "Bd", "Title", "Company")
+        table.add_column("Jobs")  # one column; each row is a 2-line job card (see _repaint)
         self._reload()  # also seeds the stage-tab counts
         self._tab_sync = False  # mount done — real tab clicks now apply + reload
         table.focus()  # the job list owns focus, not the (hidden) tabs / filter Input
@@ -382,14 +384,11 @@ class JobApplicatorApp(App[None]):
         # Remember the selected job so it survives the rebuild below (see the move_cursor at the
         # end). Without this every refresh/filter/sort/scrape snapped the cursor to the first row.
         prev_key = str(self._current.id) if self._current is not None else None
-        # Cap Title (and Company) so the auto-sized Title column can't expand to the longest
-        # title and push Company off the right edge (the reported bug). Fixed caps are
-        # deliberate over a pane-width-derived value: the latter reads table.size mid-layout
-        # and proved racy. Lowered from 46/22 to make room for the Board column: 38+18 keeps
-        # the whole table ≤ ~84 cols so every column (incl. Company) still fits the pane at a
-        # ~190-wide terminal (measured); narrower terminals h-scroll as before. Cells
-        # ellipsize cleanly instead of hard-cutting at the edge.
-        title_cap, company_cap = 38, 18
+        # Two-line rows (one DataTable column, height=2): line 1 is the FULL title (no cap —
+        # the whole point of this layout is that titles stop truncating), line 2 is the
+        # metadata — stage (coloured) · score · board · company · location (dim). zebra stripes
+        # separate adjacent jobs; the column grows to the longest title and h/l scrolls the rare
+        # over-wide one.
         table.clear()
         self._by_key = {}
         visible = self._visible()
@@ -399,16 +398,15 @@ class JobApplicatorApp(App[None]):
             stage = self._effective_stage(s)
             style = _STAGE_STYLE.get(stage, "white")
             score = f"{s.match_score:.0%}" if s.match_score is not None else "—"
-            board = s.job.board
-            board_cell = f"[dim]{_BOARD_TAG.get(board.value, '??')}[/dim]"
-            table.add_row(
-                f"[{style}]{stage.replace('_', ' ')}[/{style}]",
-                score,
-                board_cell,
-                escape(_elide(s.job.title, title_cap)),
-                escape(_elide(s.job.company, company_cap)),
-                key=key,
+            board = _BOARD_TAG.get(s.job.board.value, "??")
+            meta = f"{score} · {board} · {escape(s.job.company)}"
+            if s.job.location:
+                meta += f" · {escape(s.job.location)}"
+            cell = (
+                f"[bold]{escape(s.job.title)}[/bold]\n"
+                f"  [{style}]{stage.replace('_', ' ')}[/{style}] [dim]· {meta}[/dim]"
             )
+            table.add_row(cell, height=2, key=key)
         # Re-select the SAME job (the row set changes under a filter/sort); fall back to the
         # first row only when the previously-selected job is no longer visible.
         restore = next((i for i, s in enumerate(visible) if str(s.id) == prev_key), None)

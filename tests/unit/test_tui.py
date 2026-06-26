@@ -471,9 +471,10 @@ def test_tui_detail_elides_long_artifact_filename() -> None:
     assert "@click=app.open_tailored" in md  # still clickable
 
 
-async def test_tui_joblist_company_visible_no_overflow(tmp_path: Path) -> None:
-    """At a normal-width terminal a very long title no longer pushes Company off-screen: the
-    table fits its pane (no horizontal scroll), so all four columns render."""
+async def test_tui_joblist_company_on_metadata_line(tmp_path: Path) -> None:
+    """Two-line cards: the company sits on each job's 2nd (metadata) line, so even a very long
+    title can never push it off-screen — it's always present in the row."""
+    from textual.coordinate import Coordinate
     from textual.widgets import DataTable
 
     store = JobStore(db_path=tmp_path / "applications.db")
@@ -481,12 +482,12 @@ async def test_tui_joblist_company_visible_no_overflow(tmp_path: Path) -> None:
     app = JobApplicatorApp(
         settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
     )
-    async with app.run_test(size=(240, 40)) as pilot:
+    async with app.run_test(size=(160, 40)) as pilot:
         await pilot.pause()
         t = app.query_one("#joblist", DataTable)
-        # No horizontal overflow → every column (incl. Company) is on-screen. Without the
-        # title cap, the 120-char title would expand the table well past the pane.
-        assert t.virtual_size.width <= t.size.width
+        assert len(t.columns) == 1  # one 2-line-card column
+        cell = t.get_cell_at(Coordinate(0, 0))
+        assert "Acme Corporation Worldwide Holdings" in cell  # company always present (line 2)
 
 
 async def test_tui_detail_scroll_keys(tmp_path: Path) -> None:
@@ -2427,9 +2428,9 @@ async def test_tui_board_column_shows_each_board(tmp_path: Path) -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         t = app.query_one("#joblist", DataTable)
-        assert len(t.columns) == 5  # Stage, Score, Bd, Title, Company
-        cells = [t.get_cell_at(Coordinate(r, 2)) for r in range(t.row_count)]  # Board column
-        assert any("LI" in c for c in cells) and any("IN" in c for c in cells)
+        assert len(t.columns) == 1  # single 2-line-card column
+        cells = [t.get_cell_at(Coordinate(r, 0)) for r in range(t.row_count)]  # the job cards
+        assert any("LI" in c for c in cells) and any("IN" in c for c in cells)  # board tag, line 2
         assert not any("LinkedIn" in c for c in cells)  # full name is the detail pane's job
 
 
@@ -2513,22 +2514,25 @@ def test_tui_statusline_shows_board_filter() -> None:
     assert "board: Indeed" in line and "shown" in line
 
 
-async def test_tui_joblist_no_overflow_with_board_column(tmp_path: Path) -> None:
-    """Real-frame guard: the added Board column still fits at a ~190-wide terminal — Company
-    is not pushed off-screen (the #65-67 fix holds via the lowered title/company caps)."""
+async def test_tui_joblist_normal_titles_fit_no_overflow(tmp_path: Path) -> None:
+    """Real-frame guard: normal-length titles fit the list pane at a ~190-wide terminal (no
+    horizontal scroll); the layout is a single 2-line-card column. (Unusually long titles
+    overflow by design and are reachable via h/l.)"""
     from textual.widgets import DataTable
 
     store = JobStore(db_path=tmp_path / "applications.db")
-    store.upsert_job(_job(1, title="T" * 120, company="Acme Corporation Worldwide Holdings"))
-    store.upsert_job(_job(2, url="https://indeed.com/2", board=JobBoard.INDEED, title="X" * 120))
+    store.upsert_job(_job(1, title="Senior Platform Engineer", company="Globex International"))
+    store.upsert_job(
+        _job(2, url="https://indeed.com/2", board=JobBoard.INDEED, title="Data Engineer III")
+    )
     app = JobApplicatorApp(
         settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
     )
     async with app.run_test(size=(190, 40)) as pilot:
         await pilot.pause()
         t = app.query_one("#joblist", DataTable)
-        assert len(t.columns) == 5  # Stage, Score, Board, Title, Company
-        assert t.virtual_size.width <= t.size.width  # no horizontal overflow at 190 wide
+        assert len(t.columns) == 1  # single 2-line-card column
+        assert t.virtual_size.width <= t.size.width  # normal titles fit, no h-overflow
 
 
 # ----------------------------------------------------------------- style-guide UI flow
