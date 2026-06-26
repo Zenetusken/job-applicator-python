@@ -64,7 +64,7 @@ _STAGE_TAB_LABEL: dict[str | None, str] = {
     "found": "Found",
     "matched": "Matched",
     "tailored": "Tailored",
-    "cover_letter": "Cover",
+    "cover_letter": "Cover letter",
     "applied": "Applied",
 }
 
@@ -82,9 +82,12 @@ def _tab_to_stage(tab_id: str | None) -> str | None:
 
 
 # Board-filter cycle: None (all) then each board; compared against `s.job.board.value`.
-# `_BOARD_STYLE` colours the list's Board column for a quick LinkedIn-vs-Indeed scan.
+# `_BOARD_TAG` is a compact, UNCOLOURED 2-letter board marker for the list (LinkedIn→LI,
+# Indeed→IN). De-coloured on purpose: a coloured board column collided with the stage colours
+# (yellow = tailored AND Indeed) and the blue selection highlight. The full board name still
+# shows in the detail pane, and the 2-letter form frees width for the (cramped) Title column.
 _BOARD_CYCLE: list[str | None] = [None, *(b.value for b in JobBoard)]
-_BOARD_STYLE: dict[str, str] = {"linkedin": "blue", "indeed": "yellow"}
+_BOARD_TAG: dict[str, str] = {"linkedin": "LI", "indeed": "IN"}
 
 # Sort orders cycled by `S`; "match" (best opportunity first) is the default. The labels are
 # what the status line shows.
@@ -238,7 +241,7 @@ class JobApplicatorApp(App[None]):
 
     def on_mount(self) -> None:
         table = self.query_one("#joblist", DataTable)
-        table.add_columns("Stage", "Score", "Board", "Title", "Company")
+        table.add_columns("Stage", "Score", "Bd", "Title", "Company")
         self._reload()  # also seeds the stage-tab counts
         self._tab_sync = False  # mount done — real tab clicks now apply + reload
         table.focus()  # the job list owns focus, not the (hidden) tabs / filter Input
@@ -397,7 +400,7 @@ class JobApplicatorApp(App[None]):
             style = _STAGE_STYLE.get(stage, "white")
             score = f"{s.match_score:.0%}" if s.match_score is not None else "—"
             board = s.job.board
-            board_cell = f"[{_BOARD_STYLE.get(board.value, 'white')}]{board.display_name}[/]"
+            board_cell = f"[dim]{_BOARD_TAG.get(board.value, '??')}[/dim]"
             table.add_row(
                 f"[{style}]{stage.replace('_', ' ')}[/{style}]",
                 score,

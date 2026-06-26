@@ -2412,7 +2412,9 @@ async def test_tui_search_then_refuses_a_second_concurrent_account_worker(
 
 # ------------------------------------------------ board column + filter (Cycle F)
 async def test_tui_board_column_shows_each_board(tmp_path: Path) -> None:
-    """The list has a Board column showing each job's board (LinkedIn / Indeed)."""
+    """The list has a compact, uncoloured Board column tagging each job's board (LI / IN) —
+    the full name shows in the detail pane; the 2-letter tag frees Title width + de-collides
+    the board colour from the stage colours / selection highlight."""
     from textual.coordinate import Coordinate
     from textual.widgets import DataTable
 
@@ -2425,9 +2427,10 @@ async def test_tui_board_column_shows_each_board(tmp_path: Path) -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         t = app.query_one("#joblist", DataTable)
-        assert len(t.columns) == 5  # Stage, Score, Board, Title, Company
+        assert len(t.columns) == 5  # Stage, Score, Bd, Title, Company
         cells = [t.get_cell_at(Coordinate(r, 2)) for r in range(t.row_count)]  # Board column
-        assert any("LinkedIn" in c for c in cells) and any("Indeed" in c for c in cells)
+        assert any("LI" in c for c in cells) and any("IN" in c for c in cells)
+        assert not any("LinkedIn" in c for c in cells)  # full name is the detail pane's job
 
 
 async def test_tui_board_filter_cycles_and_narrows(tmp_path: Path) -> None:
