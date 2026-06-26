@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 import typer
 
-from job_applicator.utils.console import console
+from job_applicator.utils.console import err_console
 from job_applicator.utils.llm import LLMRuntime
 
 if TYPE_CHECKING:
@@ -35,7 +35,7 @@ def _scraper_class(site: str) -> type[BaseScraper]:
         from job_applicator.scrapers.indeed import IndeedScraper
 
         return IndeedScraper
-    console.print(f"[yellow]{site} scraper not yet implemented[/yellow]")
+    err_console.print(f"[yellow]{site} scraper not yet implemented[/yellow]")
     raise typer.Exit(1)
 
 
@@ -79,7 +79,7 @@ def _make_applicator(site: str, browser: BrowserManager, settings: AppSettings) 
         from job_applicator.applicators.indeed import IndeedApplicator
 
         return IndeedApplicator(browser, settings)
-    console.print(f"[yellow]{site} applicator not yet implemented[/yellow]")
+    err_console.print(f"[yellow]{site} applicator not yet implemented[/yellow]")
     raise typer.Exit(1)
 
 
