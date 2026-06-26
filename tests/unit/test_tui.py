@@ -842,9 +842,11 @@ async def test_tui_applied_job_counted_once_not_double(tmp_path: Path) -> None:
     app = JobApplicatorApp(settings=AppSettings(), store=store, app_state=app_state)
     async with app.run_test() as pilot:
         await pilot.pause()
-        line = app._statusline()
-        assert "1 applied" in line
-        assert "0 cover letter" in line  # NOT also counted at its head stage
+        from textual.widgets import Tab
+
+        # Counts live on the tabs now: the job shows as applied(1), NOT also at its head stage.
+        assert "1" in str(app.query_one("#stage-applied", Tab).label)
+        assert "0" in str(app.query_one("#stage-cover_letter", Tab).label)
         assert app._effective_stage(app._all[0]) == "applied"  # sidebar/detail agree
 
 
@@ -1610,14 +1612,14 @@ async def test_tui_search_shows_per_item_progress(tmp_path: Path, monkeypatch) -
 
 
 async def test_tui_busy_indicator_in_statusline(tmp_path: Path) -> None:
-    """_set_busy shows a live '⏳ …' line in the status bar and clears back to counts."""
+    """_set_busy shows a live '⏳ …' line in the status bar and clears back to the sort line."""
     app = _app(tmp_path, seed=1)
     async with app.run_test() as pilot:
         await pilot.pause()
         app._set_busy("Tailoring X…")
         assert "⏳" in app._statusline() and "Tailoring X" in app._statusline()
         app._set_busy("")
-        assert "⏳" not in app._statusline()  # restored to the funnel counts
+        assert "⏳" not in app._statusline()  # restored to the sort/filter line
 
 
 async def test_tui_search_clears_busy_and_loading(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -2042,17 +2044,18 @@ async def test_tui_empty_stage_shows_guidance(tmp_path: Path) -> None:
         assert "[cyan]f[/cyan]" in detail  # points at the stage-filter key, not 'No jobs yet'
 
 
-def test_tui_statusline_reflects_sort_and_stage() -> None:
-    """The status line always shows the active sort, and adds the stage filter + shown count
-    when a stage filter is set."""
+def test_tui_statusline_reflects_sort_and_filters() -> None:
+    """The status line shows the active sort + the board/salary/text filters (+ shown count).
+    It does NOT show the funnel counts or the stage — those are the tabs now."""
     app = JobApplicatorApp(settings=AppSettings(), store=MagicMock(), app_state=MagicMock())
     app._all = []
     line = app._statusline()  # defaults
-    assert "sort: best match" in line and "stage:" not in line
+    assert "sort: best match" in line
+    assert "stage:" not in line  # stage is the active tab, not the status line
     app._sort_mode = "recent"
-    app._stage_filter = "matched"
+    app._board_filter = "indeed"
     line = app._statusline()
-    assert "sort: recent" in line and "stage: matched" in line and "shown" in line
+    assert "sort: recent" in line and "board: Indeed" in line and "shown" in line
 
 
 async def test_tui_statusline_renders_sort_stage_in_running_frame(tmp_path: Path) -> None:
@@ -2078,10 +2081,12 @@ async def test_tui_statusline_renders_sort_stage_in_running_frame(tmp_path: Path
         await pilot.press("S")  # → recent
         await pilot.pause()
         assert "sort: recent" in _rendered()
-        await pilot.press("f")  # stage → found
+        await pilot.press("f")  # stage → found: moves the active TAB, not the status line
         await pilot.pause()
-        frame = _rendered()
-        assert "stage: found" in frame and "1 shown" in frame
+        from textual.widgets import Tabs
+
+        assert app.query_one("#stagetabs", Tabs).active == "stage-found"
+        assert "stage:" not in _rendered()  # stage lives on the tab now, not the status
 
 
 async def test_tui_salary_sort_filter_and_toggle(tmp_path: Path) -> None:

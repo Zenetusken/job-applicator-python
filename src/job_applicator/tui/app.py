@@ -427,20 +427,10 @@ class JobApplicatorApp(App[None]):
         style = f"[cyan]{escape(sg_path)}[/cyan]" if sg_path else "[dim]none — press 'g'[/dim]"
         if self._busy:  # a worker is running — show live progress instead of static counts
             return f"Résumé {resume}   Style: {style}\n[yellow]⏳ {escape(self._busy)}[/yellow]"
-        # Compose by URL (furthest-stage-wins) so an applied job — which stays in the store
-        # at its head stage — is counted once as applied, matching the CLI `status`.
-        counts: dict[str, int] = {}
-        for s in self._all:
-            stage = self._effective_stage(s)
-            counts[stage] = counts.get(stage, 0) + 1
-        head_urls = {str(s.job.url) for s in self._all}
-        counts["applied"] = counts.get("applied", 0) + len(self._applied_urls - head_urls)
-        parts = [f"{counts.get(st.value, 0)} {st.value.replace('_', ' ')}" for st in FunnelStatus]
-        # View state: the active sort (always — a control the user drives with `S`), plus the
-        # stage/text filters when set, and the shown count when either narrows the list.
+        # Line 2 carries ONLY the view controls with no other home: sort, the board/salary/text
+        # filters, and the resulting "N shown". Per-stage counts and the active stage now live on
+        # the tabs, so repeating them here would just duplicate the tab bar.
         view = [f"sort: {_SORT_LABEL[self._sort_mode]}"]
-        if self._stage_filter is not None:
-            view.append(f"stage: {self._stage_filter.replace('_', ' ')}")
         if self._board_filter is not None:
             view.append(f"board: {JobBoard(self._board_filter).display_name}")
         if self._min_salary > 0:
@@ -449,20 +439,20 @@ class JobApplicatorApp(App[None]):
             view.append("listed pay only")
         if self._filter:
             view.append(f"text: {escape(self._filter)}")
+        # "N shown" is for the NON-stage filters only: a stage tab already shows its own count,
+        # and when a stage tab + a board/etc. filter combine, len(visible) legitimately differs.
         narrowed = (
-            self._stage_filter is not None
-            or self._board_filter is not None
+            self._board_filter is not None
             or self._min_salary > 0
             or self._hide_unlisted
             or bool(self._filter)
         )
         tail = f" — {len(self._visible())} shown" if narrowed else ""
-        suffix = f"   [dim]({' · '.join(view)}{tail})[/dim]"
-        return f"Résumé {resume}   Style: {style}\n{' · '.join(parts)}{suffix}"
+        return f"Résumé {resume}   Style: {style}\n[dim]{' · '.join(view)}{tail}[/dim]"
 
     def _set_busy(self, msg: str) -> None:
         """Show a live '⏳ <msg>' progress line while a worker runs (empty string clears
-        it, restoring the funnel counts) — so latency never looks like a freeze."""
+        it, restoring the sort/filter line) — so latency never looks like a freeze."""
         self._busy = msg
         self.query_one("#statusline", Static).update(self._statusline())
 
