@@ -163,18 +163,21 @@ class JobApplicatorApp(App[None]):
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
+        # The footer shows PRIMARY keys only; the secondary long-tail (PDF exports, ATS, style
+        # guide, copy) is show=False — still bound, still in Help (?) — so the footer reads as a
+        # lean bar, not a wall. This also drops the a/A footer collision (ATS is hidden).
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh", "Refresh"),
         Binding("t", "tailor", "Tailor"),
-        Binding("T", "tailor_pdf", "Tailor PDF"),
+        Binding("T", "tailor_pdf", "Tailor PDF", show=False),
         Binding("c", "cover_letter", "Cover letter"),
-        Binding("C", "cover_letter_pdf", "Cover PDF"),
-        Binding("p", "open_pdf", "Open PDF"),
+        Binding("C", "cover_letter_pdf", "Cover PDF", show=False),
+        Binding("p", "open_pdf", "Open PDF", show=False),
         Binding("s", "search", "Search"),
         Binding("a", "apply", "Apply"),
         Binding("e", "set_resume", "Résumé"),
-        Binding("g", "set_style_guide", "Style guide"),
-        Binding("A", "ats_check", "ATS"),
+        Binding("g", "set_style_guide", "Style guide", show=False),
+        Binding("A", "ats_check", "ATS", show=False),
         Binding("o", "open_url", "Open"),
         Binding("y", "copy_url", "Copy URL", show=False),
         Binding("slash", "filter", "Filter"),
