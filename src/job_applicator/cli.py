@@ -121,6 +121,24 @@ def _resolve_ocr_mode(ocr_mode: OCRMode, force_ocr: bool) -> str:
     return str(ocr_mode)
 
 
+def _resolve_output_format(output_format: Format | None, settings: AppSettings) -> Format:
+    """Return effective output format from CLI flag or config."""
+    if output_format is not None:
+        return output_format
+    try:
+        return Format(settings.output.default_format)
+    except ValueError:
+        return Format.TXT
+
+
+def _stage_label(stage: str, count: int) -> str:
+    """Return a singular or plural human label for a funnel stage count."""
+    label = stage.replace("_", " ")
+    if stage == "cover_letter" and count != 1:
+        return "cover letters"
+    return label
+
+
 def _load_jobs_file(jobs_file: str) -> list[JobListing]:
     """Load + validate a JSON jobs file into JobListings.
 
@@ -809,10 +827,13 @@ def apply(
         "--validate",
         help="Exit non-zero if a dry run does not reach the Submit button.",
     ),
-    output_format: Format = typer.Option(
-        Format.TXT,
+    output_format: Format | None = typer.Option(
+        None,
         "--format",
-        help="Output format for generated cover letters: txt, pdf, or both.",
+        help=(
+            "Output format for generated cover letters: txt, pdf, or both "
+            "(default: output.default_format)."
+        ),
     ),
     template: str | None = typer.Option(
         None,
@@ -850,6 +871,7 @@ def apply(
     setup_logging(settings.log_level)
     effective_ocr_mode = _resolve_ocr_mode(ocr_mode, force_ocr)
     effective_template = template or settings.output.cover_letter_template
+    effective_output_format = _resolve_output_format(output_format, settings)
 
     reporter = _get_reporter(
         ctx=ctx,
@@ -858,7 +880,7 @@ def apply(
             "resume": settings.resume_path,
             "jobs_file": "",
             "limit": limit,
-            "format": output_format.value,
+            "format": effective_output_format.value,
             "template": effective_template,
             "category": category,
         },
@@ -960,7 +982,7 @@ def apply(
                                 job, user_profile, resume_data, style_guide=style
                             )
                             pdf_path: str | None = None
-                            if output_format in (Format.PDF, Format.BOTH):
+                            if effective_output_format in (Format.PDF, Format.BOTH):
                                 when = datetime.now()
                                 cl_result = CoverLetterResult(
                                     job_title=job.title,
@@ -974,7 +996,7 @@ def apply(
                                         output_dir,
                                         cl_result,
                                         settings,
-                                        output_format=output_format,
+                                        output_format=effective_output_format,
                                         template=effective_template,
                                         category=effective_category,
                                         when=when,
@@ -1060,10 +1082,13 @@ def generate_cover_letter(
         "--force-ocr",
         help="Force OCR; equivalent to --ocr-mode on.",
     ),
-    output_format: Format = typer.Option(
-        Format.TXT,
+    output_format: Format | None = typer.Option(
+        None,
         "--format",
-        help="Output format for the cover letter: txt, pdf, or both.",
+        help=(
+            "Output format for the cover letter: txt, pdf, or both "
+            "(default: output.default_format)."
+        ),
     ),
     template: str | None = typer.Option(
         None,
@@ -1088,6 +1113,7 @@ def generate_cover_letter(
     setup_logging(settings.log_level)
     effective_ocr_mode = _resolve_ocr_mode(ocr_mode, force_ocr)
     effective_template = template or settings.output.cover_letter_template
+    effective_output_format = _resolve_output_format(output_format, settings)
 
     reporter = _get_reporter(
         ctx=ctx,
@@ -1097,7 +1123,7 @@ def generate_cover_letter(
             "job_title": job_title,
             "company": company,
             "style_guide": settings.style_guide_path,
-            "format": output_format.value,
+            "format": effective_output_format.value,
             "template": effective_template,
             "category": category,
         },
@@ -1186,7 +1212,7 @@ def generate_cover_letter(
             output_dir,
             result,
             settings,
-            output_format=output_format,
+            output_format=effective_output_format,
             template=effective_template,
             category=effective_category,
             when=when,
@@ -1526,7 +1552,7 @@ def status(
         sys.stdout.write(json.dumps(payload, indent=2) + "\n")
         return
 
-    summary = " · ".join(f"{counts[st]} {st.replace('_', ' ')}" for st in order)
+    summary = " · ".join(f"{counts[st]} {_stage_label(st, counts[st])}" for st in order)
     console.print(Panel(summary, title="Funnel", border_style="cyan"))
 
     if not rows:
@@ -1622,10 +1648,13 @@ def batch(
         "--resume-run",
         help="Resume an existing incomplete batch run with matching parameters.",
     ),
-    output_format: Format = typer.Option(
-        Format.TXT,
+    output_format: Format | None = typer.Option(
+        None,
         "--format",
-        help="Output format for résumé/cover-letter artifacts: txt, pdf, or both.",
+        help=(
+            "Output format for résumé/cover-letter artifacts: txt, pdf, or both "
+            "(default: output.default_format)."
+        ),
     ),
     template: str | None = typer.Option(
         None,
@@ -1651,6 +1680,7 @@ def batch(
     effective_ocr_mode = _resolve_ocr_mode(ocr_mode, force_ocr)
     effective_resume_template = template or settings.output.resume_template
     effective_cl_template = template or settings.output.cover_letter_template
+    effective_output_format = _resolve_output_format(output_format, settings)
 
     reporter = _get_reporter(
         ctx=ctx,
@@ -1663,7 +1693,7 @@ def batch(
             "cover_letter": cover_letter,
             "run_id": run_id or "auto",
             "resume_run": resume_run,
-            "format": output_format.value,
+            "format": effective_output_format.value,
             "template": template or "default",
             "category": category,
         },
@@ -1870,13 +1900,13 @@ def batch(
                     result["skill_score"] = round(tailored.skill_score, 4)
                     result["tailored"] = True
                     result["resumed"] = True
-                    if output_format in (Format.PDF, Format.BOTH):
+                    if effective_output_format in (Format.PDF, Format.BOTH):
                         try:
                             _text_path, resume_pdf_path = await _write_tailored_artifacts(
                                 Path(output_dir),
                                 tailored,
                                 settings,
-                                output_format=output_format,
+                                output_format=effective_output_format,
                                 template=effective_resume_template,
                                 category=category or detect_job_category(job),
                                 when=when,
@@ -1939,7 +1969,7 @@ def batch(
                             Path(output_dir),
                             tailored,
                             settings,
-                            output_format=output_format,
+                            output_format=effective_output_format,
                             template=effective_resume_template,
                             category=category or detect_job_category(job),
                             when=when,
@@ -2001,7 +2031,7 @@ def batch(
                             Path(output_dir),
                             cl_result,
                             settings,
-                            output_format=output_format,
+                            output_format=effective_output_format,
                             template=effective_cl_template,
                             category=category or detect_job_category(job),
                             when=when,
@@ -2107,8 +2137,9 @@ def batch(
             console.print(table)
             tailored_ok = sum(1 for r in batch_results if r.get("tailored"))
             cl_ok = sum(1 for r in batch_results if r.get("cover_letter"))
+            cl_label = "cover letter" if cl_ok == 1 else "cover letters"
             console.print(
-                f"\n[green]{tailored_ok}[/green] tailored, [green]{cl_ok}[/green] cover letters"
+                f"\n[green]{tailored_ok}[/green] tailored, [green]{cl_ok}[/green] {cl_label}"
             )
             console.print(f"Summary: {summary_path}")
 
@@ -2167,10 +2198,13 @@ def tailor(
         "--force-ocr",
         help="Force OCR; equivalent to --ocr-mode on.",
     ),
-    output_format: Format = typer.Option(
-        Format.TXT,
+    output_format: Format | None = typer.Option(
+        None,
         "--format",
-        help="Output format for the tailored résumé: txt, pdf, or both.",
+        help=(
+            "Output format for the tailored résumé: txt, pdf, or both "
+            "(default: output.default_format)."
+        ),
     ),
     template: str | None = typer.Option(
         None,
@@ -2198,6 +2232,7 @@ def tailor(
     effective_ocr_mode = _resolve_ocr_mode(ocr_mode, force_ocr)
     resume_template = template or settings.output.resume_template
     cover_letter_template = template or settings.output.cover_letter_template
+    effective_output_format = _resolve_output_format(output_format, settings)
 
     reporter = _get_reporter(
         ctx=ctx,
@@ -2207,7 +2242,7 @@ def tailor(
             "job": job_description,
             "min_score": min_score,
             "interactive": not yes,
-            "format": output_format.value,
+            "format": effective_output_format.value,
             "template": resume_template,
             "category": category,
         },
@@ -2438,7 +2473,7 @@ def tailor(
             result,
             reporter,
             yes=yes,
-            output_format=output_format,
+            output_format=effective_output_format,
             resume_template=resume_template,
             cover_letter_template=cover_letter_template,
             category=category,
@@ -2902,7 +2937,11 @@ def _render_doctor(report: DoctorReport) -> None:
         )
 
     sh = report.self_host
-    vllm_part = f"{good} vllm" if sh.vllm_installed else f"{warn} vllm not installed"
+    vproc = report.vllm_process
+    if vproc.running and vproc.compatible:
+        vllm_part = f"{good} external vLLM detected"
+    else:
+        vllm_part = f"{good} vllm" if sh.vllm_installed else f"{warn} vllm not installed"
     token_part = f"{good} HF token" if sh.hf_token_present else f"{warn} no HF token"
     console.print(f"  Self-host      {vllm_part} · {token_part}  [dim](only if self-hosting)[/dim]")
 

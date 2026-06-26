@@ -221,7 +221,7 @@ async def main():
 
         # Per-skill similarity
         skill_details = []
-        threshold = 0.55
+        threshold = 0.75
         if job.requirements:
             valid_skills = [s for s in resume.skills if len(s.strip()) > 2 and s.strip() != "•"]
             if valid_skills:

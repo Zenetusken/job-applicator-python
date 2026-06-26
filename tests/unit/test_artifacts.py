@@ -121,10 +121,12 @@ async def test_write_tailored_pdf_renders_to_spec_path_and_writes_meta(
     assert path == expected
     assert expected.read_bytes() == b"fake pdf bytes"
     assert tailored.pdf_path == str(expected)
+    assert tailored.output_path == str(expected)
     meta_path = expected.with_suffix(".meta.json")
     assert meta_path.exists()
     meta = json.loads(meta_path.read_text())
     assert meta["pdf_path"] == str(expected)
+    assert meta["output_path"] == str(expected)
     mock_render.assert_awaited_once_with(
         tailored, job=None, template="modern", category=None, output_path=expected
     )
@@ -148,10 +150,12 @@ async def test_write_cover_letter_pdf_renders_to_spec_path_and_writes_meta(
     assert path == expected
     assert expected.read_bytes() == b"fake cl bytes"
     assert result.pdf_path == str(expected)
+    assert result.output_path == str(expected)
     meta_path = expected.with_suffix(".meta.json")
     assert meta_path.exists()
     meta = json.loads(meta_path.read_text())
     assert meta["pdf_path"] == str(expected)
+    assert meta["output_path"] == str(expected)
     mock_render.assert_awaited_once_with(
         result, job=None, template="modern", category=None, output_path=expected
     )

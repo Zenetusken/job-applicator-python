@@ -49,6 +49,17 @@ def test_resume_loader_text_file(tmp_path: object) -> None:
     assert "Python" in resume.skills
 
 
+def test_resume_loader_strips_markdown_bold_from_name(tmp_path: object) -> None:
+    """A tailored résumé re-parsed as input should not keep ** around the name."""
+    import pathlib
+
+    p = pathlib.Path(str(tmp_path)) / "resume.txt"
+    p.write_text("**Alex Rivera**\nalex@example.com\nSkills: Python\n")
+    loader = ResumeLoader()
+    resume = loader.load(p)
+    assert resume.name == "Alex Rivera"
+
+
 def test_resume_loader_recognizes_technical_skills_header(tmp_path: object) -> None:
     """Parser must recognize qualified skills headers (not just 'Skills')."""
     import pathlib

@@ -293,3 +293,34 @@ class TestJobMatcher:
         # *available* skill (Java) instead of being marked missing.
         assert missing == []
         assert set(matched) == {"Python", "Java"}
+
+
+class TestDescriptionSkillExtraction:
+    """Tests for fallback skill extraction from job descriptions."""
+
+    def test_extract_requirements_from_description_finds_known_skills(self) -> None:
+        from job_applicator.embeddings.matching import JobMatcher
+
+        matcher = JobMatcher(EmbeddingConfig(device="cpu", memory_limit_gb=0.5))
+        description = "We need Python, Kubernetes, and PostgreSQL experience."
+        reqs = matcher._extract_requirements_from_description(description)
+        assert "Python" in reqs
+        assert "Kubernetes" in reqs
+        assert "PostgreSQL" in reqs
+
+    def test_extract_requirements_ignores_hard_negatives_and_unknowns(self) -> None:
+        from job_applicator.embeddings.matching import JobMatcher
+
+        matcher = JobMatcher(EmbeddingConfig(device="cpu", memory_limit_gb=0.5))
+        description = "Looking for a team player with communication skills and Python."
+        reqs = matcher._extract_requirements_from_description(description)
+        assert "Python" in reqs
+        assert "team player" not in reqs
+        assert "communication" not in reqs
+
+    def test_extract_requirements_empty_for_empty_description(self) -> None:
+        from job_applicator.embeddings.matching import JobMatcher
+
+        matcher = JobMatcher(EmbeddingConfig(device="cpu", memory_limit_gb=0.5))
+        assert matcher._extract_requirements_from_description("") == []
+        assert matcher._extract_requirements_from_description("   ") == []

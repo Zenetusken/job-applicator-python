@@ -19,9 +19,11 @@ import pytest
 from typer.testing import CliRunner
 
 import job_applicator.cli as cli
+from job_applicator.cli import _resolve_output_format, _stage_label
+from job_applicator.config import AppSettings
 from job_applicator.embeddings.matching import MatchResult
 from job_applicator.jobs_store import JobStore
-from job_applicator.models import ApplicationResult, ApplicationStatus, JobBoard, JobListing
+from job_applicator.models import ApplicationResult, ApplicationStatus, Format, JobBoard, JobListing
 
 
 def _job(n: int = 1) -> JobListing:
@@ -53,6 +55,31 @@ def _browser_cm() -> MagicMock:
     cm.__aenter__ = AsyncMock(return_value=MagicMock())
     cm.__aexit__ = AsyncMock(return_value=False)
     return cm
+
+
+# --------------------------------------------------------------------- helpers
+def test_resolve_output_format_uses_cli_value() -> None:
+    settings = AppSettings(output={"default_format": "pdf"})  # type: ignore[arg-type]
+    assert _resolve_output_format(Format.TXT, settings) is Format.TXT
+
+
+def test_resolve_output_format_falls_back_to_config() -> None:
+    settings = AppSettings(output={"default_format": "pdf"})  # type: ignore[arg-type]
+    assert _resolve_output_format(None, settings) is Format.PDF
+
+
+def test_resolve_output_format_falls_back_to_txt_on_bad_config() -> None:
+    from unittest.mock import MagicMock
+
+    settings = MagicMock()
+    settings.output.default_format = "invalid"
+    assert _resolve_output_format(None, settings) is Format.TXT
+
+
+def test_stage_label_pluralizes_cover_letter() -> None:
+    assert _stage_label("cover_letter", 1) == "cover letter"
+    assert _stage_label("cover_letter", 2) == "cover letters"
+    assert _stage_label("matched", 2) == "matched"
 
 
 # --------------------------------------------------------------------- status

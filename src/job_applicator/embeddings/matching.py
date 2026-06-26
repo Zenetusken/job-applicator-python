@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from job_applicator.config import EmbeddingConfig
 from job_applicator.embeddings.service import EmbeddingService, EmbeddingVector
 from job_applicator.models import JobListing, ResumeData
+from job_applicator.skills import NORMALIZATION_MAP, is_hard_negative
 from job_applicator.utils.logging import get_logger
 
 logger = get_logger("embeddings.matching")
@@ -184,7 +186,7 @@ class JobMatcher:
 
         # Skill matching
         matched_skills, missing_skills = self._match_skills(
-            resume.skills, job.requirements, resume.raw_text
+            resume.skills, job.requirements, resume.raw_text, job.description
         )
 
         # Compute skill coverage score
@@ -246,7 +248,9 @@ class JobMatcher:
         matches = []
         for job, job_emb in zip(jobs, job_embs, strict=False):
             semantic_score = self._service.similarity(resume_emb, job_emb)
-            matched, missing = self._match_skills(resume.skills, job.requirements, resume.raw_text)
+            matched, missing = self._match_skills(
+                resume.skills, job.requirements, resume.raw_text, job.description
+            )
             skill_score = self._compute_skill_score(matched, missing)
 
             # Combined score: 60% semantic + 40% skill coverage
@@ -269,11 +273,36 @@ class JobMatcher:
         matches.sort(key=lambda x: x.score, reverse=True)
         return matches[:top_k]
 
+    def _extract_requirements_from_description(self, description: str) -> list[str]:
+        """Extract likely skill requirements from a job description.
+
+        Uses the known skill-alias map conservatively: only terms that appear as
+        whole words/phrases in the description are returned, and generic traits
+        are filtered out. This is a fallback when a job listing has no explicit
+        ``requirements`` list.
+        """
+        if not description:
+            return []
+
+        desc_lower = description.lower()
+        found: set[str] = set()
+        for term, canonical in NORMALIZATION_MAP.items():
+            if is_hard_negative(canonical.lower()):
+                continue
+            # Check both the alias and the canonical form as whole words/phrases.
+            for t in (term, canonical.lower()):
+                pattern = r"(?<!\w)" + re.escape(t) + r"(?!\w)"
+                if re.search(pattern, desc_lower):
+                    found.add(canonical)
+                    break
+        return sorted(found)
+
     def _match_skills(
         self,
         resume_skills: list[str],
         job_requirements: list[str],
         resume_text: str = "",
+        job_description: str = "",
     ) -> tuple[list[str], list[str]]:
         """Match resume skills to job requirements using embeddings.
 
@@ -281,6 +310,8 @@ class JobMatcher:
             resume_skills: Extracted skills from resume
             job_requirements: Required skills from job listing
             resume_text: Full resume text for fallback matching
+            job_description: Job description text; used to infer requirements when
+                none are explicitly provided.
 
         Returns:
             Tuple of (matched_skills, missing_requirements)
@@ -288,7 +319,7 @@ class JobMatcher:
         from job_applicator.skills import is_hard_negative, normalize_skill
 
         if not job_requirements:
-            return [], []
+            job_requirements = self._extract_requirements_from_description(job_description)
 
         # Normalize and drop generic traits/hard negatives.
         norm_skills = [normalize_skill(s) for s in resume_skills]
