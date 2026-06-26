@@ -9,6 +9,7 @@ navigating, and filtering touch only local state.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable
 from functools import partial
 from pathlib import Path
@@ -1188,25 +1189,40 @@ class JobApplicatorApp(App[None]):
             return
         from job_applicator.tui.screens import ApplyScreen
 
+        # Capture the job AND its cover-letter path together, here — so they can't diverge if the
+        # selection (_current) changes while the modal is open / the worker runs later.
         job = self._current.job
-        self.push_screen(ApplyScreen(job), partial(self._apply_dispatch, job))
+        cover_letter_path = self._current.cover_letter_path
+        self.push_screen(ApplyScreen(job), partial(self._apply_dispatch, job, cover_letter_path))
 
-    def _apply_dispatch(self, job: JobListing, submit: bool | None) -> None:
+    def _apply_dispatch(self, job: JobListing, cover_letter_path: str, submit: bool | None) -> None:
         # None = cancelled. Re-check busy at dispatch too (a stacked confirm could otherwise
         # start a second account worker past the modal-open gate).
         if submit is None or self._account_busy_refused():
             return
-        self._apply_worker(job, submit=submit)
+        self._apply_worker(job, cover_letter_path, submit=submit)
 
     @work(group="account")
-    async def _apply_worker(self, job: JobListing, *, submit: bool) -> None:
+    async def _apply_worker(self, job: JobListing, cover_letter_path: str, *, submit: bool) -> None:
         from job_applicator.tui import actions
 
         mode = "Submitting a real application to" if submit else "Dry-run for"
         self._set_busy(f"{mode} {job.title} — a browser will open…")
+        # Attach the cover letter generated for this job (matching the CLI). The path was captured
+        # WITH the job at action time, so it always belongs to the job being applied. Read the
+        # stored TXT off the event loop; a missing/unreadable file just applies without one.
+        cover_letter: str | None = None
+        if cover_letter_path:
+            try:
+                cover_letter = await asyncio.to_thread(
+                    Path(cover_letter_path).read_text, encoding="utf-8"
+                )
+            except OSError:
+                cover_letter = None
         try:
             result = await self._run_action(
-                "Apply", actions.apply_job(self._settings, job, submit=submit)
+                "Apply",
+                actions.apply_job(self._settings, job, submit=submit, cover_letter=cover_letter),
             )
         finally:
             self._set_busy("")
