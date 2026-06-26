@@ -265,8 +265,8 @@ class TestBatchStyleGuide:
             missing_skills=[],
             summary="good",
         )
-        matcher.rank_jobs.return_value = [match]
-        matcher.match_resume_to_job.return_value = match
+        matcher.rank_jobs = AsyncMock(return_value=[match])
+        matcher.match_resume_to_job = AsyncMock(return_value=match)
 
         tailor = MagicMock()
         tailored = MagicMock()
@@ -366,8 +366,8 @@ class TestBatchStyleGuide:
             missing_skills=[],
             summary="good",
         )
-        matcher.rank_jobs.return_value = [match]
-        matcher.match_resume_to_job.return_value = match
+        matcher.rank_jobs = AsyncMock(return_value=[match])
+        matcher.match_resume_to_job = AsyncMock(return_value=match)
 
         tailor = MagicMock()
         tailored = MagicMock()

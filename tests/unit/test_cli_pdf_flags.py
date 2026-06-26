@@ -325,7 +325,7 @@ def test_batch_pdf_flags_accepted(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     )
     monkeypatch.setattr(
         "job_applicator.embeddings.matching.JobMatcher",
-        lambda *a, **k: MagicMock(rank_jobs=lambda *a, **k: [match]),
+        lambda *a, **k: MagicMock(rank_jobs=AsyncMock(return_value=[match])),
     )
 
     engine = MagicMock()

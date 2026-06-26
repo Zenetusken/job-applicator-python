@@ -172,7 +172,7 @@ def test_match_persists_scored_jobs(
     )
     matches = [_match(_job(1)), _match(_job(2))]
     matcher_cls = MagicMock()
-    matcher_cls.return_value.rank_jobs.return_value = matches
+    matcher_cls.return_value.rank_jobs = AsyncMock(return_value=matches)
     store = MagicMock()
 
     monkeypatch.setattr("job_applicator.embeddings.matching.JobMatcher", matcher_cls)
@@ -309,7 +309,7 @@ def _patch_tailor_stack(
     monkeypatch.setattr(
         cli, "_detect_tone", lambda job: MagicMock(primary="professional", confidence=0.8)
     )
-    monkeypatch.setattr(cli, "_make_runtime", lambda settings: MagicMock())
+    monkeypatch.setattr(cli, "_make_runtime", lambda settings, name="llm": MagicMock())
     audit = MagicMock(
         entries=[],
         warnings=[],
