@@ -151,7 +151,11 @@ class JobApplicatorApp(App[None]):
 
     CSS = """
     #statusline { height: 4; border: round $primary; padding: 0 1; }
+    /* Tabs read as a clickable control, not flat indicators: inactive tabs are dimmed and the
+       active one is a filled pill (accent background). */
     #stagetabs { height: 1; }
+    #stagetabs Tab { color: $text-muted; }
+    #stagetabs Tab.-active { background: $accent; color: $background; text-style: bold; }
     #body { height: 1fr; }
     /* height: 1fr so the table fills the body like the detail pane — a DataTable defaults
        to height:auto (sizes to its rows), which left the left side short of the bottom with
