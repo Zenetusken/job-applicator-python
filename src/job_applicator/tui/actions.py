@@ -277,7 +277,13 @@ async def _score_jobs(settings: AppSettings, jobs: list[JobListing]) -> list[Mat
     return await matcher.rank_jobs(resume, jobs, len(jobs))
 
 
-async def apply_job(settings: AppSettings, job: JobListing, *, submit: bool) -> ApplicationResult:
+async def apply_job(
+    settings: AppSettings,
+    job: JobListing,
+    *,
+    submit: bool,
+    cover_letter: str | None = None,
+) -> ApplicationResult:
     """Apply to ``job``. Dry-run by default (fills the form, never submits). A real submit
     (``submit=True``) respects the daily cap and skips already-applied jobs — both checked
     BEFORE any browser launches — and is recorded in ``ApplicationState`` on success.
@@ -314,7 +320,7 @@ async def apply_job(settings: AppSettings, job: JobListing, *, submit: bool) -> 
     site = job.board.value
     async with _make_browser(site, settings) as browser:
         applicator = _make_applicator(site, browser, settings)
-        result = await applicator.apply(job, submit=submit)
+        result = await applicator.apply(job, cover_letter, submit=submit)
     if submit and result.status == ApplicationStatus.SUBMITTED:
         state.record(result)  # ApplicationState is the authority for "applied"
     return result

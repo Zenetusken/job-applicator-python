@@ -1787,7 +1787,9 @@ async def test_tui_apply_dry_run_is_default(tmp_path: Path, monkeypatch) -> None
 
     captured: dict[str, bool] = {}
 
-    async def _fake_apply(_settings: object, job: object, *, submit: bool) -> ApplicationResult:
+    async def _fake_apply(
+        _settings: object, job: object, *, submit: bool, cover_letter: str | None = None
+    ) -> ApplicationResult:
         captured["submit"] = submit
         return ApplicationResult(
             job=job, status=ApplicationStatus.PENDING, timestamp=datetime.now(UTC)
@@ -1805,6 +1807,49 @@ async def test_tui_apply_dry_run_is_default(tmp_path: Path, monkeypatch) -> None
     assert captured["submit"] is False
 
 
+async def test_tui_apply_cover_letter_bound_to_job_not_current(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """C5 + divergence guard: TUI apply attaches the cover letter generated for THE JOB BEING
+    APPLIED (matching the CLI), captured WITH the job at action time — so even if the selection
+    (_current) drifts while the modal is open, the job's own letter is used, never another's."""
+    from datetime import UTC, datetime
+
+    from job_applicator.models import ApplicationResult, ApplicationStatus
+    from job_applicator.tui import actions
+
+    letter_a = tmp_path / "a.txt"
+    letter_a.write_text("LETTER-A", encoding="utf-8")
+    letter_b = tmp_path / "b.txt"
+    letter_b.write_text("LETTER-B", encoding="utf-8")
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.mark_tailored(_job(1), tailored_resume_path="/t.txt", cover_letter_path=str(letter_a))
+    store.mark_tailored(_job(2), tailored_resume_path="/t.txt", cover_letter_path=str(letter_b))
+
+    captured: dict[str, object] = {}
+
+    async def _fake_apply(_s: object, job: object, *, submit: bool, cover_letter=None):  # type: ignore[no-untyped-def]
+        captured["cover_letter"] = cover_letter
+        return ApplicationResult(
+            job=job, status=ApplicationStatus.PENDING, timestamp=datetime.now(UTC)
+        )  # type: ignore[arg-type]
+
+    monkeypatch.setattr(actions, "apply_job", _fake_apply)
+    app = JobApplicatorApp(
+        settings=AppSettings(resume_path="/r.pdf"),
+        store=store,
+        app_state=MagicMock(list_recent=lambda **k: []),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._current = store.get(str(_job(1).url))  # select job A
+        await pilot.press("a")  # modal captures A + A's cover-letter path
+        await pilot.pause()
+        app._current = store.get(str(_job(2).url))  # selection drifts to B while the modal is open
+        await pilot.click("#go")  # dry run (checkbox unchecked)
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    assert captured["cover_letter"] == "LETTER-A"  # A's own letter, not B's
+
+
 async def test_tui_apply_real_submit_requires_checkbox(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """Ticking the danger checkbox before Apply sends a real submit (submit=True)."""
     from datetime import UTC, datetime
@@ -1814,7 +1859,9 @@ async def test_tui_apply_real_submit_requires_checkbox(tmp_path: Path, monkeypat
 
     captured: dict[str, bool] = {}
 
-    async def _fake_apply(_settings: object, job: object, *, submit: bool) -> ApplicationResult:
+    async def _fake_apply(
+        _settings: object, job: object, *, submit: bool, cover_letter: str | None = None
+    ) -> ApplicationResult:
         captured["submit"] = submit
         return ApplicationResult(
             job=job, status=ApplicationStatus.SUBMITTED, timestamp=datetime.now(UTC)
