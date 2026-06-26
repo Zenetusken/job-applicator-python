@@ -256,3 +256,65 @@ async def test_apply_returns_failed_when_context_entry_raises(
 
     assert result.status.value == "failed"
     assert "Browser not started" in (result.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_apply_error_screenshot_path_is_sanitized(
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A company/title containing '/' must not make the error-screenshot path escape into a
+    non-existent subdir (lost diagnostic) or outside cwd — the filename is slugified and lands
+    in the debug dir."""
+    import job_applicator.applicators.linkedin as linkedin_mod
+    from job_applicator.models import JobBoard, JobListing
+
+    manager, _ = _manager_with_fake_context()
+    applicator = LinkedInApplicator(manager, app_settings)
+    job = JobListing(
+        title="Engineer (Frontend/Backend)",
+        company="A/B Corp",
+        url="https://www.linkedin.com/jobs/view/9",
+        board=JobBoard.LINKEDIN,
+    )
+    captured: dict[str, object] = {}
+
+    async def _noop(*_a: object, **_k: object) -> None:
+        return None
+
+    async def _boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("navigation blew up")
+
+    async def _capture(page: object, path: object) -> None:
+        captured["path"] = path
+
+    monkeypatch.setattr("job_applicator.applicators.linkedin.random_delay", _noop)
+    monkeypatch.setattr("job_applicator.applicators.linkedin.navigate", _boom)
+    monkeypatch.setattr("job_applicator.applicators.linkedin.screenshot", _capture)
+
+    result = await applicator.apply(job)  # type: ignore[arg-type]
+    assert result.status.value == "failed"
+    path = captured["path"]
+    assert path.parent == linkedin_mod._DEBUG_DIR  # type: ignore[union-attr]  # in the debug dir
+    assert "/" not in path.name and ".." not in path.name  # type: ignore[union-attr]
+    assert path.name.endswith(".png")  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_fill_form_fields_surfaces_present_but_failed_fill(app_settings: AppSettings) -> None:
+    """A field that EXISTS but fails to fill must be SURFACED (so a real submit isn't sent with a
+    silently-missing required field), distinct from an ABSENT field (skipped, not an error)."""
+    manager, _ = _manager_with_fake_context()
+    applicator = LinkedInApplicator(manager, app_settings)
+
+    class _BadEl:
+        async def fill(self, _v: str) -> None:
+            raise RuntimeError("field is readonly")
+
+    class _Page:
+        async def query_selector(self, sel: str) -> object:
+            return _BadEl() if "first" in sel else None  # only first-name present; it fails
+
+    filled, errors = await applicator._fill_form_fields(_Page())  # type: ignore[arg-type]
+    assert "firstName" in errors  # present-but-failed → surfaced
+    assert "firstName" not in filled
+    assert "lastName" not in errors  # absent → not an error

@@ -1040,6 +1040,50 @@ async def test_tui_tailor_action_marks_tailored(tmp_path: Path, monkeypatch) -> 
     assert got.tailored_resume_path == "/out/tailored.txt"
 
 
+async def test_tui_tailor_survives_store_write_failure(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A failing funnel-store write AFTER a successful tailor must NOT crash the worker and lose
+    the result — the artifact is already written, so it surfaces a warning toast instead."""
+    from job_applicator.jobs_store import JobStoreError
+    from job_applicator.models import TailoredResume
+    from job_applicator.tui import actions
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))
+    fake = TailoredResume(
+        original_path="/r.pdf",
+        tailored_text="T",
+        job_title="Engineer 1",
+        job_company="Co1",
+        match_score=0.8,
+        semantic_score=0.8,
+        skill_score=0.8,
+        changes_summary="c",
+        output_path="/out/tailored.txt",
+    )
+
+    async def _fake_tailor(_s: object, _j: object, *, style_guide_path: str = "", **kw: object):
+        return fake
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise JobStoreError("database is locked")
+
+    monkeypatch.setattr(actions, "tailor_job", _fake_tailor)
+    monkeypatch.setattr(store, "mark_tailored", _boom)
+    app = JobApplicatorApp(
+        settings=AppSettings(resume_path="/r.pdf"),
+        store=store,
+        app_state=MagicMock(list_recent=lambda **k: []),
+    )
+    notes: list[dict[str, object]] = []
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(app, "notify", lambda *_a, **k: notes.append(k))
+        await pilot.press("t")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    assert any(n.get("severity") == "warning" for n in notes)  # warned, didn't crash
+
+
 async def test_tui_cover_letter_action_advances_funnel(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """Pressing `c` runs the (mocked) cover-letter action and advances to cover_letter."""
     from job_applicator.models import CoverLetterResult, FunnelStatus
