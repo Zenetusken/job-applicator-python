@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 from job_applicator.config import EmbeddingConfig, LLMConfig
@@ -187,9 +188,9 @@ class JobMatcher:
         Returns:
             MatchResult with score, matched/missing skills, and summary
         """
-        # Compute embeddings
-        resume_emb = self.compute_resume_embedding(resume)
-        job_emb = self.compute_job_embedding(job)
+        # Compute embeddings off the event loop (encode is blocking CPU work).
+        resume_emb = await asyncio.to_thread(self.compute_resume_embedding, resume)
+        job_emb = await asyncio.to_thread(self.compute_job_embedding, job)
 
         # Compute semantic similarity
         semantic_score = self._service.similarity(resume_emb, job_emb)
@@ -237,8 +238,8 @@ class JobMatcher:
         if not jobs:
             return []
 
-        # Compute resume embedding once
-        resume_emb = self.compute_resume_embedding(resume)
+        # Compute resume embedding once (off the event loop — blocking CPU encode).
+        resume_emb = await asyncio.to_thread(self.compute_resume_embedding, resume)
 
         # Compute job embeddings in batch
         job_texts = []
@@ -252,7 +253,7 @@ class JobMatcher:
                 parts.append(f"Requirements: {', '.join(job.requirements)}")
             job_texts.append(" | ".join(parts)[:1500])
 
-        job_embs = self._service.embed_batch(job_texts)
+        job_embs = await asyncio.to_thread(self._service.embed_batch, job_texts)
 
         # Compute similarities with combined scoring
         matches = []
@@ -347,10 +348,10 @@ class JobMatcher:
             ]
             return [], fallback_missing
 
-        # Compute embeddings on normalized texts
-        skill_embs = self._service.embed_batch(valid_skills)
+        # Compute embeddings on normalized texts (off the event loop — blocking CPU encode).
+        skill_embs = await asyncio.to_thread(self._service.embed_batch, valid_skills)
         req_texts = [n for n, _ in valid_reqs]
-        req_embs = self._service.embed_batch(req_texts)
+        req_embs = await asyncio.to_thread(self._service.embed_batch, req_texts)
 
         # Find matches using similarity threshold
         matched: list[str] = []

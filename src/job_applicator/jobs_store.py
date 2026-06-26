@@ -112,6 +112,9 @@ class JobStore:
     def _init_schema(self) -> None:
         try:
             with self._connect() as conn:
+                # WAL: readers (status / the TUI) don't block on a long batch/apply writer on
+                # this shared DB. Persists on the file, so setting it at init is enough.
+                conn.execute("PRAGMA journal_mode=WAL")
                 conn.executescript(_CREATE_SQL)
                 # Migration: older databases were created without pdf_path.
                 self._migrate_add_pdf_path(conn)

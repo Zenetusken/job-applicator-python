@@ -79,6 +79,37 @@ def test_count_today(tmp_path: Path) -> None:
     assert state.count_today(board="indeed") == 0
 
 
+def test_count_today_normalizes_nonutc_offset(tmp_path: Path) -> None:
+    """A SUBMITTED application stamped in a non-UTC offset is counted on its UTC day, not its
+    wall-clock day — else a +14:00 'today' that is really yesterday-in-UTC inflates the cap."""
+    from datetime import timezone
+
+    state = ApplicationState(db_path=tmp_path / "apps.db")
+    # 1h before today's UTC midnight = yesterday-UTC, expressed in +14:00 so its wall-clock DATE
+    # reads as today — exactly the case the old TEXT compare miscounted.
+    today_midnight = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    ts = (today_midnight - timedelta(hours=1)).astimezone(timezone(timedelta(hours=14)))
+    assert ts.date() == today_midnight.date()  # the trap: wall-clock date is today
+    state.record(
+        ApplicationResult(job=_make_job(), status=ApplicationStatus.SUBMITTED, timestamp=ts)
+    )
+    assert state.count_today() == 0  # but it is yesterday in UTC → not in today's cap
+
+
+def test_has_applied_since_normalizes_nonutc(tmp_path: Path) -> None:
+    """`since` must be compared on the UTC scale too (stored applied_at is UTC): a `since` AFTER
+    the stored instant but in a negative offset must not falsely match via raw TEXT compare."""
+    from datetime import timezone
+
+    state = ApplicationState(db_path=tmp_path / "apps.db")
+    job = _make_job()
+    stored = datetime(2026, 6, 26, 0, 0, tzinfo=UTC)
+    state.record(ApplicationResult(job=job, status=ApplicationStatus.SUBMITTED, timestamp=stored))
+    # 1h AFTER stored, expressed in -10:00 so its wall-clock string sorts BEFORE the stored one.
+    since = datetime(2026, 6, 26, 1, 0, tzinfo=UTC).astimezone(timezone(timedelta(hours=-10)))
+    assert state.has_applied(str(job.url), since=since) is False  # stored is before `since`
+
+
 def test_count_today_ignores_skipped_and_failed(tmp_path: Path) -> None:
     """Only real submissions count toward the daily cap."""
     state = ApplicationState(db_path=tmp_path / "apps.db")

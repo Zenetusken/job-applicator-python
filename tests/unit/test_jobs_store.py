@@ -239,3 +239,19 @@ def test_seniority_not_clobbered_by_rescrape(store: JobStore) -> None:
 
     store.upsert_job(_job(1, seniority="staff"))  # a NEW seniority still updates
     assert store.get("1").job.seniority == "staff"  # type: ignore[union-attr]
+
+
+def test_stores_enable_wal_journal_mode(tmp_path: Path) -> None:
+    """All three stores set WAL on init so readers (status / the TUI) don't block on a long
+    batch/apply writer sharing the same DB file."""
+    import sqlite3
+
+    from job_applicator.batch_state import BatchState
+    from job_applicator.state import ApplicationState
+
+    for cls in (JobStore, ApplicationState, BatchState):
+        db = tmp_path / f"{cls.__name__}.db"
+        cls(db_path=db)  # construction runs _init_schema → sets WAL
+        with sqlite3.connect(str(db)) as conn:
+            mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        assert mode == "wal", f"{cls.__name__} journal_mode={mode!r}"

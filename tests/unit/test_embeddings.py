@@ -1051,3 +1051,47 @@ class TestJobMatcherRanking:
         assert results[0].score >= results[1].score
         assert results[0].job.company == "Acme"
         assert "Python" in results[0].matched_skills
+
+
+async def test_match_offloads_blocking_encode_off_event_loop(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The blocking sentence-transformers encode must run OFF the event loop (asyncio.to_thread),
+    so matching never freezes the TUI / blocks concurrency (CLAUDE.md: async for I/O; CPU work
+    offloaded, not run inline on the loop)."""
+    import asyncio
+
+    import numpy as np
+
+    from job_applicator.config import EmbeddingConfig, LLMConfig
+    from job_applicator.embeddings.matching import JobMatcher
+    from job_applicator.models import JobBoard, JobListing, ResumeData
+
+    matcher = JobMatcher(EmbeddingConfig(device="cpu", memory_limit_gb=0.5), LLMConfig())
+    monkeypatch.setattr(
+        matcher._service, "embed", lambda *_a, **_k: np.zeros(1024, dtype=np.float32)
+    )
+    monkeypatch.setattr(
+        matcher._service,
+        "embed_batch",
+        lambda texts, **_k: [np.zeros(1024, dtype=np.float32) for _ in texts],
+    )
+
+    calls: list[str] = []
+    real_to_thread = asyncio.to_thread
+
+    async def _spy(fn, *a, **k):  # type: ignore[no-untyped-def]
+        calls.append(getattr(fn, "__name__", str(fn)))
+        return await real_to_thread(fn, *a, **k)
+
+    monkeypatch.setattr(asyncio, "to_thread", _spy)
+
+    resume = ResumeData(raw_text="Python developer", skills=["Python"])
+    job = JobListing(
+        title="Dev",
+        company="Co",
+        url="https://x/1",
+        board=JobBoard.LINKEDIN,
+        requirements=["Python"],
+    )
+    result = await matcher.match_resume_to_job(resume, job)
+    assert result is not None
+    assert calls  # embeddings ran off the event loop (to_thread was used)
