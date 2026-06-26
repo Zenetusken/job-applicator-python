@@ -7,10 +7,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
+from instructor.core import InstructorError
 
 from job_applicator.config import EmbeddingConfig, LLMConfig
 from job_applicator.embeddings.service import EmbeddingService
-from job_applicator.embeddings.skill_extraction import LLMSkillExtractor
+from job_applicator.embeddings.skill_extraction import LLMSkillExtractor, _ExtractionResult
 
 
 class TestEmbeddingConfig:
@@ -401,7 +402,11 @@ class TestLLMSkillExtractor:
         monkeypatch.setattr(extractor, "_cache_dir", tmp_path)
 
         with patch.object(
-            extractor, "_call_llm", return_value=["Python", "team player"]
+            extractor,
+            "_call_llm",
+            return_value=_ExtractionResult(
+                skills=["Python", "team player"], method="instructor", fallback=False
+            ),
         ) as mock_call:
             result = asyncio.run(extractor.extract(description, use_cache=True))
             assert "Python" in result
@@ -426,7 +431,13 @@ class TestLLMSkillExtractor:
         import asyncio
 
         description = "We need Python."
-        with patch.object(extractor, "_call_llm", return_value=["Python", "Rust", "Kubernetes"]):
+        with patch.object(
+            extractor,
+            "_call_llm",
+            return_value=_ExtractionResult(
+                skills=["Python", "Rust", "Kubernetes"], method="instructor", fallback=False
+            ),
+        ):
             result = asyncio.run(extractor.extract(description, use_cache=False))
             assert result == ["Python"]
 
@@ -435,7 +446,13 @@ class TestLLMSkillExtractor:
         import asyncio
 
         description = "We use postgres, vuejs."
-        with patch.object(extractor, "_call_llm", return_value=["postgres", "vuejs"]):
+        with patch.object(
+            extractor,
+            "_call_llm",
+            return_value=_ExtractionResult(
+                skills=["postgres", "vuejs"], method="instructor", fallback=False
+            ),
+        ):
             result = asyncio.run(extractor.extract(description, use_cache=False))
             assert "PostgreSQL" in result
             assert "Vue.js" in result
@@ -445,14 +462,119 @@ class TestLLMSkillExtractor:
         import asyncio
 
         description_lower = "we are hiring a react native engineer."
-        with patch.object(extractor, "_call_llm", return_value=["React"]):
+        with patch.object(
+            extractor,
+            "_call_llm",
+            return_value=_ExtractionResult(skills=["React"], method="instructor", fallback=False),
+        ):
             result = asyncio.run(extractor.extract(description_lower, use_cache=False))
             assert "React" not in result
 
         description_explicit = "Experience with React Native is required."
-        with patch.object(extractor, "_call_llm", return_value=["React Native"]):
+        with patch.object(
+            extractor,
+            "_call_llm",
+            return_value=_ExtractionResult(
+                skills=["React Native"], method="instructor", fallback=False
+            ),
+        ):
             result = asyncio.run(extractor.extract(description_explicit, use_cache=False))
             assert "React Native" in result
+
+    def test_single_word_skill_followed_by_common_word_is_grounded(
+        self, extractor: LLMSkillExtractor
+    ) -> None:
+        """A single-word skill followed by a function word stays grounded."""
+        import asyncio
+
+        description = "React is great. We also use React Native."
+        with patch.object(
+            extractor,
+            "_call_llm",
+            return_value=_ExtractionResult(skills=["React"], method="instructor", fallback=False),
+        ):
+            result = asyncio.run(extractor.extract(description, use_cache=False))
+            assert "React" in result
+
+    def test_direct_fallback_handles_empty_content(self, extractor: LLMSkillExtractor) -> None:
+        """Direct litellm fallback returns [] when choices are empty or content is None."""
+        import asyncio
+
+        description = "We need Python."
+        mock_instructor = MagicMock()
+        mock_instructor.from_litellm.return_value.create = AsyncMock(
+            side_effect=InstructorError("instructor failed")
+        )
+
+        # Empty choices
+        fake_response_empty = AsyncMock()
+        fake_response_empty.choices = []
+
+        with patch("job_applicator.embeddings.skill_extraction.instructor", mock_instructor):
+            with patch(
+                "job_applicator.embeddings.skill_extraction.acompletion",
+                return_value=fake_response_empty,
+            ):
+                result = asyncio.run(extractor.extract(description, use_cache=False))
+                assert result == []
+
+        # None content
+        fake_response_none = AsyncMock()
+        fake_response_none.choices = [AsyncMock()]
+        fake_response_none.choices[0].message.content = None
+
+        with patch("job_applicator.embeddings.skill_extraction.instructor", mock_instructor):
+            with patch(
+                "job_applicator.embeddings.skill_extraction.acompletion",
+                return_value=fake_response_none,
+            ):
+                result = asyncio.run(extractor.extract(description, use_cache=False))
+                assert result == []
+
+    def test_direct_fallback_parses_json_array(self, extractor: LLMSkillExtractor) -> None:
+        """Direct litellm fallback parses a raw JSON array response."""
+        import asyncio
+
+        description = "We need Python and FastAPI."
+        fake_response = AsyncMock()
+        fake_response.choices = [AsyncMock()]
+        fake_response.choices[0].message.content = '["Python", "FastAPI"]'
+
+        mock_instructor = MagicMock()
+        mock_instructor.from_litellm.return_value.create = AsyncMock(
+            side_effect=InstructorError("instructor failed")
+        )
+
+        with patch("job_applicator.embeddings.skill_extraction.instructor", mock_instructor):
+            with patch(
+                "job_applicator.embeddings.skill_extraction.acompletion",
+                return_value=fake_response,
+            ):
+                result = asyncio.run(extractor.extract(description, use_cache=False))
+                assert "Python" in result
+                assert "FastAPI" in result
+
+    def test_direct_fallback_parses_markdown_json(self, extractor: LLMSkillExtractor) -> None:
+        """Direct litellm fallback parses JSON embedded in a markdown block."""
+        import asyncio
+
+        description = "We need Python."
+        fake_response = AsyncMock()
+        fake_response.choices = [AsyncMock()]
+        fake_response.choices[0].message.content = '```json\n{"skills": ["Python"]}\n```'
+
+        mock_instructor = MagicMock()
+        mock_instructor.from_litellm.return_value.create = AsyncMock(
+            side_effect=InstructorError("instructor failed")
+        )
+
+        with patch("job_applicator.embeddings.skill_extraction.instructor", mock_instructor):
+            with patch(
+                "job_applicator.embeddings.skill_extraction.acompletion",
+                return_value=fake_response,
+            ):
+                result = asyncio.run(extractor.extract(description, use_cache=False))
+                assert "Python" in result
 
     def test_instructor_fallback_exercised(self, extractor: LLMSkillExtractor) -> None:
         """If instructor fails, direct litellm is used."""
@@ -466,7 +588,7 @@ class TestLLMSkillExtractor:
 
         mock_instructor = MagicMock()
         mock_instructor.from_litellm.return_value.create = AsyncMock(
-            side_effect=RuntimeError("instructor failed")
+            side_effect=InstructorError("instructor failed")
         )
 
         with patch("job_applicator.embeddings.skill_extraction.instructor", mock_instructor):
@@ -488,7 +610,13 @@ class TestLLMSkillExtractor:
         cache_path.write_text("not json", encoding="utf-8")
 
         try:
-            with patch.object(extractor, "_call_llm", return_value=["Python"]) as mock_call:
+            with patch.object(
+                extractor,
+                "_call_llm",
+                return_value=_ExtractionResult(
+                    skills=["Python"], method="instructor", fallback=False
+                ),
+            ) as mock_call:
                 result = asyncio.run(extractor.extract(description))
                 assert result == ["Python"]
                 mock_call.assert_called_once()
@@ -509,7 +637,13 @@ class TestLLMSkillExtractor:
 
         description = "We need Python, AWS."
         with patch.object(
-            extractor, "_call_llm", return_value=["Python", "Python", "", "  ", "AWS"]
+            extractor,
+            "_call_llm",
+            return_value=_ExtractionResult(
+                skills=["Python", "Python", "", "  ", "AWS"],
+                method="instructor",
+                fallback=False,
+            ),
         ):
             result = asyncio.run(extractor.extract(description, use_cache=False))
             assert result == ["AWS", "Python"]
@@ -528,7 +662,7 @@ class TestLLMSkillExtractor:
         fake_response.choices[0].message.content = '{"skills": []}'
 
         with patch("job_applicator.embeddings.skill_extraction.instructor") as mock_instructor:
-            mock_instructor.from_litellm.return_value.create.side_effect = RuntimeError(
+            mock_instructor.from_litellm.return_value.create.side_effect = InstructorError(
                 "instructor failed"
             )
             with patch(
@@ -560,7 +694,7 @@ class TestLLMSkillExtractor:
                 with patch(
                     "job_applicator.embeddings.skill_extraction.instructor"
                 ) as mock_instructor:
-                    mock_instructor.from_litellm.return_value.create.side_effect = RuntimeError(
+                    mock_instructor.from_litellm.return_value.create.side_effect = InstructorError(
                         "instructor failed"
                     )
                     result = asyncio.run(extractor.extract(description, use_cache=False))
@@ -633,7 +767,7 @@ class TestLLMSkillExtractor:
         fake_response.choices[0].message.content = '{"skills": ["Python"]}'
 
         with patch("job_applicator.embeddings.skill_extraction.instructor") as mock_instructor:
-            mock_instructor.from_litellm.return_value.create.side_effect = RuntimeError(
+            mock_instructor.from_litellm.return_value.create.side_effect = InstructorError(
                 "instructor failed"
             )
             with patch(

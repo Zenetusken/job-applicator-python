@@ -10,16 +10,24 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import instructor
+from instructor.core import InstructorError
 from litellm import acompletion
-from pydantic import BaseModel, Field
+from litellm.exceptions import APIError
+from pydantic import BaseModel, Field, ValidationError
 
 from job_applicator.config import LLMConfig
 from job_applicator.skills import NORMALIZATION_MAP, is_hard_negative, normalize_skill
-from job_applicator.utils.llm import LLMRuntime, quiet_litellm, strip_thinking_process
+from job_applicator.utils.llm import (
+    LLMRuntime,
+    llm_call_error,
+    quiet_litellm,
+    strip_thinking_process,
+)
 from job_applicator.utils.logging import get_logger
 from job_applicator.utils.verbose import VerboseReporter
 
@@ -47,12 +55,116 @@ SKILL_USER_PROMPT = "{}"
 
 MAX_DESCRIPTION_LENGTH = 1500
 
+# Common English words that cannot form the second word of a multi-word skill
+# compound. This keeps the hallucination guard from rejecting a single-word
+# skill just because it happens to be followed by a function word in prose.
+_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "must",
+        "shall",
+        "can",
+        "need",
+        "dare",
+        "ought",
+        "used",
+        "to",
+        "of",
+        "in",
+        "for",
+        "on",
+        "with",
+        "at",
+        "by",
+        "from",
+        "as",
+        "into",
+        "through",
+        "during",
+        "before",
+        "after",
+        "above",
+        "below",
+        "between",
+        "under",
+        "and",
+        "but",
+        "or",
+        "yet",
+        "so",
+        "if",
+        "because",
+        "although",
+        "though",
+        "while",
+        "where",
+        "when",
+        "that",
+        "which",
+        "who",
+        "whom",
+        "whose",
+        "what",
+        "this",
+        "these",
+        "those",
+        "i",
+        "you",
+        "he",
+        "she",
+        "it",
+        "we",
+        "they",
+        "me",
+        "him",
+        "her",
+        "us",
+        "them",
+        "my",
+        "your",
+        "his",
+        "its",
+        "our",
+        "their",
+    }
+)
+
 
 class SkillExtractionOutput(BaseModel):
     """Structured output for LLM skill extraction."""
 
     skills: list[str] = Field(description="Canonical technical skills required by the job")
     model_config = {"extra": "forbid"}
+
+
+@dataclass
+class _ExtractionResult:
+    """Result of an LLM skill-extraction attempt."""
+
+    skills: list[str]
+    method: str
+    fallback: bool
 
 
 class LLMSkillExtractor:
@@ -67,8 +179,6 @@ class LLMSkillExtractor:
         self._config = config
         self._cache_dir = Path.home() / ".job-applicator" / "skill-extraction"
         self._cache_dir.mkdir(parents=True, exist_ok=True)
-        self._last_method: str = "direct"
-        self._last_fallback: bool = False
 
     def _get_cache_key(self, description: str) -> str:
         """Generate a cache key from model name and description."""
@@ -152,11 +262,13 @@ class LLMSkillExtractor:
         method: str | None = None
         fallback: bool = False
         try:
-            raw_skills = await runtime.run(lambda _prev: self._call_llm(description))
-            method = self._last_method
-            fallback = self._last_fallback
+            result = await runtime.run(lambda _prev: self._call_llm(description))
+            raw_skills = result.skills
+            method = result.method
+            fallback = result.fallback
         except Exception as exc:
-            logger.warning("Skill extraction LLM call failed: %s", exc)
+            error = llm_call_error(exc, self._config.api_base or "")
+            logger.warning("Skill extraction LLM call failed: %s", error)
             if reporter is not None:
                 reporter.record_llm_call(
                     model=self._config.model,
@@ -195,12 +307,9 @@ class LLMSkillExtractor:
 
         return cleaned
 
-    async def _call_llm(self, description: str) -> list[str]:
-        """Call the LLM and return raw skill strings."""
+    async def _call_llm(self, description: str) -> _ExtractionResult:
+        """Call the LLM and return raw skill strings with method metadata."""
         quiet_litellm()
-
-        self._last_method = "direct"
-        self._last_fallback = False
 
         model = f"openai/{self._config.model}" if self._config.api_base else self._config.model
         truncated = description[:MAX_DESCRIPTION_LENGTH]
@@ -224,28 +333,46 @@ class LLMSkillExtractor:
                 extra_body=extra_body,
             )
             logger.info("Extracted skills via instructor: %s", response.skills)
-            self._last_method = "instructor"
-            return list(response.skills)
-        except Exception:
-            logger.debug("Instructor skill extraction failed, falling back to direct litellm")
+            return _ExtractionResult(
+                skills=list(response.skills), method="instructor", fallback=False
+            )
+        except (
+            ImportError,
+            InstructorError,
+            APIError,
+            ValidationError,
+            json.JSONDecodeError,
+        ) as exc:
+            logger.warning("Instructor skill extraction failed: %s", exc)
+            logger.debug("Falling back to direct litellm for skill extraction")
 
-        response = await acompletion(
-            model=model,
-            api_base=self._config.api_base,
-            api_key=self._config.api_key,
-            messages=messages,
-            max_tokens=self._config.max_tokens,
-            temperature=self._config.temperature,
-            extra_body=extra_body,
-        )
+        try:
+            response = await acompletion(
+                model=model,
+                api_base=self._config.api_base,
+                api_key=self._config.api_key,
+                messages=messages,
+                max_tokens=self._config.max_tokens,
+                temperature=self._config.temperature,
+                extra_body=extra_body,
+            )
+        except Exception as exc:
+            logger.warning("Direct litellm skill extraction failed: %s", exc)
+            return _ExtractionResult(skills=[], method="direct", fallback=True)
+
+        if not response.choices:
+            logger.warning("Direct litellm response had no choices")
+            return _ExtractionResult(skills=[], method="direct", fallback=True)
 
         content = response.choices[0].message.content
+        if content is None:
+            logger.warning("Direct litellm response content was None")
+            return _ExtractionResult(skills=[], method="direct", fallback=True)
+
         content = strip_thinking_process(content)
         skills = self._parse_skills_from_text(content)
         logger.info("Extracted skills via direct litellm: %s", skills)
-        self._last_method = "direct"
-        self._last_fallback = True
-        return skills
+        return _ExtractionResult(skills=skills, method="direct", fallback=True)
 
     def _parse_skills_from_text(self, text: str) -> list[str]:
         """Extract a list of skills from raw LLM text output."""
@@ -310,13 +437,31 @@ class LLMSkillExtractor:
 
         desc_lower = description.lower()
 
+        # Build known multi-word surface forms: explicit aliases plus compounds
+        # that appear in the description where the second word is not a common
+        # function word (so "React is" is not treated as a multi-word form).
+        single_word_forms = {form for form in surface_forms if len(form.split()) == 1}
+        multi_word_forms = {
+            " ".join(form.split()).lower() for form in surface_forms if len(form.split()) > 1
+        }
+        tokens = re.findall(r"\b\w+(?:\.\w+)*\b", description)
+        for i, token in enumerate(tokens):
+            if token.lower() not in {f.lower() for f in single_word_forms}:
+                continue
+            if i + 1 >= len(tokens):
+                continue
+            next_token = tokens[i + 1]
+            if next_token.lower() in _STOPWORDS:
+                continue
+            multi_word_forms.add(f"{token.lower()} {next_token.lower()}")
+
         for form in surface_forms:
             if not form or not form.strip():
                 continue
             stripped = form.strip()
             words = stripped.split()
             if len(words) > 1:
-                if " ".join(words) in desc_lower:
+                if " ".join(words).lower() in desc_lower:
                     return True
             else:
                 pattern = r"(?<!\w)" + re.escape(stripped.lower()) + r"(?!\w)"
@@ -326,7 +471,7 @@ class LLMSkillExtractor:
                     if next_word_match:
                         next_word = next_word_match.group(1)
                         compound = f"{stripped.lower()} {next_word.lower()}"
-                        if compound in desc_lower:
+                        if compound in multi_word_forms:
                             continue
                     return True
         return False
