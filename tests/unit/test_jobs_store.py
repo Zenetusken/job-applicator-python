@@ -222,3 +222,20 @@ def test_corrupt_db_raises_jobstoreerror(tmp_path: Path) -> None:
     bad.write_text("not a sqlite database")
     with pytest.raises(JobStoreError):
         JobStore(db_path=bad)
+
+
+def test_seniority_not_clobbered_by_rescrape(store: JobStore) -> None:
+    """A re-write lacking seniority must NOT wipe a previously-detected one — the same data-loss
+    class as the salary guard. Guards upsert_job / upsert_match / mark_tailored."""
+    store.upsert_job(_job(1, seniority="senior"))
+    assert store.get("1").job.seniority == "senior"  # type: ignore[union-attr]
+
+    store.upsert_job(_job(1, seniority=None))  # list-card rescrape, no seniority
+    assert store.get("1").job.seniority == "senior"  # type: ignore[union-attr]
+    store.upsert_match(_match(_job(1, seniority=None)))  # scored, still none
+    assert store.get("1").job.seniority == "senior"  # type: ignore[union-attr]
+    store.mark_tailored(_job(1, seniority=None), tailored_resume_path="/tmp/r.txt")
+    assert store.get("1").job.seniority == "senior"  # type: ignore[union-attr]
+
+    store.upsert_job(_job(1, seniority="staff"))  # a NEW seniority still updates
+    assert store.get("1").job.seniority == "staff"  # type: ignore[union-attr]

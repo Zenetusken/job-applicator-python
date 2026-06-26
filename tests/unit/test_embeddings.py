@@ -64,6 +64,15 @@ class TestEmbeddingService:
         svc2 = EmbeddingService(config2)
         assert svc1._get_cache_key("hello") != svc2._get_cache_key("hello")
 
+    def test_cache_key_includes_max_seq_length(self) -> None:
+        """Cache key must differ when max_seq_length changes — it changes truncation and thus the
+        vector, so a different length must not return a stale cached embedding."""
+        config1 = EmbeddingConfig(device="cpu", memory_limit_gb=0.5, max_seq_length=128)
+        config2 = EmbeddingConfig(device="cpu", memory_limit_gb=0.5, max_seq_length=512)
+        svc1 = EmbeddingService(config1)
+        svc2 = EmbeddingService(config2)
+        assert svc1._get_cache_key("hello") != svc2._get_cache_key("hello")
+
     def test_cache_key_includes_normalize_flag(self) -> None:
         """Cache key must differ when normalize_embeddings changes."""
         config1 = EmbeddingConfig(device="cpu", memory_limit_gb=0.5, normalize_embeddings=True)

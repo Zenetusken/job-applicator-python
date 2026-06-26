@@ -25,7 +25,7 @@ from job_applicator.documents.artifacts import (
     write_tailored,
     write_tailored_pdf,
 )
-from job_applicator.exceptions import CookieError, JobApplicatorError
+from job_applicator.exceptions import ConfigError, CookieError, JobApplicatorError
 from job_applicator.factories import (
     _make_applicator,
     _make_browser,
@@ -2823,21 +2823,28 @@ def check_session(
 ) -> None:
     """Verify that an authenticated board session is ready (or not required)."""
     _merge_verbose_ctx(ctx, verbose, log_file)
-    settings = _get_settings(headed=headed)
-    setup_logging(settings.log_level)
+    try:
+        settings = _get_settings(headed=headed)
+        setup_logging(settings.log_level)
 
-    async def _run() -> None:
-        async with _make_browser(site, settings) as browser:
-            scraper = _make_scraper(site, browser, settings)
-            health = await scraper.check_session()
+        async def _run() -> None:
+            async with _make_browser(site, settings) as browser:
+                scraper = _make_scraper(site, browser, settings)
+                health = await scraper.check_session()
 
-        if health.healthy:
-            console.print(f"[green]✓ {health.board.value}:[/green] {health.details}")
-        else:
-            console.print(f"[red]✗ {health.board.value}:[/red] {health.details}")
-            raise typer.Exit(1)
+            if health.healthy:
+                console.print(f"[green]✓ {health.board.value}:[/green] {health.details}")
+            else:
+                console.print(f"[red]✗ {health.board.value}:[/red] {health.details}")
+                raise typer.Exit(1)
 
-    asyncio.run(_run())
+        asyncio.run(_run())
+    except JobApplicatorError as exc:
+        # Typed, expected failures (bad config, no display/browser) — clean message, not a
+        # raw traceback (mirrors search/apply/import-cookies; the unhealthy-session typer.Exit
+        # is not a JobApplicatorError, so it still propagates as exit 1).
+        err_console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
+        raise typer.Exit(1) from exc
 
 
 @app.command()
@@ -2851,7 +2858,18 @@ def doctor(
     _merge_verbose_ctx(ctx, verbose, log_file)
     from job_applicator.diagnostics import run_diagnostics
 
-    settings = _get_settings()
+    try:
+        settings = _get_settings()
+    except ConfigError as exc:
+        # doctor's whole job is to diagnose config problems — report a bad config as a failed
+        # check, don't crash before run_diagnostics can run.
+        if as_json:
+            import json
+
+            sys.stdout.write(json.dumps({"ok": False, "error": str(exc)}, indent=2) + "\n")
+        else:
+            err_console.print(f"[red]✗ config[/red]  {escape(str(exc))}")
+        raise typer.Exit(1) from exc
     report = asyncio.run(run_diagnostics(settings))
     if as_json:
         import json
@@ -3005,8 +3023,15 @@ def _render_doctor(report: DoctorReport) -> None:
 
 
 def _get_settings(headed: bool = False) -> AppSettings:
-    """Build AppSettings, overriding headless if --headed."""
-    settings = AppSettings()
+    """Build AppSettings, overriding headless if --headed. A malformed/invalid config.toml
+    surfaces as a typed ConfigError (not a raw TOMLDecodeError / pydantic ValidationError that
+    would crash every command with a traceback)."""
+    try:
+        settings = AppSettings()
+    except JobApplicatorError:
+        raise
+    except Exception as exc:  # TOMLDecodeError, pydantic ValidationError, OSError reading config
+        raise ConfigError(f"Invalid configuration: {exc}") from exc
     if headed:
         settings.browser.headless = False
     return settings

@@ -214,6 +214,34 @@ class TestResumeTailor:
         assert result.match_score == pytest.approx(0.72)
 
     @pytest.mark.asyncio
+    async def test_tailor_rejects_empty_completion(self, llm_config, sample_resume, sample_job):
+        """An empty LLM completion must raise LLMError (typed), not yield an empty TailoredResume
+        that silently flows into cover-letter generation + PDF rendering."""
+        from job_applicator.embeddings.matching import MatchResult
+        from job_applicator.exceptions import LLMError
+
+        tailor = ResumeTailor(llm_config)
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "   "  # empty after stripping
+
+        mock_matcher = MagicMock()
+        mock_matcher.match_resume_to_job = AsyncMock(
+            return_value=MatchResult(
+                job=sample_job,
+                score=0.5,
+                semantic_score=0.5,
+                skill_score=0.5,
+                matched_skills=[],
+                missing_skills=[],
+                summary="",
+            )
+        )
+        with patch("litellm.acompletion", new_callable=AsyncMock, return_value=mock_response):
+            with pytest.raises(LLMError):
+                await tailor.tailor(sample_resume, sample_job, matcher=mock_matcher)
+
+    @pytest.mark.asyncio
     async def test_tailor_accepts_matcher_param(self, llm_config, sample_resume, sample_job):
         """Passing a matcher should reuse it instead of creating a new one."""
         from job_applicator.embeddings.matching import MatchResult

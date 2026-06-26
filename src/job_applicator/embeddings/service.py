@@ -74,7 +74,12 @@ class EmbeddingService:
 
     def _get_cache_key(self, text: str) -> str:
         """Generate cache key for text, including model and config."""
-        content = f"{self._config.model_name}:{self._config.normalize_embeddings}:{text}"
+        # Include max_seq_length: it changes truncation and thus the vector, so a length change
+        # must invalidate the cache rather than return a stale, differently-truncated embedding.
+        content = (
+            f"{self._config.model_name}:{self._config.normalize_embeddings}:"
+            f"{self._config.max_seq_length}:{text}"
+        )
         return hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()
 
     def _get_cache_path(self, text: str) -> Path:
