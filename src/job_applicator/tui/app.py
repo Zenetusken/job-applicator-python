@@ -15,12 +15,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, TypeVar
 
 from rich.markup import escape
+from rich.text import Text
 from textual import work
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, ScreenStackError
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, VerticalScroll
+from textual.css.query import NoMatches
 from textual.widget import Widget
-from textual.widgets import DataTable, Footer, Input, LoadingIndicator, Static
+from textual.widgets import Footer, Input, LoadingIndicator, OptionList, Static, Tab, Tabs
+from textual.widgets.option_list import Option
 
 from job_applicator.exceptions import JobApplicatorError
 from job_applicator.models import (
@@ -56,10 +59,37 @@ _STAGE_STYLE: dict[str, str] = {
 _STAGE_CYCLE: list[str | None] = [None, *(st.value for st in FunnelStatus)]
 _STAGE_ORDER: dict[str, int] = {st.value: i for i, st in enumerate(FunnelStatus)}
 
+# View tabs across the top mirror the stage filter: "All" + each funnel stage, in funnel order.
+# The tab id encodes the stage value ("stage-all" = no filter); the label is the short caption.
+_STAGE_TAB_LABEL: dict[str | None, str] = {
+    None: "All",
+    "found": "Found",
+    "matched": "Matched",
+    "tailored": "Tailored",
+    "cover_letter": "Cover letter",
+    "applied": "Applied",
+}
+
+
+def _stage_to_tab(stage: str | None) -> str:
+    """Tab id for a stage filter value (None → the All tab)."""
+    return f"stage-{stage or 'all'}"
+
+
+def _tab_to_stage(tab_id: str | None) -> str | None:
+    """Stage filter value for a tab id (the All tab → None)."""
+    if not tab_id or tab_id == "stage-all":
+        return None
+    return tab_id.removeprefix("stage-")
+
+
 # Board-filter cycle: None (all) then each board; compared against `s.job.board.value`.
-# `_BOARD_STYLE` colours the list's Board column for a quick LinkedIn-vs-Indeed scan.
+# `_BOARD_TAG` is a compact, UNCOLOURED 2-letter board marker for the list (LinkedIn→LI,
+# Indeed→IN). De-coloured on purpose: a coloured board column collided with the stage colours
+# (yellow = tailored AND Indeed) and the blue selection highlight. The full board name still
+# shows in the detail pane, and the 2-letter form frees width for the (cramped) Title column.
 _BOARD_CYCLE: list[str | None] = [None, *(b.value for b in JobBoard)]
-_BOARD_STYLE: dict[str, str] = {"linkedin": "blue", "indeed": "yellow"}
+_BOARD_TAG: dict[str, str] = {"linkedin": "LI", "indeed": "IN"}
 
 # Sort orders cycled by `S`; "match" (best opportunity first) is the default. The labels are
 # what the status line shows.
@@ -108,9 +138,11 @@ class _JobListLoading(LoadingIndicator):
     """
 
 
-class JobListTable(DataTable[str]):
-    """The job-list table. Overrides the loading widget so a running search shows a themed
-    indicator over the app surface instead of the framework default's bare grey overlay."""
+class JobList(OptionList):
+    """The job list. An OptionList (not a DataTable) so each job is a multi-line card that
+    WRAPS to the pane width instead of overflowing horizontally, with a full-width highlight.
+    Overrides the loading widget so a running search shows a themed indicator over the app
+    surface instead of the framework default's bare grey overlay."""
 
     def get_loading_widget(self) -> Widget:
         return _JobListLoading()
@@ -123,29 +155,40 @@ class JobApplicatorApp(App[None]):
 
     CSS = """
     #statusline { height: 4; border: round $primary; padding: 0 1; }
+    /* Tabs read as a clickable control, not flat indicators: inactive tabs are dimmed and the
+       active one is a filled pill (accent background). */
+    #stagetabs { height: 1; }
+    #stagetabs Tab { color: $text-muted; }
+    #stagetabs Tab.-active { background: $accent; color: $background; text-style: bold; }
     #body { height: 1fr; }
-    /* height: 1fr so the table fills the body like the detail pane — a DataTable defaults
-       to height:auto (sizes to its rows), which left the left side short of the bottom with
-       few results AND made the loading cover only span the content rows. */
-    #joblist { width: 45%; height: 1fr; border-right: solid $panel; }
-    #detail { width: 1fr; padding: 0 1; }
+    /* height: 1fr so the list fills the body like the detail pane. border: none clears the
+       OptionList default all-side border (which otherwise eats 2 rows / shrinks the list);
+       keep only the right divider between the list and the detail pane. */
+    #joblist { width: 45%; height: 1fr; border: none; border-right: solid $panel; padding: 0; }
+    /* max-width caps the reading measure: a full-pane-wide description line (~110 cols on a
+       wide terminal) is hard to read; ~90 is a comfortable column. Narrower terminals are
+       unaffected (pane < 90). */
+    #detail { width: 1fr; max-width: 90; padding: 0 1; }
     #filter { dock: bottom; display: none; border: round $accent; }
     #filter.visible { display: block; }
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
+        # The footer shows PRIMARY keys only; the secondary long-tail (PDF exports, ATS, style
+        # guide, copy) is show=False — still bound, still in Help (?) — so the footer reads as a
+        # lean bar, not a wall. This also drops the a/A footer collision (ATS is hidden).
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh", "Refresh"),
         Binding("t", "tailor", "Tailor"),
-        Binding("T", "tailor_pdf", "Tailor PDF"),
+        Binding("T", "tailor_pdf", "Tailor PDF", show=False),
         Binding("c", "cover_letter", "Cover letter"),
-        Binding("C", "cover_letter_pdf", "Cover PDF"),
-        Binding("p", "open_pdf", "Open PDF"),
+        Binding("C", "cover_letter_pdf", "Cover PDF", show=False),
+        Binding("p", "open_pdf", "Open PDF", show=False),
         Binding("s", "search", "Search"),
         Binding("a", "apply", "Apply"),
         Binding("e", "set_resume", "Résumé"),
-        Binding("g", "set_style_guide", "Style guide"),
-        Binding("A", "ats_check", "ATS"),
+        Binding("g", "set_style_guide", "Style guide", show=False),
+        Binding("A", "ats_check", "ATS", show=False),
         Binding("o", "open_url", "Open"),
         Binding("y", "copy_url", "Copy URL", show=False),
         Binding("slash", "filter", "Filter"),
@@ -158,11 +201,6 @@ class JobApplicatorApp(App[None]):
         Binding("escape", "clear_filter", "Clear filter", show=False),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
-        # Scroll the job table SIDEWAYS (vim h/l). When the table overflows its pane the
-        # columns run off-screen; row-cursor mode has no cell cursor to reach them and the TUI
-        # captures the mouse, so without these keys the off-screen columns are unreachable.
-        Binding("l", "scroll_table(1)", "Scroll →", show=False),
-        Binding("h", "scroll_table(-1)", "Scroll ←", show=False),
         # Scroll the detail pane (the job list owns focus / arrows, so a long posting needs
         # its own keys for keyboard users; the mouse wheel works over it too).
         Binding("right_square_bracket", "scroll_detail(1)", "Scroll posting", show=False),
@@ -192,21 +230,70 @@ class JobApplicatorApp(App[None]):
         self._min_salary = 0  # min annual-salary floor (0 = off; see _SALARY_CYCLE)
         self._hide_unlisted = False  # when True, hide jobs with no parseable salary
         self._load_error = ""
+        # True while we programmatically move the stage tab to mirror _stage_filter, so the
+        # tab-activated handler doesn't re-apply/reload. Starts True to swallow the auto-activation
+        # of the first tab during mount (on_mount drives the first real reload itself).
+        self._tab_sync = True
 
     # ------------------------------------------------------------------ layout
     def compose(self) -> ComposeResult:
         yield Static(id="statusline")
+        yield Tabs(
+            *(Tab(label, id=_stage_to_tab(stage)) for stage, label in _STAGE_TAB_LABEL.items()),
+            id="stagetabs",
+        )
         with Horizontal(id="body"):
-            yield JobListTable(id="joblist", cursor_type="row", zebra_stripes=True)
+            yield JobList(id="joblist")
             yield VerticalScroll(Static(id="detail"), id="detailscroll")
         yield Input(id="filter", placeholder="filter title/company — Enter to apply, Esc to clear")
         yield Footer()
 
     def on_mount(self) -> None:
-        table = self.query_one("#joblist", DataTable)
-        table.add_columns("Stage", "Score", "Board", "Title", "Company")
-        self._reload()
-        table.focus()  # the job list owns focus, not the (hidden) filter Input
+        self._reload()  # builds the job cards + seeds the stage-tab counts + sets the highlight
+        self._tab_sync = False  # mount done — real tab clicks now apply + reload
+        self.query_one("#joblist", JobList).focus()  # the list owns focus, not tabs / filter
+
+    def on_tabs_tab_activated(self, event: Tabs.TabActivated) -> None:
+        """A stage tab was clicked/selected → apply it as the stage filter. Suppressed while we
+        sync the tab to ``_stage_filter`` (see ``_sync_stage_tab``) so it can't loop."""
+        if self._tab_sync:
+            return
+        stage = _tab_to_stage(event.tab.id)
+        if stage != self._stage_filter:
+            self._stage_filter = stage
+            self._reload(refresh_applied=False)
+        self.query_one("#joblist", JobList).focus()  # clicking a tab returns focus to the list
+
+    def _sync_stage_tab(self) -> None:
+        """Move the active stage tab to mirror ``_stage_filter`` WITHOUT triggering a reload."""
+        try:
+            tabs = self.query_one("#stagetabs", Tabs)
+        except NoMatches:
+            return
+        self._tab_sync = True
+        try:
+            tabs.active = _stage_to_tab(self._stage_filter)
+        finally:
+            self._tab_sync = False
+
+    def _update_tab_counts(self) -> None:
+        """Show the live per-stage counts in the tab labels (All = total)."""
+        try:
+            tabs = self.query_one("#stagetabs", Tabs)
+        except NoMatches:
+            return
+        counts: dict[str, int] = {}
+        for s in self._all:
+            stage = self._effective_stage(s)
+            counts[stage] = counts.get(stage, 0) + 1
+        head_urls = {str(s.job.url) for s in self._all}
+        counts["applied"] = counts.get("applied", 0) + len(self._applied_urls - head_urls)
+        for tab_stage, label in _STAGE_TAB_LABEL.items():
+            n = len(self._all) if tab_stage is None else counts.get(tab_stage, 0)
+            try:
+                tabs.query_one(f"#{_stage_to_tab(tab_stage)}", Tab).label = f"{label} {n}"
+            except NoMatches:
+                pass
 
     # -------------------------------------------------------------------- data
     def _reload(self, *, refresh_applied: bool = True) -> None:
@@ -234,6 +321,7 @@ class JobApplicatorApp(App[None]):
         # Sort the VIEW (not the shared list_jobs query the CLI also uses) by the active
         # mode — keeps it TUI-local, and makes the post-scoring repaint visibly re-rank.
         self._apply_sort()
+        self._update_tab_counts()  # refresh the per-stage counts shown on the tabs
         self._repaint()
 
     def _apply_sort(self) -> None:
@@ -295,74 +383,84 @@ class JobApplicatorApp(App[None]):
         applied via the funnel stays in the store at its head stage)."""
         return "applied" if str(s.job.url) in self._applied_urls else s.funnel_status.value
 
+    def _job_card(self, s: StoredJob) -> Text:
+        """A two-line job card (an OptionList prompt that WRAPS to the pane width):
+          line 1 — a stage-coloured spine ``▌`` + the FULL title (bold)
+          line 2 — the spine + the match score (bright) + board · company · location (dim)
+        The spine colour encodes the funnel stage (see the legend in Help), so the stage word
+        isn't repeated on every row; the score is the one bright element."""
+        stage = self._effective_stage(s)
+        color = _STAGE_STYLE.get(stage, "white")
+        card = Text(no_wrap=False, overflow="fold")  # fold = wrap long lines, never truncate
+        card.append("▌ ", style=color)
+        card.append(s.job.title, style="bold")
+        card.append("\n")
+        card.append("▌ ", style=color)
+        if s.match_score is not None:
+            card.append(f"{s.match_score:.0%}", style="bold")  # the one bright element
+        else:
+            card.append("—", style="dim")
+        meta = f" · {_BOARD_TAG.get(s.job.board.value, '??')} · {s.job.company}"
+        if s.job.location:
+            meta += f" · {s.job.location}"
+        card.append(meta, style="dim")
+        card.append("\n")  # trailing blank line → visual gap between cards
+        return card
+
     def _repaint(self) -> None:
         self.query_one("#statusline", Static).update(self._statusline())
-        table = self.query_one("#joblist", DataTable)
-        # Remember the selected job so it survives the rebuild below (see the move_cursor at the
-        # end). Without this every refresh/filter/sort/scrape snapped the cursor to the first row.
+        jobs = self.query_one("#joblist", JobList)
+        # Remember the selected job so it survives the rebuild (OptionList.highlighted is None
+        # until set, so we re-select explicitly below — else the detail pane goes blank on load
+        # and after every refresh/filter/sort/scrape).
         prev_key = str(self._current.id) if self._current is not None else None
-        # Cap Title (and Company) so the auto-sized Title column can't expand to the longest
-        # title and push Company off the right edge (the reported bug). Fixed caps are
-        # deliberate over a pane-width-derived value: the latter reads table.size mid-layout
-        # and proved racy. Lowered from 46/22 to make room for the Board column: 38+18 keeps
-        # the whole table ≤ ~84 cols so every column (incl. Company) still fits the pane at a
-        # ~190-wide terminal (measured); narrower terminals h-scroll as before. Cells
-        # ellipsize cleanly instead of hard-cutting at the edge.
-        title_cap, company_cap = 38, 18
-        table.clear()
+        jobs.clear_options()
         self._by_key = {}
         visible = self._visible()
         for s in visible:
             key = str(s.id)
             self._by_key[key] = s
-            stage = self._effective_stage(s)
-            style = _STAGE_STYLE.get(stage, "white")
-            score = f"{s.match_score:.0%}" if s.match_score is not None else "—"
-            board = s.job.board
-            board_cell = f"[{_BOARD_STYLE.get(board.value, 'white')}]{board.display_name}[/]"
-            table.add_row(
-                f"[{style}]{stage.replace('_', ' ')}[/{style}]",
-                score,
-                board_cell,
-                escape(_elide(s.job.title, title_cap)),
-                escape(_elide(s.job.company, company_cap)),
-                key=key,
-            )
-        # Re-select the SAME job (the row set changes under a filter/sort); fall back to the
-        # first row only when the previously-selected job is no longer visible.
-        restore = next((i for i, s in enumerate(visible) if str(s.id) == prev_key), None)
-        if restore is not None:
-            table.move_cursor(row=restore)
+            jobs.add_option(Option(self._job_card(s), id=key))
+        # Re-select the SAME job (the option set changes under a filter/sort); fall back to the
+        # first option only when the previously-selected job is no longer visible.
+        if visible:
+            restore = next((i for i, s in enumerate(visible) if str(s.id) == prev_key), 0)
+            jobs.highlighted = restore
             self._update_detail(visible[restore])
         else:
-            self._update_detail(visible[0] if visible else None)
+            jobs.highlighted = None
+            self._update_detail(None)
 
     # ------------------------------------------------------------------ render
     def _statusline(self) -> str:
         if self._load_error:
             return f"[red]⚠ {escape(self._load_error)}[/red]"
-        # Pre-styled sentinel when unset (the default first-run state); escape() only the
-        # real path, never the sentinel's own markup.
+        # Show the résumé/style-guide BASENAME (the full path is long and ate the whole line);
+        # the pre-styled sentinel stays as-is when unset (escape only the real value).
         path = self._settings.resume_path
-        resume = f"[cyan]{escape(path)}[/cyan]" if path else "[dim]not set — press 'e' to set[/dim]"
+        resume = (
+            f"[cyan]{escape(Path(path).name)}[/cyan]"
+            if path
+            else "[dim]not set — press 'e' to set[/dim]"
+        )
         sg_path = self._settings.style_guide_path
-        style = f"[cyan]{escape(sg_path)}[/cyan]" if sg_path else "[dim]none — press 'g'[/dim]"
+        style = (
+            f"[cyan]{escape(Path(sg_path).name)}[/cyan]"
+            if sg_path
+            else "[dim]none — press 'g'[/dim]"
+        )
         if self._busy:  # a worker is running — show live progress instead of static counts
             return f"Résumé {resume}   Style: {style}\n[yellow]⏳ {escape(self._busy)}[/yellow]"
-        # Compose by URL (furthest-stage-wins) so an applied job — which stays in the store
-        # at its head stage — is counted once as applied, matching the CLI `status`.
-        counts: dict[str, int] = {}
-        for s in self._all:
-            stage = self._effective_stage(s)
-            counts[stage] = counts.get(stage, 0) + 1
-        head_urls = {str(s.job.url) for s in self._all}
-        counts["applied"] = counts.get("applied", 0) + len(self._applied_urls - head_urls)
-        parts = [f"{counts.get(st.value, 0)} {st.value.replace('_', ' ')}" for st in FunnelStatus]
-        # View state: the active sort (always — a control the user drives with `S`), plus the
-        # stage/text filters when set, and the shown count when either narrows the list.
-        view = [f"sort: {_SORT_LABEL[self._sort_mode]}"]
-        if self._stage_filter is not None:
-            view.append(f"stage: {self._stage_filter.replace('_', ' ')}")
+        # Line 2 carries the position (row N/M), the sort, the board/salary/text filters, and the
+        # resulting "N shown". Per-stage counts and the active stage live on the tabs.
+        view: list[str] = []
+        try:  # current position in the list (updates on every cursor move; see the highlight hook)
+            jobs = self.query_one("#joblist", JobList)
+            if jobs.highlighted is not None and jobs.option_count:
+                view.append(f"{jobs.highlighted + 1}/{jobs.option_count}")
+        except (NoMatches, ScreenStackError):  # not mounted yet (e.g. a unit-test _statusline call)
+            pass
+        view.append(f"sort: {_SORT_LABEL[self._sort_mode]}")
         if self._board_filter is not None:
             view.append(f"board: {JobBoard(self._board_filter).display_name}")
         if self._min_salary > 0:
@@ -371,20 +469,20 @@ class JobApplicatorApp(App[None]):
             view.append("listed pay only")
         if self._filter:
             view.append(f"text: {escape(self._filter)}")
+        # "N shown" is for the NON-stage filters only: a stage tab already shows its own count,
+        # and when a stage tab + a board/etc. filter combine, len(visible) legitimately differs.
         narrowed = (
-            self._stage_filter is not None
-            or self._board_filter is not None
+            self._board_filter is not None
             or self._min_salary > 0
             or self._hide_unlisted
             or bool(self._filter)
         )
         tail = f" — {len(self._visible())} shown" if narrowed else ""
-        suffix = f"   [dim]({' · '.join(view)}{tail})[/dim]"
-        return f"Résumé {resume}   Style: {style}\n{' · '.join(parts)}{suffix}"
+        return f"Résumé {resume}   Style: {style}\n[dim]{' · '.join(view)}{tail}[/dim]"
 
     def _set_busy(self, msg: str) -> None:
         """Show a live '⏳ <msg>' progress line while a worker runs (empty string clears
-        it, restoring the funnel counts) — so latency never looks like a freeze."""
+        it, restoring the sort/filter line) — so latency never looks like a freeze."""
         self._busy = msg
         self.query_one("#statusline", Static).update(self._statusline())
 
@@ -412,6 +510,7 @@ class JobApplicatorApp(App[None]):
             f"[bold]{escape(j.title)}[/bold]",
             f"[green]{escape(j.company)}[/green]   [dim]{j.board.display_name}[/dim]",
             "",
+            "[bold]Overview[/bold]",  # section header, matching the Description header below
             f"Stage     [{style}]{stage.replace('_', ' ')}[/{style}]",
             f"Location  {escape(j.location) if j.location else '—'}",
             f"Salary    {escape(j.salary) if j.salary else '—'}",
@@ -467,19 +566,22 @@ class JobApplicatorApp(App[None]):
         return "\n".join(lines)
 
     # ----------------------------------------------------------------- actions
-    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        key = event.row_key.value
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        key = event.option.id
         if key is not None:
             self._update_detail(self._by_key.get(key))
+        # Refresh the status so the "row N/M" position tracks the cursor.
+        self.query_one("#statusline", Static).update(self._statusline())
 
     def action_refresh(self) -> None:
         self._reload()
 
     def action_cycle_stage_filter(self) -> None:
-        """Cycle the funnel-stage filter (all → each stage → all). View-only; composes with
-        the board + text filters and respects the 'applied' overlay via ``_effective_stage``."""
+        """Cycle the funnel-stage filter (all → each stage → all) and move the matching tab.
+        View-only; composes with the board + text filters; respects the 'applied' overlay."""
         i = _STAGE_CYCLE.index(self._stage_filter)
         self._stage_filter = _STAGE_CYCLE[(i + 1) % len(_STAGE_CYCLE)]
+        self._sync_stage_tab()  # mirror the cycle on the tab bar (no reload — view-only)
         self._repaint()
 
     def action_cycle_board_filter(self) -> None:
@@ -523,11 +625,6 @@ class JobApplicatorApp(App[None]):
             pane.scroll_page_down()
         else:
             pane.scroll_page_up()
-
-    def action_scroll_table(self, direction: int) -> None:
-        """Scroll the job table sideways so off-screen columns are reachable by keyboard when
-        the table overflows its pane (see the h/l bindings)."""
-        self.query_one("#joblist", DataTable).scroll_relative(x=direction * 8, animate=False)
 
     def _current_url(self) -> str | None:
         """The selected job's posting URL, or None (with a toast) when there isn't one."""
@@ -906,7 +1003,7 @@ class JobApplicatorApp(App[None]):
         toasted by ``_run_action`` and does NOT abort the remaining board(s)."""
         from job_applicator.tui import actions
 
-        table = self.query_one("#joblist", DataTable)
+        table = self.query_one("#joblist", JobList)
         table.loading = True  # spinner until the FIRST result streams in (across all boards)
         self._set_busy("Searching…")
         streamed = False
@@ -1045,10 +1142,10 @@ class JobApplicatorApp(App[None]):
         return None
 
     def action_cursor_down(self) -> None:
-        self.query_one("#joblist", DataTable).action_cursor_down()
+        self.query_one("#joblist", JobList).action_cursor_down()
 
     def action_cursor_up(self) -> None:
-        self.query_one("#joblist", DataTable).action_cursor_up()
+        self.query_one("#joblist", JobList).action_cursor_up()
 
     def action_filter(self) -> None:
         box = self.query_one("#filter", Input)
@@ -1068,14 +1165,15 @@ class JobApplicatorApp(App[None]):
         self._board_filter = None
         self._min_salary = 0
         self._hide_unlisted = False
+        self._sync_stage_tab()  # reset the tab bar to "All" too
         self._repaint()
-        self.query_one("#joblist", DataTable).focus()
+        self.query_one("#joblist", JobList).focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         self._filter = event.value.strip()
         event.input.remove_class("visible")
         self._repaint()
-        self.query_one("#joblist", DataTable).focus()
+        self.query_one("#joblist", JobList).focus()
 
 
 def run_tui(settings: AppSettings) -> None:

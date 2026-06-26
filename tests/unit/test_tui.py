@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
-from textual.widgets import DataTable
+from textual.widgets import OptionList
 from typer.testing import CliRunner
 
 import job_applicator.cli as cli
@@ -72,8 +72,8 @@ async def test_tui_mounts_and_lists_jobs(tmp_path: Path) -> None:
     app = _app(tmp_path, seed=3)
     async with app.run_test() as pilot:
         await pilot.pause()
-        table = app.query_one("#joblist", DataTable)
-        assert table.row_count == 3
+        table = app.query_one("#joblist", OptionList)
+        assert table.option_count == 3
         assert table.has_focus  # the job list owns focus, not the (hidden) filter Input
         assert app._current is not None  # detail follows the first row
 
@@ -97,8 +97,8 @@ async def test_tui_filter_narrows_then_clears(tmp_path: Path) -> None:
     app = JobApplicatorApp(settings=AppSettings(), store=store, app_state=app_state)
     async with app.run_test() as pilot:
         await pilot.pause()
-        table = app.query_one("#joblist", DataTable)
-        assert table.row_count == 2
+        table = app.query_one("#joblist", OptionList)
+        assert table.option_count == 2
         await pilot.press("slash")
         await pilot.pause()
         await pilot.press("g", "l", "o", "b", "e", "x")
@@ -108,10 +108,10 @@ async def test_tui_filter_narrows_then_clears(tmp_path: Path) -> None:
         assert app.query_one("#filter", Input).value == "globex"  # the "/" trigger didn't leak
         await pilot.press("enter")
         await pilot.pause()
-        assert table.row_count == 1  # only Globex
+        assert table.option_count == 1  # only Globex
         await pilot.press("escape")
         await pilot.pause()
-        assert table.row_count == 2  # filter cleared
+        assert table.option_count == 2  # filter cleared
 
 
 async def test_tui_help_key_does_not_leak_into_filter(tmp_path: Path) -> None:
@@ -139,7 +139,7 @@ async def test_tui_empty_store(tmp_path: Path) -> None:
     app = JobApplicatorApp(settings=AppSettings(), store=store, app_state=app_state)
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert app.query_one("#joblist", DataTable).row_count == 0
+        assert app.query_one("#joblist", OptionList).option_count == 0
         assert app._current is None
 
 
@@ -151,12 +151,12 @@ async def test_tui_refresh_picks_up_new_jobs(tmp_path: Path) -> None:
     app = JobApplicatorApp(settings=AppSettings(), store=store, app_state=app_state)
     async with app.run_test() as pilot:
         await pilot.pause()
-        table = app.query_one("#joblist", DataTable)
-        assert table.row_count == 1
+        table = app.query_one("#joblist", OptionList)
+        assert table.option_count == 1
         store.upsert_job(_job(2))  # a new job lands in the store
         await pilot.press("r")
         await pilot.pause()
-        assert table.row_count == 2
+        assert table.option_count == 2
 
 
 async def test_tui_launch_reads_only_local_state(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -471,22 +471,23 @@ def test_tui_detail_elides_long_artifact_filename() -> None:
     assert "@click=app.open_tailored" in md  # still clickable
 
 
-async def test_tui_joblist_company_visible_no_overflow(tmp_path: Path) -> None:
-    """At a normal-width terminal a very long title no longer pushes Company off-screen: the
-    table fits its pane (no horizontal scroll), so all four columns render."""
-    from textual.widgets import DataTable
+async def test_tui_joblist_company_on_metadata_line(tmp_path: Path) -> None:
+    """Two-line cards: the company sits on each job's 2nd (metadata) line, so even a very long
+    title can never push it off-screen — it's always present in the card, and the card WRAPS to
+    the pane (no horizontal scroll)."""
+    from textual.widgets import OptionList
 
     store = JobStore(db_path=tmp_path / "applications.db")
     store.upsert_job(_job(1, title="T" * 120, company="Acme Corporation Worldwide Holdings"))
     app = JobApplicatorApp(
         settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
     )
-    async with app.run_test(size=(240, 40)) as pilot:
+    async with app.run_test(size=(160, 40)) as pilot:
         await pilot.pause()
-        t = app.query_one("#joblist", DataTable)
-        # No horizontal overflow → every column (incl. Company) is on-screen. Without the
-        # title cap, the 120-char title would expand the table well past the pane.
-        assert t.virtual_size.width <= t.size.width
+        t = app.query_one("#joblist", OptionList)
+        card = str(t.get_option_at_index(0).prompt)  # the 2-line card text
+        assert "Acme Corporation Worldwide Holdings" in card  # company always present (line 2)
+        assert t.virtual_size.width <= t.size.width  # wraps to the pane, no h-scroll
 
 
 async def test_tui_detail_scroll_keys(tmp_path: Path) -> None:
@@ -513,9 +514,9 @@ def test_tui_joblist_loading_widget_override() -> None:
     composed children collapses when used as a cover — the regression this guards)."""
     from textual.widgets import LoadingIndicator
 
-    from job_applicator.tui.app import JobListTable, _JobListLoading
+    from job_applicator.tui.app import JobList, _JobListLoading
 
-    widget = JobListTable().get_loading_widget()
+    widget = JobList().get_loading_widget()
     assert isinstance(widget, _JobListLoading)
     assert isinstance(widget, LoadingIndicator)  # leaf, renders itself — does not collapse
 
@@ -523,7 +524,7 @@ def test_tui_joblist_loading_widget_override() -> None:
 async def test_tui_joblist_loading_is_themed_on_screen(tmp_path: Path) -> None:
     """Real frame: loading mounts a self-rendering cover that FILLS the area (non-collapsed)
     with a SOLID background — guards both the grey bleed AND the 0x0-collapse regression."""
-    from textual.widgets import DataTable
+    from textual.widgets import OptionList
 
     from job_applicator.tui.app import _JobListLoading
 
@@ -535,7 +536,7 @@ async def test_tui_joblist_loading_is_themed_on_screen(tmp_path: Path) -> None:
     )
     async with app.run_test(size=(200, 40)) as pilot:
         await pilot.pause()
-        table = app.query_one("#joblist", DataTable)
+        table = app.query_one("#joblist", OptionList)
         table.loading = True  # the reactive the real search worker uses
         await pilot.pause()
         cover = table._cover_widget  # the loading cover lives here (not the query tree)
@@ -548,7 +549,7 @@ async def test_tui_panes_fill_body_equally(tmp_path: Path) -> None:
     """The list and detail panes are the same height (both fill the body) — a DataTable
     defaults to height:auto, which left the left side short of the bottom with few rows."""
     from textual.containers import VerticalScroll
-    from textual.widgets import DataTable
+    from textual.widgets import OptionList
 
     store = JobStore(db_path=tmp_path / "applications.db")
     store.upsert_job(_job(1))  # a SINGLE row — the case where auto-height was short
@@ -557,7 +558,7 @@ async def test_tui_panes_fill_body_equally(tmp_path: Path) -> None:
     )
     async with app.run_test(size=(200, 40)) as pilot:
         await pilot.pause()
-        table = app.query_one("#joblist", DataTable)
+        table = app.query_one("#joblist", OptionList)
         detail = app.query_one("#detailscroll", VerticalScroll)
         body_height = app.query_one("#body").size.height
         # Both panes fill the body (symmetric). A collapsed auto-height table (~2 rows) fails
@@ -842,9 +843,11 @@ async def test_tui_applied_job_counted_once_not_double(tmp_path: Path) -> None:
     app = JobApplicatorApp(settings=AppSettings(), store=store, app_state=app_state)
     async with app.run_test() as pilot:
         await pilot.pause()
-        line = app._statusline()
-        assert "1 applied" in line
-        assert "0 cover letter" in line  # NOT also counted at its head stage
+        from textual.widgets import Tab
+
+        # Counts live on the tabs now: the job shows as applied(1), NOT also at its head stage.
+        assert "1" in str(app.query_one("#stage-applied", Tab).label)
+        assert "0" in str(app.query_one("#stage-cover_letter", Tab).label)
         assert app._effective_stage(app._all[0]) == "applied"  # sidebar/detail agree
 
 
@@ -1526,7 +1529,7 @@ async def test_tui_search_streams_rows_incrementally(tmp_path: Path, monkeypatch
     the loading spinner clears on the first result."""
     import asyncio
 
-    from textual.widgets import DataTable
+    from textual.widgets import OptionList
 
     from job_applicator.scrapers.base import SearchParams
     from job_applicator.tui import actions
@@ -1550,16 +1553,16 @@ async def test_tui_search_streams_rows_incrementally(tmp_path: Path, monkeypatch
     )
     async with app.run_test() as pilot:
         await pilot.pause()
-        table = app.query_one("#joblist", DataTable)
-        assert table.row_count == 0
+        table = app.query_one("#joblist", OptionList)
+        assert table.option_count == 0
         app._search_worker([SearchParams(query="x", board=JobBoard.LINKEDIN)])
         await pilot.pause()
-        assert table.row_count == 1  # first row streamed in (not waiting for the whole scrape)
+        assert table.option_count == 1  # first row streamed in (not waiting for the whole scrape)
         assert table.loading is False  # spinner cleared on the first result
         gate.set()
         await app.workers.wait_for_complete()
         await pilot.pause()
-        assert table.row_count == 2  # second row streamed in too
+        assert table.option_count == 2  # second row streamed in too
 
 
 async def test_tui_reload_sorts_best_match_first(tmp_path: Path) -> None:
@@ -1610,19 +1613,19 @@ async def test_tui_search_shows_per_item_progress(tmp_path: Path, monkeypatch) -
 
 
 async def test_tui_busy_indicator_in_statusline(tmp_path: Path) -> None:
-    """_set_busy shows a live '⏳ …' line in the status bar and clears back to counts."""
+    """_set_busy shows a live '⏳ …' line in the status bar and clears back to the sort line."""
     app = _app(tmp_path, seed=1)
     async with app.run_test() as pilot:
         await pilot.pause()
         app._set_busy("Tailoring X…")
         assert "⏳" in app._statusline() and "Tailoring X" in app._statusline()
         app._set_busy("")
-        assert "⏳" not in app._statusline()  # restored to the funnel counts
+        assert "⏳" not in app._statusline()  # restored to the sort/filter line
 
 
 async def test_tui_search_clears_busy_and_loading(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """After a search, the list spinner (loading) and the busy line are both cleared."""
-    from textual.widgets import DataTable
+    from textual.widgets import OptionList
 
     from job_applicator.tui import actions
 
@@ -1646,7 +1649,7 @@ async def test_tui_search_clears_busy_and_loading(tmp_path: Path, monkeypatch) -
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert app._busy == ""
-        assert app.query_one("#joblist", DataTable).loading is False
+        assert app.query_one("#joblist", OptionList).loading is False
 
 
 async def test_tui_help_modal_opens_and_lists_keys(tmp_path: Path) -> None:
@@ -1927,20 +1930,20 @@ async def test_tui_stage_filter_cycles_through_stages(tmp_path: Path) -> None:
     app = _staged_app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        table = app.query_one("#joblist", DataTable)
-        assert table.row_count == 4  # all stages shown
+        table = app.query_one("#joblist", OptionList)
+        assert table.option_count == 4  # all stages shown
         await pilot.press("f")  # → found
         await pilot.pause()
-        assert app._stage_filter == "found" and table.row_count == 1
+        assert app._stage_filter == "found" and table.option_count == 1
         assert app._current is not None and app._current.job.company == "Co1"
         await pilot.press("f")  # → matched
         await pilot.pause()
-        assert app._stage_filter == "matched" and table.row_count == 1
+        assert app._stage_filter == "matched" and table.option_count == 1
         assert app._current is not None and app._current.job.company == "Co2"
         for _ in range(4):  # matched → tailored → cover_letter → applied → all
             await pilot.press("f")
         await pilot.pause()
-        assert app._stage_filter is None and table.row_count == 4  # full circle
+        assert app._stage_filter is None and table.option_count == 4  # full circle
 
 
 async def test_tui_stage_filter_composes_with_text_filter(tmp_path: Path) -> None:
@@ -1954,13 +1957,13 @@ async def test_tui_stage_filter_composes_with_text_filter(tmp_path: Path) -> Non
     )
     async with app.run_test() as pilot:
         await pilot.pause()
-        table = app.query_one("#joblist", DataTable)
+        table = app.query_one("#joblist", OptionList)
         app._filter = "acme"  # text filter → jobs 1 (found) + 3 (matched)
         app._repaint()
-        assert table.row_count == 2
+        assert table.option_count == 2
         await pilot.press("f")  # add stage filter → found → only job 1
         await pilot.pause()
-        assert app._stage_filter == "found" and table.row_count == 1
+        assert app._stage_filter == "found" and table.option_count == 1
         assert app._current is not None and app._current.job.company == "Acme"
 
 
@@ -1970,14 +1973,14 @@ async def test_tui_stage_filter_respects_applied_overlay(tmp_path: Path) -> None
     app = _staged_app(tmp_path, applied=(4,))  # job 4 (cover_letter in store) is SUBMITTED
     async with app.run_test() as pilot:
         await pilot.pause()
-        table = app.query_one("#joblist", DataTable)
+        table = app.query_one("#joblist", OptionList)
         assert app._applied_urls == {"https://linkedin.com/jobs/4"}
         app._stage_filter = "cover_letter"  # job 4 reads as applied now → not here
         app._repaint()
-        assert table.row_count == 0
+        assert table.option_count == 0
         app._stage_filter = "applied"  # … it shows here instead
         app._repaint()
-        assert table.row_count == 1
+        assert table.option_count == 1
         assert app._current is not None and app._current.job.company == "Co4"
 
 
@@ -1986,7 +1989,7 @@ async def test_tui_escape_clears_stage_and_text_filters(tmp_path: Path) -> None:
     app = _staged_app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        table = app.query_one("#joblist", DataTable)
+        table = app.query_one("#joblist", OptionList)
         await pilot.press("f")  # stage → found
         await pilot.pause()
         app._filter = "co1"  # and a text filter
@@ -1995,7 +1998,7 @@ async def test_tui_escape_clears_stage_and_text_filters(tmp_path: Path) -> None:
         await pilot.press("escape")
         await pilot.pause()
         assert app._stage_filter is None and app._filter == ""
-        assert table.row_count == 4  # both cleared → all jobs
+        assert table.option_count == 4  # both cleared → all jobs
 
 
 async def test_tui_sort_cycles_and_reorders(tmp_path: Path) -> None:
@@ -2036,23 +2039,24 @@ async def test_tui_empty_stage_shows_guidance(tmp_path: Path) -> None:
         await pilot.pause()
         app._stage_filter = "applied"  # no applied jobs
         app._repaint()
-        assert app.query_one("#joblist", DataTable).row_count == 0
+        assert app.query_one("#joblist", OptionList).option_count == 0
         detail = app._detail_markup(None)
         assert "No jobs match the current filter" in detail
         assert "[cyan]f[/cyan]" in detail  # points at the stage-filter key, not 'No jobs yet'
 
 
-def test_tui_statusline_reflects_sort_and_stage() -> None:
-    """The status line always shows the active sort, and adds the stage filter + shown count
-    when a stage filter is set."""
+def test_tui_statusline_reflects_sort_and_filters() -> None:
+    """The status line shows the active sort + the board/salary/text filters (+ shown count).
+    It does NOT show the funnel counts or the stage — those are the tabs now."""
     app = JobApplicatorApp(settings=AppSettings(), store=MagicMock(), app_state=MagicMock())
     app._all = []
     line = app._statusline()  # defaults
-    assert "sort: best match" in line and "stage:" not in line
+    assert "sort: best match" in line
+    assert "stage:" not in line  # stage is the active tab, not the status line
     app._sort_mode = "recent"
-    app._stage_filter = "matched"
+    app._board_filter = "indeed"
     line = app._statusline()
-    assert "sort: recent" in line and "stage: matched" in line and "shown" in line
+    assert "sort: recent" in line and "board: Indeed" in line and "shown" in line
 
 
 async def test_tui_statusline_renders_sort_stage_in_running_frame(tmp_path: Path) -> None:
@@ -2078,10 +2082,12 @@ async def test_tui_statusline_renders_sort_stage_in_running_frame(tmp_path: Path
         await pilot.press("S")  # → recent
         await pilot.pause()
         assert "sort: recent" in _rendered()
-        await pilot.press("f")  # stage → found
+        await pilot.press("f")  # stage → found: moves the active TAB, not the status line
         await pilot.pause()
-        frame = _rendered()
-        assert "stage: found" in frame and "1 shown" in frame
+        from textual.widgets import Tabs
+
+        assert app.query_one("#stagetabs", Tabs).active == "stage-found"
+        assert "stage:" not in _rendered()  # stage lives on the tab now, not the status
 
 
 async def test_tui_salary_sort_filter_and_toggle(tmp_path: Path) -> None:
@@ -2134,21 +2140,21 @@ async def test_tui_salary_keys_status_and_esc(tmp_path: Path) -> None:
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        table = app.query_one("#joblist", DataTable)
+        table = app.query_one("#joblist", OptionList)
         await pilot.press("m")  # min salary → $40k
         await pilot.pause()
         assert app._min_salary == 40_000
         assert "min $40k" in _rendered()
-        assert table.row_count == 2  # $150k clears it; the unlisted job is kept
+        assert table.option_count == 2  # $150k clears it; the unlisted job is kept
         await pilot.press("u")  # hide unlisted-pay jobs
         await pilot.pause()
         assert app._hide_unlisted is True
         assert "listed pay only" in _rendered()
-        assert table.row_count == 1  # only the job with listed pay remains
+        assert table.option_count == 1  # only the job with listed pay remains
         await pilot.press("escape")  # resets ALL filters
         await pilot.pause()
         assert app._min_salary == 0 and app._hide_unlisted is False
-        assert table.row_count == 2
+        assert table.option_count == 2
 
 
 # ----------------------------------------- Indeed + multi-board search (Cycle E)
@@ -2406,10 +2412,10 @@ async def test_tui_search_then_refuses_a_second_concurrent_account_worker(
 
 
 # ------------------------------------------------ board column + filter (Cycle F)
-async def test_tui_board_column_shows_each_board(tmp_path: Path) -> None:
-    """The list has a Board column showing each job's board (LinkedIn / Indeed)."""
-    from textual.coordinate import Coordinate
-    from textual.widgets import DataTable
+async def test_tui_board_tag_in_each_card(tmp_path: Path) -> None:
+    """Each job card's metadata line carries the compact, uncoloured board tag (LI / IN); the
+    full name is the detail pane's job."""
+    from textual.widgets import OptionList
 
     store = JobStore(db_path=tmp_path / "applications.db")
     store.upsert_job(_job(1))  # LinkedIn (the _job default)
@@ -2419,15 +2425,15 @@ async def test_tui_board_column_shows_each_board(tmp_path: Path) -> None:
     )
     async with app.run_test() as pilot:
         await pilot.pause()
-        t = app.query_one("#joblist", DataTable)
-        assert len(t.columns) == 5  # Stage, Score, Board, Title, Company
-        cells = [t.get_cell_at(Coordinate(r, 2)) for r in range(t.row_count)]  # Board column
-        assert any("LinkedIn" in c for c in cells) and any("Indeed" in c for c in cells)
+        t = app.query_one("#joblist", OptionList)
+        cards = [str(t.get_option_at_index(r).prompt) for r in range(t.option_count)]
+        assert any("LI" in c for c in cards) and any("IN" in c for c in cards)  # board tag, line 2
+        assert not any("LinkedIn" in c for c in cards)  # full name is the detail pane's job
 
 
 async def test_tui_board_filter_cycles_and_narrows(tmp_path: Path) -> None:
     """`b` cycles the board filter (all → linkedin → indeed → all), narrowing the list."""
-    from textual.widgets import DataTable
+    from textual.widgets import OptionList
 
     store = JobStore(db_path=tmp_path / "applications.db")
     store.upsert_job(_job(1))  # LinkedIn
@@ -2437,24 +2443,24 @@ async def test_tui_board_filter_cycles_and_narrows(tmp_path: Path) -> None:
     )
     async with app.run_test() as pilot:
         await pilot.pause()
-        t = app.query_one("#joblist", DataTable)
-        assert t.row_count == 2  # all boards
+        t = app.query_one("#joblist", OptionList)
+        assert t.option_count == 2  # all boards
         await pilot.press("b")  # → linkedin
         await pilot.pause()
-        assert app._board_filter == "linkedin" and t.row_count == 1
+        assert app._board_filter == "linkedin" and t.option_count == 1
         assert app._current is not None and app._current.job.board is JobBoard.LINKEDIN
         await pilot.press("b")  # → indeed
         await pilot.pause()
-        assert app._board_filter == "indeed" and t.row_count == 1
+        assert app._board_filter == "indeed" and t.option_count == 1
         assert app._current is not None and app._current.job.board is JobBoard.INDEED
         await pilot.press("b")  # → all
         await pilot.pause()
-        assert app._board_filter is None and t.row_count == 2
+        assert app._board_filter is None and t.option_count == 2
 
 
 async def test_tui_board_filter_composes_with_stage_filter(tmp_path: Path) -> None:
     """Board + stage filters narrow together (logical AND)."""
-    from textual.widgets import DataTable
+    from textual.widgets import OptionList
 
     store = JobStore(db_path=tmp_path / "applications.db")
     store.upsert_job(_job(1))  # LinkedIn, found
@@ -2467,17 +2473,17 @@ async def test_tui_board_filter_composes_with_stage_filter(tmp_path: Path) -> No
     )
     async with app.run_test() as pilot:
         await pilot.pause()
-        t = app.query_one("#joblist", DataTable)
+        t = app.query_one("#joblist", OptionList)
         app._board_filter = "linkedin"
         app._stage_filter = "matched"
         app._repaint()
-        assert t.row_count == 1  # LinkedIn AND matched → only job 3
+        assert t.option_count == 1  # LinkedIn AND matched → only job 3
         assert app._current is not None and app._current.job.company == "Co3"
 
 
 async def test_tui_escape_clears_board_filter_too(tmp_path: Path) -> None:
     """Esc resets the board filter along with the stage + text filters."""
-    from textual.widgets import DataTable
+    from textual.widgets import OptionList
 
     store = JobStore(db_path=tmp_path / "applications.db")
     store.upsert_job(_job(1))
@@ -2487,13 +2493,13 @@ async def test_tui_escape_clears_board_filter_too(tmp_path: Path) -> None:
     )
     async with app.run_test() as pilot:
         await pilot.pause()
-        t = app.query_one("#joblist", DataTable)
+        t = app.query_one("#joblist", OptionList)
         await pilot.press("b")  # board → linkedin
         await pilot.pause()
-        assert app._board_filter == "linkedin" and t.row_count == 1
+        assert app._board_filter == "linkedin" and t.option_count == 1
         await pilot.press("escape")
         await pilot.pause()
-        assert app._board_filter is None and t.row_count == 2
+        assert app._board_filter is None and t.option_count == 2
 
 
 def test_tui_statusline_shows_board_filter() -> None:
@@ -2505,22 +2511,24 @@ def test_tui_statusline_shows_board_filter() -> None:
     assert "board: Indeed" in line and "shown" in line
 
 
-async def test_tui_joblist_no_overflow_with_board_column(tmp_path: Path) -> None:
-    """Real-frame guard: the added Board column still fits at a ~190-wide terminal — Company
-    is not pushed off-screen (the #65-67 fix holds via the lowered title/company caps)."""
-    from textual.widgets import DataTable
+async def test_tui_joblist_cards_wrap_no_h_overflow(tmp_path: Path) -> None:
+    """Real-frame guard: the cards WRAP to the list pane, so even a very long title/company
+    never causes horizontal scroll (the OptionList fills width and folds long lines)."""
+    from textual.widgets import OptionList
 
     store = JobStore(db_path=tmp_path / "applications.db")
-    store.upsert_job(_job(1, title="T" * 120, company="Acme Corporation Worldwide Holdings"))
-    store.upsert_job(_job(2, url="https://indeed.com/2", board=JobBoard.INDEED, title="X" * 120))
+    store.upsert_job(_job(1, title="Senior Platform Engineer", company="Globex International"))
+    store.upsert_job(
+        _job(2, url="https://indeed.com/2", board=JobBoard.INDEED, title="X" * 140)  # very long
+    )
     app = JobApplicatorApp(
         settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
     )
-    async with app.run_test(size=(190, 40)) as pilot:
+    async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        t = app.query_one("#joblist", DataTable)
-        assert len(t.columns) == 5  # Stage, Score, Board, Title, Company
-        assert t.virtual_size.width <= t.size.width  # no horizontal overflow at 190 wide
+        t = app.query_one("#joblist", OptionList)
+        assert t.option_count == 2
+        assert t.virtual_size.width <= t.size.width  # wraps; no horizontal scroll even at 140ch
 
 
 # ----------------------------------------------------------------- style-guide UI flow
@@ -2549,11 +2557,11 @@ async def test_tui_set_style_guide_persists_config(tmp_path: Path, monkeypatch) 
 
 
 async def test_tui_style_guide_status_line(tmp_path: Path) -> None:
-    """The status line shows the configured style guide path (or the unset hint)."""
+    """The status line shows the configured style guide (basename) or the unset hint."""
     store = JobStore(db_path=tmp_path / "applications.db")
     store.upsert_job(_job(1))
     app = JobApplicatorApp(
-        settings=AppSettings(resume_path="/cv.pdf", style_guide_path="/style.pdf"),
+        settings=AppSettings(resume_path="/docs/cv.pdf", style_guide_path="/docs/style.pdf"),
         store=store,
         app_state=MagicMock(list_recent=lambda **k: []),
     )
@@ -2561,7 +2569,7 @@ async def test_tui_style_guide_status_line(tmp_path: Path) -> None:
         await pilot.pause()
         line = app._statusline()
         assert "Style:" in line
-        assert "/style.pdf" in line
+        assert "style.pdf" in line and "/docs/" not in line  # basename only, not the full path
 
 
 def test_tui_statusline_style_guide_unset_hint() -> None:
@@ -2816,24 +2824,33 @@ async def test_tui_cursor_preserved_across_refresh_and_sort(tmp_path: Path) -> N
         assert app._current is not None and app._current.id == selected
 
 
-async def test_tui_h_l_scroll_table_sideways(tmp_path: Path) -> None:
-    """When the job table overflows its pane, h/l scroll it sideways so off-screen columns are
-    reachable by keyboard (the TUI captures the mouse) — the reported 'lost sideways scroll'."""
+async def test_tui_stage_tabs_filter_sync_and_counts(tmp_path: Path) -> None:
+    """The stage tabs show per-stage counts, filter on click, mirror the `f` cycle, and reset
+    on Esc — the 'tabs + visual hierarchy' redesign (increment 1)."""
+    from textual.widgets import Tab, Tabs
+
+    from job_applicator.tui.app import _stage_to_tab
+
     store = JobStore(db_path=tmp_path / "applications.db")
-    for i in range(3):
-        store.upsert_job(
-            _job(i, title=f"A Very Long Job Title Number {i} That Overflows The Pane"),
-        )
+    store.upsert_job(_job(1))
+    store.upsert_job(_job(2))
+    store.upsert_match(_mr(_job(3)))  # one matched job
     app = JobApplicatorApp(
         settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
     )
-    async with app.run_test(size=(110, 40)) as pilot:
+    async with app.run_test() as pilot:
         await pilot.pause()
-        table = app.query_one("#joblist", DataTable)
-        assert table.max_scroll_x > 0  # the table really does overflow at this width
-        await pilot.press("l")
+        tabs = app.query_one("#stagetabs", Tabs)
+        table = app.query_one("#joblist", OptionList)
+        assert tabs.active == "stage-all"
+        assert "3" in str(app.query_one("#stage-all", Tab).label)  # All shows the total
+        assert "1" in str(app.query_one("#stage-matched", Tab).label)  # Matched count
+        tabs.active = "stage-matched"  # click a tab → filters
         await pilot.pause()
-        assert table.scroll_x > 0  # 'l' scrolled right
-        await pilot.press("h", "h", "h")
+        assert app._stage_filter == "matched" and table.option_count == 1
+        await pilot.press("f")  # the f cycle moves the active tab too (no loop)
         await pilot.pause()
-        assert table.scroll_x == 0  # 'h' scrolled back, clamped at the left edge
+        assert tabs.active == _stage_to_tab(app._stage_filter)
+        await pilot.press("escape")  # Esc resets the tab to All
+        await pilot.pause()
+        assert app._stage_filter is None and tabs.active == "stage-all" and table.option_count == 3

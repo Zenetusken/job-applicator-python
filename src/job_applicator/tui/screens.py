@@ -429,10 +429,10 @@ class HelpScreen(_FadeModalScreen[None]):
             "",
             "[bold]Navigate[/bold]",
             "  ↑ ↓ · j k   move selection",
-            "  h l         scroll the job table sideways (when columns overflow)",
+            "  h l         scroll a job card sideways (for an unusually long title)",
             "  ] \\[         scroll the posting / detail pane",  # \\[ → literal '[' (not a tag)
             "  /           filter title/company · Esc clears all filters",
-            "  f           filter by funnel stage (cycles)",
+            "  f           funnel-stage filter — cycles the tabs at the top (or click a tab)",
             "  b           filter by board (cycles)",
             "  m           minimum salary floor (off → $40k … $150k, cycles)",
             "  u           toggle hiding jobs with no listed salary",
