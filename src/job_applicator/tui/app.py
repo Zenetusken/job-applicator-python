@@ -14,7 +14,9 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, TypeVar
 
+from rich.console import Console, ConsoleOptions, RenderResult
 from rich.markup import escape
+from rich.measure import Measurement
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult, ScreenStackError
@@ -84,12 +86,24 @@ def _tab_to_stage(tab_id: str | None) -> str | None:
 
 
 # Board-filter cycle: None (all) then each board; compared against `s.job.board.value`.
-# `_BOARD_TAG` is a compact, UNCOLOURED 2-letter board marker for the list (LinkedIn→LI,
-# Indeed→IN). De-coloured on purpose: a coloured board column collided with the stage colours
-# (yellow = tailored AND Indeed) and the blue selection highlight. The full board name still
-# shows in the detail pane, and the 2-letter form frees width for the (cramped) Title column.
+# `_BOARD_STYLE` colours the full board name as a badge for an instant LinkedIn-vs-Indeed scan.
+# (Stage colour now lives on the card's left spine, well away from this mid-line badge, so the
+# board can keep its own brand colour without reading as a stage.)
 _BOARD_CYCLE: list[str | None] = [None, *(b.value for b in JobBoard)]
-_BOARD_TAG: dict[str, str] = {"linkedin": "LI", "indeed": "IN"}
+_BOARD_STYLE: dict[str, str] = {"linkedin": "bold blue", "indeed": "bold yellow"}
+
+
+def _score_style(score: float | None) -> str:
+    """Sentiment palette for a match score: green (strong) / yellow (moderate) / red (weak),
+    so the confidence reads at a glance. Unknown (unscored) → dim."""
+    if score is None:
+        return "dim"
+    if score >= 0.70:
+        return "bold green"
+    if score >= 0.50:
+        return "bold yellow"
+    return "bold red"
+
 
 # Sort orders cycled by `S`; "match" (best opportunity first) is the default. The labels are
 # what the status line shows.
@@ -120,6 +134,37 @@ def _elide_mid(text: str, limit: int) -> str:
     keep = max(2, limit - 1)
     head = (keep + 1) // 2
     return text[:head] + "…" + text[-(keep - head) :]
+
+
+class _JobCard:
+    """One job's list row, as a custom Rich renderable so the stage-coloured left spine ``▌``
+    runs down EVERY line of the card — including wrapped continuations — and the card re-wraps to
+    the OptionList's width automatically (no manual width math / resize handling). Takes the card
+    lines (title · company · meta) so each gets the spine and wraps independently.
+
+    ``__str__`` returns the plain text so callers (and tests) can read the content."""
+
+    _GUTTER = "▌ "  # the spine + one space; 2 cells
+
+    def __init__(self, lines: list[Text], spine_style: str) -> None:
+        self._lines = lines
+        self._spine_style = spine_style
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        inner = max(4, options.max_width - len(self._GUTTER))  # content width past the spine
+        for source in self._lines:
+            for line in source.wrap(console, inner):
+                row = Text(self._GUTTER, style=self._spine_style)
+                row.append_text(line)
+                yield row
+        yield Text("")  # a blank trailing line → visual gap between cards
+
+    def __rich_measure__(self, console: Console, options: ConsoleOptions) -> Measurement:
+        # Never ask for more than the available width — so the OptionList wraps us, never scrolls.
+        return Measurement(min(20, options.max_width), options.max_width)
+
+    def __str__(self) -> str:
+        return "\n".join(line.plain for line in self._lines)
 
 
 class _JobListLoading(LoadingIndicator):
@@ -191,12 +236,14 @@ class JobApplicatorApp(App[None]):
         Binding("A", "ats_check", "ATS", show=False),
         Binding("o", "open_url", "Open"),
         Binding("y", "copy_url", "Copy URL", show=False),
-        Binding("slash", "filter", "Filter"),
-        Binding("f", "cycle_stage_filter", "Stage"),
-        Binding("b", "cycle_board_filter", "Board"),
-        Binding("m", "cycle_min_salary", "Min $"),
+        Binding("slash", "filter", "Find"),
+        Binding("f", "open_filters", "Filter"),
+        # The individual cycle keys still work for power users, but are off the footer now that
+        # `f` opens a grouped Filter & sort panel (board/salary/sort/text/stage in one place).
+        Binding("b", "cycle_board_filter", "Board", show=False),
+        Binding("m", "cycle_min_salary", "Min $", show=False),
         Binding("u", "toggle_unlisted", "Unlisted", show=False),
-        Binding("S", "cycle_sort", "Sort"),
+        Binding("S", "cycle_sort", "Sort", show=False),
         Binding("question_mark", "help", "Help"),
         Binding("escape", "clear_filter", "Clear filter", show=False),
         Binding("j", "cursor_down", "Down", show=False),
@@ -383,29 +430,25 @@ class JobApplicatorApp(App[None]):
         applied via the funnel stays in the store at its head stage)."""
         return "applied" if str(s.job.url) in self._applied_urls else s.funnel_status.value
 
-    def _job_card(self, s: StoredJob) -> Text:
-        """A two-line job card (an OptionList prompt that WRAPS to the pane width):
-          line 1 — a stage-coloured spine ``▌`` + the FULL title (bold)
-          line 2 — the spine + the match score (bright) + board · company · location (dim)
-        The spine colour encodes the funnel stage (see the legend in Help), so the stage word
-        isn't repeated on every row; the score is the one bright element."""
-        stage = self._effective_stage(s)
-        color = _STAGE_STYLE.get(stage, "white")
-        card = Text(no_wrap=False, overflow="fold")  # fold = wrap long lines, never truncate
-        card.append("▌ ", style=color)
-        card.append(s.job.title, style="bold")
-        card.append("\n")
-        card.append("▌ ", style=color)
-        if s.match_score is not None:
-            card.append(f"{s.match_score:.0%}", style="bold")  # the one bright element
-        else:
-            card.append("—", style="dim")
-        meta = f" · {_BOARD_TAG.get(s.job.board.value, '??')} · {s.job.company}"
+    def _job_card(self, s: StoredJob) -> _JobCard:
+        """A three-line job card (rendered by ``_JobCard`` so the stage-coloured spine spans all
+        lines, incl. wraps), giving a clear hierarchy:
+          line 1 — the FULL title (bold)
+          line 2 — the company (green, its own line so it isn't lost in the metadata)
+          line 3 — match score (sentiment colour) · board (brand badge) · location (dim)
+        """
+        spine = _STAGE_STYLE.get(self._effective_stage(s), "white")
+        title = Text(s.job.title, style="bold")
+        company = Text(s.job.company or "—", style="green")
+        meta = Text()
+        score = s.match_score
+        meta.append(f"{score:.0%}" if score is not None else "—", style=_score_style(score))
+        meta.append("  ·  ", style="dim")
+        meta.append(s.job.board.display_name, style=_BOARD_STYLE.get(s.job.board.value, "white"))
         if s.job.location:
-            meta += f" · {s.job.location}"
-        card.append(meta, style="dim")
-        card.append("\n")  # trailing blank line → visual gap between cards
-        return card
+            meta.append("  ·  ", style="dim")
+            meta.append(s.job.location, style="dim")
+        return _JobCard([title, company, meta], spine)
 
     def _repaint(self) -> None:
         self.query_one("#statusline", Static).update(self._statusline())
@@ -518,7 +561,7 @@ class JobApplicatorApp(App[None]):
         if s.match_score is not None:
             sem, skill = s.semantic_score or 0, s.skill_score or 0
             lines.append(
-                f"Match     {s.match_score:.0%}  "
+                f"Match     [{_score_style(s.match_score)}]{s.match_score:.0%}[/]  "
                 f"[dim](semantic {sem:.0%} · skill {skill:.0%})[/dim]"
             )
         if s.matched_skills:
@@ -576,9 +619,56 @@ class JobApplicatorApp(App[None]):
     def action_refresh(self) -> None:
         self._reload()
 
+    def action_open_filters(self) -> None:
+        """Open the grouped Filter & sort panel (`f`) — stage · board · min salary · hide-unlisted
+        · sort · text in one place. The app builds the option lists from its constants and applies
+        the result in ``_apply_filters`` (so the panel screen needs no import back here)."""
+        from job_applicator.tui.screens import FilterScreen
+
+        stage_opts = [
+            (label, "all" if st is None else st) for st, label in _STAGE_TAB_LABEL.items()
+        ]
+        board_opts = [("All boards", "all"), *((b.display_name, b.value) for b in JobBoard)]
+        salary_opts = [("Any", "0"), *((f"${v // 1000}k+", str(v)) for v in _SALARY_CYCLE[1:])]
+        sort_opts = [(label, key) for key, label in _SORT_LABEL.items()]
+        self.push_screen(
+            FilterScreen(
+                stage_options=stage_opts,
+                stage_value="all" if self._stage_filter is None else self._stage_filter,
+                board_options=board_opts,
+                board_value="all" if self._board_filter is None else self._board_filter,
+                salary_options=salary_opts,
+                salary_value=str(self._min_salary),
+                sort_options=sort_opts,
+                sort_value=self._sort_mode,
+                hide_unlisted=self._hide_unlisted,
+                text=self._filter,
+            ),
+            self._apply_filters,
+        )
+
+    def _apply_filters(self, result: dict[str, object] | None) -> None:
+        """Apply the Filter panel's result (None = cancelled). Sets every view control at once,
+        mirrors stage on the tabs, and re-queries. View-only; never touches the account."""
+        joblist = self.query_one("#joblist", JobList)
+        if result is None:
+            joblist.focus()
+            return
+        stage = result["stage"]
+        board = result["board"]
+        self._stage_filter = None if stage == "all" else str(stage)
+        self._board_filter = None if board == "all" else str(board)
+        self._min_salary = int(str(result["min_salary"]))
+        self._hide_unlisted = bool(result["hide_unlisted"])
+        self._sort_mode = str(result["sort_mode"])
+        self._filter = str(result["text"])
+        self._sync_stage_tab()
+        self._reload(refresh_applied=False)
+        joblist.focus()
+
     def action_cycle_stage_filter(self) -> None:
         """Cycle the funnel-stage filter (all → each stage → all) and move the matching tab.
-        View-only; composes with the board + text filters; respects the 'applied' overlay."""
+        View-only; kept for the tabs/`f`-panel to share; composes with the other filters."""
         i = _STAGE_CYCLE.index(self._stage_filter)
         self._stage_filter = _STAGE_CYCLE[(i + 1) % len(_STAGE_CYCLE)]
         self._sync_stage_tab()  # mirror the cycle on the tab bar (no reload — view-only)

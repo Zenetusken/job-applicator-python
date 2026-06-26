@@ -15,7 +15,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
-from textual.widgets import Button, Checkbox, Input, Label, Static
+from textual.widgets import Button, Checkbox, Input, Label, Select, Static
 
 from job_applicator.models import JobBoard
 from job_applicator.scrapers.base import SearchParams
@@ -183,6 +183,108 @@ class SearchScreen(_FadeModalScreen[list[SearchParams] | None]):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         # Enter in any field submits the form (same as the Search button).
         self._submit()
+
+
+class FilterScreen(_FadeModalScreen["dict[str, object] | None"]):
+    """One panel for ALL the list's view controls — stage, board, minimum salary, hide-unlisted,
+    sort, and a text filter — opened with ``f`` so they're discoverable in one place instead of a
+    row of cycle keys. Dismisses with a dict of the chosen values to apply, or ``None`` on
+    cancel/Esc. The option lists + current values are passed in by the app (which owns the
+    constants), so this screen has no import back to ``app.py``.
+
+    View-only: changing filters/sort never touches the account; it only re-queries the store."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "cancel", "Cancel")]
+
+    CSS = """
+    FilterScreen { align: center middle; }
+    #filterbox {
+        width: 64; height: auto; max-height: 90%; padding: 1 2;
+        border: thick $accent; background: $surface;
+    }
+    #filterbox Select, #filterbox Input { margin: 1 0; }
+    #fbuttons { height: auto; align: right middle; margin-top: 1; }
+    #fbuttons Button { margin-left: 2; }
+    """
+
+    def __init__(
+        self,
+        *,
+        stage_options: list[tuple[str, str]],
+        stage_value: str,
+        board_options: list[tuple[str, str]],
+        board_value: str,
+        salary_options: list[tuple[str, str]],
+        salary_value: str,
+        sort_options: list[tuple[str, str]],
+        sort_value: str,
+        hide_unlisted: bool,
+        text: str,
+    ) -> None:
+        super().__init__()
+        self._stage_options = stage_options
+        self._stage_value = stage_value
+        self._board_options = board_options
+        self._board_value = board_value
+        self._salary_options = salary_options
+        self._salary_value = salary_value
+        self._sort_options = sort_options
+        self._sort_value = sort_value
+        self._hide_unlisted = hide_unlisted
+        self._text = text
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="filterbox"):
+            yield Label("[bold]Filter & sort[/bold]")
+            yield Label("Stage")
+            yield Select(
+                self._stage_options, value=self._stage_value, allow_blank=False, id="f_stage"
+            )
+            yield Label("Board")
+            yield Select(
+                self._board_options, value=self._board_value, allow_blank=False, id="f_board"
+            )
+            yield Label("Minimum salary")
+            yield Select(
+                self._salary_options, value=self._salary_value, allow_blank=False, id="f_salary"
+            )
+            yield Label("Sort by")
+            yield Select(self._sort_options, value=self._sort_value, allow_blank=False, id="f_sort")
+            yield Checkbox(
+                "Hide jobs with no listed salary", value=self._hide_unlisted, id="f_unlisted"
+            )
+            yield Input(value=self._text, placeholder="text filter — title / company", id="f_text")
+            with Horizontal(id="fbuttons"):
+                yield Button("Apply", variant="primary", id="apply")
+                yield Button("Cancel", id="cancel")
+
+    def on_mount(self) -> None:
+        super().on_mount()  # fade-in
+        self.query_one("#f_stage", Select).focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def _submit(self) -> None:
+        self.dismiss(
+            {
+                "stage": self.query_one("#f_stage", Select).value,
+                "board": self.query_one("#f_board", Select).value,
+                "min_salary": int(str(self.query_one("#f_salary", Select).value)),
+                "sort_mode": self.query_one("#f_sort", Select).value,
+                "hide_unlisted": self.query_one("#f_unlisted", Checkbox).value,
+                "text": self.query_one("#f_text", Input).value.strip(),
+            }
+        )
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "apply":
+            self._submit()
+        else:
+            self.dismiss(None)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self._submit()  # Enter in the text field applies
 
 
 class ApplyScreen(_FadeModalScreen[bool | None]):
@@ -429,14 +531,11 @@ class HelpScreen(_FadeModalScreen[None]):
             "",
             "[bold]Navigate[/bold]",
             "  ↑ ↓ · j k   move selection",
-            "  h l         scroll a job card sideways (for an unusually long title)",
             "  ] \\[         scroll the posting / detail pane",  # \\[ → literal '[' (not a tag)
-            "  /           filter title/company · Esc clears all filters",
-            "  f           funnel-stage filter — cycles the tabs at the top (or click a tab)",
-            "  b           filter by board (cycles)",
-            "  m           minimum salary floor (off → $40k … $150k, cycles)",
-            "  u           toggle hiding jobs with no listed salary",
-            "  S           sort: best match · recent · funnel stage · salary (cycles)",
+            "  /           quick text filter (title/company) · Esc clears all filters",
+            "  f           Filter & sort panel — stage · board · salary · sort · text",
+            "  tabs        click a stage tab at the top (or use the f panel)",
+            "  [dim]quick keys: b board · m min$ · u unlisted · S sort (all in the f panel)[/dim]",
             "  r           refresh from the store",
             "  q           quit",
             "",
