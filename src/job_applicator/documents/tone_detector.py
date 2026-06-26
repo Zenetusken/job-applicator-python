@@ -252,7 +252,7 @@ class ToneDetector:
             total = sum(scores.values())
             confidence = scores[primary] / total if total > 0 else 0.0
 
-        logger.info("Detected tone: %s (confidence: %.1f%%)", primary, confidence * 100)
+        logger.debug("Detected tone: %s (confidence: %.1f%%)", primary, confidence * 100)
 
         return ToneProfile(
             primary=primary,

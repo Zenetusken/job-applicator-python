@@ -864,3 +864,27 @@ class TestEmptySectionStripping:
         tailored = "Name\n**Languages**\nEnglish, French\n"
         result = tailor._strip_empty_certifications_languages(tailored, original)
         assert "**Languages**" in result
+
+    def test_validate_skills_keeps_comma_separated_original_skills(self, llm_config):
+        tailor = ResumeTailor(llm_config)
+        original_skills = ["Python", "FastAPI", "PostgreSQL", "Docker"]
+        tailored = "**Skills**\n• Python, FastAPI, PostgreSQL, Docker\n\n**Experience**\n"
+        result = tailor._validate_skills(tailored, original_skills)
+        assert "Python, FastAPI, PostgreSQL, Docker" in result
+
+    def test_validate_skills_drops_hallucinated_skills_in_comma_list(self, llm_config):
+        tailor = ResumeTailor(llm_config)
+        original_skills = ["Python", "FastAPI"]
+        tailored = "**Skills**\n• Python, Kubernetes, FastAPI\n\n**Experience**\n"
+        result = tailor._validate_skills(tailored, original_skills)
+        assert "Python" in result
+        assert "FastAPI" in result
+        assert "Kubernetes" not in result
+
+    def test_validate_skills_keeps_extra_words_when_core_skill_matches(self, llm_config):
+        tailor = ResumeTailor(llm_config)
+        original_skills = ["Python", "Docker"]
+        tailored = "**Skills**\n• Python (advanced)\n• Docker & Kubernetes\n"
+        result = tailor._validate_skills(tailored, original_skills)
+        assert "Python (advanced)" in result
+        assert "Docker & Kubernetes" in result

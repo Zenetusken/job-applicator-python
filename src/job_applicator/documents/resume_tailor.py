@@ -928,29 +928,41 @@ class ResumeTailor:
             # If in skills section, validate each skill line
             if in_skills_section and stripped:
                 # Extract the skill text (remove bullets, markdown)
-                skill_text = re.sub(r"^[\*\-\•\·\s]+", "", stripped)
-                skill_text = skill_text.strip()
+                bullet_match = re.match(r"^([\*\-\•\·\s]*)(.*)$", stripped)
+                prefix = bullet_match.group(1) if bullet_match else ""
+                skill_text = bullet_match.group(2).strip() if bullet_match else stripped
 
                 if not skill_text or len(skill_text) < 3:
                     result_lines.append(line)
                     continue
 
-                skill_norm = normalize_skill(skill_text).lower()
+                # Some LLMs emit the whole skills section as one comma-separated
+                # line ("Python, FastAPI, ..."). Split on commas, validate each
+                # token individually, and rebuild the line so valid skills are kept.
+                # Ampersand / "and" are left intact because lines like
+                # "Docker & Kubernetes" still match via token containment when one
+                # of the skills is present in the original résumé.
+                raw_tokens = [t.strip() for t in skill_text.split(",") if t.strip()]
 
-                # Drop generic traits unless they were literally in the original resume.
-                if is_hard_negative(skill_norm) and skill_norm not in norm_skills:
-                    logger.info("Stripped hard-negative skill: %s", skill_text)
-                    continue
+                kept_tokens: list[str] = []
+                for token in raw_tokens:
+                    if len(token) < 3:
+                        continue
+                    token_norm = normalize_skill(token).lower()
 
-                # Check if this skill matches any original skill
-                is_original = any(_skills_match(skill_norm, orig) for orig in norm_skills)
+                    # Drop generic traits unless they were literally in the original resume.
+                    if is_hard_negative(token_norm) and token_norm not in norm_skills:
+                        logger.info("Stripped hard-negative skill: %s", token)
+                        continue
 
-                if is_original:
-                    result_lines.append(line)
-                else:
-                    # Hallucinated skill — skip it
-                    logger.info("Stripped hallucinated skill: %s", skill_text)
-                    continue
+                    if any(_skills_match(token_norm, orig) for orig in norm_skills):
+                        kept_tokens.append(token)
+                    else:
+                        logger.info("Stripped hallucinated skill: %s", token)
+
+                if kept_tokens:
+                    result_lines.append(prefix + ", ".join(kept_tokens))
+                continue
             else:
                 result_lines.append(line)
 
