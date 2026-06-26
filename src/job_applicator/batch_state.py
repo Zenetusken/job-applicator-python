@@ -114,6 +114,7 @@ class BatchState:
     def _init_schema(self) -> None:
         try:
             with self._connect() as conn:
+                conn.execute("PRAGMA journal_mode=WAL")  # readers don't block on a writer
                 conn.executescript(_CREATE_SQL)
                 # Migration: older databases were created without pdf_path.
                 self._migrate_add_pdf_path(conn)

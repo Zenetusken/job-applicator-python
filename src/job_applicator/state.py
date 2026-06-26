@@ -23,6 +23,15 @@ logger = get_logger("state")
 DEFAULT_DB_DIR = Path.home() / ".job-applicator"
 DEFAULT_DB_PATH = DEFAULT_DB_DIR / "applications.db"
 
+
+def _to_utc(d: datetime) -> datetime:
+    """Normalize a datetime to UTC for storage/comparison: a naive value is assumed UTC (the
+    ApplicationResult.timestamp contract); an aware value is converted. Keeps every stored
+    applied_at on a single, lexicographically-correct UTC scale (so count_today's TEXT bound is
+    sound regardless of the producer's offset)."""
+    return d.replace(tzinfo=UTC) if d.tzinfo is None else d.astimezone(UTC)
+
+
 _CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS applications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,6 +89,7 @@ class ApplicationState:
     def _init_schema(self) -> None:
         try:
             with self._connect() as conn:
+                conn.execute("PRAGMA journal_mode=WAL")  # readers don't block on a writer
                 conn.executescript(_CREATE_SQL)
         except sqlite3.Error as exc:
             raise StateError(f"Cannot initialize state schema: {exc}") from exc
@@ -107,7 +117,7 @@ class ApplicationState:
                         result.job.company,
                         result.job.board.value,
                         result.status.value,
-                        result.timestamp.isoformat(),
+                        _to_utc(result.timestamp).isoformat(),
                         cover_letter_path,
                         result.error_message,
                         result.notes,
@@ -136,7 +146,7 @@ class ApplicationState:
         since_clause = ""
         if since is not None:
             since_clause = " AND applied_at >= ?"
-            params.append(since.isoformat())
+            params.append(_to_utc(since).isoformat())  # same UTC scale as the stored applied_at
         # Parameter order matches: url, [since], status_values. The only dynamic
         # fragments are comma-separated placeholders and a constant since clause.
         sql = (
