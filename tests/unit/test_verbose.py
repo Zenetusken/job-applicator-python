@@ -146,9 +146,8 @@ def test_gcl_json_stdout_is_pure_json(monkeypatch: pytest.MonkeyPatch, tmp_path:
     )
     assert result.exit_code == 0, result.output
     parsed = json.loads(result.stdout)  # raises if any progress line leaked onto stdout
-    assert parsed == {
-        "cover_letter": "Dear Hiring Manager,\n\nI build async Python systems.",
-        "job_title": "Dev",
-        "company": "Acme",
-    }
+    assert parsed["cover_letter"] == "Dear Hiring Manager,\n\nI build async Python systems."
+    assert parsed["job_title"] == "Dev"
+    assert parsed["company"] == "Acme"
+    assert parsed["output_path"]  # default --format txt writes a text artifact
     assert "Detected tone" not in result.stdout  # progress went to stderr

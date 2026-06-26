@@ -16,6 +16,7 @@ AI-powered job application tool using Playwright browser automation with modern 
 - **Style Analysis**: Mimic writing style from one or more example resumes/cover letters (comma-separated paths); example guides in `docs/style-guide-examples/`
 - **Cover-Letter Sign-Off Enforcement**: Every generated cover letter is validated for a recognized closing word and a signature matching the applicant's name
 - **ATS Compatibility Check**: Validate resumes against ATS heuristics (contact info, standard sections, length, no ASCII tables) with a score and actionable suggestions
+- **PDF Résumé & Cover Letters**: Render tailored documents to PDF with Typst (optional `[pdf]` extra). Built-in `modern`, `classic`, and `minimal` templates
 - **Structured Outputs**: Instructor for type-safe LLM responses
 
 ## Tech Stack
@@ -25,6 +26,7 @@ AI-powered job application tool using Playwright browser automation with modern 
 - litellm (universal LLM API)
 - instructor (structured outputs)
 - sentence-transformers (mxbai-embed-large-v1 embeddings)
+- Typst (PDF rendering, optional `[pdf]` extra)
 - Pydantic v2 (data validation)
 
 ## Hardware Requirements
@@ -146,6 +148,13 @@ job-applicator batch --resume resume.pdf --jobs-file jobs.json --top-k 10 \
 # Tailor with a style guide
 job-applicator tailor --resume resume.pdf --job-title "Tech Support" --company "CGI" \
   --style-guide example.txt
+
+# Render PDF artifacts (requires the [pdf] extra)
+pip install -e ".[pdf]"
+job-applicator tailor --resume resume.pdf --job-title "Python Dev" --company "Acme" --format pdf
+job-applicator generate-cover-letter --resume resume.pdf --job-title "Python Dev" --company "Acme" --format pdf
+job-applicator batch --resume resume.pdf --jobs-file jobs.json --top-k 5 --format both
+job-applicator apply --query "python" --limit 3 --format pdf
 
 # Detailed match report with per-skill breakdown
 python scripts/detailed_match_report.py

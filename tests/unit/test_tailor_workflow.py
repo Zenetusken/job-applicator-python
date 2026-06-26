@@ -44,6 +44,9 @@ def _drive(
     match_score: float = 0.8,
     staleness: list[str] | None = None,
     ordering: list[str] | None = None,
+    output_format: str | None = None,
+    template: str | None = None,
+    category: str | None = None,
 ):
     """Drive the `tailor` command through its interactive loop.
 
@@ -95,6 +98,12 @@ def _drive(
             args.append("--yes")
         if as_json:
             args.append("--json")
+        if output_format:
+            args.extend(["--format", output_format])
+        if template:
+            args.extend(["--template", template])
+        if category:
+            args.extend(["--category", category])
         result = CliRunner().invoke(
             cli.app,
             args,
@@ -137,6 +146,39 @@ def test_tailor_accept_then_cover_letter(monkeypatch: pytest.MonkeyPatch, tmp_pa
     cl.assert_awaited_once()
     meta = next(tmp_path.glob("tailored_*.meta.json")).read_text(encoding="utf-8")
     assert "output/cover.txt" in meta  # cover_letter_path recorded
+
+
+def test_tailor_pdf_format_writes_pdf_artifact(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``tailor --format pdf --template classic`` renders a PDF artifact and sidecar."""
+    from job_applicator.documents.pdf_renderer import PDFRenderer
+
+    fake_pdf = tmp_path / "tailored_Acme_Dev_20260625_120000_000000_classic.pdf"
+    fake_pdf.write_bytes(b"%PDF-1.4 fake")
+
+    with patch.object(
+        PDFRenderer, "render_resume", new=AsyncMock(return_value=fake_pdf)
+    ) as mock_render:
+        result, _engine, _cl = _drive(
+            monkeypatch,
+            tmp_path,
+            [],
+            yes=True,
+            output_format="pdf",
+            template="classic",
+            category="cybersecurity",
+        )
+
+    assert result.exit_code == 0, result.output
+    pdfs = list(tmp_path.glob("tailored_*.pdf"))
+    assert len(pdfs) == 1
+    assert pdfs[0].name == fake_pdf.name
+    meta = next(tmp_path.glob("tailored_*.meta.json")).read_text(encoding="utf-8")
+    assert str(fake_pdf) in meta
+    mock_render.assert_awaited_once()
+    assert mock_render.await_args.kwargs["template"] == "classic"
+    assert mock_render.await_args.kwargs["category"] == "cybersecurity"
 
 
 def test_tailor_retry_refines_then_quit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

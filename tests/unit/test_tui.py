@@ -603,6 +603,66 @@ async def test_tui_open_cover_artifact(tmp_path: Path, monkeypatch) -> None:  # 
     assert opened["uri"].endswith("cover_letter_Acme.txt")  # the cover, not the résumé
 
 
+async def test_tui_open_pdf_artifact(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The `p` key opens the tailored-résumé PDF when one exists."""
+    import webbrowser
+
+    monkeypatch.setenv("DISPLAY", ":0")
+    txt = tmp_path / "tailored_Acme_Dev.txt"
+    txt.write_text("resume text", encoding="utf-8")
+    pdf = tmp_path / "tailored_Acme_Dev_20260625_120000_000000_modern.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake")
+    opened: dict[str, str] = {}
+    monkeypatch.setattr(webbrowser, "open", lambda u: opened.setdefault("uri", u) or True)
+    app = _tailored_app(tmp_path, tailored_resume_path=str(txt), pdf_path=str(pdf))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_open_pdf()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    assert opened["uri"].endswith("tailored_Acme_Dev_20260625_120000_000000_modern.pdf")
+
+
+async def test_tui_open_pdf_falls_back_to_cover_letter_pdf(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """`action_open_pdf` falls back to the cover-letter PDF when no résumé PDF exists."""
+    import webbrowser
+
+    monkeypatch.setenv("DISPLAY", ":0")
+    txt = tmp_path / "tailored_Acme_Dev.txt"
+    txt.write_text("resume text", encoding="utf-8")
+    cl_pdf = tmp_path / "cover_letter_Acme_Dev_20260625_120000_000000_modern.pdf"
+    cl_pdf.write_bytes(b"%PDF-1.4 fake")
+    opened: dict[str, str] = {}
+    monkeypatch.setattr(webbrowser, "open", lambda u: opened.setdefault("uri", u) or True)
+    app = _tailored_app(tmp_path, tailored_resume_path=str(txt), cover_letter_pdf_path=str(cl_pdf))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_open_pdf()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    assert opened["uri"].endswith("cover_letter_Acme_Dev_20260625_120000_000000_modern.pdf")
+
+
+async def test_tui_open_pdf_noop_when_absent(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A job with no generated PDF: `p` warns and launches nothing."""
+    import webbrowser
+
+    monkeypatch.setenv("DISPLAY", ":0")
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))
+    never = MagicMock()
+    monkeypatch.setattr(webbrowser, "open", never)
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_open_pdf()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    never.assert_not_called()
+
+
 async def test_tui_open_tailored_headless_does_not_launch(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """On headless Linux (no DISPLAY) opening an artifact does NOT launch a viewer."""
     import sys
@@ -957,7 +1017,7 @@ async def test_tui_tailor_action_marks_tailored(tmp_path: Path, monkeypatch) -> 
     )
 
     async def _fake_tailor(
-        _settings: object, _job: object, *, style_guide_path: str = ""
+        _settings: object, _job: object, *, style_guide_path: str = "", **kw: object
     ) -> TailoredResume:
         return fake
 
@@ -1000,6 +1060,7 @@ async def test_tui_cover_letter_action_advances_funnel(tmp_path: Path, monkeypat
         tailored_resume_path: str = "",
         *,
         style_guide_path: str = "",
+        **kw: object,
     ) -> CoverLetterResult:
         return fake
 
@@ -1775,7 +1836,9 @@ async def test_tui_worker_error_does_not_crash_app(tmp_path: Path, monkeypatch) 
     store = JobStore(db_path=tmp_path / "applications.db")
     store.upsert_job(_job(1))
 
-    async def _boom(_settings: object, _job: object, *, style_guide_path: str = "") -> object:
+    async def _boom(
+        _settings: object, _job: object, *, style_guide_path: str = "", **kw: object
+    ) -> object:
         raise RuntimeError("kaboom")  # NOT a JobApplicatorError
 
     monkeypatch.setattr(actions, "tailor_job", _boom)
@@ -2526,6 +2589,7 @@ async def test_tui_tailor_action_passes_style_guide(tmp_path: Path, monkeypatch)
         job: JobListing,
         *,
         style_guide_path: str = "",
+        **kw: object,
     ) -> TailoredResume:
         captured["style_guide_path"] = style_guide_path
         return fake
@@ -2570,6 +2634,7 @@ async def test_tui_cover_letter_action_passes_style_guide(tmp_path: Path, monkey
         tailored_resume_path: str = "",
         *,
         style_guide_path: str = "",
+        **kw: object,
     ) -> CoverLetterResult:
         captured["style_guide_path"] = style_guide_path
         return fake
@@ -2617,3 +2682,108 @@ def test_tui_help_includes_style_guide_key() -> None:
 
     screen = HelpScreen()
     assert "set style-guide" in screen._HELP.lower()
+
+
+async def test_tui_tailor_pdf_action_records_pdf_path(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Pressing `T` renders a PDF résumé and records its path in the store."""
+    from job_applicator.models import FunnelStatus, TailoredResume
+    from job_applicator.tui import actions
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))
+    fake = TailoredResume(
+        original_path="/r.pdf",
+        tailored_text="T",
+        job_title="Engineer 1",
+        job_company="Co1",
+        match_score=0.8,
+        semantic_score=0.8,
+        skill_score=0.8,
+        changes_summary="c",
+        output_path="/out/tailored.pdf",
+        pdf_path="/out/tailored.pdf",
+    )
+
+    async def _fake_tailor_pdf(
+        _settings: object,
+        _job: object,
+        *,
+        style_guide_path: str = "",
+        output_format: object = None,
+        **kw: object,
+    ) -> TailoredResume:
+        assert output_format is not None and output_format.value == "pdf"
+        return fake
+
+    monkeypatch.setattr(actions, "tailor_job", _fake_tailor_pdf)
+    app = JobApplicatorApp(
+        settings=AppSettings(resume_path="/r.pdf"),
+        store=store,
+        app_state=MagicMock(list_recent=lambda **k: []),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("T")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    got = store.get("https://linkedin.com/jobs/1")
+    assert got is not None and got.funnel_status is FunnelStatus.TAILORED
+    assert got.pdf_path == "/out/tailored.pdf"
+
+
+async def test_tui_cover_letter_pdf_action_records_pdf_path(  # type: ignore[no-untyped-def]
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Pressing `C` renders a PDF cover letter and records its path in the store."""
+    from job_applicator.models import CoverLetterResult, FunnelStatus
+    from job_applicator.tui import actions
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))
+    fake = CoverLetterResult(
+        job_title="Engineer 1",
+        job_company="Co1",
+        job_url="https://linkedin.com/jobs/1",
+        cover_letter_text="Dear hiring manager,",
+        attempt=1,
+        prompt_version="1.0",
+        output_path="/out/cover.pdf",
+        pdf_path="/out/cover.pdf",
+    )
+
+    async def _fake_cl_pdf(
+        _settings: object,
+        _job: object,
+        tailored_resume_path: str = "",
+        *,
+        style_guide_path: str = "",
+        output_format: object = None,
+        **kw: object,
+    ) -> CoverLetterResult:
+        assert output_format is not None and output_format.value == "pdf"
+        return fake
+
+    monkeypatch.setattr(actions, "cover_letter_job", _fake_cl_pdf)
+    app = JobApplicatorApp(
+        settings=AppSettings(resume_path="/r.pdf"),
+        store=store,
+        app_state=MagicMock(list_recent=lambda **k: []),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("C")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    got = store.get("https://linkedin.com/jobs/1")
+    assert got is not None and got.funnel_status is FunnelStatus.COVER_LETTER
+    assert got.cover_letter_pdf_path == "/out/cover.pdf"
+
+
+def test_tui_help_includes_pdf_keys() -> None:
+    """The in-app help references the new PDF action keys."""
+    from job_applicator.tui.screens import HelpScreen
+
+    screen = HelpScreen()
+    assert "tailor résumé pdf" in screen._HELP.lower()
+    assert "cover letter pdf" in screen._HELP.lower()
+    assert "open generated pdf" in screen._HELP.lower()

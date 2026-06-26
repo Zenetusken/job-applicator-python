@@ -20,11 +20,13 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import tempfile
 import tomllib
 from pathlib import Path
 from typing import Any
 
 import httpx
+from jinja2 import Environment, PackageLoader
 
 from job_applicator.config import (
     CONFIG_FILE_ENV_VAR,
@@ -33,12 +35,20 @@ from job_applicator.config import (
     EmbeddingConfig,
     LLMConfig,
 )
+from job_applicator.documents.formatted_models import (
+    FormattedEducationEntry,
+    FormattedExperienceEntry,
+    FormattedResume,
+    FormattedSkillGroup,
+)
+from job_applicator.documents.pdf_renderer import _typst_escape
 from job_applicator.models import (
     BrowserCheck,
     ConfigCheck,
     DoctorReport,
     EmbeddingsCheck,
     LLMEndpointCheck,
+    PDFRenderingCheck,
     SelfHostCheck,
     SystemBinariesCheck,
 )
@@ -274,6 +284,71 @@ def check_config(settings: AppSettings) -> ConfigCheck:
     return result
 
 
+def _pdf_smoke_resume() -> FormattedResume:
+    """Return a minimal ``FormattedResume`` for the PDF doctor smoke test."""
+    return FormattedResume(
+        name="Smoke Test",
+        title="PDF Rendering Check",
+        email="smoke@example.com",
+        phone="555-555-5555",
+        location="City",
+        summary="A minimal résumé used to verify the PDF rendering toolchain.",
+        experience=[
+            FormattedExperienceEntry(
+                title="Engineer",
+                company="Example Inc",
+                start_date="2020",
+                end_date="Present",
+                bullets=["Built things."],
+            )
+        ],
+        education=[
+            FormattedEducationEntry(
+                degree="BS",
+                institution="University",
+                start_date="2015",
+                end_date="2019",
+            )
+        ],
+        skills=[FormattedSkillGroup(category="Languages", skills=["Python"])],
+    )
+
+
+def check_pdf_rendering() -> PDFRenderingCheck:
+    """Smoke-test the PDF rendering toolchain (typst package + built-in template)."""
+    try:
+        import typst
+    except ImportError:
+        return PDFRenderingCheck(
+            ok=False,
+            message="typst package not installed; run pip install 'job-applicator[pdf]'",
+        )
+
+    env = Environment(
+        loader=PackageLoader("job_applicator", "templates"),
+        autoescape=False,  # noqa: S701
+    )
+    env.filters["typst_escape"] = _typst_escape
+
+    with tempfile.TemporaryDirectory() as tmp:
+        source_path = Path(tmp) / "smoke.typ"
+        output_path = Path(tmp) / "smoke.pdf"
+        try:
+            template = env.get_template("cv/modern.typ")
+        except Exception as exc:
+            return PDFRenderingCheck(
+                ok=False, message=f"could not load built-in CV template: {exc}"
+            )
+        source_path.write_text(template.render(resume=_pdf_smoke_resume()), encoding="utf-8")
+        try:
+            typst.compile(str(source_path), output=str(output_path), format="pdf")
+            if output_path.exists() and output_path.stat().st_size > 0:
+                return PDFRenderingCheck(ok=True, message="typst compile works")
+            return PDFRenderingCheck(ok=False, message="typst produced empty PDF")
+        except Exception as exc:  # pragma: no cover - typst runtime errors vary by host
+            return PDFRenderingCheck(ok=False, message=f"typst compile failed: {exc}")
+
+
 async def run_diagnostics(settings: AppSettings) -> DoctorReport:
     """Run every check and assemble the report (only an HTTP-200 /models is blocking).
 
@@ -288,4 +363,5 @@ async def run_diagnostics(settings: AppSettings) -> DoctorReport:
         browser=browser,
         system=check_system_binaries(),
         config=check_config(settings),
+        pdf_rendering=check_pdf_rendering(),
     )

@@ -9,12 +9,17 @@ avoid a cli <-> workflow import cycle.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from functools import partial
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rich.panel import Panel
 from rich.table import Table
 
+from job_applicator.documents.artifacts import write_tailored, write_tailored_pdf
+from job_applicator.documents.job_category import detect_job_category
+from job_applicator.models import Format
 from job_applicator.utils.diff import render_diff
 from job_applicator.workflows.cover_letter import _cover_letter_workflow
 
@@ -46,6 +51,11 @@ async def _tailor_workflow(
     result: TailoredResume,
     reporter: VerboseReporter | None,
     yes: bool = False,
+    *,
+    output_format: Format = Format.TXT,
+    resume_template: str = "modern",
+    cover_letter_template: str = "modern",
+    category: str | None = None,
 ) -> None:
     """Run the interactive tailor loop until the user accepts ([A]) or quits ([Q]).
 
@@ -124,27 +134,57 @@ async def _tailor_workflow(
             )
 
         if choice == "A":
-            from datetime import datetime as dt
-
             output_dir = await asyncio.to_thread(settings.ensure_output_dir)
+            when = datetime.now()
+            effective_category = category or detect_job_category(job)
 
-            safe_company = job.company.replace(" ", "_").replace("/", "_")
-            safe_title = job.title.replace(" ", "_").replace("/", "_")
-            timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"tailored_{safe_company}_{safe_title}_{timestamp}.txt"
-            output_path = output_dir / filename
-
-            await asyncio.to_thread(output_path.write_text, result.tailored_text, encoding="utf-8")
-            result.output_path = str(output_path)
+            if output_format == Format.TXT:
+                resume_path, meta_path = await asyncio.to_thread(
+                    write_tailored, output_dir, result, when=when
+                )
+                result.output_path = resume_path
+                files_written = [resume_path]
+            elif output_format == Format.PDF:
+                pdf_path = await write_tailored_pdf(
+                    output_dir,
+                    result,
+                    settings,
+                    template=resume_template,
+                    category=effective_category,
+                    when=when,
+                )
+                result.output_path = str(pdf_path)
+                result.pdf_path = str(pdf_path)
+                files_written = [str(pdf_path)]
+            else:  # both
+                resume_path, meta_path = await asyncio.to_thread(
+                    write_tailored, output_dir, result, when=when
+                )
+                pdf_path = await write_tailored_pdf(
+                    output_dir,
+                    result,
+                    settings,
+                    template=resume_template,
+                    category=effective_category,
+                    when=when,
+                    write_meta=False,
+                )
+                result.output_path = resume_path
+                result.pdf_path = str(pdf_path)
+                # Update the text sidecar to reference the PDF.
+                await asyncio.to_thread(
+                    Path(meta_path).write_text, result.model_dump_json(indent=2), encoding="utf-8"
+                )
+                files_written = [resume_path, str(pdf_path)]
 
             if reporter:
-                reporter.record_io(files_written=[str(output_path)])
+                reporter.record_io(files_written=files_written)
 
-            console.print(f"\n[green]Tailored resume saved: {output_path}[/green]")
+            console.print(f"\n[green]Tailored resume saved: {result.output_path}[/green]")
             console.print(f"[dim]Attempt #{attempt} | Score: {result.match_score:.0%}[/dim]")
 
             # Offer cover letter generation
-            cover_letter_path = None
+            cover_letter_path: Path | None = None
             if yes:
                 # Non-interactive: skip the offer — _cover_letter_workflow is itself
                 # interactive. Use `generate-cover-letter` / `batch --cover-letter` for a
@@ -169,16 +209,19 @@ async def _tailor_workflow(
                     style,
                     tone_profile,
                     result.tailored_text,
+                    output_format=output_format,
+                    template=cover_letter_template,
+                    category=category,
                 )
 
             # Write resume meta.json (with or without cover_letter_path)
             if cover_letter_path:
                 result.cover_letter_path = str(cover_letter_path)
-            meta_path = output_path.with_suffix(".meta.json")
+            final_meta_path = Path(result.output_path).with_suffix(".meta.json")
             await asyncio.to_thread(
-                meta_path.write_text, result.model_dump_json(indent=2), encoding="utf-8"
+                final_meta_path.write_text, result.model_dump_json(indent=2), encoding="utf-8"
             )
-            console.print(f"[green]Metadata saved: {meta_path}[/green]")
+            console.print(f"[green]Metadata saved: {final_meta_path}[/green]")
 
             break
 

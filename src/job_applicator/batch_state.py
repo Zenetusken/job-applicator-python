@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS batch_jobs (
     status TEXT NOT NULL,
     resume_path TEXT,
     cover_letter_path TEXT,
+    pdf_path TEXT,
     error_message TEXT,
     updated_at TIMESTAMP NOT NULL,
     PRIMARY KEY (run_id, job_url)
@@ -114,8 +115,17 @@ class BatchState:
         try:
             with self._connect() as conn:
                 conn.executescript(_CREATE_SQL)
+                # Migration: older databases were created without pdf_path.
+                self._migrate_add_pdf_path(conn)
         except sqlite3.Error as exc:
             raise BatchStateError(f"Cannot initialize batch schema: {exc}") from exc
+
+    @staticmethod
+    def _migrate_add_pdf_path(conn: sqlite3.Connection) -> None:
+        """Add the ``pdf_path`` column to ``batch_jobs`` if it is missing."""
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(batch_jobs)")}
+        if "pdf_path" not in columns:
+            conn.execute("ALTER TABLE batch_jobs ADD COLUMN pdf_path TEXT")
 
     def start_run(self, spec: BatchRunSpec, *, run_id: str, reset: bool = True) -> str:
         """Create or reset a batch run record. Returns the run_id."""
@@ -196,6 +206,7 @@ class BatchState:
         *,
         resume_path: str | None = None,
         cover_letter_path: str | None = None,
+        pdf_path: str | None = None,
         error_message: str | None = None,
     ) -> None:
         """Persist the status of a single job within a batch run."""
@@ -206,13 +217,14 @@ class BatchState:
                     """
                     INSERT INTO batch_jobs (
                         run_id, job_url, title, company, board, status, resume_path,
-                        cover_letter_path, error_message, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        cover_letter_path, pdf_path, error_message, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(run_id, job_url) DO UPDATE SET
                         status=excluded.status,
                         board=excluded.board,
                         resume_path=excluded.resume_path,
                         cover_letter_path=excluded.cover_letter_path,
+                        pdf_path=excluded.pdf_path,
                         error_message=excluded.error_message,
                         updated_at=excluded.updated_at
                     """,
@@ -225,6 +237,7 @@ class BatchState:
                         status,
                         resume_path,
                         cover_letter_path,
+                        pdf_path,
                         error_message,
                         now,
                     ),

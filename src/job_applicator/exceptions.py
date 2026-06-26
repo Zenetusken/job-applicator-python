@@ -64,6 +64,10 @@ class CoverLetterError(DocumentError):
     """Cover letter generation error."""
 
 
+class PDFRenderError(DocumentError):
+    """Raised when PDF rendering fails."""
+
+
 class LLMError(JobApplicatorError):
     """LLM API call failed.
 
