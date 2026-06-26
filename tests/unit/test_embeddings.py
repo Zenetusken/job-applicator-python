@@ -496,6 +496,21 @@ class TestLLMSkillExtractor:
             result = asyncio.run(extractor.extract(description, use_cache=False))
             assert "React" in result
 
+    def test_react_native_trailing_punctuation_rejection(
+        self, extractor: LLMSkillExtractor
+    ) -> None:
+        """React followed by 'Native.' (with punctuation) is rejected as a compound."""
+        import asyncio
+
+        description = "Experience with React Native."
+        with patch.object(
+            extractor,
+            "_call_llm",
+            return_value=_ExtractionResult(skills=["React"], method="instructor", fallback=False),
+        ):
+            result = asyncio.run(extractor.extract(description, use_cache=False))
+            assert "React" not in result
+
     def test_direct_fallback_handles_empty_content(self, extractor: LLMSkillExtractor) -> None:
         """Direct litellm fallback returns [] when choices are empty or content is None."""
         import asyncio

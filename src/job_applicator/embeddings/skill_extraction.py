@@ -444,7 +444,8 @@ class LLMSkillExtractor:
         multi_word_forms = {
             " ".join(form.split()).lower() for form in surface_forms if len(form.split()) > 1
         }
-        tokens = re.findall(r"\b\w+(?:\.\w+)*\b", description)
+        token_re = re.compile(r"\b\w+(?:\.\w+)*\b")
+        tokens = token_re.findall(description)
         for i, token in enumerate(tokens):
             if token.lower() not in {f.lower() for f in single_word_forms}:
                 continue
@@ -467,7 +468,7 @@ class LLMSkillExtractor:
                 pattern = r"(?<!\w)" + re.escape(stripped.lower()) + r"(?!\w)"
                 for match in re.finditer(pattern, desc_lower):
                     tail = description[match.end() :]
-                    next_word_match = re.match(r"\s+(\S+)", tail)
+                    next_word_match = re.match(r"\s+(\w+(?:\.\w+)*)\b", tail)
                     if next_word_match:
                         next_word = next_word_match.group(1)
                         compound = f"{stripped.lower()} {next_word.lower()}"
