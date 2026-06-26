@@ -30,6 +30,7 @@ from job_applicator.models import (
     JobBoard,
     parse_salary_to_annual_min,
 )
+from job_applicator.tui.textfmt import format_job_description
 
 if TYPE_CHECKING:
     from job_applicator.config import AppSettings
@@ -157,6 +158,11 @@ class JobApplicatorApp(App[None]):
         Binding("escape", "clear_filter", "Clear filter", show=False),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
+        # Scroll the job table SIDEWAYS (vim h/l). When the table overflows its pane the
+        # columns run off-screen; row-cursor mode has no cell cursor to reach them and the TUI
+        # captures the mouse, so without these keys the off-screen columns are unreachable.
+        Binding("l", "scroll_table(1)", "Scroll →", show=False),
+        Binding("h", "scroll_table(-1)", "Scroll ←", show=False),
         # Scroll the detail pane (the job list owns focus / arrows, so a long posting needs
         # its own keys for keyboard users; the mouse wheel works over it too).
         Binding("right_square_bracket", "scroll_detail(1)", "Scroll posting", show=False),
@@ -292,6 +298,9 @@ class JobApplicatorApp(App[None]):
     def _repaint(self) -> None:
         self.query_one("#statusline", Static).update(self._statusline())
         table = self.query_one("#joblist", DataTable)
+        # Remember the selected job so it survives the rebuild below (see the move_cursor at the
+        # end). Without this every refresh/filter/sort/scrape snapped the cursor to the first row.
+        prev_key = str(self._current.id) if self._current is not None else None
         # Cap Title (and Company) so the auto-sized Title column can't expand to the longest
         # title and push Company off the right edge (the reported bug). Fixed caps are
         # deliberate over a pane-width-derived value: the latter reads table.size mid-layout
@@ -319,7 +328,14 @@ class JobApplicatorApp(App[None]):
                 escape(_elide(s.job.company, company_cap)),
                 key=key,
             )
-        self._update_detail(visible[0] if visible else None)
+        # Re-select the SAME job (the row set changes under a filter/sort); fall back to the
+        # first row only when the previously-selected job is no longer visible.
+        restore = next((i for i, s in enumerate(visible) if str(s.id) == prev_key), None)
+        if restore is not None:
+            table.move_cursor(row=restore)
+            self._update_detail(visible[restore])
+        else:
+            self._update_detail(visible[0] if visible else None)
 
     # ------------------------------------------------------------------ render
     def _statusline(self) -> str:
@@ -444,9 +460,10 @@ class JobApplicatorApp(App[None]):
                 "  [dim](o open · y copy)[/dim]",
             ]
         if j.description:
-            # Full description (the store keeps up to ~5k chars); the detail pane scrolls.
-            # Truncating here hid the rest of the posting even though the pane can scroll.
-            lines += ["", "[bold]Description[/bold]", escape(j.description)]
+            # Reflow the raw scrape into readable markup (the formatter escapes its own text and
+            # adds the header [bold], so it is NOT re-escaped here). Store keeps ~5k chars; the
+            # pane scrolls. Truncating here would hide the rest of the posting.
+            lines += ["", "[bold]Description[/bold]", "", format_job_description(j.description)]
         return "\n".join(lines)
 
     # ----------------------------------------------------------------- actions
@@ -506,6 +523,11 @@ class JobApplicatorApp(App[None]):
             pane.scroll_page_down()
         else:
             pane.scroll_page_up()
+
+    def action_scroll_table(self, direction: int) -> None:
+        """Scroll the job table sideways so off-screen columns are reachable by keyboard when
+        the table overflows its pane (see the h/l bindings)."""
+        self.query_one("#joblist", DataTable).scroll_relative(x=direction * 8, animate=False)
 
     def _current_url(self) -> str | None:
         """The selected job's posting URL, or None (with a toast) when there isn't one."""

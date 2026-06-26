@@ -2795,3 +2795,45 @@ def test_tui_help_includes_pdf_keys() -> None:
     assert "tailor résumé pdf" in screen._HELP.lower()
     assert "cover letter pdf" in screen._HELP.lower()
     assert "open generated pdf" in screen._HELP.lower()
+
+
+async def test_tui_cursor_preserved_across_refresh_and_sort(tmp_path: Path) -> None:
+    """Refresh / sort / filter rebuild the table; the SELECTED job must stay selected (by row
+    key) instead of snapping back to the first listing — the reported 'r/S just jump to the
+    first job' bug."""
+    app = _app(tmp_path, seed=3)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("j")  # move off the first row
+        await pilot.pause()
+        selected = app._current.id if app._current else None
+        assert selected is not None
+        await pilot.press("r")  # refresh
+        await pilot.pause()
+        assert app._current is not None and app._current.id == selected  # kept selection
+        await pilot.press("S")  # cycle sort — same job stays selected, not reset to row 0
+        await pilot.pause()
+        assert app._current is not None and app._current.id == selected
+
+
+async def test_tui_h_l_scroll_table_sideways(tmp_path: Path) -> None:
+    """When the job table overflows its pane, h/l scroll it sideways so off-screen columns are
+    reachable by keyboard (the TUI captures the mouse) — the reported 'lost sideways scroll'."""
+    store = JobStore(db_path=tmp_path / "applications.db")
+    for i in range(3):
+        store.upsert_job(
+            _job(i, title=f"A Very Long Job Title Number {i} That Overflows The Pane"),
+        )
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test(size=(110, 40)) as pilot:
+        await pilot.pause()
+        table = app.query_one("#joblist", DataTable)
+        assert table.max_scroll_x > 0  # the table really does overflow at this width
+        await pilot.press("l")
+        await pilot.pause()
+        assert table.scroll_x > 0  # 'l' scrolled right
+        await pilot.press("h", "h", "h")
+        await pilot.pause()
+        assert table.scroll_x == 0  # 'h' scrolled back, clamped at the left edge
