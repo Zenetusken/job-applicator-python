@@ -950,3 +950,75 @@ class TestJobMatcherAsyncExtraction:
         assert result.matched_skills == []
         assert result.missing_skills == []
         assert result.skill_score == 0.5
+
+
+class TestJobMatcherRanking:
+    """Tests for JobMatcher async ranking behavior."""
+
+    @pytest.fixture
+    def matcher(self) -> JobMatcher:
+        return JobMatcher(
+            EmbeddingConfig(device="cpu", memory_limit_gb=0.5),
+            LLMConfig(model="test-model"),
+        )
+
+    async def test_rank_jobs_is_async_and_sorts_results(
+        self,
+        matcher: JobMatcher,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """rank_jobs must be awaited and return results sorted by score."""
+        from job_applicator.models import JobBoard, JobListing
+
+        # Avoid loading the real embedding model.
+        monkeypatch.setattr(
+            matcher._service,
+            "embed",
+            lambda _text: np.zeros(8, dtype=np.float32),
+        )
+        monkeypatch.setattr(
+            matcher._service,
+            "embed_batch",
+            lambda texts: [np.zeros(8, dtype=np.float32) for _ in texts],
+        )
+        monkeypatch.setattr(
+            matcher._service,
+            "similarity",
+            lambda _a, _b: 0.5,
+        )
+
+        async def fake_match_skills(
+            resume_skills: list[str],
+            job_requirements: list[str],
+            resume_text: str = "",
+            job_description: str = "",
+        ) -> tuple[list[str], list[str]]:
+            if "Python" in job_requirements:
+                return ["Python"], ["Django"]
+            return [], ["Rust"]
+
+        monkeypatch.setattr(matcher, "_match_skills", fake_match_skills)
+
+        resume = ResumeData(raw_text="Skills: Python", skills=["Python"])
+        jobs = [
+            JobListing(
+                title="Backend Dev",
+                company="Acme",
+                url="https://example.com/1",
+                board=JobBoard.LINKEDIN,
+                requirements=["Python", "Django"],
+            ),
+            JobListing(
+                title="Systems Dev",
+                company="Beta",
+                url="https://example.com/2",
+                board=JobBoard.LINKEDIN,
+                requirements=["Rust"],
+            ),
+        ]
+
+        results = await matcher.rank_jobs(resume, jobs, top_k=2)
+        assert len(results) == 2
+        assert results[0].score >= results[1].score
+        assert results[0].job.company == "Acme"
+        assert "Python" in results[0].matched_skills
