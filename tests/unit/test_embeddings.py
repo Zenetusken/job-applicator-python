@@ -10,8 +10,10 @@ import pytest
 from instructor.core import InstructorError
 
 from job_applicator.config import EmbeddingConfig, LLMConfig
+from job_applicator.embeddings.matching import JobMatcher
 from job_applicator.embeddings.service import EmbeddingService
 from job_applicator.embeddings.skill_extraction import LLMSkillExtractor, _ExtractionResult
+from job_applicator.models import ResumeData
 
 
 class TestEmbeddingConfig:
@@ -151,24 +153,24 @@ class TestJobMatcher:
         assert result.matched_skills == ["Python"]
         assert result.summary == "Strong match"
 
-    def test_skill_matching_structure(self) -> None:
+    async def test_skill_matching_structure(self) -> None:
         """Test skill matching returns correct structure."""
         from job_applicator.embeddings.matching import JobMatcher
 
         config = EmbeddingConfig(device="cpu", memory_limit_gb=0.5)
-        matcher = JobMatcher(config)
+        matcher = JobMatcher(config, LLMConfig())
 
         # Test with empty skills returns empty lists
-        matched, missing = matcher._match_skills([], ["Python", "FastAPI"])
+        matched, missing = await matcher._match_skills([], ["Python", "FastAPI"])
         assert matched == []
         assert missing == ["Python", "FastAPI"]
 
         # Test with empty requirements
-        matched, missing = matcher._match_skills(["Python", "FastAPI"], [])
+        matched, missing = await matcher._match_skills(["Python", "FastAPI"], [])
         assert matched == []
         assert missing == []
 
-    def test_skill_match_threshold_rejects_false_positive_band(
+    async def test_skill_match_threshold_rejects_false_positive_band(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Pins the 0.75 skill-match threshold. A best-cosine in the false-positive band
@@ -177,17 +179,17 @@ class TestJobMatcher:
         'covered' (a Python résumé reported missing_skills=[] for a React job)."""
         from job_applicator.embeddings.matching import JobMatcher
 
-        matcher = JobMatcher(EmbeddingConfig(device="cpu", memory_limit_gb=0.5))
+        matcher = JobMatcher(EmbeddingConfig(device="cpu", memory_limit_gb=0.5), LLMConfig())
         svc = matcher._service
         # Stub the model out — control the cosine directly (no model load).
         monkeypatch.setattr(svc, "embed_batch", lambda texts, **kw: [[1.0]] * len(texts))
 
         monkeypatch.setattr(svc, "similarity", lambda a, b: 0.62)  # false-positive band
-        matched, missing = matcher._match_skills(["Python"], ["React"])
+        matched, missing = await matcher._match_skills(["Python"], ["React"])
         assert matched == [] and missing == ["React"]  # NOT covered at 0.75 (was at 0.55)
 
         monkeypatch.setattr(svc, "similarity", lambda a, b: 0.80)  # genuine match
-        matched, missing = matcher._match_skills(["Python"], ["React"])
+        matched, missing = await matcher._match_skills(["Python"], ["React"])
         assert matched == ["Python"] and missing == []
 
     def test_embed_text_with_prefix(self) -> None:
@@ -195,7 +197,7 @@ class TestJobMatcher:
         from job_applicator.embeddings.matching import JobMatcher
 
         config = EmbeddingConfig(device="cpu", memory_limit_gb=0.5)
-        matcher = JobMatcher(config)
+        matcher = JobMatcher(config, LLMConfig())
 
         # Verify the method exists and accepts a prefix parameter
         import inspect
@@ -209,7 +211,7 @@ class TestJobMatcher:
         from job_applicator.models import ResumeData
 
         config = EmbeddingConfig(device="cpu", memory_limit_gb=0.5)
-        matcher = JobMatcher(config)
+        matcher = JobMatcher(config, LLMConfig())
 
         resume = ResumeData(
             raw_text="John Doe\nSkills: Python",
@@ -244,7 +246,7 @@ class TestJobMatcher:
         from job_applicator.models import ResumeData
 
         config = EmbeddingConfig(device="cpu", memory_limit_gb=0.5)
-        matcher = JobMatcher(config)
+        matcher = JobMatcher(config, LLMConfig())
 
         # Sparse structured data forces the raw-text fallback path.
         resume = ResumeData(
@@ -267,12 +269,12 @@ class TestJobMatcher:
         assert "jane.smith@example.com" not in call_text
         assert "Python" in call_text  # real skills survive
 
-    def test_match_skills_shares_best_available_skill(self) -> None:
+    async def test_match_skills_shares_best_available_skill(self) -> None:
         """Two requirements that both prefer one skill must not falsely mark one missing."""
         from job_applicator.embeddings.matching import JobMatcher
 
         config = EmbeddingConfig(device="cpu", memory_limit_gb=0.5)
-        matcher = JobMatcher(config)
+        matcher = JobMatcher(config, LLMConfig())
 
         # Pass strings straight through as their own "embeddings".
         matcher._service.embed_batch = lambda texts: list(texts)  # type: ignore[method-assign]
@@ -287,7 +289,7 @@ class TestJobMatcher:
         }
         matcher._service.similarity = lambda a, b: sim_table[(a, b)]  # type: ignore[method-assign]
 
-        matched, missing = matcher._match_skills(
+        matched, missing = await matcher._match_skills(
             ["Python", "Java"],
             ["Python programming", "Python development"],
         )
@@ -296,37 +298,6 @@ class TestJobMatcher:
         # *available* skill (Java) instead of being marked missing.
         assert missing == []
         assert set(matched) == {"Python", "Java"}
-
-
-class TestDescriptionSkillExtraction:
-    """Tests for fallback skill extraction from job descriptions."""
-
-    def test_extract_requirements_from_description_finds_known_skills(self) -> None:
-        from job_applicator.embeddings.matching import JobMatcher
-
-        matcher = JobMatcher(EmbeddingConfig(device="cpu", memory_limit_gb=0.5))
-        description = "We need Python, Kubernetes, and PostgreSQL experience."
-        reqs = matcher._extract_requirements_from_description(description)
-        assert "Python" in reqs
-        assert "Kubernetes" in reqs
-        assert "PostgreSQL" in reqs
-
-    def test_extract_requirements_ignores_hard_negatives_and_unknowns(self) -> None:
-        from job_applicator.embeddings.matching import JobMatcher
-
-        matcher = JobMatcher(EmbeddingConfig(device="cpu", memory_limit_gb=0.5))
-        description = "Looking for a team player with communication skills and Python."
-        reqs = matcher._extract_requirements_from_description(description)
-        assert "Python" in reqs
-        assert "team player" not in reqs
-        assert "communication" not in reqs
-
-    def test_extract_requirements_empty_for_empty_description(self) -> None:
-        from job_applicator.embeddings.matching import JobMatcher
-
-        matcher = JobMatcher(EmbeddingConfig(device="cpu", memory_limit_gb=0.5))
-        assert matcher._extract_requirements_from_description("") == []
-        assert matcher._extract_requirements_from_description("   ") == []
 
 
 class TestLLMSkillExtractor:
@@ -886,3 +857,96 @@ class TestLLMSkillExtractor:
         details = [call["details"] for call in reporter.report.llm.calls]
         assert any(d.get("skill_extraction") == "error" for d in details)
         assert reporter.report.errors
+
+
+class TestJobMatcherAsyncExtraction:
+    """Tests for JobMatcher using LLMSkillExtractor for descriptions."""
+
+    @pytest.fixture
+    def matcher(self) -> JobMatcher:
+        from job_applicator.embeddings.matching import JobMatcher
+
+        return JobMatcher(
+            EmbeddingConfig(device="cpu", memory_limit_gb=0.5),
+            LLMConfig(model="test-model"),
+        )
+
+    async def test_description_only_job_uses_extractor(
+        self, matcher: JobMatcher, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from job_applicator.models import JobBoard, JobListing
+
+        async def fake_extract(
+            description: str,
+            runtime: object = None,
+            use_cache: bool = True,
+            reporter: object = None,
+        ) -> list[str]:
+            return ["Python", "FastAPI"]
+
+        monkeypatch.setattr(matcher._skill_extractor, "extract", fake_extract)
+
+        resume = ResumeData(raw_text="Skills: Python", skills=["Python"])
+        job = JobListing(
+            title="Backend Dev",
+            company="Acme",
+            url="https://example.com/1",
+            board=JobBoard.LINKEDIN,
+            description="We need Python and FastAPI.",
+            requirements=[],
+        )
+        result = await matcher.match_resume_to_job(resume, job)
+        assert "Python" in result.matched_skills
+        assert "FastAPI" in result.missing_skills
+
+    async def test_explicit_requirements_bypass_extractor(
+        self, matcher: JobMatcher, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from job_applicator.models import JobBoard, JobListing
+
+        called = False
+
+        async def fake_extract(*args: object, **kwargs: object) -> list[str]:
+            nonlocal called
+            called = True
+            return ["Python"]
+
+        monkeypatch.setattr(matcher._skill_extractor, "extract", fake_extract)
+
+        resume = ResumeData(raw_text="Skills: Python", skills=["Python"])
+        job = JobListing(
+            title="Backend Dev",
+            company="Acme",
+            url="https://example.com/1",
+            board=JobBoard.LINKEDIN,
+            description="...",
+            requirements=["Python", "Django"],
+        )
+        result = await matcher.match_resume_to_job(resume, job)
+        assert not called
+        assert "Python" in result.matched_skills
+        assert "Django" in result.missing_skills
+
+    async def test_extractor_failure_yields_neutral_skill_score(
+        self, matcher: JobMatcher, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from job_applicator.models import JobBoard, JobListing
+
+        async def fake_extract(*args: object, **kwargs: object) -> list[str]:
+            return []
+
+        monkeypatch.setattr(matcher._skill_extractor, "extract", fake_extract)
+
+        resume = ResumeData(raw_text="Skills: Python", skills=["Python"])
+        job = JobListing(
+            title="Backend Dev",
+            company="Acme",
+            url="https://example.com/1",
+            board=JobBoard.LINKEDIN,
+            description="We need Python and FastAPI.",
+            requirements=[],
+        )
+        result = await matcher.match_resume_to_job(resume, job)
+        assert result.matched_skills == []
+        assert result.missing_skills == []
+        assert result.skill_score == 0.5

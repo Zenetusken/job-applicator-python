@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 
-from job_applicator.config import EmbeddingConfig
+from job_applicator.config import EmbeddingConfig, LLMConfig
 from job_applicator.embeddings.service import EmbeddingService, EmbeddingVector
+from job_applicator.embeddings.skill_extraction import LLMSkillExtractor
 from job_applicator.models import JobListing, ResumeData
-from job_applicator.skills import NORMALIZATION_MAP, is_hard_negative
+from job_applicator.utils.llm import LLMRuntime
 from job_applicator.utils.logging import get_logger
+from job_applicator.utils.verbose import VerboseReporter
 
 logger = get_logger("embeddings.matching")
 
@@ -44,9 +45,18 @@ class JobMatcher:
     - Individual skills and requirements
     """
 
-    def __init__(self, config: EmbeddingConfig) -> None:
-        self._config = config
-        self._service = EmbeddingService(config)
+    def __init__(
+        self,
+        embedding_config: EmbeddingConfig,
+        llm_config: LLMConfig | None = None,
+        runtime: LLMRuntime | None = None,
+        reporter: VerboseReporter | None = None,
+    ) -> None:
+        self._config = embedding_config
+        self._service = EmbeddingService(embedding_config)
+        self._skill_extractor = LLMSkillExtractor(llm_config or LLMConfig())
+        self._runtime = runtime
+        self._reporter = reporter
 
     def embed_text(self, text: str, prefix: str = "") -> EmbeddingVector:
         """Generate embedding for text with optional query prefix.
@@ -163,7 +173,7 @@ class JobMatcher:
         text = " | ".join(parts)[:1500]
         return self._service.embed(text)
 
-    def match_resume_to_job(
+    async def match_resume_to_job(
         self,
         resume: ResumeData,
         job: JobListing,
@@ -185,7 +195,7 @@ class JobMatcher:
         semantic_score = self._service.similarity(resume_emb, job_emb)
 
         # Skill matching
-        matched_skills, missing_skills = self._match_skills(
+        matched_skills, missing_skills = await self._match_skills(
             resume.skills, job.requirements, resume.raw_text, job.description
         )
 
@@ -208,7 +218,7 @@ class JobMatcher:
             summary=summary,
         )
 
-    def rank_jobs(
+    async def rank_jobs(
         self,
         resume: ResumeData,
         jobs: list[JobListing],
@@ -248,7 +258,7 @@ class JobMatcher:
         matches = []
         for job, job_emb in zip(jobs, job_embs, strict=False):
             semantic_score = self._service.similarity(resume_emb, job_emb)
-            matched, missing = self._match_skills(
+            matched, missing = await self._match_skills(
                 resume.skills, job.requirements, resume.raw_text, job.description
             )
             skill_score = self._compute_skill_score(matched, missing)
@@ -273,31 +283,7 @@ class JobMatcher:
         matches.sort(key=lambda x: x.score, reverse=True)
         return matches[:top_k]
 
-    def _extract_requirements_from_description(self, description: str) -> list[str]:
-        """Extract likely skill requirements from a job description.
-
-        Uses the known skill-alias map conservatively: only terms that appear as
-        whole words/phrases in the description are returned, and generic traits
-        are filtered out. This is a fallback when a job listing has no explicit
-        ``requirements`` list.
-        """
-        if not description:
-            return []
-
-        desc_lower = description.lower()
-        found: set[str] = set()
-        for term, canonical in NORMALIZATION_MAP.items():
-            if is_hard_negative(canonical.lower()):
-                continue
-            # Check both the alias and the canonical form as whole words/phrases.
-            for t in (term, canonical.lower()):
-                pattern = r"(?<!\w)" + re.escape(t) + r"(?!\w)"
-                if re.search(pattern, desc_lower):
-                    found.add(canonical)
-                    break
-        return sorted(found)
-
-    def _match_skills(
+    async def _match_skills(
         self,
         resume_skills: list[str],
         job_requirements: list[str],
@@ -319,7 +305,11 @@ class JobMatcher:
         from job_applicator.skills import is_hard_negative, normalize_skill
 
         if not job_requirements:
-            job_requirements = self._extract_requirements_from_description(job_description)
+            job_requirements = await self._skill_extractor.extract(
+                job_description,
+                runtime=self._runtime,
+                reporter=self._reporter,
+            )
 
         # Normalize and drop generic traits/hard negatives.
         norm_skills = [normalize_skill(s) for s in resume_skills]
