@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- PDF rendering support via the new optional `[pdf]` extra (`pip install 'job-applicator[pdf]'`),
+  powered by Typst and Jinja2 templates.
+  - Built-in résumé and cover-letter templates: `modern`, `classic`, and `minimal`.
+  - `PDFRenderer` renders `TailoredResume` / `CoverLetterResult` to PDF through a
+    structured LLM formatting step, escaped Typst source generation, and a
+    `ProcessPoolExecutor` compile step.
+  - `--format {txt|pdf|both}`, `--template`, and `--category` flags added to
+    `tailor`, `generate-cover-letter`, `batch`, and `apply`.
+  - TUI key bindings `T` (tailor résumé PDF) and `C` (cover-letter PDF).
+  - `OutputConfig` in `config.toml` controls default format and templates.
+  - `job-applicator doctor` verifies the PDF rendering stack.
+  - Property-based fuzz tests (`tests/unit/test_pdf_renderer_fuzz.py`) verify Typst
+    escaping is idempotent and complete.
+  - Opt-in visual regression tests (`tests/integration/test_pdf_regression.py`) gated
+    by `JOB_APPLICATOR_PDF_REGRESSION=1`.
+
 ## [0.3.6] - 2026-06-24
 
 ### Fixed

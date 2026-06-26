@@ -27,7 +27,7 @@ ruff format src/ tests/
 # Release (see RELEASING.md)
 bash scripts/release.sh <version>   # bump version, update CHANGELOG.md, tag, build dist
 
-# Tests — 871 fast unit tests (the green gate); 910 total = 871 unit + 5 integration + 34 live
+# Tests — 950+ fast unit tests (the green gate); 990+ total = 950+ unit + 8 integration + 34 live
 pytest -m unit -v               # or: pytest tests/unit/ -v   (auto-marked by location)
 pytest -m unit -v -k test_name  # single test
 
@@ -42,18 +42,19 @@ job-applicator check-session                # Verify board session is ready
 job-applicator search --site linkedin --query "python developer"
 job-applicator status                       # Show saved job funnel
 job-applicator match --resume resume.pdf --jobs-file jobs.json
-job-applicator tailor --resume resume.pdf --from <id-or-url> [--style-guide example.txt]
-job-applicator generate-cover-letter --resume resume.pdf --job-title "..." --company "..." [--style-guide example.txt]
+job-applicator tailor --resume resume.pdf --from <id-or-url> [--style-guide example.txt] [--format txt|pdf|both] [--template modern|classic|minimal] [--category <category>]
+job-applicator generate-cover-letter --resume resume.pdf --job-title "..." --company "..." [--style-guide example.txt] [--format txt|pdf|both] [--template modern|classic|minimal] [--category <category>]
 job-applicator ats-check --resume resume.pdf [--json] [--strict]
-job-applicator apply --query "python" --validate [--style-guide example.txt]            # Dry-run Easy Apply and validate it reaches Submit
-job-applicator apply --query "python" --submit --limit 5 [--style-guide example.txt]    # Send real applications
-job-applicator batch --resume resume.pdf --jobs-file jobs.json --top-k 10 --resume-run [--style-guide "ex1.txt,ex2.pdf"]
+job-applicator apply --query "python" --validate [--style-guide example.txt] [--format txt|pdf|both] [--template modern|classic|minimal] [--category <category>]            # Dry-run Easy Apply and validate it reaches Submit
+job-applicator apply --query "python" --submit --limit 5 [--style-guide example.txt] [--format txt|pdf|both] [--template modern|classic|minimal] [--category <category>]    # Send real applications
+job-applicator batch --resume resume.pdf --jobs-file jobs.json --top-k 10 --resume-run [--style-guide "ex1.txt,ex2.pdf"] [--format txt|pdf|both] [--template modern|classic|minimal] [--category <category>]
 job-applicator tui                          # Full-screen terminal UI over the funnel store
 ```
 
 Most commands that read a résumé accept `--resume`, `--ocr-mode {auto|on|off}`, and `--force-ocr`.
 `apply` is dry-run by default; real submissions require `--submit`. `apply`, `batch`, `tailor`, and
-`generate-cover-letter` all accept `--style-guide` with a single file or comma-separated paths.
+`generate-cover-letter` all accept `--style-guide` with a single file or comma-separated paths,
+and now also `--format`, `--template`, and `--category` for PDF rendering.
 Example style guides live in `docs/style-guide-examples/`.
 
 - **Cover letters are hard-validated for a proper sign-off.** `documents/sign_off.py` extracts the
@@ -84,10 +85,12 @@ src/job_applicator/
 ├── scrapers/           # base.py (BrowserPolicy) → linkedin.py, indeed.py
 ├── applicators/        # base.py → linkedin.py (Easy Apply, dry-run gated), indeed.py
 ├── documents/          # cover letter, résumé parsing/tailoring, style/tone/ATS/OCR/sign-off/artifacts
+│                       #   PDF rendering: pdf_renderer.py, formatted_models.py, job_category.py,
+│                       #   templates/ (Typst), artifacts.py
 ├── embeddings/         # embedding service + job matching
 ├── tui/                # Textual full-screen UI over the funnel store
 └── utils/              # logging, LLM retry/breaker/circuit, cookies, console, diff, region,
-                        # URL, secure store, text, verbose, profile
+                        # URL, secure store, text, verbose, profile, path
 ```
 
 ## Conventions
@@ -203,6 +206,15 @@ src/job_applicator/
 - **`config.toml` is actually loaded.** `AppSettings.settings_customise_sources()` adds it as the
   lowest-priority source; env vars override it. Point at an alternate file via
   `JOB_APPLICATOR_CONFIG_FILE`; a missing file is a no-op.
+- **PDF rendering requires the optional `[pdf]` extra.** Install with
+  `pip install -e ".[pdf]"` (pulls in `typst`). Without it, `--format pdf` produces a clear
+  error message and `doctor` reports PDF rendering as unavailable.
+- **PDF templates live in `src/job_applicator/templates/`** (Typst `.typ` files) and are packaged
+  into the wheel via `[tool.setuptools.package-data]`. Built-ins: `modern`, `classic`, `minimal`.
+  Set `output.template_dir` to load custom templates by file stem.
+- **PDF artifact basenames match plain-text artifacts.** Both share `tailored_<company>_<title>_<ts>`
+  / `cover_letter_<company>_<title>_<ts>` so `--format both` produces `.txt` + `.pdf` + one
+  `.meta.json` sidecar.
 
 ## LLM Setup
 
@@ -229,9 +241,10 @@ that generate cover letters. The default dry-run `apply` does not run the ATS pr
 ## Testing
 
 - Tests are auto-marked by location (`tests/conftest.py`): `pytest -m unit` / `-m live` /
-  `-m integration` all work. Unit suite (`pytest -m unit`, 871) is fast — no browser/GPU; the green
+  `-m integration` all work. Unit suite (`pytest -m unit`, ~950) is fast — no browser/GPU; the green
   gate.
-- 5 integration tests live in `tests/integration/` and exercise browser automation wiring.
+- 8 integration tests live in `tests/integration/` and exercise browser automation wiring + PDF
+  rendering.
 - The 34 live tests at `tests/` root carry `-m live`; they need vLLM (`localhost:8000`) + GPU; run
   them manually.
 - Tests use fixtures from `tests/conftest.py`.
