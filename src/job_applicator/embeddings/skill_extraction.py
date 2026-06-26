@@ -39,8 +39,8 @@ SKILL_SYSTEM_PROMPT = (
     "and problem solving.\n"
     "- Ignore seniority, work arrangement, location, and compensation.\n"
     '- Do not include generic terms like "software development" unless a '
-    "specific technology is named.\n\n"
-    'Return ONLY a JSON object in the format {"skills": ["Skill1", "Skill2"] }.'
+    "specific technology is named.\n"
+    '- Return ONLY a JSON object in the format {"skills": ["Skill1", "Skill2"] }.'
 )
 
 SKILL_USER_PROMPT = "{}"
