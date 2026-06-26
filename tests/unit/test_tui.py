@@ -860,7 +860,7 @@ async def test_search_jobs_fallback_to_found_when_scoring_fails(monkeypatch) -> 
         factories, "_make_scraper", lambda *a, **k: MagicMock(scrape=AsyncMock(return_value=jobs))
     )
 
-    def _boom(settings: object, j: object) -> object:
+    async def _boom(settings: object, j: object) -> object:
         raise RuntimeError("embeddings down")
 
     monkeypatch.setattr(actions, "_score_jobs", _boom)
@@ -1365,7 +1365,9 @@ async def test_search_jobs_scores_when_resume_set(monkeypatch) -> None:  # type:
     monkeypatch.setattr(
         factories, "_make_scraper", lambda *a, **k: MagicMock(scrape=AsyncMock(return_value=jobs))
     )
-    monkeypatch.setattr(actions, "_score_jobs", lambda settings, j: [_mr(jobs[0]), _mr(jobs[1])])
+    monkeypatch.setattr(
+        actions, "_score_jobs", AsyncMock(return_value=[_mr(jobs[0]), _mr(jobs[1])])
+    )
     store = MagicMock()
     n = await actions.search_jobs(
         AppSettings(resume_path="/cv.pdf"), store, SearchParams(query="x", board=JobBoard.LINKEDIN)
@@ -1386,7 +1388,7 @@ async def test_search_jobs_found_when_no_resume(monkeypatch) -> None:  # type: i
     monkeypatch.setattr(
         factories, "_make_scraper", lambda *a, **k: MagicMock(scrape=AsyncMock(return_value=jobs))
     )
-    score = MagicMock()
+    score = AsyncMock()
     monkeypatch.setattr(actions, "_score_jobs", score)
     store = MagicMock()
     n = await actions.search_jobs(
@@ -1409,7 +1411,9 @@ async def test_search_jobs_reports_phase_progress(monkeypatch) -> None:  # type:
     monkeypatch.setattr(
         factories, "_make_scraper", lambda *a, **k: MagicMock(scrape=AsyncMock(return_value=jobs))
     )
-    monkeypatch.setattr(actions, "_score_jobs", lambda settings, j: [_mr(jobs[0]), _mr(jobs[1])])
+    monkeypatch.setattr(
+        actions, "_score_jobs", AsyncMock(return_value=[_mr(jobs[0]), _mr(jobs[1])])
+    )
     msgs: list[str] = []
     await actions.search_jobs(
         AppSettings(resume_path="/cv.pdf"),
@@ -1441,7 +1445,9 @@ async def test_search_jobs_forwards_per_item_progress(monkeypatch) -> None:  # t
 
     monkeypatch.setattr(factories, "_make_browser", lambda *a, **k: _browser_cm())
     monkeypatch.setattr(factories, "_make_scraper", lambda *a, **k: MagicMock(scrape=_fake_scrape))
-    monkeypatch.setattr(actions, "_score_jobs", lambda settings, j: [_mr(jobs[0]), _mr(jobs[1])])
+    monkeypatch.setattr(
+        actions, "_score_jobs", AsyncMock(return_value=[_mr(jobs[0]), _mr(jobs[1])])
+    )
     msgs: list[str] = []
     await actions.search_jobs(
         AppSettings(resume_path="/cv.pdf"),
@@ -1471,7 +1477,9 @@ async def test_search_jobs_streams_found_then_matched(monkeypatch) -> None:  # t
 
     monkeypatch.setattr(factories, "_make_browser", lambda *a, **k: _browser_cm())
     monkeypatch.setattr(factories, "_make_scraper", lambda *a, **k: MagicMock(scrape=_fake_scrape))
-    monkeypatch.setattr(actions, "_score_jobs", lambda s, j: [_mr(jobs[0]), _mr(jobs[1])])
+    monkeypatch.setattr(
+        actions, "_score_jobs", AsyncMock(return_value=[_mr(jobs[0]), _mr(jobs[1])])
+    )
     store = MagicMock()
     seen: list[object] = []
     await actions.search_jobs(
