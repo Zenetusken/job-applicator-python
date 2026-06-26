@@ -2412,9 +2412,9 @@ async def test_tui_search_then_refuses_a_second_concurrent_account_worker(
 
 
 # ------------------------------------------------ board column + filter (Cycle F)
-async def test_tui_board_tag_in_each_card(tmp_path: Path) -> None:
-    """Each job card's metadata line carries the compact, uncoloured board tag (LI / IN); the
-    full name is the detail pane's job."""
+async def test_tui_board_badge_in_each_card(tmp_path: Path) -> None:
+    """Each job card carries a colour-coded, FULL-NAME board badge (LinkedIn / Indeed) on its
+    metadata line — distinct colours for an at-a-glance scan."""
     from textual.widgets import OptionList
 
     store = JobStore(db_path=tmp_path / "applications.db")
@@ -2427,8 +2427,7 @@ async def test_tui_board_tag_in_each_card(tmp_path: Path) -> None:
         await pilot.pause()
         t = app.query_one("#joblist", OptionList)
         cards = [str(t.get_option_at_index(r).prompt) for r in range(t.option_count)]
-        assert any("LI" in c for c in cards) and any("IN" in c for c in cards)  # board tag, line 2
-        assert not any("LinkedIn" in c for c in cards)  # full name is the detail pane's job
+        assert any("LinkedIn" in c for c in cards) and any("Indeed" in c for c in cards)
 
 
 async def test_tui_board_filter_cycles_and_narrows(tmp_path: Path) -> None:
@@ -2902,3 +2901,15 @@ async def test_tui_filter_modal_cancel_keeps_state(tmp_path: Path) -> None:
         await pilot.press("escape")
         await pilot.pause()
         assert (app._board_filter, app._sort_mode, app._min_salary) == before
+
+
+def test_score_style_sentiment_palette() -> None:
+    """The match score gets a sentiment colour: green (strong) / yellow (moderate) / red (weak),
+    and dim when unscored."""
+    from job_applicator.tui.app import _score_style
+
+    assert _score_style(0.82) == "bold green"
+    assert _score_style(0.70) == "bold green"
+    assert _score_style(0.58) == "bold yellow"
+    assert _score_style(0.49) == "bold red"
+    assert _score_style(None) == "dim"
