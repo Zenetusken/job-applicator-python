@@ -35,6 +35,33 @@ class TestSkillExtraction:
         )
         assert set(result) == {"FastAPI", "PostgreSQL", "Python"}
 
+    async def test_extract_raises_on_llm_failure_not_empty(
+        self, extractor: LLMSkillExtractor, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An LLM-call FAILURE must raise LLMError — never return [] (indistinguishable from a job
+        that genuinely lists no skills, which would silently degrade the match downstream)."""
+        from job_applicator.exceptions import LLMError
+
+        async def boom(description: str) -> _ExtractionResult:
+            raise ConnectionError("connection refused")
+
+        monkeypatch.setattr(extractor, "_call_llm", boom)
+        with pytest.raises(LLMError):
+            await extractor.extract("Senior Python engineer with Django and PostgreSQL.")
+
+    async def test_extract_returns_empty_on_successful_no_skills(
+        self, extractor: LLMSkillExtractor, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A SUCCESSFUL call that finds no skills legitimately returns [] — not every empty is a
+        failure. This is the distinction the no-masking rule hinges on (failure→raise, empty→ok)."""
+
+        async def none_found(description: str) -> _ExtractionResult:
+            return _ExtractionResult(skills=[], method="instructor", fallback=False)
+
+        monkeypatch.setattr(extractor, "_call_llm", none_found)
+        result = await extractor.extract("We value teamwork and a positive attitude.")
+        assert result == []
+
     async def test_unmapped_skill_grounded_by_token_match(
         self, extractor: LLMSkillExtractor, monkeypatch: pytest.MonkeyPatch
     ) -> None:

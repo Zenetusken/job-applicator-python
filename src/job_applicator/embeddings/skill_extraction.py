@@ -21,6 +21,7 @@ from litellm.exceptions import APIError
 from pydantic import BaseModel, Field, ValidationError
 
 from job_applicator.config import LLMConfig
+from job_applicator.exceptions import LLMError
 from job_applicator.skills import NORMALIZATION_MAP, is_hard_negative, normalize_skill
 from job_applicator.utils.llm import (
     LLMRuntime,
@@ -364,7 +365,10 @@ class LLMSkillExtractor:
                     details={"skill_extraction": "error", "error": str(exc)},
                 )
                 reporter.record_error(f"Skill extraction failed: {exc}")
-            return []
+            # RAISE the typed error — never return [] on an LLM failure. An empty skill list
+            # that actually means "the endpoint was down" is indistinguishable from "this job
+            # genuinely lists no skills", and silently degrades every match downstream.
+            raise error from exc
 
         if reporter is not None:
             details: dict[str, Any] = {"skill_extraction": "llm_call", "method": method}
@@ -444,18 +448,18 @@ class LLMSkillExtractor:
                 extra_body=extra_body,
             )
         except Exception as exc:
-            logger.warning("Direct litellm skill extraction failed: %s", exc)
-            return _ExtractionResult(skills=[], method="direct", fallback=True)
+            # Transport failure on the direct fallback → raise, never return [] (a masked failure).
+            raise llm_call_error(exc, self._config.api_base or "") from exc
 
         if not response.choices:
-            logger.warning("Direct litellm response had no choices")
-            return _ExtractionResult(skills=[], method="direct", fallback=True)
+            raise LLMError("Direct litellm skill-extraction response had no choices")
 
         content = response.choices[0].message.content
         if content is None:
-            logger.warning("Direct litellm response content was None")
-            return _ExtractionResult(skills=[], method="direct", fallback=True)
+            raise LLMError("Direct litellm skill-extraction response content was None")
 
+        # A SUCCESSFUL call that parses to no skills is legitimate (the job may list none) — only
+        # the failure branches above raise.
         content = strip_thinking_process(content)
         skills = self._parse_skills_from_text(content)
         logger.info("Extracted skills via direct litellm: %s", skills)

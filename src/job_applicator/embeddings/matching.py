@@ -200,11 +200,8 @@ class JobMatcher:
             resume.skills, job.requirements, resume.raw_text, job.description
         )
 
-        # Compute skill coverage score
-        skill_score = self._compute_skill_score(matched_skills, missing_skills)
-
-        # Combined score: 60% semantic + 40% skill coverage
-        score = (0.6 * semantic_score) + (0.4 * skill_score)
+        # Combined score: 60% semantic + 40% skill coverage (semantic-only when skill is unknown)
+        score, skill_score = self._combined_score(semantic_score, matched_skills, missing_skills)
 
         # Generate summary
         summary = self._generate_match_summary(score, matched_skills, missing_skills)
@@ -262,10 +259,8 @@ class JobMatcher:
             matched, missing = await self._match_skills(
                 resume.skills, job.requirements, resume.raw_text, job.description
             )
-            skill_score = self._compute_skill_score(matched, missing)
-
-            # Combined score: 60% semantic + 40% skill coverage
-            score = (0.6 * semantic_score) + (0.4 * skill_score)
+            # Combined score: 60% semantic + 40% skill coverage (semantic-only when unknown)
+            score, skill_score = self._combined_score(semantic_score, matched, missing)
             summary = self._generate_match_summary(score, matched, missing)
 
             matches.append(
@@ -402,6 +397,23 @@ class JobMatcher:
         if total == 0:
             return 0.5  # Neutral if no requirements
         return len(matched_skills) / total
+
+    def _combined_score(
+        self,
+        semantic_score: float,
+        matched_skills: list[str],
+        missing_skills: list[str],
+    ) -> tuple[float, float]:
+        """Blend semantic similarity (60%) + skill coverage (40%) → (combined, skill).
+
+        When skill coverage is genuinely UNKNOWN — no requirements to compare against (e.g. none
+        listed AND none extractable, or the extractor LLM is down) — rank on semantic similarity
+        ALONE rather than injecting a neutral 0.5 floor (which would add a uniform +0.2 to every
+        such job). The reported skill is 0.0 in that case (no coverage measured)."""
+        if not matched_skills and not missing_skills:
+            return semantic_score, 0.0
+        skill_score = self._compute_skill_score(matched_skills, missing_skills)
+        return (0.6 * semantic_score) + (0.4 * skill_score), skill_score
 
     def _generate_match_summary(
         self,

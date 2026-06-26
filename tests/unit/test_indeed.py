@@ -507,3 +507,44 @@ async def test_scrape_keeps_snippet_and_dumps_failing_card(
     diag = (Path(debug_dir) / "indeed-failed-card.txt").read_text(encoding="utf-8")
     assert "page.url:" in diag  # navigated/challenged discriminator
     assert "card data-jk attr:" in diag  # confirms whether data-jk exists for the dedup fix
+
+
+async def test_scrape_no_cards_raises_scraper_error(
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Indeed: 0 job cards → ScraperError (0 cards is ambiguous empty-vs-blocked; fail loudly,
+    DOM dumped), never a silent empty list."""
+    import job_applicator.scrapers.indeed as ind
+    from job_applicator.exceptions import ScraperError
+    from job_applicator.models import JobBoard
+    from job_applicator.scrapers.base import SearchParams
+
+    browser = MagicMock()
+    browser.headless = False
+    browser.persistent_context = AsyncMock(return_value=MagicMock())
+    scraper = IndeedScraper(browser, app_settings)
+
+    page = MagicMock()
+    page.url = "https://www.indeed.com/jobs"
+    page.close = AsyncMock()
+
+    async def _page(_ctx: object) -> object:
+        return page
+
+    async def _noload(*_a: object, **_k: object) -> None:
+        return None
+
+    async def _noresults(*_a: object, **_k: object) -> list[object]:
+        return []  # 0 cards
+
+    async def _nodump(*_a: object, **_k: object) -> None:
+        return None
+
+    monkeypatch.setattr(scraper, "_new_stealth_page", _page)
+    monkeypatch.setattr(ind, "load_cookies", _noload)
+    monkeypatch.setattr(scraper, "_load_results", _noresults)
+    monkeypatch.setattr(scraper, "_dump_debug", _nodump)
+
+    params = SearchParams(query="python", max_results=5, board=JobBoard.INDEED)
+    with pytest.raises(ScraperError):
+        await scraper.scrape(params)

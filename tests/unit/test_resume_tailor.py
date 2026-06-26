@@ -916,3 +916,19 @@ class TestEmptySectionStripping:
         result = tailor._validate_skills(tailored, original_skills)
         assert "Python (advanced)" in result
         assert "Docker & Kubernetes" in result
+
+
+@pytest.mark.asyncio
+async def test_summarize_changes_raises_not_fabricated(llm_config, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A summary LLM failure RAISES the typed error — never returns a fabricated
+    'summary generation failed' string that masks the failure as a real summary."""
+    from job_applicator.exceptions import LLMError
+
+    tailor = ResumeTailor(llm_config)
+
+    async def _boom(*_a: object, **_k: object) -> str:
+        raise LLMError("summary call failed")
+
+    monkeypatch.setattr(tailor, "_call_llm", _boom)
+    with pytest.raises(LLMError):
+        await tailor._summarize_changes("original resume text", "tailored resume text")
