@@ -1348,9 +1348,13 @@ def match(
             console.print(f"[green]Loaded {len(jobs)} jobs[/green]")
 
         # Match
+        from job_applicator.utils.llm import LLMRuntime
+
+        runtime = LLMRuntime.from_config(settings.llm_resilience, name="match")
+
         with console.status("Computing embeddings and matching..."):
-            matcher = JobMatcher(settings.embedding)
-            matches = matcher.rank_jobs(resume_data, jobs, top_k=top_k)
+            matcher = JobMatcher(settings.embedding, settings.llm, runtime, reporter=reporter)
+            matches = await matcher.rank_jobs(resume_data, jobs, top_k=top_k)
 
         # Filter by min score
         if min_score > 0:
@@ -1763,9 +1767,12 @@ def batch(
         if not as_json:
             console.print(f"[green]Loaded {len(jobs)} jobs[/green]")
 
-        matcher = JobMatcher(settings.embedding)
+        from job_applicator.utils.llm import LLMRuntime
+
+        runtime = LLMRuntime.from_config(settings.llm_resilience, name="batch")
+        matcher = JobMatcher(settings.embedding, settings.llm, runtime, reporter=reporter)
         with console.status("Computing match scores..."):
-            matches = matcher.rank_jobs(resume_data, jobs, top_k=top_k)
+            matches = await matcher.rank_jobs(resume_data, jobs, top_k=top_k)
 
         if reporter and matches:
             reporter.record_match(
@@ -2407,10 +2414,12 @@ def tailor(
         pre_match_score = None
         if min_score > 0:
             from job_applicator.embeddings.matching import JobMatcher
+            from job_applicator.utils.llm import LLMRuntime
 
+            runtime = LLMRuntime.from_config(settings.llm_resilience, name="tailor")
+            matcher = JobMatcher(settings.embedding, settings.llm, runtime, reporter=reporter)
             with console.status("Computing match score..."):
-                matcher = JobMatcher(settings.embedding)
-                pre_match = matcher.match_resume_to_job(resume_data, job)
+                pre_match = await matcher.match_resume_to_job(resume_data, job)
             pre_match_score = pre_match.score
             console.print(
                 f"[cyan]Match score: {pre_match.score:.0%} (threshold: {min_score:.0%})[/cyan]"
