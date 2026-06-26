@@ -647,8 +647,12 @@ class ResumeTailor:
         from job_applicator.embeddings.matching import JobMatcher
 
         if matcher is None:
-            matcher = JobMatcher(EmbeddingConfig(device="cpu", memory_limit_gb=0.5))
-        match_result = matcher.match_resume_to_job(resume, job)
+            matcher = JobMatcher(
+                EmbeddingConfig(device="cpu", memory_limit_gb=0.5),
+                self._config,
+                self._runtime,
+            )
+        match_result = await matcher.match_resume_to_job(resume, job)
 
         logger.info("Current match: %.0f%%", match_result.score * 100)
 
@@ -788,7 +792,11 @@ class ResumeTailor:
         from job_applicator.embeddings.matching import JobMatcher
 
         if matcher is None:
-            matcher = JobMatcher(EmbeddingConfig(device="cpu", memory_limit_gb=0.5))
+            matcher = JobMatcher(
+                EmbeddingConfig(device="cpu", memory_limit_gb=0.5),
+                self._config,
+                self._runtime,
+            )
 
         synthetic_resume = ResumeData(
             raw_text=refined_text,
@@ -800,7 +808,7 @@ class ResumeTailor:
             experience=original_resume.experience,
             education=original_resume.education,
         )
-        new_match = matcher.match_resume_to_job(synthetic_resume, job)
+        new_match = await matcher.match_resume_to_job(synthetic_resume, job)
 
         return TailoredResume(
             original_path=current_tailored.original_path,

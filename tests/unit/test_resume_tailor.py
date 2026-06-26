@@ -200,7 +200,7 @@ class TestResumeTailor:
             summary="Good match",
         )
         mock_matcher = MagicMock()
-        mock_matcher.match_resume_to_job.return_value = mock_match
+        mock_matcher.match_resume_to_job = AsyncMock(return_value=mock_match)
 
         with patch(
             "litellm.acompletion",
@@ -234,7 +234,7 @@ class TestResumeTailor:
             summary="Strong match",
         )
         mock_matcher = MagicMock()
-        mock_matcher.match_resume_to_job.return_value = mock_match
+        mock_matcher.match_resume_to_job = AsyncMock(return_value=mock_match)
 
         with patch(
             "litellm.acompletion",
@@ -278,7 +278,7 @@ class TestResumeTailor:
             summary="Strong match",
         )
         mock_matcher = MagicMock()
-        mock_matcher.match_resume_to_job.return_value = mock_match
+        mock_matcher.match_resume_to_job = AsyncMock(return_value=mock_match)
 
         with patch(
             "litellm.acompletion",
