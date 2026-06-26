@@ -2837,3 +2837,35 @@ async def test_tui_h_l_scroll_table_sideways(tmp_path: Path) -> None:
         await pilot.press("h", "h", "h")
         await pilot.pause()
         assert table.scroll_x == 0  # 'h' scrolled back, clamped at the left edge
+
+
+async def test_tui_stage_tabs_filter_sync_and_counts(tmp_path: Path) -> None:
+    """The stage tabs show per-stage counts, filter on click, mirror the `f` cycle, and reset
+    on Esc — the 'tabs + visual hierarchy' redesign (increment 1)."""
+    from textual.widgets import Tab, Tabs
+
+    from job_applicator.tui.app import _stage_to_tab
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))
+    store.upsert_job(_job(2))
+    store.upsert_match(_mr(_job(3)))  # one matched job
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        tabs = app.query_one("#stagetabs", Tabs)
+        table = app.query_one("#joblist", DataTable)
+        assert tabs.active == "stage-all"
+        assert "3" in str(app.query_one("#stage-all", Tab).label)  # All shows the total
+        assert "1" in str(app.query_one("#stage-matched", Tab).label)  # Matched count
+        tabs.active = "stage-matched"  # click a tab → filters
+        await pilot.pause()
+        assert app._stage_filter == "matched" and table.row_count == 1
+        await pilot.press("f")  # the f cycle moves the active tab too (no loop)
+        await pilot.pause()
+        assert tabs.active == _stage_to_tab(app._stage_filter)
+        await pilot.press("escape")  # Esc resets the tab to All
+        await pilot.pause()
+        assert app._stage_filter is None and tabs.active == "stage-all" and table.row_count == 3

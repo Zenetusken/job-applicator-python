@@ -19,8 +19,9 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, VerticalScroll
+from textual.css.query import NoMatches
 from textual.widget import Widget
-from textual.widgets import DataTable, Footer, Input, LoadingIndicator, Static
+from textual.widgets import DataTable, Footer, Input, LoadingIndicator, Static, Tab, Tabs
 
 from job_applicator.exceptions import JobApplicatorError
 from job_applicator.models import (
@@ -55,6 +56,30 @@ _STAGE_STYLE: dict[str, str] = {
 # compares cleanly against it. `_STAGE_ORDER` ranks a stage for the "stage" sort.
 _STAGE_CYCLE: list[str | None] = [None, *(st.value for st in FunnelStatus)]
 _STAGE_ORDER: dict[str, int] = {st.value: i for i, st in enumerate(FunnelStatus)}
+
+# View tabs across the top mirror the stage filter: "All" + each funnel stage, in funnel order.
+# The tab id encodes the stage value ("stage-all" = no filter); the label is the short caption.
+_STAGE_TAB_LABEL: dict[str | None, str] = {
+    None: "All",
+    "found": "Found",
+    "matched": "Matched",
+    "tailored": "Tailored",
+    "cover_letter": "Cover",
+    "applied": "Applied",
+}
+
+
+def _stage_to_tab(stage: str | None) -> str:
+    """Tab id for a stage filter value (None → the All tab)."""
+    return f"stage-{stage or 'all'}"
+
+
+def _tab_to_stage(tab_id: str | None) -> str | None:
+    """Stage filter value for a tab id (the All tab → None)."""
+    if not tab_id or tab_id == "stage-all":
+        return None
+    return tab_id.removeprefix("stage-")
+
 
 # Board-filter cycle: None (all) then each board; compared against `s.job.board.value`.
 # `_BOARD_STYLE` colours the list's Board column for a quick LinkedIn-vs-Indeed scan.
@@ -123,6 +148,7 @@ class JobApplicatorApp(App[None]):
 
     CSS = """
     #statusline { height: 4; border: round $primary; padding: 0 1; }
+    #stagetabs { height: 1; }
     #body { height: 1fr; }
     /* height: 1fr so the table fills the body like the detail pane — a DataTable defaults
        to height:auto (sizes to its rows), which left the left side short of the bottom with
@@ -192,10 +218,18 @@ class JobApplicatorApp(App[None]):
         self._min_salary = 0  # min annual-salary floor (0 = off; see _SALARY_CYCLE)
         self._hide_unlisted = False  # when True, hide jobs with no parseable salary
         self._load_error = ""
+        # True while we programmatically move the stage tab to mirror _stage_filter, so the
+        # tab-activated handler doesn't re-apply/reload. Starts True to swallow the auto-activation
+        # of the first tab during mount (on_mount drives the first real reload itself).
+        self._tab_sync = True
 
     # ------------------------------------------------------------------ layout
     def compose(self) -> ComposeResult:
         yield Static(id="statusline")
+        yield Tabs(
+            *(Tab(label, id=_stage_to_tab(stage)) for stage, label in _STAGE_TAB_LABEL.items()),
+            id="stagetabs",
+        )
         with Horizontal(id="body"):
             yield JobListTable(id="joblist", cursor_type="row", zebra_stripes=True)
             yield VerticalScroll(Static(id="detail"), id="detailscroll")
@@ -205,8 +239,51 @@ class JobApplicatorApp(App[None]):
     def on_mount(self) -> None:
         table = self.query_one("#joblist", DataTable)
         table.add_columns("Stage", "Score", "Board", "Title", "Company")
-        self._reload()
-        table.focus()  # the job list owns focus, not the (hidden) filter Input
+        self._reload()  # also seeds the stage-tab counts
+        self._tab_sync = False  # mount done — real tab clicks now apply + reload
+        table.focus()  # the job list owns focus, not the (hidden) tabs / filter Input
+
+    def on_tabs_tab_activated(self, event: Tabs.TabActivated) -> None:
+        """A stage tab was clicked/selected → apply it as the stage filter. Suppressed while we
+        sync the tab to ``_stage_filter`` (see ``_sync_stage_tab``) so it can't loop."""
+        if self._tab_sync:
+            return
+        stage = _tab_to_stage(event.tab.id)
+        if stage != self._stage_filter:
+            self._stage_filter = stage
+            self._reload(refresh_applied=False)
+        self.query_one("#joblist", DataTable).focus()  # clicking a tab returns focus to the list
+
+    def _sync_stage_tab(self) -> None:
+        """Move the active stage tab to mirror ``_stage_filter`` WITHOUT triggering a reload."""
+        try:
+            tabs = self.query_one("#stagetabs", Tabs)
+        except NoMatches:
+            return
+        self._tab_sync = True
+        try:
+            tabs.active = _stage_to_tab(self._stage_filter)
+        finally:
+            self._tab_sync = False
+
+    def _update_tab_counts(self) -> None:
+        """Show the live per-stage counts in the tab labels (All = total)."""
+        try:
+            tabs = self.query_one("#stagetabs", Tabs)
+        except NoMatches:
+            return
+        counts: dict[str, int] = {}
+        for s in self._all:
+            stage = self._effective_stage(s)
+            counts[stage] = counts.get(stage, 0) + 1
+        head_urls = {str(s.job.url) for s in self._all}
+        counts["applied"] = counts.get("applied", 0) + len(self._applied_urls - head_urls)
+        for tab_stage, label in _STAGE_TAB_LABEL.items():
+            n = len(self._all) if tab_stage is None else counts.get(tab_stage, 0)
+            try:
+                tabs.query_one(f"#{_stage_to_tab(tab_stage)}", Tab).label = f"{label} {n}"
+            except NoMatches:
+                pass
 
     # -------------------------------------------------------------------- data
     def _reload(self, *, refresh_applied: bool = True) -> None:
@@ -234,6 +311,7 @@ class JobApplicatorApp(App[None]):
         # Sort the VIEW (not the shared list_jobs query the CLI also uses) by the active
         # mode — keeps it TUI-local, and makes the post-scoring repaint visibly re-rank.
         self._apply_sort()
+        self._update_tab_counts()  # refresh the per-stage counts shown on the tabs
         self._repaint()
 
     def _apply_sort(self) -> None:
@@ -412,6 +490,7 @@ class JobApplicatorApp(App[None]):
             f"[bold]{escape(j.title)}[/bold]",
             f"[green]{escape(j.company)}[/green]   [dim]{j.board.display_name}[/dim]",
             "",
+            "[bold]Overview[/bold]",  # section header, matching the Description header below
             f"Stage     [{style}]{stage.replace('_', ' ')}[/{style}]",
             f"Location  {escape(j.location) if j.location else '—'}",
             f"Salary    {escape(j.salary) if j.salary else '—'}",
@@ -476,10 +555,11 @@ class JobApplicatorApp(App[None]):
         self._reload()
 
     def action_cycle_stage_filter(self) -> None:
-        """Cycle the funnel-stage filter (all → each stage → all). View-only; composes with
-        the board + text filters and respects the 'applied' overlay via ``_effective_stage``."""
+        """Cycle the funnel-stage filter (all → each stage → all) and move the matching tab.
+        View-only; composes with the board + text filters; respects the 'applied' overlay."""
         i = _STAGE_CYCLE.index(self._stage_filter)
         self._stage_filter = _STAGE_CYCLE[(i + 1) % len(_STAGE_CYCLE)]
+        self._sync_stage_tab()  # mirror the cycle on the tab bar (no reload — view-only)
         self._repaint()
 
     def action_cycle_board_filter(self) -> None:
@@ -1068,6 +1148,7 @@ class JobApplicatorApp(App[None]):
         self._board_filter = None
         self._min_salary = 0
         self._hide_unlisted = False
+        self._sync_stage_tab()  # reset the tab bar to "All" too
         self._repaint()
         self.query_one("#joblist", DataTable).focus()
 
