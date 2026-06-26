@@ -191,12 +191,14 @@ class JobApplicatorApp(App[None]):
         Binding("A", "ats_check", "ATS", show=False),
         Binding("o", "open_url", "Open"),
         Binding("y", "copy_url", "Copy URL", show=False),
-        Binding("slash", "filter", "Filter"),
-        Binding("f", "cycle_stage_filter", "Stage"),
-        Binding("b", "cycle_board_filter", "Board"),
-        Binding("m", "cycle_min_salary", "Min $"),
+        Binding("slash", "filter", "Find"),
+        Binding("f", "open_filters", "Filter"),
+        # The individual cycle keys still work for power users, but are off the footer now that
+        # `f` opens a grouped Filter & sort panel (board/salary/sort/text/stage in one place).
+        Binding("b", "cycle_board_filter", "Board", show=False),
+        Binding("m", "cycle_min_salary", "Min $", show=False),
         Binding("u", "toggle_unlisted", "Unlisted", show=False),
-        Binding("S", "cycle_sort", "Sort"),
+        Binding("S", "cycle_sort", "Sort", show=False),
         Binding("question_mark", "help", "Help"),
         Binding("escape", "clear_filter", "Clear filter", show=False),
         Binding("j", "cursor_down", "Down", show=False),
@@ -576,9 +578,56 @@ class JobApplicatorApp(App[None]):
     def action_refresh(self) -> None:
         self._reload()
 
+    def action_open_filters(self) -> None:
+        """Open the grouped Filter & sort panel (`f`) — stage · board · min salary · hide-unlisted
+        · sort · text in one place. The app builds the option lists from its constants and applies
+        the result in ``_apply_filters`` (so the panel screen needs no import back here)."""
+        from job_applicator.tui.screens import FilterScreen
+
+        stage_opts = [
+            (label, "all" if st is None else st) for st, label in _STAGE_TAB_LABEL.items()
+        ]
+        board_opts = [("All boards", "all"), *((b.display_name, b.value) for b in JobBoard)]
+        salary_opts = [("Any", "0"), *((f"${v // 1000}k+", str(v)) for v in _SALARY_CYCLE[1:])]
+        sort_opts = [(label, key) for key, label in _SORT_LABEL.items()]
+        self.push_screen(
+            FilterScreen(
+                stage_options=stage_opts,
+                stage_value="all" if self._stage_filter is None else self._stage_filter,
+                board_options=board_opts,
+                board_value="all" if self._board_filter is None else self._board_filter,
+                salary_options=salary_opts,
+                salary_value=str(self._min_salary),
+                sort_options=sort_opts,
+                sort_value=self._sort_mode,
+                hide_unlisted=self._hide_unlisted,
+                text=self._filter,
+            ),
+            self._apply_filters,
+        )
+
+    def _apply_filters(self, result: dict[str, object] | None) -> None:
+        """Apply the Filter panel's result (None = cancelled). Sets every view control at once,
+        mirrors stage on the tabs, and re-queries. View-only; never touches the account."""
+        joblist = self.query_one("#joblist", JobList)
+        if result is None:
+            joblist.focus()
+            return
+        stage = result["stage"]
+        board = result["board"]
+        self._stage_filter = None if stage == "all" else str(stage)
+        self._board_filter = None if board == "all" else str(board)
+        self._min_salary = int(str(result["min_salary"]))
+        self._hide_unlisted = bool(result["hide_unlisted"])
+        self._sort_mode = str(result["sort_mode"])
+        self._filter = str(result["text"])
+        self._sync_stage_tab()
+        self._reload(refresh_applied=False)
+        joblist.focus()
+
     def action_cycle_stage_filter(self) -> None:
         """Cycle the funnel-stage filter (all → each stage → all) and move the matching tab.
-        View-only; composes with the board + text filters; respects the 'applied' overlay."""
+        View-only; kept for the tabs/`f`-panel to share; composes with the other filters."""
         i = _STAGE_CYCLE.index(self._stage_filter)
         self._stage_filter = _STAGE_CYCLE[(i + 1) % len(_STAGE_CYCLE)]
         self._sync_stage_tab()  # mirror the cycle on the tab bar (no reload — view-only)

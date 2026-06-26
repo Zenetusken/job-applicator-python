@@ -1932,16 +1932,16 @@ async def test_tui_stage_filter_cycles_through_stages(tmp_path: Path) -> None:
         await pilot.pause()
         table = app.query_one("#joblist", OptionList)
         assert table.option_count == 4  # all stages shown
-        await pilot.press("f")  # → found
+        app.action_cycle_stage_filter()  # → found
         await pilot.pause()
         assert app._stage_filter == "found" and table.option_count == 1
         assert app._current is not None and app._current.job.company == "Co1"
-        await pilot.press("f")  # → matched
+        app.action_cycle_stage_filter()  # → matched
         await pilot.pause()
         assert app._stage_filter == "matched" and table.option_count == 1
         assert app._current is not None and app._current.job.company == "Co2"
         for _ in range(4):  # matched → tailored → cover_letter → applied → all
-            await pilot.press("f")
+            app.action_cycle_stage_filter()
         await pilot.pause()
         assert app._stage_filter is None and table.option_count == 4  # full circle
 
@@ -1961,7 +1961,7 @@ async def test_tui_stage_filter_composes_with_text_filter(tmp_path: Path) -> Non
         app._filter = "acme"  # text filter → jobs 1 (found) + 3 (matched)
         app._repaint()
         assert table.option_count == 2
-        await pilot.press("f")  # add stage filter → found → only job 1
+        app.action_cycle_stage_filter()  # add stage filter → found → only job 1
         await pilot.pause()
         assert app._stage_filter == "found" and table.option_count == 1
         assert app._current is not None and app._current.job.company == "Acme"
@@ -1990,7 +1990,7 @@ async def test_tui_escape_clears_stage_and_text_filters(tmp_path: Path) -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         table = app.query_one("#joblist", OptionList)
-        await pilot.press("f")  # stage → found
+        app.action_cycle_stage_filter()  # stage → found
         await pilot.pause()
         app._filter = "co1"  # and a text filter
         app._repaint()
@@ -2082,7 +2082,7 @@ async def test_tui_statusline_renders_sort_stage_in_running_frame(tmp_path: Path
         await pilot.press("S")  # → recent
         await pilot.pause()
         assert "sort: recent" in _rendered()
-        await pilot.press("f")  # stage → found: moves the active TAB, not the status line
+        app.action_cycle_stage_filter()  # stage → found: moves the active TAB, not the status line
         await pilot.pause()
         from textual.widgets import Tabs
 
@@ -2848,9 +2848,57 @@ async def test_tui_stage_tabs_filter_sync_and_counts(tmp_path: Path) -> None:
         tabs.active = "stage-matched"  # click a tab → filters
         await pilot.pause()
         assert app._stage_filter == "matched" and table.option_count == 1
-        await pilot.press("f")  # the f cycle moves the active tab too (no loop)
+        app.action_cycle_stage_filter()  # the f cycle moves the active tab too (no loop)
         await pilot.pause()
         assert tabs.active == _stage_to_tab(app._stage_filter)
         await pilot.press("escape")  # Esc resets the tab to All
         await pilot.pause()
         assert app._stage_filter is None and tabs.active == "stage-all" and table.option_count == 3
+
+
+async def test_tui_filter_modal_applies_view_controls(tmp_path: Path) -> None:
+    """`f` opens the grouped Filter & sort panel; applying it sets board/sort (etc.) at once and
+    re-queries — the footer no longer needs the individual b/m/S cycle keys."""
+    from textual.widgets import Select
+
+    from job_applicator.tui.app import JobList
+    from job_applicator.tui.screens import FilterScreen
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))  # LinkedIn
+    store.upsert_job(_job(2, url="https://indeed.com/2", board=JobBoard.INDEED))
+    app = JobApplicatorApp(
+        settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        screen = app.screen_stack[-1]
+        assert isinstance(screen, FilterScreen)
+        screen.query_one("#f_board", Select).value = "indeed"
+        screen.query_one("#f_sort", Select).value = "recent"
+        await pilot.pause()
+        screen._submit()
+        await pilot.pause()
+        assert app._board_filter == "indeed" and app._sort_mode == "recent"
+        assert app.query_one("#joblist", JobList).option_count == 1  # only the Indeed job
+        # the footer is lean: the per-filter cycle keys are no longer shown (they live in `f`)
+        shown = {b.key for b in app.BINDINGS if getattr(b, "show", True)}
+        assert "f" in shown and not ({"b", "m", "S"} & shown)
+
+
+async def test_tui_filter_modal_cancel_keeps_state(tmp_path: Path) -> None:
+    """Cancelling the Filter panel (Esc/None) changes nothing."""
+    from job_applicator.tui.screens import FilterScreen
+
+    app = _app(tmp_path, seed=3)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        before = (app._board_filter, app._sort_mode, app._min_salary)
+        await pilot.press("f")
+        await pilot.pause()
+        assert isinstance(app.screen_stack[-1], FilterScreen)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert (app._board_filter, app._sort_mode, app._min_salary) == before
