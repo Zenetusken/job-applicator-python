@@ -693,6 +693,7 @@ class ResumeTailor:
             prompt += f"\n\n{style_section}"
 
         tailored_text = await self._call_llm(prompt)
+        tailored_text = self._require_nonempty(tailored_text)
         tailored_text = self._validate_skills(tailored_text, resume.skills)
         tailored_text = self._strip_hallucinated_tools(
             tailored_text, resume.raw_text, job.requirements
@@ -785,6 +786,7 @@ class ResumeTailor:
         refined_text = self._strip_empty_certifications_languages(
             refined_text, original_resume.raw_text
         )
+        refined_text = self._require_nonempty(refined_text)
         changes = await self._summarize_changes(current_tailored.tailored_text, refined_text)
 
         # Recompute match scores against the refined text
@@ -878,6 +880,14 @@ class ResumeTailor:
         for i, entry in enumerate(entries, 1):
             numbered.append(f"  {i}. {entry}")
         return "\n".join(numbered)
+
+    def _require_nonempty(self, text: str) -> str:
+        """Guard against an empty tailored résumé reaching the caller (and then cover-letter
+        generation + PDF rendering). Raises LLMError so @async_retry retries a transient empty
+        completion before failing with a typed error (mirrors cover_letter._validate_output)."""
+        if not text.strip():
+            raise LLMError("Tailored résumé is empty")
+        return text
 
     def _validate_skills(self, text: str, original_skills: list[str]) -> str:
         """Strip skills from tailored text that aren't in the original resume.

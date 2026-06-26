@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from secrets import SystemRandom
 
+from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Page
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
@@ -24,6 +25,14 @@ async def navigate(page: Page, url: str, timeout_ms: int = 30_000) -> None:
         raise NavigationError(
             f"Navigation timed out: {url}",
             context={"url": url, "timeout_ms": timeout_ms},
+        ) from exc
+    except PlaywrightError as exc:
+        # Non-timeout navigation failures (DNS, connection refused, ERR_ABORTED, …) are a base
+        # playwright Error, NOT a TimeoutError — wrap them too so they're retryable via the
+        # NavigationError-only retry and never surface as a raw traceback (CLAUDE.md: typed errors).
+        raise NavigationError(
+            f"Navigation failed: {url} ({exc})",
+            context={"url": url},
         ) from exc
 
 

@@ -133,3 +133,52 @@ def test_pyproject_version_matches_runtime_version() -> None:
     pyproject = Path("pyproject.toml").read_bytes()
     data = tomllib.loads(pyproject.decode("utf-8"))
     assert data["project"]["version"] == __version__
+
+
+def test_get_settings_wraps_malformed_config_as_config_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A malformed config.toml must surface as a typed ConfigError, not a raw TOMLDecodeError."""
+    from job_applicator.cli import _get_settings
+    from job_applicator.exceptions import ConfigError
+
+    bad = tmp_path / "config.toml"
+    bad.write_text("this is = not valid toml [[[")
+    monkeypatch.setenv("JOB_APPLICATOR_CONFIG_FILE", str(bad))
+    with pytest.raises(ConfigError):
+        _get_settings()
+
+
+def test_doctor_reports_malformed_config_without_crashing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`doctor` (whose job is diagnosing config) must report a malformed config as a clean
+    failure (exit 1, no escaped raw exception), not crash before it can run."""
+    from typer.testing import CliRunner
+
+    from job_applicator import cli
+
+    bad = tmp_path / "config.toml"
+    bad.write_text("nope = [[[")
+    monkeypatch.setenv("JOB_APPLICATOR_CONFIG_FILE", str(bad))
+    result = CliRunner().invoke(cli.app, ["doctor"])
+    assert result.exit_code == 1
+    # Caught + reported, not escaped as a raw exception (SystemExit = a clean typer.Exit).
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
+def test_check_session_reports_typed_error_without_crashing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """check-session must surface a typed error (bad config / no browser) as a clean exit 1, not
+    a raw traceback — it previously ran asyncio.run bare with no JobApplicatorError wrapper."""
+    from typer.testing import CliRunner
+
+    from job_applicator import cli
+
+    bad = tmp_path / "config.toml"
+    bad.write_text("x = [[[")
+    monkeypatch.setenv("JOB_APPLICATOR_CONFIG_FILE", str(bad))
+    result = CliRunner().invoke(cli.app, ["check-session"])
+    assert result.exit_code == 1
+    assert result.exception is None or isinstance(result.exception, SystemExit)
