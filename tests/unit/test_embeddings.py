@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
 
-from job_applicator.config import EmbeddingConfig
+from job_applicator.config import EmbeddingConfig, LLMConfig
 from job_applicator.embeddings.service import EmbeddingService
+from job_applicator.embeddings.skill_extraction import LLMSkillExtractor
 
 
 class TestEmbeddingConfig:
@@ -324,3 +325,321 @@ class TestDescriptionSkillExtraction:
         matcher = JobMatcher(EmbeddingConfig(device="cpu", memory_limit_gb=0.5))
         assert matcher._extract_requirements_from_description("") == []
         assert matcher._extract_requirements_from_description("   ") == []
+
+
+class TestLLMSkillExtractor:
+    """Tests for LLM-driven skill extraction."""
+
+    @pytest.fixture
+    def llm_config(self) -> LLMConfig:
+        return LLMConfig(
+            model="test-model",
+            api_base="http://localhost:8000/v1",
+            api_key="not-needed",
+        )
+
+    @pytest.fixture
+    def extractor(self, llm_config: LLMConfig) -> LLMSkillExtractor:
+        return LLMSkillExtractor(llm_config)
+
+    def test_cache_key_includes_model_and_description(self) -> None:
+        """Cache key must differ when model or description changes."""
+        config1 = LLMConfig(model="model-a", api_base="http://localhost:8000/v1")
+        config2 = LLMConfig(model="model-b", api_base="http://localhost:8000/v1")
+        extractor1 = LLMSkillExtractor(config1)
+        extractor2 = LLMSkillExtractor(config2)
+
+        # Different models -> different keys for the same description.
+        assert extractor1._get_cache_key("same description") != extractor2._get_cache_key(
+            "same description"
+        )
+
+        # Different descriptions -> different keys for the same model.
+        key1 = extractor1._get_cache_key("description one")
+        key2 = extractor1._get_cache_key("description two")
+        assert key1 != key2
+        assert len(key1) == 16
+
+    def test_empty_description_returns_empty_list(self, extractor: LLMSkillExtractor) -> None:
+        """Empty or whitespace descriptions return an empty list without LLM call."""
+        import asyncio
+
+        with patch.object(extractor, "_call_llm") as mock_call:
+            assert asyncio.run(extractor.extract("")) == []
+            assert asyncio.run(extractor.extract("   ")) == []
+            assert asyncio.run(extractor.extract("\n\t")) == []
+            mock_call.assert_not_called()
+
+    def test_cache_hit_returns_cached_skills(self, extractor: LLMSkillExtractor) -> None:
+        """Cache hit returns cached skills without calling the LLM."""
+        import asyncio
+
+        description = "We need Python, Kubernetes."
+        cache_path = extractor._get_cache_path(description)
+        cache_path.write_text('{"skills": ["Python", "Kubernetes"]}', encoding="utf-8")
+
+        try:
+            with patch.object(extractor, "_call_llm") as mock_call:
+                result = asyncio.run(extractor.extract(description))
+                assert result == ["Kubernetes", "Python"]
+                mock_call.assert_not_called()
+        finally:
+            cache_path.unlink(missing_ok=True)
+
+    def test_llm_failure_returns_empty_list(self, extractor: LLMSkillExtractor) -> None:
+        """LLM failure returns [] and does not crash."""
+        import asyncio
+
+        with patch.object(extractor, "_call_llm", side_effect=RuntimeError("boom")):
+            result = asyncio.run(extractor.extract("We need Python.", use_cache=False))
+            assert result == []
+
+    def test_hallucinated_skills_are_dropped(self, extractor: LLMSkillExtractor) -> None:
+        """Skills not grounded in the description are dropped."""
+        import asyncio
+
+        description = "We need Python."
+        with patch.object(extractor, "_call_llm", return_value=["Python", "Rust", "Kubernetes"]):
+            result = asyncio.run(extractor.extract(description, use_cache=False))
+            assert result == ["Python"]
+
+    def test_aliases_kept_when_grounded(self, extractor: LLMSkillExtractor) -> None:
+        """Skills matching known aliases but not canonical form are kept."""
+        import asyncio
+
+        description = "We use postgres, vuejs."
+        with patch.object(extractor, "_call_llm", return_value=["postgres", "vuejs"]):
+            result = asyncio.run(extractor.extract(description, use_cache=False))
+            assert "PostgreSQL" in result
+            assert "Vue.js" in result
+
+    def test_react_native_compound_rejection(self, extractor: LLMSkillExtractor) -> None:
+        """React inside React Native is rejected; React Native explicit is kept."""
+        import asyncio
+
+        description_lower = "we are hiring a react native engineer."
+        with patch.object(extractor, "_call_llm", return_value=["React"]):
+            result = asyncio.run(extractor.extract(description_lower, use_cache=False))
+            assert "React" not in result
+
+        description_explicit = "Experience with React Native is required."
+        with patch.object(extractor, "_call_llm", return_value=["React Native"]):
+            result = asyncio.run(extractor.extract(description_explicit, use_cache=False))
+            assert "React Native" in result
+
+    def test_instructor_fallback_exercised(self, extractor: LLMSkillExtractor) -> None:
+        """If instructor fails, direct litellm is used."""
+        import asyncio
+
+        description = "We need Python."
+
+        fake_response = AsyncMock()
+        fake_response.choices = [AsyncMock()]
+        fake_response.choices[0].message.content = '{"skills": ["Python"]}'
+
+        mock_instructor = MagicMock()
+        mock_instructor.from_litellm.return_value.create = AsyncMock(
+            side_effect=RuntimeError("instructor failed")
+        )
+
+        with patch("job_applicator.embeddings.skill_extraction.instructor", mock_instructor):
+            with patch(
+                "job_applicator.embeddings.skill_extraction.acompletion",
+                return_value=fake_response,
+            ) as mock_acompletion:
+                result = asyncio.run(extractor.extract(description, use_cache=False))
+                assert result == ["Python"]
+                mock_instructor.from_litellm.assert_called_once()
+                mock_acompletion.assert_awaited_once()
+
+    def test_corrupt_cache_treated_as_miss(self, extractor: LLMSkillExtractor) -> None:
+        """Corrupt cache entries are treated as misses."""
+        import asyncio
+
+        description = "We need Python."
+        cache_path = extractor._get_cache_path(description)
+        cache_path.write_text("not json", encoding="utf-8")
+
+        try:
+            with patch.object(extractor, "_call_llm", return_value=["Python"]) as mock_call:
+                result = asyncio.run(extractor.extract(description))
+                assert result == ["Python"]
+                mock_call.assert_called_once()
+        finally:
+            cache_path.unlink(missing_ok=True)
+
+    def test_cache_key_changes_when_model_changes(self, extractor: LLMSkillExtractor) -> None:
+        """Cache key must differ when llm.model changes."""
+        config_a = LLMConfig(model="model-a", api_base="http://localhost:8000/v1")
+        config_b = LLMConfig(model="model-b", api_base="http://localhost:8000/v1")
+        extractor_a = LLMSkillExtractor(config_a)
+        extractor_b = LLMSkillExtractor(config_b)
+        assert extractor_a._get_cache_key("same") != extractor_b._get_cache_key("same")
+
+    def test_duplicate_and_empty_skills_cleaned(self, extractor: LLMSkillExtractor) -> None:
+        """Duplicate and empty skill strings are cleaned."""
+        import asyncio
+
+        description = "We need Python, AWS."
+        with patch.object(
+            extractor, "_call_llm", return_value=["Python", "Python", "", "  ", "AWS"]
+        ):
+            result = asyncio.run(extractor.extract(description, use_cache=False))
+            assert result == ["AWS", "Python"]
+
+    def test_user_message_is_exact_truncated_description(
+        self, extractor: LLMSkillExtractor
+    ) -> None:
+        """The user message contains exactly the first 1500 characters."""
+        import asyncio
+
+        description = "x" * 2000
+        expected = description[:1500]
+
+        fake_response = AsyncMock()
+        fake_response.choices = [AsyncMock()]
+        fake_response.choices[0].message.content = '{"skills": []}'
+
+        with patch("job_applicator.embeddings.skill_extraction.instructor") as mock_instructor:
+            mock_instructor.from_litellm.return_value.create.side_effect = RuntimeError(
+                "instructor failed"
+            )
+            with patch(
+                "job_applicator.embeddings.skill_extraction.acompletion",
+                return_value=fake_response,
+            ) as mock_acompletion:
+                asyncio.run(extractor.extract(description, use_cache=False))
+                call_kwargs = mock_acompletion.await_args.kwargs
+                messages = call_kwargs["messages"]
+                assert messages[1]["role"] == "user"
+                assert messages[1]["content"] == expected
+
+    def test_call_args_use_quiet_litellm_enable_thinking_and_model_prefix(
+        self, extractor: LLMSkillExtractor
+    ) -> None:
+        """quiet_litellm, enable_thinking=False, and openai/ model prefix are used."""
+        import asyncio
+
+        description = "We need Python."
+        fake_response = AsyncMock()
+        fake_response.choices = [AsyncMock()]
+        fake_response.choices[0].message.content = '{"skills": ["Python"]}'
+
+        with patch("job_applicator.embeddings.skill_extraction.quiet_litellm") as mock_quiet:
+            with patch(
+                "job_applicator.embeddings.skill_extraction.acompletion",
+                return_value=fake_response,
+            ) as mock_acompletion:
+                with patch(
+                    "job_applicator.embeddings.skill_extraction.instructor"
+                ) as mock_instructor:
+                    mock_instructor.from_litellm.return_value.create.side_effect = RuntimeError(
+                        "instructor failed"
+                    )
+                    result = asyncio.run(extractor.extract(description, use_cache=False))
+                    assert result == ["Python"]
+                    mock_quiet.assert_called_once()
+                    mock_acompletion.assert_awaited_once()
+                    call_kwargs = mock_acompletion.await_args.kwargs
+                    assert call_kwargs["model"] == "openai/test-model"
+                    assert call_kwargs.get("extra_body") == {
+                        "chat_template_kwargs": {"enable_thinking": False}
+                    }
+                    messages = call_kwargs["messages"]
+                    assert messages[0]["role"] == "system"
+                    assert messages[1]["role"] == "user"
+                    assert messages[1]["content"] == description[:1500]
+
+    def test_reporter_records_cache_hit(self, extractor: LLMSkillExtractor) -> None:
+        """Reporter records cache hit event."""
+        import asyncio
+
+        from job_applicator.utils.verbose import VerboseReporter
+
+        description = "We need Python."
+        cache_path = extractor._get_cache_path(description)
+        cache_path.write_text('{"skills": ["Python"]}', encoding="utf-8")
+        reporter = VerboseReporter(command="test", args={}, config={})
+
+        try:
+            with patch.object(extractor, "_call_llm") as mock_call:
+                asyncio.run(extractor.extract(description, reporter=reporter))
+                mock_call.assert_not_called()
+                details = [call["details"] for call in reporter.report.llm.calls]
+                assert {"skill_extraction": "cache_hit"} in details
+        finally:
+            cache_path.unlink(missing_ok=True)
+
+    def test_reporter_records_cache_miss_and_instructor_call(
+        self, extractor: LLMSkillExtractor
+    ) -> None:
+        """Reporter records cache miss and instructor llm_call event."""
+        import asyncio
+
+        from job_applicator.utils.verbose import VerboseReporter
+
+        description = "We need Python."
+        reporter = VerboseReporter(command="test", args={}, config={})
+
+        fake_response = AsyncMock()
+        fake_response.skills = ["Python"]
+
+        with patch("job_applicator.embeddings.skill_extraction.instructor") as mock_instructor:
+            mock_instructor.from_litellm.return_value.create = AsyncMock(return_value=fake_response)
+            asyncio.run(extractor.extract(description, use_cache=False, reporter=reporter))
+
+        details = [call["details"] for call in reporter.report.llm.calls]
+        assert {"skill_extraction": "cache_miss"} in details
+        assert {"skill_extraction": "llm_call", "method": "instructor"} in details
+
+    def test_reporter_records_fallback_and_direct_call(self, extractor: LLMSkillExtractor) -> None:
+        """Reporter records fallback and direct llm_call event."""
+        import asyncio
+
+        from job_applicator.utils.verbose import VerboseReporter
+
+        description = "We need Python."
+        reporter = VerboseReporter(command="test", args={}, config={})
+
+        fake_response = AsyncMock()
+        fake_response.choices = [AsyncMock()]
+        fake_response.choices[0].message.content = '{"skills": ["Python"]}'
+
+        with patch("job_applicator.embeddings.skill_extraction.instructor") as mock_instructor:
+            mock_instructor.from_litellm.return_value.create.side_effect = RuntimeError(
+                "instructor failed"
+            )
+            with patch(
+                "job_applicator.embeddings.skill_extraction.acompletion",
+                return_value=fake_response,
+            ):
+                asyncio.run(extractor.extract(description, use_cache=False, reporter=reporter))
+
+        details = [call["details"] for call in reporter.report.llm.calls]
+        assert {"skill_extraction": "cache_miss"} in details
+        assert {
+            "skill_extraction": "fallback",
+            "from": "instructor",
+            "to": "direct",
+        } in details
+        assert {
+            "skill_extraction": "llm_call",
+            "method": "direct",
+            "fallback": True,
+        } in details
+
+    def test_reporter_records_error(self, extractor: LLMSkillExtractor) -> None:
+        """Reporter records error event on LLM failure."""
+        import asyncio
+
+        from job_applicator.utils.verbose import VerboseReporter
+
+        description = "We need Python."
+        reporter = VerboseReporter(command="test", args={}, config={})
+
+        with patch.object(extractor, "_call_llm", side_effect=RuntimeError("boom")):
+            asyncio.run(extractor.extract(description, use_cache=False, reporter=reporter))
+
+        details = [call["details"] for call in reporter.report.llm.calls]
+        assert any(d.get("skill_extraction") == "error" for d in details)
+        assert reporter.report.errors
