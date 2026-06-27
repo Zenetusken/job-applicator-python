@@ -17,7 +17,11 @@ from typing import TYPE_CHECKING
 from rich.panel import Panel
 from rich.table import Table
 
-from job_applicator.documents.artifacts import write_tailored, write_tailored_pdf
+from job_applicator.documents.artifacts import (
+    strip_markdown_bold,
+    write_tailored,
+    write_tailored_pdf,
+)
 from job_applicator.documents.job_category import detect_job_category
 from job_applicator.models import Format
 from job_applicator.utils.diff import render_diff
@@ -81,12 +85,14 @@ async def _tailor_workflow(
         console.print("\n[bold]Tailored Resume Preview:[/bold]\n")
         console.print(
             Panel(
-                result.tailored_text,
+                strip_markdown_bold(result.tailored_text),
                 title="Tailored Resume",
                 border_style="cyan",
             )
         )
-        render_diff(console, session.original_text, result.tailored_text, max_lines=30)
+        render_diff(
+            console, session.original_text, strip_markdown_bold(result.tailored_text), max_lines=30
+        )
 
         console.print("\n[bold]Metadata:[/bold]")
         meta_table = Table(show_header=False, box=None)
@@ -108,7 +114,7 @@ async def _tailor_workflow(
         console.print(meta_table)
 
         console.print("\n[bold]Changes Made:[/bold]")
-        console.print(result.changes_summary)
+        console.print(strip_markdown_bold(result.changes_summary))
 
         console.print("\n[bold]What would you like to do?[/bold]")
         action_table = Table(show_header=False, box=None)

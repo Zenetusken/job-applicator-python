@@ -38,6 +38,30 @@ class EmbeddingService:
         self._cache_dir = Path.home() / ".job-applicator" / "embeddings"
         self._cache_dir.mkdir(parents=True, exist_ok=True)
 
+    def _resolve_device(self) -> str:
+        """Resolve the embedding device, falling back to CPU when CUDA is requested
+        but unavailable — so a CPU-only box runs (slower) instead of crashing at load.
+
+        Only ``cuda*`` requests are checked; an explicit ``cpu``/``mps``/other is honored
+        as-is. The fallback is loud (a warning) so the user knows performance will differ.
+        """
+        configured = self._config.device
+        if not configured.lower().startswith("cuda"):
+            return configured
+        try:
+            import torch
+        except ImportError:
+            logger.warning("embedding.device=%r but torch is unavailable; using CPU.", configured)
+            return "cpu"
+        if not torch.cuda.is_available():
+            logger.warning(
+                "embedding.device=%r but CUDA is not available; falling back to CPU (slower). "
+                "Set embedding.device='cpu' in config to silence this.",
+                configured,
+            )
+            return "cpu"
+        return configured
+
     def _load_model(self) -> SentenceTransformer:
         """Lazy-load the embedding model with VRAM limits."""
         if self._model is None:
@@ -53,7 +77,7 @@ class EmbeddingService:
                 # Load model with memory limit
                 self._model = SentenceTransformer(
                     self._config.model_name,
-                    device=self._config.device,
+                    device=self._resolve_device(),
                     model_kwargs={
                         "torch_dtype": "float16",  # Use FP16 to save VRAM
                     },

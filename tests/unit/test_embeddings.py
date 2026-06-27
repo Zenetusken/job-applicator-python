@@ -48,6 +48,34 @@ class TestEmbeddingService:
     def service(self, config: EmbeddingConfig) -> EmbeddingService:
         return EmbeddingService(config)
 
+    def test_resolve_device_falls_back_to_cpu_when_cuda_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `cuda` request on a box without CUDA falls back to CPU rather than crashing."""
+        import sys
+        from types import SimpleNamespace
+
+        monkeypatch.setitem(
+            sys.modules, "torch", SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False))
+        )
+        svc = EmbeddingService(EmbeddingConfig(device="cuda", memory_limit_gb=0.5))
+        assert svc._resolve_device() == "cpu"
+
+    def test_resolve_device_honors_cpu_and_available_cuda(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Explicit `cpu` is honored without importing torch; available CUDA is kept."""
+        import sys
+        from types import SimpleNamespace
+
+        cpu_svc = EmbeddingService(EmbeddingConfig(device="cpu", memory_limit_gb=0.5))
+        assert cpu_svc._resolve_device() == "cpu"
+        monkeypatch.setitem(
+            sys.modules, "torch", SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True))
+        )
+        cuda_svc = EmbeddingService(EmbeddingConfig(device="cuda", memory_limit_gb=0.5))
+        assert cuda_svc._resolve_device() == "cuda"
+
     def test_cache_key_generation(self, service: EmbeddingService) -> None:
         """Test cache key consistency."""
         text = "Test text for caching"
