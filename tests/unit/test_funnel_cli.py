@@ -475,3 +475,19 @@ def test_status_db_error_is_clean(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.exit_code == 1, result.output
     assert "Traceback (most recent call last)" not in (result.stdout + result.stderr)
     assert "database is locked" in result.stderr
+
+
+def test_dead_verbose_flags_removed_from_status_only_commands() -> None:
+    """The --verbose/--log-file flags were dead no-ops on status/doctor/check-session (they
+    record nothing) — removed so the CLI no longer advertises a flag that does nothing. They
+    are now usage errors (exit 2 at arg-parse, before any execution)."""
+    from typer.testing import CliRunner
+
+    from job_applicator import cli
+
+    runner = CliRunner()
+    for cmd in ("status", "doctor", "check-session"):
+        assert runner.invoke(cli.app, [cmd, "--verbose"]).exit_code == 2, f"{cmd} --verbose"
+        assert runner.invoke(cli.app, [cmd, "--log-file", "x.log"]).exit_code == 2, (
+            f"{cmd} --log-file"
+        )
