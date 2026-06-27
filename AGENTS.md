@@ -27,7 +27,7 @@ ruff format src/ tests/
 # Release (see RELEASING.md)
 bash scripts/release.sh <version>   # bump version, update CHANGELOG.md, tag, build dist
 
-# Tests — 950+ fast unit tests (the green gate); 990+ total = 950+ unit + 8 integration + 34 live
+# Tests — 1066 fast unit tests (the green gate); 1109 total = 1066 unit + 9 integration + 34 live
 pytest -m unit -v               # or: pytest tests/unit/ -v   (auto-marked by location)
 pytest -m unit -v -k test_name  # single test
 
@@ -101,6 +101,10 @@ src/job_applicator/
 - **All business-logic exceptions are `JobApplicatorError` subclasses.** A small number of built-ins
   are intentionally raised directly (`IndexError` for out-of-range session access, `OSError` for
   secure-store symlink refusal). No bare `RuntimeError`.
+- **No failure-masking fallbacks.** On a failure or unavailable dependency, RAISE a typed error —
+  never return a fabricated default/empty that's indistinguishable from a real result (style guide,
+  skills, scrape, score). Distinguish a *failure* (raise) from a legitimately-*empty* input/result
+  (return empty). The honest-failure scrapers are the template (cards present but none parsed → raise).
 - **Async for I/O, sync for CPU.** Playwright/HTTP = async. Parsing/formatting/embeddings = sync.
 - **Config is centralized.** `AppSettings` in `config.py`. Env prefix: `JOB_APPLICATOR_*`.
 - **No global mutable business state.** Pass `AppSettings`/context objects. A few module-level
@@ -180,8 +184,10 @@ src/job_applicator/
   suffix checks. It is also used to drop look-alike hosts when importing cookies from a browser.
 - **LinkedIn description extraction clicks cards.** The scraper clicks each card, waits for content
   change, clicks the correct "show more" button, then extracts with a 5 000-char cap.
-- **`--verbose` and `--log-file` work both before and after the command.** `--verbose` emits a
-  structured `VerboseReport`; `--log-file` persists it to disk.
+- **`--verbose` and `--log-file` work both before and after the *data* commands** (search, match,
+  tailor, apply, batch, generate-cover-letter, ats-check). `--verbose` emits a structured
+  `VerboseReport`; `--log-file` persists it to disk. The status-only `status`/`doctor`/`check-session`
+  don't take them (they record nothing into a reporter).
 - **JSON output goes to stdout, logs go to stderr.** Enables `job-applicator match --json | jq .`
   without Rich wrapping corruption.
 - **Batch runs persist progress for crash recovery.** State lives in
@@ -254,9 +260,9 @@ that generate cover letters. The default dry-run `apply` does not run the ATS pr
 ## Testing
 
 - Tests are auto-marked by location (`tests/conftest.py`): `pytest -m unit` / `-m live` /
-  `-m integration` all work. Unit suite (`pytest -m unit`, ~950) is fast — no browser/GPU; the green
+  `-m integration` all work. Unit suite (`pytest -m unit`, ~1066) is fast — no browser/GPU; the green
   gate.
-- 8 integration tests live in `tests/integration/` and exercise browser automation wiring + PDF
+- 9 integration tests live in `tests/integration/` and exercise browser automation wiring + PDF
   rendering.
 - The 34 live tests at `tests/` root carry `-m live`; they need vLLM (`localhost:8000`) + GPU; run
   them manually.

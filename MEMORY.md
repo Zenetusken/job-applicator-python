@@ -3,11 +3,11 @@
 Project memory for job-applicator-python. Consolidated facts about the codebase,
 decisions, and current state. Keep under ~200 lines; prune stale entries when adding.
 
-_Last synced: 2026-06-25_
+_Last synced: 2026-06-26_
 
 ## Snapshot
 
-- **Stats:** 62 source modules (`src/job_applicator/`), ~950 fast unit tests (`pytest -m unit` — the green gate, no browser/GPU); ~990 total = ~950 unit + 8 integration + 34 live (`-m live`) needing vLLM (`localhost:8000`) + GPU. Tests auto-marked by location in `tests/conftest.py`. Live tests skip cleanly when the configured LLM endpoint is unreachable.
+- **Stats:** 64 source modules (`src/job_applicator/`), 1066 fast unit tests (`pytest -m unit` — the green gate, no browser/GPU); 1109 total = 1066 unit + 9 integration + 34 live (`-m live`) needing vLLM (`localhost:8000`) + GPU. Tests auto-marked by location in `tests/conftest.py`. Live tests skip cleanly when the configured LLM endpoint is unreachable.
 - **Python:** 3.12+ (dev box 3.12.8). Mypy strict; ruff (100-char lines, double quotes).
 - **Quality gates (all must pass, in order):**
   `ruff check src/ tests/` → `ruff format --check src/ tests/` →
@@ -39,7 +39,7 @@ _Last synced: 2026-06-25_
 
 - Pydantic models cross module boundaries, never dicts. All exceptions subclass `JobApplicatorError`.
 - Async for I/O, sync for CPU. Config centralized in `AppSettings`; no global mutable state.
-- Combined match score = 60% semantic + 40% skill coverage. Skill semantic threshold 0.75 (retuned in v0.3.5 to separate genuine synonyms from same-domain false positives).
+- Combined match score = 60% semantic + 40% skill coverage; **semantic-only when a job lists no requirements** (skill coverage unknown → no neutral floor; `_combined_score` in `embeddings/matching.py`). Skill semantic threshold 0.75 (retuned in v0.3.5 to separate genuine synonyms from same-domain false positives).
 - Skills are normalized before matching/validation (`Python 3` → `Python`, `reactjs` → `React`); generic traits (`team player`, `communication`) are hard-negative filtered so they don't distort skill scores.
 - Apply is dry-run by default; `--submit` opt-in required. Dry runs generate cover letters as a preview whenever `--cover-letter` is enabled and a résumé path is configured; the generated text is surfaced in `--json` output and in the console table. `--validate` exits non-zero if a dry run doesn't reach the Submit button. `DryRunValidation` records reachability, fields filled, resume upload, and cover-letter field presence.
 - LLM via litellm + instructor; **client of an external** OpenAI-compatible endpoint (`[llm] api_base`,
@@ -122,6 +122,26 @@ Completed a second systematic hardening pass with baseline capture and unit test
 - **Batch resume no longer wipes progress** — `BatchState.start_run()` gained a `reset` parameter; the CLI only calls it when not resuming an existing run, so `--resume-run` keeps completed jobs.
 - **Daily cap is accurate** — `ApplicationResult.timestamp` is now UTC-aware; `count_today()` filters to `status='submitted'` and uses correct parameter ordering so dry runs / failures don't consume the cap.
 - **Dry runs don't pollute application state** — the `apply` command only records to `ApplicationState` when `submit=True`.
+
+## Hardening arc + TUI redesign (2026-06-26, PRs #77–#87)
+
+A six-tier hardening pass (each test-first + gated + Gate-2a-reviewed) plus a Textual TUI redo:
+
+- **Honest failure — no fabricated fallbacks (the keystone, T6).** On a failure/unavailable
+  dependency the code RAISES a typed error instead of returning a default that looks legit:
+  `style_analyzer` (no invented StyleGuide on a dead endpoint), `skill_extraction` (raise on an
+  LLM-call failure; `[]` only on a successful no-skills response), `cookies.read_cookies` (raise on
+  a corrupt file; `[]` only for an absent one), both scrapers (0 cards / all-cards-failed → raise),
+  `resume_tailor._summarize_changes` (raise, no "summary generation failed" string). The sweep
+  *exposed 5 tests that had codified the masking* (a style test green only because the default
+  matched; matcher/extractor tests asserting "failure → []/0.5") — all rewritten to assert raise.
+- **Other tiers:** seniority/match COALESCE data-loss guards; `--json` stdout-purity on no-result
+  paths; UTC-normalized daily cap + SQLite WAL on all three stores; matching encode offloaded via
+  `asyncio.to_thread`; `navigate()` wraps all Playwright errors; typed `ConfigError` + graceful
+  `doctor`; matching is **semantic-only when a job lists no requirements** (no 0.5 floor).
+- **TUI:** job list is a wrapping **OptionList** of multi-line cards (DataTable can't wrap) rendered
+  as a **compact bordered table** (per-card stage spine + `$panel` row-divider, no blank gap); real
+  apply attaches the stored cover letter; account workers stay one-at-a-time + non-`exclusive`.
 
 ## Workflow
 
