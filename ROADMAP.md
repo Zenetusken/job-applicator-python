@@ -5,6 +5,32 @@ Living tracker of planned work. Detailed specs/plans/reports live under `docs/co
 implement → gate (`ruff` · `ruff format --check` · `mypy src/` · `pytest -m unit` ·
 `pytest -m live`) → code-review → commit → PR.
 
+## Planned — committed next (two arcs, back-to-back)
+
+Both are committed and **sequenced to run immediately one after the other** — whichever starts
+first, the other follows directly with no gap. Recommended order: **Arc 1 (cleanup) first, Arc 2
+(redesign) second** — cleanup is small/independent/low-risk and clears the deck, and its
+device-robust embedding service feeds the redesign; the redesign is a deliberate multi-phase arc
+that wants a clean, uninterrupted focus block.
+
+- **Arc 1 — Deferred UX/robustness cleanup** (out-of-scope items banked from PRs #90 / #91).
+  One small self-contained PR:
+  - **Tailored résumé strips markdown** — `**bold**` currently leaks into the tailored résumé
+    output/preview (cover letters already de-markdown; fix the `resume_tailor` / formatting path).
+  - **Cover-letter voice** — reduce repeated-verb tells (e.g. "engineered" ×4) via the de-AI
+    re-prompt.
+  - **TUI per-skill detail** — surface matched/missing skills per job (the CLI `match` table shows
+    them; the TUI shows only the score) — `tui/`.
+  - **`status` "Recent jobs" ordering** — worst→best today; make the sort intentional + documented.
+  - **Embeddings CPU fallback** — `embedding.device` defaults to `cuda` with no
+    `torch.cuda.is_available()` guard (`config.py` → `embeddings/service.py`); fall back to CPU on
+    non-CUDA boxes instead of crashing.
+- **Arc 2 — Domain-general (semantic) skill grounding** — spec:
+  `docs/compose/specs/2026-06-26-semantic-skill-grounding.md`. Retire the keyword grounding +
+  hardcoded (software-only) normalization for **LLM evidence-span grounding + embedding-dedup
+  normalization**; ESCO/O*NET taxonomy as the north star. Phased (flag → A/B on a multi-domain eval
+  set → default-on). This is the "keyword matching won't scale to other domains" fix.
+
 ## Shipped
 
 - **Style-guide + sign-off release** (PR #35 / v0.3.6): structured cover-letter sign-off
