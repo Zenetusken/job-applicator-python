@@ -1,0 +1,90 @@
+# Spec: domain-general skill grounding & normalization
+
+**Status:** Proposed (design only — not yet scheduled). Interim correctness fixes shipped
+separately (F-A/F-B/F-D, see "Interim" below).
+**Motivation:** A live-CLI QA pass surfaced skill-matching bugs; fixing them exposed that the
+skill *canonicalization + grounding* layer is keyword/hardcoded and software-domain-only. It will
+not generalize to other domains (nursing, finance, legal, trades). Keyword matching is not enough.
+
+## Current pipeline (measured 2026-06-26)
+
+`match` skill coverage = **extract → normalize → ground → match**:
+
+| Stage | Mechanism | Generalizes? |
+|---|---|---|
+| Extract skills from JD | LLM (Qwen3.5-4B via instructor) — `embeddings/skill_extraction.py` | ✅ LLM is domain-general |
+| Normalize (`NORMALIZATION_MAP`) | **58 hardcoded tech aliases** — `skills/normalization.py` | ❌ zero non-software coverage |
+| Hard-negatives (`HARD_NEGATIVE_SKILLS`) | hardcoded frozenset | ❌ tech/generic-tuned |
+| Ground (`_is_grounded`) | **19 regex/substring ops** + compound/stopword heuristics, **0 embeddings** | ❌ pure keyword |
+| Match skill↔requirement (`_match_skills`) | **embeddings (mxbai), cosine ≥ 0.75** (15 embed calls) — `embeddings/matching.py` | ✅ already semantic |
+
+Key insight: the **matching is already semantic**; the embedding model is loaded but the grounding
+step ignores it. The non-scalable parts are **normalization, hard-negatives, grounding** — wedged
+between the (general) LLM and the (general) embedder.
+
+## Goal
+
+Domain-general skill canonicalization + grounding on the existing local stack (Qwen3.5-4B + mxbai,
+both already loaded; 12 GB GPU), without heavy new dependencies, preserving the hallucination guard
+that grounding provides (a skill must be *claimed in the text*, not merely plausible).
+
+## Proposed approach
+
+### 1. Grounding: substring → verify-the-citation (LLM evidence spans)
+Have the extractor return, per skill, the **exact source span** it is drawn from (structured output
+already in use via instructor). Grounding = verify that span occurs in the source text (cheap,
+exact, domain-general). A fabricated skill yields a span that fails verification → dropped — the
+hallucination guard survives without a map or hand-tuned compound heuristics.
+- **Fallback / lighter variant:** embedding-cosine grounding — embed skill vs source sentences,
+  grounded if max cosine ≥ τ. No extra LLM tokens, reuses mxbai, handles paraphrase
+  ("managed patients" ≈ "patient care"); weaker guard ("near the text" ≠ "claimed"). Needs τ tuned
+  per [[embedding-threshold-empirics]] discipline.
+
+### 2. Normalization: hardcoded map → canonical-from-LLM + embedding-dedup
+LLM emits canonical names directly; collapse near-duplicates by embedding similarity. The 58-entry
+map degrades to an optional fast-path/cache, not the source of truth.
+- **North star:** link to a standard multi-domain ontology — **ESCO** (~13k skills, free, all
+  occupations) / O*NET / Lightcast Open Skills — embedded once, queried by nearest-neighbor. Biggest
+  lift; own project. Gives synonym handling + cross-domain canonical names for free.
+
+### 3. Hard-negatives
+A taxonomy distinguishes skills from generic traits inherently; until then keep a *small,
+domain-agnostic* stop-list rather than a growing tech list.
+
+## Migration (staged)
+
+- **Interim (shipped):** F-A résumé multi-line comma-skill parse; F-B grounding stops dropping
+  single-word skills before ordinary nouns (known-multiword gate, `_KNOWN_MULTIWORD_SKILLS` from the
+  map values + `react native`); F-D short-skill (`Go`/`C#`) survival. These make the *current*
+  software path correct; they are **not** the scaling answer — but F-B already nudges toward it:
+  dropping the synthesize-a-compound-from-any-noun behavior keeps single-word skills grounded in
+  *any* domain (e.g. "phlebotomy training" keeps `phlebotomy`), even though normalization stays
+  software-only.
+- **Phase 1:** evidence-span grounding behind a config flag; A/B against the current keyword
+  grounding on the eval set; default-on when ≥ parity on tech and clearly better cross-domain.
+- **Phase 2:** embedding-dedup normalization; demote `NORMALIZATION_MAP` to a cache.
+- **Phase 3 (optional):** ESCO/taxonomy backbone.
+
+## Validation
+
+- **Multi-domain eval set:** labelled (résumé, JD) pairs across ≥4 domains (software, nursing,
+  finance, skilled trades) with expected matched/missing skills. Current harness is software-only.
+- **Regression guards already added:** the QA harness now asserts the *positive* direction
+  (a strong-overlap job reports a résumé skill as MATCHED) on a realistic wrapped-skills résumé, plus
+  unit guards for F-A/F-B/F-D. Extend with cross-domain cases.
+- **Threshold discipline:** any new cosine threshold tuned + documented per
+  [[embedding-threshold-empirics]] (the 0.75 skill-match value was tuned only on tech).
+
+## Risks / open questions
+
+- LLM token cost + latency of evidence spans (mitigated: spans are short; cache by JD hash already
+  exists). 4B span-citation reliability — mitigated because we *verify* the span (a bad citation
+  fails closed). Beware few-shot span examples being copied verbatim ([[keyfigures-example-hallucination]]).
+- Canonical-name consistency across calls (cache + deterministic prompting).
+- Taxonomy choice (ESCO vs O*NET vs Lightcast) + licensing + ~13k-entry embedding footprint on a
+  12 GB box (fits, but co-resident with vLLM + mxbai — measure).
+- Where grounding runs: per-skill vs one batched verification call.
+- Distinct-skill vs subskill-of-a-present-skill: the interim known-compound gate correctly drops
+  bare `React` for "react native" (a distinct framework) but would also drop `AWS` for "AWS Lambda",
+  where AWS is a *present superset* — wrong-ish. The redesign must tell these apart (taxonomy
+  parent/child, or evidence-span keeps both). Pre-existing in the interim heuristic; not a regression.

@@ -240,6 +240,21 @@ _PROSE_STOPWORDS: frozenset[str] = frozenset(
 )
 
 
+# Genuine multi-word skills (lowercased), taken from the canonical VALUES of the
+# normalization map — e.g. "react native", "spring boot", "machine learning".
+# Grounding treats "<skill> <next-word>" as one of these distinct compound skills
+# (and so rejects the bare first word) ONLY when the pair is in this set. A skill
+# followed by an ordinary noun ("kubernetes platform", "python automation") is NOT
+# a compound, so the bare skill stays grounded. Built from canonical values, not
+# alias keys, so an alias that normalizes back to the bare skill ("docker
+# container" → Docker) never disqualifies it.
+_KNOWN_MULTIWORD_SKILLS: frozenset[str] = frozenset(
+    " ".join(canonical.lower().split())
+    for canonical in NORMALIZATION_MAP.values()
+    if len(canonical.split()) > 1
+)
+
+
 class SkillExtractionOutput(BaseModel):
     """Structured output for LLM skill extraction."""
 
@@ -549,7 +564,12 @@ class LLMSkillExtractor:
             next_token = tokens[i + 1]
             if next_token.lower() in non_compound or _is_version_like(next_token):
                 continue
-            multi_word_forms.add(f"{token.lower()} {next_token.lower()}")
+            # Only a KNOWN multi-word skill (e.g. "react native") makes the bare
+            # first word a different skill and thus disqualifies it; an ordinary
+            # following noun ("kubernetes platform", "python automation") does not.
+            compound = f"{token.lower()} {next_token.lower()}"
+            if compound in _KNOWN_MULTIWORD_SKILLS:
+                multi_word_forms.add(compound)
 
         for form in surface_forms:
             if not form or not form.strip():

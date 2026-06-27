@@ -27,6 +27,7 @@ NORMALIZATION_MAP: Final[dict[str, str]] = {
     "ts": "TypeScript",
     "react js": "React",
     "reactjs": "React",
+    "react native": "React Native",
     "node js": "Node.js",
     "nodejs": "Node.js",
     "vue js": "Vue.js",

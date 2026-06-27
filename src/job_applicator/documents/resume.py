@@ -358,17 +358,25 @@ class ResumeLoader:
                     for part in parts:
                         # Remove leading bullets
                         part = re.sub(r"^[•·\-\|/]\s*", "", part).strip()
-                        if part and len(part) > 2:
+                        # >= 2 so common short skills survive (Go, C#, AI, ML, UX);
+                        # single chars are dropped as too noisy/ambiguous.
+                        if part and len(part) >= 2:
                             clean_lines.append(part)
 
-            # Determine if skills are comma-separated on one line or one-per-line
-            if len(clean_lines) == 1 and "," in clean_lines[0]:
-                # All skills on one line, comma-separated
-                raw = clean_lines[0].split(",")
-                skills = [s.strip() for s in raw if s.strip() and len(s.strip()) > 2]
-            else:
-                # One-per-line (also covers a single non-comma skill / empty)
-                skills = [s.strip() for s in clean_lines if len(s.strip()) > 2]
+            # Skills may be comma-separated (often wrapping across several lines),
+            # one-per-line, or a mix. Split any line containing commas into its
+            # tokens and keep comma-free lines as single skills, so a wrapped comma
+            # list ("Python, asyncio,\npytest, Git") parses to individual skills
+            # instead of one blob per line. (The old "comma-split only when a single
+            # line" path mis-parsed every wrapped comma list into per-line blobs,
+            # which then matched nothing during skill-coverage scoring.)
+            for clean_line in clean_lines:
+                if "," in clean_line:
+                    skills.extend(
+                        tok.strip() for tok in clean_line.split(",") if len(tok.strip()) >= 2
+                    )
+                else:
+                    skills.append(clean_line)
 
         # Extract summary/objective
         if "Summary" in text:

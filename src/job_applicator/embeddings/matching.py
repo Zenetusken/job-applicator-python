@@ -312,7 +312,8 @@ class JobMatcher:
         valid_skills = [
             s
             for s in norm_skills
-            if len(s.strip()) > 2 and s.strip() != "•" and not is_hard_negative(s)
+            # >= 2 so short skills (Go, C#, AI, ML) aren't silently dropped from coverage.
+            if len(s.strip()) >= 2 and s.strip() != "•" and not is_hard_negative(s)
         ]
 
         # Preserve original requirement text for reporting while matching on
