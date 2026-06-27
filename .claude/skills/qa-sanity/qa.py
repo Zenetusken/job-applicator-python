@@ -157,7 +157,11 @@ def make_fixtures() -> dict[str, Path]:
                         "Backend Engineer, Globex (2017-2021)",
                         "Designed PostgreSQL schemas and Redis caching for a 5M-user app."]),
         ("Education", ["B.S. Computer Science, State University (2017)"]),
-        ("Skills", ["Python, asyncio, FastAPI, Pydantic, PostgreSQL, Redis, Docker, AWS"]),
+        # Deliberately a comma list WRAPPED across two lines — the realistic résumé shape
+        # that exposed the F-A skill-parse bug (a single line parsed fine and hid it). Keep
+        # it multi-line so the harness exercises the real case, not the easy one.
+        ("Skills", ["Python, asyncio, FastAPI, Pydantic,",
+                    "PostgreSQL, Redis, Docker, AWS"]),
     ]:
         d.add_heading(h, 1)
         for ln in lines:
@@ -446,6 +450,21 @@ def live_checks(fx: dict[str, Path]) -> None:
             react_ok = "react" in miss or "typescript" in miss
     record("match: React job reports React/TypeScript as missing skills", t, react_ok,
            "missing_skills under-reports the gap" if not react_ok else "ok")
+
+    # QA F-C (blind-spot guard): the React→missing check above is DEGENERATE — it passes even
+    # when matching is fully broken, because an empty matched set makes every requirement
+    # trivially "missing". Assert the POSITIVE direction too: a strong-overlap job must report a
+    # skill the résumé actually HAS as MATCHED. Combined with the wrapped multi-line Skills
+    # fixture, this would have caught both the F-A parser blob bug and the F-B grounding drop.
+    matched_ok = False
+    if isinstance(arr, list):
+        strong = next((j for j in arr if "Python Engineer" in j.get("title", "")), None)
+        if strong is not None:
+            got = " ".join(strong.get("matched_skills", [])).lower()
+            matched_ok = any(s in got for s in ("python", "asyncio", "postgresql"))
+    record("match: strong-overlap job reports a résumé skill as MATCHED (not just missing)", t,
+           matched_ok,
+           "matched_skills empty — résumé's own skills not recognized" if not matched_ok else "ok")
 
     # Increment 1: match persists scored jobs into the funnel store (a side effect of the
     # LIVE match runs above) — assert at the isolated DB directly.

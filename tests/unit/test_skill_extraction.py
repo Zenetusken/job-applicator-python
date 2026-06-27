@@ -152,6 +152,29 @@ class TestSkillExtraction:
         result = await extractor.extract("We need React experience for this role.")
         assert "React" in result
 
+    async def test_single_word_skill_grounded_before_ordinary_noun(
+        self, extractor: LLMSkillExtractor, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F-B regression: a skill followed by an ordinary noun ("Kubernetes platform",
+        "Python automation") is NOT a compound skill, so the bare skill stays grounded.
+        The old heuristic synthesized a compound from any non-stopword continuation and
+        dropped Kubernetes/Python even though they were literally in the description."""
+
+        async def fake_llm(description: str) -> _ExtractionResult:
+            return _ExtractionResult(
+                skills=["Kubernetes", "Python"],
+                method="instructor",
+                fallback=False,
+            )
+
+        monkeypatch.setattr(extractor, "_call_llm", fake_llm)
+
+        result = await extractor.extract(
+            "Own our Kubernetes platform and developer tooling; day-to-day is Python automation."
+        )
+        assert "Kubernetes" in result
+        assert "Python" in result
+
     async def test_version_like_suffix_does_not_reject_single_word(
         self, extractor: LLMSkillExtractor, monkeypatch: pytest.MonkeyPatch
     ) -> None:
