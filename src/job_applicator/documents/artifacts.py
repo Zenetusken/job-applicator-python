@@ -7,6 +7,7 @@ collisions: ``tailored_<company>_<title>_<YYYYMMDD_HHMMSS>_<microseconds>_<templ
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -18,6 +19,18 @@ from job_applicator.utils.path import safe_filename_slug
 if TYPE_CHECKING:
     from job_applicator.config import AppSettings
     from job_applicator.models import CoverLetterResult, TailoredResume
+
+
+def strip_markdown_bold(text: str) -> str:
+    """Strip paired ``**bold**`` markers for human-facing output (``**Skills**`` → ``Skills``).
+
+    The tailoring model emits ``**bold**`` for résumé section headers/titles and in its
+    "changes made" summary — intentional for the headers, which the section parsers
+    (``_looks_like_section_header``) and the PDF formatter consume. But the saved ``.txt``
+    artifact, the on-screen preview, and the change-log are for humans, so the markers are
+    stripped there. The raw ``TailoredResume.tailored_text`` keeps them for the parser/PDF path.
+    """
+    return re.sub(r"\*\*(.+?)\*\*", r"\1", text)
 
 
 def _write_text(path: Path, content: str) -> None:
@@ -61,7 +74,7 @@ def write_tailored(
     """
     base = artifact_basename(tailored.job_company, tailored.job_title, when=when)
     resume_path = output_dir / f"{base}.txt"
-    _write_text(resume_path, tailored.tailored_text)
+    _write_text(resume_path, strip_markdown_bold(tailored.tailored_text))
     tailored.output_path = str(resume_path)
     meta_path = output_dir / f"{base}.meta.json"
     _write_text(meta_path, tailored.model_dump_json(indent=2))

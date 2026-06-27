@@ -395,7 +395,10 @@ class JobStore:
             params.append(board)
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
-        sql += " ORDER BY updated_at DESC LIMIT ?"
+        # Recency-first ("Recent jobs"), with match_score DESC as a tiebreak so jobs
+        # scored in the SAME batch (identical updated_at) read best-first rather than in
+        # arbitrary insertion order. NULL (unscored) scores sort last under DESC.
+        sql += " ORDER BY updated_at DESC, match_score DESC LIMIT ?"
         params.append(limit)
         try:
             with self._connect() as conn:

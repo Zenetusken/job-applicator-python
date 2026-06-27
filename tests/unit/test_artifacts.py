@@ -12,6 +12,7 @@ import pytest
 from job_applicator.config import AppSettings
 from job_applicator.documents.artifacts import (
     artifact_basename,
+    strip_markdown_bold,
     write_cover_letter,
     write_cover_letter_pdf,
     write_tailored,
@@ -47,6 +48,29 @@ def _cover_letter() -> CoverLetterResult:
         attempt=1,
         prompt_version="1.0",
     )
+
+
+def test_strip_markdown_bold_strips_paired_bold() -> None:
+    """Item 1: paired **bold** markers are removed; inner text + structure preserved."""
+    body = "**ANDREI TESTER**\n\n**SKILLS**\nPython, Go\n\n- Did **stuff** well."
+    out = strip_markdown_bold(body)
+    assert "**" not in out
+    assert "ANDREI TESTER" in out
+    assert "SKILLS" in out and "Python, Go" in out
+    assert "Did stuff well." in out
+
+
+def test_write_tailored_strips_markdown_from_txt_keeps_raw_in_meta(tmp_path: Path) -> None:
+    """Item 1: the saved .txt résumé is clean plain text (no ** leaks to the user), while
+    the meta sidecar keeps the raw tailored_text whose markers feed the parsers/PDF path."""
+    tailored = _tailored()
+    tailored.tailored_text = "**ANDREI TESTER**\n\n**Skills**\nPython, Go"
+    resume_path, meta_path = write_tailored(tmp_path, tailored, when=WHEN)
+    txt = Path(resume_path).read_text(encoding="utf-8")
+    assert "**" not in txt
+    assert "ANDREI TESTER" in txt and "Skills" in txt and "Python, Go" in txt
+    # The machine-readable sidecar keeps the raw markers (load-bearing downstream).
+    assert "**Skills**" in Path(meta_path).read_text(encoding="utf-8")
 
 
 def test_write_tailored_writes_files_and_sets_output_path(tmp_path: Path) -> None:

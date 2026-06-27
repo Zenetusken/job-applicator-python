@@ -84,6 +84,9 @@ a sign-off at the beginning or middle of the letter.
 Voice rules — these are what separate human writing from AI writing, follow them strictly:
 - Vary sentence length. Include at least one short sentence (under eight words). Never write \
 paragraph after paragraph of uniform ~30-word sentences.
+- Vary your verbs. Do not open multiple sentences with the same word, and do not reuse a \
+distinctive verb (e.g. "engineered", "architected", "designed") more than twice — the same verb \
+restated across sentences reads as machine-generated.
 - Write plain prose only. No markdown, no bullet points, no bold, and no backticks around \
 terms like asyncio or mypy.
 - State accomplishments directly. Do NOT stack trailing "-ing" clauses such as \

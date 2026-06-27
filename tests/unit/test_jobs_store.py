@@ -47,6 +47,29 @@ def store(tmp_path: Path) -> JobStore:
     return JobStore(db_path=tmp_path / "applications.db")
 
 
+def test_list_jobs_tiebreaks_same_recency_by_score_desc(tmp_path: Path) -> None:
+    """Within the same updated_at batch, list_jobs orders best-score-first. Recency-DESC
+    is unchanged; match_score-DESC only breaks ties among same-recency rows (so a batch of
+    jobs scored together reads best-first instead of in arbitrary insertion order)."""
+    import sqlite3
+
+    db = tmp_path / "applications.db"
+    store = JobStore(db_path=db)
+    low, high = _job(1), _job(2)
+    store.upsert_job(low)
+    store.upsert_match(_match(low, score=0.40))
+    store.upsert_job(high)
+    store.upsert_match(_match(high, score=0.90))
+    # Force identical recency so the score tiebreak (not insertion order) decides.
+    conn = sqlite3.connect(str(db))
+    conn.execute("UPDATE jobs SET updated_at = '2026-01-01 00:00:00'")
+    conn.commit()
+    conn.close()
+
+    scores = [j.match_score for j in store.list_jobs()]
+    assert scores == [0.90, 0.40], f"expected score-DESC within same recency, got {scores}"
+
+
 def test_upsert_job_roundtrip(store: JobStore) -> None:
     store.upsert_job(_job(1), source_query="python remote")
     got = store.get("1")
