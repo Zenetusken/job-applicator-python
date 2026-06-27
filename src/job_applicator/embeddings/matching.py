@@ -52,10 +52,14 @@ class JobMatcher:
         llm_config: LLMConfig | None = None,
         runtime: LLMRuntime | None = None,
         reporter: VerboseReporter | None = None,
+        *,
+        grounding_mode: str = "keyword",
     ) -> None:
         self._config = embedding_config
         self._service = EmbeddingService(embedding_config)
-        self._skill_extractor = LLMSkillExtractor(llm_config or LLMConfig())
+        self._skill_extractor = LLMSkillExtractor(
+            llm_config or LLMConfig(), grounding_mode=grounding_mode
+        )
         self._runtime = runtime
         self._reporter = reporter
 

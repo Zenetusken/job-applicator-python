@@ -189,3 +189,100 @@ class TestSkillExtraction:
 
         result = await extractor.extract("We use Python 3.11 on the backend.")
         assert "Python" in result
+
+
+class TestEvidenceSpanGrounding:
+    """Arc 2 Phase 1 — evidence-span grounding (grounding_mode='evidence_span'), default-off."""
+
+    @staticmethod
+    def _ext(mode: str = "evidence_span") -> LLMSkillExtractor:
+        return LLMSkillExtractor(LLMConfig(model="test"), grounding_mode=mode)
+
+    def test_default_mode_is_keyword(self) -> None:
+        assert LLMSkillExtractor(LLMConfig(model="test"))._grounding_mode == "keyword"
+
+    def test_span_grounded_normalizes_case_whitespace_punctuation(self) -> None:
+        ext = self._ext()
+        text = "Responsibilities: IV insertion, ventilator management. BLS/ACLS required."
+        assert ext._span_grounded("IV insertion", text)
+        assert ext._span_grounded("iv   insertion", text)  # case + whitespace
+        assert ext._span_grounded("ventilator management.", text)  # trailing punctuation
+        assert ext._span_grounded("BLS/ACLS", text)  # internal punctuation
+        assert not ext._span_grounded("blockchain", text)  # absent
+        assert not ext._span_grounded("", text)  # empty span never grounds
+
+    def test_verify_spans_keeps_grounded_drops_fabricated(self) -> None:
+        ext = self._ext()
+        text = "Build async pipelines in Python with FastAPI and PostgreSQL."
+        pairs = [
+            ("Python", "in Python"),
+            ("FastAPI", "with FastAPI"),
+            ("Kubernetes", "deploy on Kubernetes"),  # span not in text → fabricated
+            ("PostgreSQL", "PostgreSQL"),
+        ]
+        assert ext._verify_spans(pairs, text) == ["Python", "FastAPI", "PostgreSQL"]
+
+    def test_verify_spans_dedupes_by_name(self) -> None:
+        ext = self._ext()
+        text = "Python and more Python work."
+        assert ext._verify_spans([("Python", "Python and"), ("python", "more Python")], text) == [
+            "Python"
+        ]
+
+    def test_clean_skills_skips_keyword_grounding_when_already_grounded(self) -> None:
+        """A span-verified skill that is NOT a literal substring (cross-domain canonical name)
+        must survive in evidence-span mode — keyword grounding would wrongly drop it."""
+        ext = self._ext()
+        desc = "Registered Nurse: patient assessment and ventilator management."
+        # already_grounded=True (span verified upstream) keeps it; keyword grounding drops it.
+        assert len(ext._clean_skills(["Critical Care Nursing"], desc, already_grounded=True)) == 1
+        assert ext._clean_skills(["Critical Care Nursing"], desc, already_grounded=False) == []
+
+    def test_cache_key_includes_grounding_mode(self) -> None:
+        """No cross-mode cache contamination: keyword and evidence_span key the same text apart."""
+        desc = "Python and PostgreSQL."
+        assert self._ext("keyword")._get_cache_key(desc) != self._ext(
+            "evidence_span"
+        )._get_cache_key(desc)
+
+    def test_evidence_grounding_cross_domain_eval(self) -> None:
+        """Deterministic eval scaffold: span verification keeps real cross-domain skills
+        (software / nursing / finance) and drops a fabricated span — the property the live
+        multi-domain A/B (next phase) measures against the real LLM."""
+        ext = self._ext()
+        cases = {
+            "software": (
+                "Build async services in Python with FastAPI on Kubernetes.",
+                [
+                    ("Python", "in Python"),
+                    ("FastAPI", "with FastAPI"),
+                    ("Kubernetes", "on Kubernetes"),
+                    ("Rust", "rewrite in Rust"),  # fabricated
+                ],
+                {"Python", "FastAPI", "Kubernetes"},
+            ),
+            "nursing": (
+                "ICU RN: patient assessment, IV insertion, ventilator management; BLS required.",
+                [
+                    ("Patient Assessment", "patient assessment"),
+                    ("IV Insertion", "IV insertion"),
+                    ("Ventilator Management", "ventilator management"),
+                    ("BLS", "BLS required"),
+                    ("Phlebotomy", "phlebotomy certification"),  # fabricated
+                ],
+                {"Patient Assessment", "IV Insertion", "Ventilator Management", "BLS"},
+            ),
+            "finance": (
+                "Analyst: discounted cash flow models, variance analysis, forecasts in Excel; CFA.",
+                [
+                    ("Discounted Cash Flow", "discounted cash flow models"),
+                    ("Variance Analysis", "variance analysis"),
+                    ("Excel", "in Excel"),
+                    ("CFA", "CFA"),
+                    ("Bloomberg Terminal", "Bloomberg Terminal"),  # fabricated
+                ],
+                {"Discounted Cash Flow", "Variance Analysis", "Excel", "CFA"},
+            ),
+        }
+        for domain, (text, pairs, expected) in cases.items():
+            assert set(ext._verify_spans(pairs, text)) == expected, domain

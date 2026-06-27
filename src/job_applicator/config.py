@@ -84,6 +84,21 @@ class EmbeddingConfig(BaseSettings):
     normalize_embeddings: bool = True
 
 
+class SkillConfig(BaseSettings):
+    """Skill-extraction / grounding policy.
+
+    ``grounding_mode`` selects how an LLM-extracted skill is verified against the source text:
+    - ``keyword`` (default): substring + tech-tuned compound/stopword heuristics (software-only).
+    - ``evidence_span``: the model returns the exact source phrase per skill and we verify that
+      span occurs in the text — domain-general. See
+      ``docs/compose/specs/2026-06-26-semantic-skill-grounding.md``.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="JOB_APPLICATOR_SKILLS_")
+
+    grounding_mode: Literal["keyword", "evidence_span"] = "keyword"
+
+
 class TargetConfig(BaseSettings):
     """Job board target settings."""
 
@@ -132,6 +147,7 @@ class AppSettings(BaseSettings):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     llm_resilience: LLMResilienceConfig = Field(default_factory=LLMResilienceConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
+    skills: SkillConfig = Field(default_factory=SkillConfig)
     target: TargetConfig = Field(default_factory=TargetConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
 

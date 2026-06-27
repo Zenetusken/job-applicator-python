@@ -88,10 +88,12 @@ def _isolate_local_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     cache_dir = tmp_path / "ja-state" / "skill-extraction"
     orig_init = LLMSkillExtractor.__init__
 
-    def _patched_init(self: LLMSkillExtractor, config: LLMConfig) -> None:
+    def _patched_init(
+        self: LLMSkillExtractor, config: LLMConfig, *, grounding_mode: str = "keyword"
+    ) -> None:
         with monkeypatch.context() as m:
             m.setattr("pathlib.Path.home", lambda: tmp_path / "ja-state")
-            orig_init(self, config)
+            orig_init(self, config, grounding_mode=grounding_mode)
         self._cache_dir = cache_dir
         self._cache_dir.mkdir(parents=True, exist_ok=True)
 

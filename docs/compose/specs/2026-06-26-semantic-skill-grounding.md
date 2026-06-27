@@ -78,8 +78,13 @@ domain-agnostic* stop-list rather than a growing tech list.
   dropping the synthesize-a-compound-from-any-noun behavior keeps single-word skills grounded in
   *any* domain (e.g. "phlebotomy training" keeps `phlebotomy`), even though normalization stays
   software-only.
-- **Phase 1:** evidence-span grounding behind a config flag; A/B against the current keyword
-  grounding on the eval set; default-on when ≥ parity on tech and clearly better cross-domain.
+- **Phase 1 — IMPLEMENTED (default-off):** evidence-span grounding behind `skills.grounding_mode`
+  (`keyword` default | `evidence_span`). `SkillEvidence` / `SkillExtractionOutputV2` schema, span
+  verification under aggressive normalization, **mode in the cache key** (no cross-mode
+  contamination), degrade-to-keyword fallback when structured output is unavailable, + unit guards
+  and a deterministic cross-domain eval scaffold. Live-validated: a nursing job grounds *patient
+  assessment / IV insertion / ventilator management* — domains keyword/map cannot reach.
+  **Remaining:** the live multi-domain A/B (precision/recall vs keyword) and the default-on flip.
 - **Phase 2:** embedding-dedup normalization; demote `NORMALIZATION_MAP` to a cache.
 - **Phase 3 (optional):** ESCO/taxonomy backbone.
 
