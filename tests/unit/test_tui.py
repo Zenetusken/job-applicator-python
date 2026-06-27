@@ -3025,3 +3025,21 @@ def test_score_style_sentiment_palette() -> None:
     assert _score_style(0.58) == "bold yellow"
     assert _score_style(0.49) == "bold red"
     assert _score_style(None) == "dim"
+
+
+def test_job_card_renders_row_divider_not_blank_gap() -> None:
+    """Compact table look: each card ends with a $panel rule divider (a table-row separator),
+    NOT a blank gap line — and the stage spine rail continues through the divider."""
+    import io
+
+    from rich.console import Console
+    from rich.text import Text
+
+    from job_applicator.tui.app import _JobCard
+
+    c = Console(width=40, file=io.StringIO(), force_terminal=False)
+    c.print(_JobCard([Text("Title"), Text("Co"), Text("61%  ·  LinkedIn")], "cyan", "#242f38"))
+    lines = c.file.getvalue().rstrip("\n").split("\n")
+    assert "─" in lines[-1]  # last line is the row divider
+    assert all(line.strip() for line in lines)  # no blank gap line anywhere
+    assert lines[-1].lstrip().startswith("▌")  # stage spine rail continues through the divider
