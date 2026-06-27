@@ -28,6 +28,24 @@ Domain-general skill canonicalization + grounding on the existing local stack (Q
 both already loaded; 12 GB GPU), without heavy new dependencies, preserving the hallucination guard
 that grounding provides (a skill must be *claimed in the text*, not merely plausible).
 
+## Empirics — evidence-span fidelity probe (2026-06-26)
+
+Before building any evidence-span plumbing, a live probe tested the approach's core assumption on
+the local 4B (Qwen3.5-4B, temp 0): *does it emit evidence spans that are verifiable substrings of
+the source?* Schematic prompt (no concrete example span — the 4B copies them verbatim), 4
+descriptions across 2 software + 2 non-software domains, strict span check (lowercase + collapse
+whitespace + strip punctuation).
+
+**Result: 30/30 skills span-verified, 0% false-negative rate** — software (asyncio, FastAPI,
+Kubernetes…), nursing (patient assessment, IV insertion, ventilator management, BLS, ACLS), and
+finance (discounted cash flow models, variance analysis, Excel, CFA) all grounded by verbatim
+spans. Strict span-grounding does NOT drop correct skills here, and it grounds exactly the
+cross-domain skills the keyword/map grounding cannot.
+
+**Decision: pursue evidence-span grounding** (approach #1 below). The embedding-grounding variant
+stays the documented fallback (would have been chosen had span fidelity been low). One-off probe
+kept at `scratchpad/probe_evidence_spans.py` (not committed to src).
+
 ## Proposed approach
 
 ### 1. Grounding: substring → verify-the-citation (LLM evidence spans)
