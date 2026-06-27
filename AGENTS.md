@@ -27,7 +27,7 @@ ruff format src/ tests/
 # Release (see RELEASING.md)
 bash scripts/release.sh <version>   # bump version, update CHANGELOG.md, tag, build dist
 
-# Tests — 1066 fast unit tests (the green gate); 1109 total = 1066 unit + 9 integration + 34 live
+# Tests — ~1066 fast unit tests (the green gate); ~1109 total = ~1066 unit + 9 integration + 34 live
 pytest -m unit -v               # or: pytest tests/unit/ -v   (auto-marked by location)
 pytest -m unit -v -k test_name  # single test
 
