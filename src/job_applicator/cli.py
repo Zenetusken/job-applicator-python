@@ -1459,11 +1459,8 @@ def match(
 
 @app.command()
 def status(
-    ctx: typer.Context,
     as_json: bool = typer.Option(False, "--json", help="Output the funnel as JSON."),
     limit: int = typer.Option(20, "--limit", "-n", min=1, help="Max recent jobs to show."),
-    verbose: bool = _verbose_option(),
-    log_file: str | None = _log_file_option(),
 ) -> None:
     """Show your job funnel: counts by stage and the most recent jobs.
 
@@ -1472,7 +1469,6 @@ def status(
     URL so each job shows its *furthest* stage (no double counting). Offline and
     account-safe — reads local state only, never the network or your account.
     """
-    _merge_verbose_ctx(ctx, verbose, log_file)
     from datetime import UTC
 
     from job_applicator.models import ApplicationStatus, FunnelStatus
@@ -2851,14 +2847,10 @@ cover_letter_template = "__OUTPUT_COVER_LETTER_TEMPLATE__"
 
 @app.command("check-session")
 def check_session(
-    ctx: typer.Context,
     site: str = typer.Argument("linkedin", help="Job board to check (linkedin, indeed)."),
     headed: bool = typer.Option(False, "--headed", help="Show the browser window."),
-    verbose: bool = _verbose_option(),
-    log_file: str | None = _log_file_option(),
 ) -> None:
     """Verify that an authenticated board session is ready (or not required)."""
-    _merge_verbose_ctx(ctx, verbose, log_file)
     try:
         settings = _get_settings(headed=headed)
         setup_logging(settings.log_level)
@@ -2885,13 +2877,9 @@ def check_session(
 
 @app.command()
 def doctor(
-    ctx: typer.Context,
     as_json: bool = typer.Option(False, "--json", help="Output the health report as JSON."),
-    verbose: bool = _verbose_option(),
-    log_file: str | None = _log_file_option(),
 ) -> None:
     """Check the AI backend, browser, system binaries, and config."""
-    _merge_verbose_ctx(ctx, verbose, log_file)
     from job_applicator.diagnostics import run_diagnostics
 
     try:
