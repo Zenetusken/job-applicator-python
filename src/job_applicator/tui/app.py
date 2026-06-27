@@ -147,9 +147,10 @@ class _JobCard:
 
     _GUTTER = "▌ "  # the spine + one space; 2 cells
 
-    def __init__(self, lines: list[Text], spine_style: str) -> None:
+    def __init__(self, lines: list[Text], spine_style: str, divider_style: str) -> None:
         self._lines = lines
         self._spine_style = spine_style
+        self._divider_style = divider_style
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         inner = max(4, options.max_width - len(self._GUTTER))  # content width past the spine
@@ -158,7 +159,12 @@ class _JobCard:
                 row = Text(self._GUTTER, style=self._spine_style)
                 row.append_text(line)
                 yield row
-        yield Text("")  # a blank trailing line → visual gap between cards
+        # A horizontal rule in the theme's $panel colour (the same hue as the pane border) divides
+        # the rows into a table — compact structure in place of the old blank gap. The spine rail
+        # continues through it so the stage-coloured left edge stays unbroken.
+        divider = Text(self._GUTTER, style=self._spine_style)
+        divider.append("─" * inner, style=self._divider_style)
+        yield divider
 
     def __rich_measure__(self, console: Console, options: ConsoleOptions) -> Measurement:
         # Never ask for more than the available width — so the OptionList wraps us, never scrolls.
@@ -449,7 +455,9 @@ class JobApplicatorApp(App[None]):
         if s.job.location:
             meta.append("  ·  ", style="dim")
             meta.append(s.job.location, style="dim")
-        return _JobCard([title, company, meta], spine)
+        # Match the row divider to the pane border ($panel) so the table grid reads as one piece.
+        divider = self.theme_variables.get("panel", "#242f38")
+        return _JobCard([title, company, meta], spine, divider)
 
     def _repaint(self) -> None:
         self.query_one("#statusline", Static).update(self._statusline())
