@@ -454,7 +454,10 @@ class LLMSkillExtractor:
 
         cleaned = self._clean_skills(raw_skills, description, already_grounded=grounded)
 
-        if use_cache:
+        # Do NOT cache a DEGRADED (keyword-grounded) result under the evidence_span key — it
+        # would persist as a stale "span-verified" hit after the endpoint recovers (the
+        # cross-mode contamination the mode-in-key change prevents, one level down). Re-extract.
+        if use_cache and (self._grounding_mode != "evidence_span" or grounded):
             self._save_cache(description, cleaned)
 
         return cleaned
@@ -597,18 +600,32 @@ class LLMSkillExtractor:
 
     @staticmethod
     def _span_grounded(span: str, description: str) -> bool:
-        """True if ``span`` occurs in ``description`` under aggressive normalization
-        (lowercase, punctuation → space, whitespace collapsed)."""
+        """True if ``span`` occurs in ``description`` as a WHOLE-TOKEN match.
+
+        Normalization lowercases, collapses whitespace, and replaces each punctuation run with
+        a boundary sentinel (``\\x00``, never in real text) so a clause boundary
+        ("part-time. series") cannot fuse two spans. The match is then anchored with word
+        boundaries so a short span cannot ground INSIDE a larger word ("Ada" must not match
+        "adaptable", "React" not "reactive") — keeping this guard at least as strict as the
+        keyword grounding it replaces."""
 
         def norm(s: str) -> str:
-            return " ".join(re.sub(r"[^\w\s]", " ", s.lower()).split())
+            return " ".join(re.sub(r"[^\w\s]+", " \x00 ", s.lower()).split())
 
         nspan = norm(span)
-        return bool(nspan) and nspan in norm(description)
+        if not nspan or nspan == "\x00":
+            return False
+        return re.search(r"(?<!\w)" + re.escape(nspan) + r"(?!\w)", norm(description)) is not None
 
     def _verify_spans(self, pairs: list[tuple[str, str]], description: str) -> list[str]:
-        """Keep skill names whose evidence span verifies in the text; drop fabricated/paraphrased
-        spans. Order-preserving, de-duplicated by lower-cased name."""
+        """Keep skill names whose evidence span verifies as a whole-token match in the text;
+        drop fabricated/paraphrased spans. Order-preserving, de-duplicated by lower-cased name.
+
+        Phase-1 limitation (by design): this verifies the SPAN is in the text but trusts the
+        model's canonical NAME for that span. A name/evidence MISMATCH (name "Java" for span
+        "JavaScript") is not caught — no string check can separate that from a legitimate
+        canonicalization (name "PostgreSQL" for span "Postgres"); both are prefix relations.
+        Catching it needs name↔span embedding coherence — a Phase-2 check (see the spec)."""
         kept: list[str] = []
         seen: set[str] = set()
         for name, evidence in pairs:
@@ -639,7 +656,16 @@ class LLMSkillExtractor:
             if not skill or not skill.strip():
                 continue
             normalized = normalize_skill(skill)
-            if not normalized or is_hard_negative(normalized):
+            if not normalized:
+                continue
+            stripped = normalized.strip()
+            # Soft-skill traits (the hard-negative blocklist) are always dropped. The len<=2
+            # sub-rule, though, is relaxed in evidence-span mode: a span-verified short skill
+            # (R, Go) is real and must survive, whereas keyword mode drops it as noise.
+            if len(stripped) <= 2:
+                if not already_grounded:
+                    continue
+            elif is_hard_negative(stripped):
                 continue
             if not already_grounded and not self._is_grounded(normalized, description):
                 logger.warning("Dropping ungrounded skill '%s' from description", skill)

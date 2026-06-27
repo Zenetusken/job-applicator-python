@@ -84,8 +84,17 @@ domain-agnostic* stop-list rather than a growing tech list.
   contamination), degrade-to-keyword fallback when structured output is unavailable, + unit guards
   and a deterministic cross-domain eval scaffold. Live-validated: a nursing job grounds *patient
   assessment / IV insertion / ventilator management* — domains keyword/map cannot reach.
+  An **adversarial multi-agent code review (2026-06-27)** then hardened the guard: span
+  verification is now **word-boundary-anchored** (a short span can't ground inside a larger word —
+  "Ada" ⊄ "adaptable"), punctuation is a clause boundary (not a join), short span-verified skills
+  survive (`R`/`Go`), and a degraded result is no longer cached under the evidence_span key. +7
+  `extract()`-level / degrade / no-masking unit guards closed the test gap the review found.
   **Remaining:** the live multi-domain A/B (precision/recall vs keyword) and the default-on flip.
-- **Phase 2:** embedding-dedup normalization; demote `NORMALIZATION_MAP` to a cache.
+- **Phase 2:** embedding-dedup normalization; demote `NORMALIZATION_MAP` to a cache. Also the
+  **name↔span coherence** check — catch a name/evidence mismatch (name `Java` for span
+  `JavaScript`) WITHOUT dropping a legitimate canonicalization (name `PostgreSQL` for span
+  `Postgres`). Deferred from Phase 1 because no string check separates the two (both are prefix
+  relations); it needs name↔span embeddings.
 - **Phase 3 (optional):** ESCO/taxonomy backbone.
 
 ## Validation
