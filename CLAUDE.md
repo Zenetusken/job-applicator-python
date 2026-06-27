@@ -22,6 +22,7 @@ AI-powered job application tool using Playwright browser automation with modern 
 
 - **Pydantic models cross module boundaries, dicts don't.** If two modules share a payload, it's a pydantic model in `models.py`.
 - **Errors are typed and carry context.** Every raised exception is a `JobApplicatorError` subclass. No bare `RuntimeError`s.
+- **Never mask a failure with a fabricated default.** When a dependency is unavailable or an operation fails, RAISE a typed error — a default/empty value that looks like a real result is undetectable downstream (a hallucination). Distinguish a genuine *failure* (raise) from a legitimately-*empty* input/result (return empty).
 - **Async for I/O, sync for CPU.** Playwright, HTTP calls — async. Parsing, formatting — sync.
 - **Configuration is centralized.** `AppSettings` in `config.py` is the single source. Loaded from `config.toml` + `JOB_APPLICATOR_*` env vars.
 - **No global mutable state.** Pass via config/context objects.
@@ -71,7 +72,7 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
 - Instructor for structured LLM outputs (Pydantic models)
 - mxbai-embed-large-v1 for semantic job matching (~1.5 GB VRAM)
 - Style analyzer with persistent cache and multi-document support
-- Combined scoring: 60% semantic similarity + 40% skill coverage
+- Combined scoring: 60% semantic similarity + 40% skill coverage; **semantic-only when a job lists no requirements** (skill coverage unknown → no neutral floor)
 - **Never automate login.** Seed a session once as a human (`login` headed flow, or
   `import-cookies --from-browser`); the tool only reuses it. Automated sign-in trips anti-bot
   defenses and risks the account.
