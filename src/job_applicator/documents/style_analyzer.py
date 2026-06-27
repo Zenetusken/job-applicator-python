@@ -172,13 +172,13 @@ class StyleAnalyzer:
     async def _analyze_with_llm(self, text: str) -> StyleGuide:
         """Perform the actual LLM analysis using instructor for structured output."""
         try:
-            from job_applicator.utils.llm import quiet_litellm
+            from job_applicator.utils.llm import litellm_model, quiet_litellm
 
             quiet_litellm()
             import instructor
             from litellm import acompletion
 
-            model = f"openai/{self._config.model}" if self._config.api_base else self._config.model
+            model = litellm_model(self._config)
 
             # Try instructor first (structured output with automatic retry).
             # instructor defaults to TOOLS mode, which uses vLLM's tool-call

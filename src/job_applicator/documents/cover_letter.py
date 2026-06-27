@@ -19,6 +19,7 @@ from job_applicator.utils.llm import (
     CircuitOpenError,
     LLMRuntime,
     ValidatedOutput,
+    litellm_model,
     llm_call_error,
     quiet_litellm,
     strip_thinking_process,
@@ -441,8 +442,7 @@ class CoverLetterGenerator:
         remember that and skip it for the rest of this generator's lifetime,
         falling back to direct completion without noisy logs.
         """
-        # For local vLLM, need "openai/" prefix
-        model = f"openai/{self._config.model}" if self._config.api_base else self._config.model
+        model = litellm_model(self._config)
 
         async def _direct_litellm() -> str:
             from litellm import acompletion

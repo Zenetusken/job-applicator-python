@@ -127,9 +127,10 @@ src/job_applicator/
 - **LLM output has thinking process.** Qwen models prepend reasoning. Callers suppress it at two
   layers: `extra_body={"chat_template_kwargs": {"enable_thinking": False}}` in litellm, and
   post-processing with `strip_thinking_process()` in `utils/llm.py`.
-- **LLM calls need an `openai/` prefix for local vLLM.** Cover-letter, style, and tailor callers
-  pass `model = f"openai/{config.model}"` when `llm.api_base` is set. Embeddings use
-  `sentence-transformers` directly and do not use this prefix.
+- **LLM calls need an `openai/` prefix for local vLLM.** All completion callers (cover-letter,
+  style, tailor, skill-extraction, PDF formatting) build the model id via the single helper
+  `utils.llm.litellm_model(config)`, which adds the `openai/` prefix when `llm.api_base` is set.
+  Embeddings use `sentence-transformers` directly and do not use this prefix.
 - **LLM resilience is configured centrally.** `LLMResilienceConfig` (in `config.py`) drives a shared
   circuit breaker + content-retry runtime in `utils/llm.py` for all LLM consumers.
 - **litellm banners are suppressed.** `utils.llm.quiet_litellm()` runs before litellm calls to keep
@@ -150,8 +151,10 @@ src/job_applicator/
   FP16 with ~1.5 GB VRAM; set `embedding.device="cpu"` for CPU-only boxes.
 - **Embedding cache at `~/.job-applicator/embeddings/`.** Style cache at
   `~/.job-applicator/styles/`. Clear with `EmbeddingService.clear_cache()`.
-- **`sentence-transformers` needs CUDA torch.** If you get `libcudart.so` errors, reinstall:
-  `pip install torch --index-url https://download.pytorch.org/whl/cu130`
+- **`sentence-transformers` needs CUDA torch.** The default PyPI `torch==2.11.0` wheel is already
+  the CUDA 13.0 build, so a plain install matches CUDA-13 drivers. Only if your driver needs an
+  *older* CUDA (you get `libcudart.so` errors) reinstall from the index matching your driver, e.g.
+  `pip install torch --index-url https://download.pytorch.org/whl/cu126` for a CUDA 12.6 driver.
 - **Résumé PDF parser uses multi-parser consensus + OCR fallback.** Supports PDF
   (`pdftotext -layout`), DOCX, TXT/MD, and images. `ResumeLoader.load()` dispatches by extension and
   falls back to OCR when extracted text is short. OCR uses PaddleOCR on CPU by default.
@@ -207,8 +210,9 @@ src/job_applicator/
   any dry run fails to reach Submit.
 - **`search` persists discovered jobs.** Discovered listings flow into `jobs_store.py` and are
   visible via `status` and the TUI.
-- **Default `llm.max_tokens` is `4096`.** `config.example.toml` sets `max_tokens = 1024`; increase
-  it if you plan to tailor long résumés.
+- **Default `llm.max_tokens` is `4096`**, matching `config.example.toml`. 4096 fits full résumé
+  tailoring; style analysis self-caps at 1024 (`STYLE_MAX_TOKENS`). Setting it below ~4096 can
+  truncate tailored résumés.
 - **`config.toml` is actually loaded.** `AppSettings.settings_customise_sources()` adds it as the
   lowest-priority source; env vars override it. Point at an alternate file via
   `JOB_APPLICATOR_CONFIG_FILE`; a missing file is a no-op.
@@ -235,10 +239,11 @@ Default model: `cyankiwi/Qwen3.5-4B-AWQ-4bit`. Override via `JOB_APPLICATOR_LLM_
 `config.toml`. Default `llm.max_tokens` is `4096`.
 
 To self-host, install the `[serve]` extra (vLLM 0.23.x, CUDA 13.0 wheel) and run
-`scripts/serve-vllm.sh`. The script defaults to job-applicator's own `.venv/bin/vllm`,
-`GPU_MEM=0.70`, `MAX_MODEL_LEN=8192`, and `ENFORCE_EAGER=1` (needed on 12 GB cards to
-avoid vLLM 0.23's V1 cudagraph-profiling OOM). Override with `VLLM_BIN`, `GPU_MEM`,
-`MAX_MODEL_LEN`, and `ENFORCE_EAGER` env vars.
+`scripts/serve-vllm.sh`. The script runs job-applicator's own `.venv/bin/vllm` (or an explicit
+`VLLM_BIN`) — for isolation it does NOT silently fall back to a `vllm` on `$PATH`; if neither is
+present it errors. Defaults: `GPU_MEM=0.70`, `MAX_MODEL_LEN=8192`, and `ENFORCE_EAGER=1` (needed
+on 12 GB cards to avoid vLLM 0.23's V1 cudagraph-profiling OOM). Override with `VLLM_BIN`,
+`GPU_MEM`, `MAX_MODEL_LEN`, and `ENFORCE_EAGER` env vars.
 
 `serve-vllm.sh` auto-sets `--tool-call-parser qwen3_xml --enable-auto-tool-choice` for Qwen3.5
 (and Qwen3) models. Cover-letter and style-guide generation use instructor in TOOLS mode, which

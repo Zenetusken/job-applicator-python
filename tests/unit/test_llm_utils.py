@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from job_applicator.utils.llm import strip_thinking_process
@@ -285,6 +287,40 @@ def test_cover_letter_generator_runtime_is_injectable() -> None:
     assert not hasattr(cover_letter, "_CIRCUIT_BREAKER")
     gen = CoverLetterGenerator(LLMConfig())
     assert gen._breaker is gen._runtime.breaker
+
+
+def test_litellm_model_adds_openai_prefix_when_api_base_set() -> None:
+    """F5: OpenAI-compatible endpoints (local vLLM, …) get the ``openai/`` prefix."""
+    from job_applicator.config import LLMConfig
+    from job_applicator.utils.llm import litellm_model
+
+    cfg = LLMConfig(api_base="http://localhost:8000/v1", model="cyankiwi/Qwen3.5-4B-AWQ-4bit")
+    assert litellm_model(cfg) == "openai/cyankiwi/Qwen3.5-4B-AWQ-4bit"
+
+
+def test_litellm_model_bare_when_no_api_base() -> None:
+    """F5: with no api_base, litellm routes by provider — pass the bare id unchanged."""
+    from job_applicator.config import LLMConfig
+    from job_applicator.utils.llm import litellm_model
+
+    cfg = LLMConfig(api_base="", model="gpt-4o-mini")
+    assert litellm_model(cfg) == "gpt-4o-mini"
+
+
+def test_openai_prefix_rule_lives_only_in_litellm_model() -> None:
+    """F5 (anti-drift): the ``openai/`` prefix is constructed in exactly one place —
+    the ``litellm_model()`` helper. Guards against a new completion caller
+    copy-pasting the inline prefix logic and re-introducing the 6-way duplication."""
+    src = Path(__file__).resolve().parents[2] / "src" / "job_applicator"
+    hits = [
+        f"{py.relative_to(src)}:{i}"
+        for py in src.rglob("*.py")
+        for i, line in enumerate(py.read_text(encoding="utf-8").splitlines(), 1)
+        if 'f"openai/{' in line
+    ]
+    outside_helper = [h for h in hits if not h.startswith("utils/llm.py:")]
+    assert not outside_helper, f"inline 'openai/' prefix must use litellm_model(): {outside_helper}"
+    assert hits, "expected litellm_model() itself to still build the prefix"
 
 
 def test_circuit_breaker_from_config_uses_thresholds() -> None:

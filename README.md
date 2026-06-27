@@ -77,8 +77,11 @@ scripts/serve-vllm.sh               # serves :8000
 
 Environment overrides: `MODEL`, `HOST`, `PORT`, `GPU_MEM` (default `0.70`),
 `MAX_MODEL_LEN` (default `8192`), `ENFORCE_EAGER` (default `1`), and `VLLM_BIN`
-(default: this project's `.venv/bin/vllm`). Set `VLLM_BIN` to share a vLLM
-executable from another venv without touching that project's config.
+(default: this project's `.venv/bin/vllm`). For isolation the script uses **only**
+that in-project binary or an explicit `VLLM_BIN`; if neither is present it errors
+rather than silently adopting a `vllm` found on `$PATH` (which could be another
+project's). Set `VLLM_BIN` to share a vLLM executable from another venv without
+touching that project's config.
 
 The defaults are tuned for a 12 GB desktop GPU. On tighter cards vLLM 0.23's V1
 cudagraph profiler can OOM during startup; `ENFORCE_EAGER=1` avoids that by disabling

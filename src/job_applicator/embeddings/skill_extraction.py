@@ -25,6 +25,7 @@ from job_applicator.exceptions import LLMError
 from job_applicator.skills import NORMALIZATION_MAP, is_hard_negative, normalize_skill
 from job_applicator.utils.llm import (
     LLMRuntime,
+    litellm_model,
     llm_call_error,
     quiet_litellm,
     strip_thinking_process,
@@ -402,7 +403,7 @@ class LLMSkillExtractor:
         """Call the LLM and return raw skill strings with method metadata."""
         quiet_litellm()
 
-        model = f"openai/{self._config.model}" if self._config.api_base else self._config.model
+        model = litellm_model(self._config)
         truncated = description[:MAX_DESCRIPTION_LENGTH]
         messages = [
             {"role": "system", "content": SKILL_SYSTEM_PROMPT},

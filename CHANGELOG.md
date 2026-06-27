@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Serve script no longer silently piggybacks on a `$PATH` vLLM.** `scripts/serve-vllm.sh` now
+  uses only job-applicator's own `.venv/bin/vllm` or an explicit `VLLM_BIN`; if neither exists it
+  errors with install/opt-in guidance instead of adopting whatever `vllm` is first on `$PATH`
+  (historically a sibling project's), closing the last cross-project coupling in the self-host path.
+- **`config.example.toml` no longer caps `max_tokens` at 1024.** It now ships `4096` to match the
+  built-in default, so bootstrapping from the example doesn't silently truncate tailored résumés.
+
+### Changed
+- **Single source of truth for the litellm model id.** All completion callers build it via
+  `utils.llm.litellm_model(config)` instead of re-deriving the `openai/` prefix in six places.
+- **Docs corrected on how the CUDA 13.0 wheel is obtained.** `vllm 0.23` pins `torch==2.11.0`,
+  whose PyPI wheel is the cu13 build (bundles `nvidia-*-cu13`), so a plain `pip install` lands the
+  cu13 stack with no extra index; pip selects it unconditionally and it needs a CUDA-13 driver to
+  run. (README, pyproject, AGENTS.md.)
+
 ## [0.4.1] - 2026-06-25
 
 ### Changed
