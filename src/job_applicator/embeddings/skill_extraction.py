@@ -53,6 +53,25 @@ SKILL_SYSTEM_PROMPT = (
     '- Return ONLY a JSON object in the format {"skills": ["Skill1", "Skill2"] }.'
 )
 
+# Domain-general evidence-span variant (grounding_mode="evidence_span"): the model returns each
+# skill with the exact source phrase, which we verify is a substring of the text. No concrete
+# example pair (the 4B copies example spans verbatim). See the semantic-grounding spec.
+SKILL_SYSTEM_PROMPT_EVIDENCE = (
+    "Extract the professional and technical skills explicitly required or mentioned in the "
+    "text — skills, tools, technologies, methods, certifications, and domain competencies of "
+    "any field.\n\n"
+    "For EACH skill return two things:\n"
+    "- name: its canonical, widely recognized name.\n"
+    "- evidence: the EXACT verbatim phrase, copied word-for-word from the text, that mentions "
+    "it. Copy the characters as they appear; do NOT paraphrase, summarize, normalize, or "
+    "invent.\n\n"
+    "Rules:\n"
+    "- Only include skills actually present in the text.\n"
+    "- Ignore soft skills (communication, teamwork, leadership) and seniority, work "
+    "arrangement, location, and compensation.\n"
+    '- Return ONLY a JSON object: {"skills": [{"name": "...", "evidence": "..."}]}.'
+)
+
 SKILL_USER_PROMPT = "{}"
 
 MAX_DESCRIPTION_LENGTH = 1500
@@ -262,6 +281,23 @@ class SkillExtractionOutput(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class SkillEvidence(BaseModel):
+    """One extracted skill plus the verbatim source phrase that grounds it."""
+
+    name: str = Field(description="Canonical name of the skill")
+    evidence: str = Field(description="Exact verbatim phrase copied from the text that mentions it")
+    model_config = {"extra": "forbid"}
+
+
+class SkillExtractionOutputV2(BaseModel):
+    """Evidence-grounded structured output: each skill carries its source phrase."""
+
+    skills: list[SkillEvidence] = Field(
+        description="Skills present in the text, each with evidence"
+    )
+    model_config = {"extra": "forbid"}
+
+
 @dataclass
 class _ExtractionResult:
     """Result of an LLM skill-extraction attempt."""
@@ -269,6 +305,7 @@ class _ExtractionResult:
     skills: list[str]
     method: str
     fallback: bool
+    grounded: bool = False  # True iff evidence-span verification already grounded these names
 
 
 class LLMSkillExtractor:
@@ -279,14 +316,18 @@ class LLMSkillExtractor:
     hard negatives, and verified against the original description.
     """
 
-    def __init__(self, config: LLMConfig) -> None:
+    def __init__(self, config: LLMConfig, *, grounding_mode: str = "keyword") -> None:
         self._config = config
+        self._grounding_mode = grounding_mode
         self._cache_dir = Path.home() / ".job-applicator" / "skill-extraction"
         self._cache_dir.mkdir(parents=True, exist_ok=True)
 
     def _get_cache_key(self, description: str) -> str:
-        """Generate a cache key from model name and description."""
-        content = f"{self._config.model}\x00{description}"
+        """Generate a cache key from model name, grounding mode, and description.
+
+        The grounding mode is part of the key so keyword- and evidence-span-grounded results
+        never collide — switching modes must not return the other mode's cached skills."""
+        content = f"{self._config.model}\x00{self._grounding_mode}\x00{description}"
         return hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()[:16]
 
     def _get_cache_path(self, description: str) -> Path:
@@ -352,7 +393,9 @@ class LLMSkillExtractor:
                         temperature=self._config.temperature,
                         details={"skill_extraction": "cache_hit"},
                     )
-                return self._clean_skills(cached, description)
+                return self._clean_skills(
+                    cached, description, already_grounded=self._grounding_mode == "evidence_span"
+                )
 
         if reporter is not None:
             reporter.record_llm_call(
@@ -365,11 +408,13 @@ class LLMSkillExtractor:
         raw_skills: list[str] = []
         method: str | None = None
         fallback: bool = False
+        grounded: bool = False
         try:
             result = await runtime.run(lambda _prev: self._call_llm(description))
             raw_skills = result.skills
             method = result.method
             fallback = result.fallback
+            grounded = result.grounded
         except Exception as exc:
             error = llm_call_error(exc, self._config.api_base or "")
             logger.warning("Skill extraction LLM call failed: %s", error)
@@ -407,9 +452,12 @@ class LLMSkillExtractor:
                 details=details,
             )
 
-        cleaned = self._clean_skills(raw_skills, description)
+        cleaned = self._clean_skills(raw_skills, description, already_grounded=grounded)
 
-        if use_cache:
+        # Do NOT cache a DEGRADED (keyword-grounded) result under the evidence_span key — it
+        # would persist as a stale "span-verified" hit after the endpoint recovers (the
+        # cross-mode contamination the mode-in-key change prevents, one level down). Re-extract.
+        if use_cache and (self._grounding_mode != "evidence_span" or grounded):
             self._save_cache(description, cleaned)
 
         return cleaned
@@ -417,6 +465,23 @@ class LLMSkillExtractor:
     async def _call_llm(self, description: str) -> _ExtractionResult:
         """Call the LLM and return raw skill strings with method metadata."""
         quiet_litellm()
+
+        if self._grounding_mode == "evidence_span":
+            try:
+                return await self._call_llm_evidence_span(description)
+            except (
+                ImportError,
+                InstructorError,
+                APIError,
+                ValidationError,
+                json.JSONDecodeError,
+            ) as exc:
+                # Structured evidence-span output unavailable (e.g. a vLLM without a tool-call
+                # parser). Degrade to keyword grounding — result.grounded stays False so
+                # _clean_skills still keyword-grounds these names. Not a masked failure.
+                logger.warning(
+                    "Evidence-span extraction failed (%s); degrading to keyword grounding", exc
+                )
 
         model = litellm_model(self._config)
         truncated = description[:MAX_DESCRIPTION_LENGTH]
@@ -506,17 +571,103 @@ class LLMSkillExtractor:
 
         return []
 
-    def _clean_skills(self, skills: list[str], description: str) -> list[str]:
-        """Normalize, filter, ground, deduplicate, and sort skills."""
+    async def _call_llm_evidence_span(self, description: str) -> _ExtractionResult:
+        """Evidence-span extraction: the model returns each skill with the exact source phrase,
+        and we keep only skills whose span verifies as a substring of the text. Domain-general —
+        no normalization map or keyword heuristics. Raises on structured-output failure so the
+        caller can degrade to keyword grounding."""
+        truncated = description[:MAX_DESCRIPTION_LENGTH]
+        client: Any = instructor.from_litellm(acompletion)
+        response = await client.create(
+            model=litellm_model(self._config),
+            api_base=self._config.api_base,
+            api_key=self._config.api_key,
+            messages=[
+                {"role": "system", "content": SKILL_SYSTEM_PROMPT_EVIDENCE},
+                {"role": "user", "content": SKILL_USER_PROMPT.format(truncated)},
+            ],
+            response_model=SkillExtractionOutputV2,
+            max_retries=2,
+            max_tokens=self._config.max_tokens,
+            temperature=self._config.temperature,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        )
+        grounded = self._verify_spans([(s.name, s.evidence) for s in response.skills], description)
+        logger.info("Extracted skills via evidence-span: %s", grounded)
+        return _ExtractionResult(
+            skills=grounded, method="evidence_span", fallback=False, grounded=True
+        )
+
+    @staticmethod
+    def _span_grounded(span: str, description: str) -> bool:
+        """True if ``span`` occurs in ``description`` as a WHOLE-TOKEN match.
+
+        Normalization lowercases, collapses whitespace, and replaces each punctuation run with
+        a boundary sentinel (``\\x00``, never in real text) so a clause boundary
+        ("part-time. series") cannot fuse two spans. The match is then anchored with word
+        boundaries so a short span cannot ground INSIDE a larger word ("Ada" must not match
+        "adaptable", "React" not "reactive") — keeping this guard at least as strict as the
+        keyword grounding it replaces."""
+
+        def norm(s: str) -> str:
+            return " ".join(re.sub(r"[^\w\s]+", " \x00 ", s.lower()).split())
+
+        nspan = norm(span)
+        if not nspan or nspan == "\x00":
+            return False
+        return re.search(r"(?<!\w)" + re.escape(nspan) + r"(?!\w)", norm(description)) is not None
+
+    def _verify_spans(self, pairs: list[tuple[str, str]], description: str) -> list[str]:
+        """Keep skill names whose evidence span verifies as a whole-token match in the text;
+        drop fabricated/paraphrased spans. Order-preserving, de-duplicated by lower-cased name.
+
+        Phase-1 limitation (by design): this verifies the SPAN is in the text but trusts the
+        model's canonical NAME for that span. A name/evidence MISMATCH (name "Java" for span
+        "JavaScript") is not caught — no string check can separate that from a legitimate
+        canonicalization (name "PostgreSQL" for span "Postgres"); both are prefix relations.
+        Catching it needs name↔span embedding coherence — a Phase-2 check (see the spec)."""
+        kept: list[str] = []
+        seen: set[str] = set()
+        for name, evidence in pairs:
+            if not name or not name.strip():
+                continue
+            if not self._span_grounded(evidence, description):
+                logger.warning(
+                    "Dropping skill %r — evidence span %r not found in text", name, evidence
+                )
+                continue
+            key = name.strip().lower()
+            if key not in seen:
+                seen.add(key)
+                kept.append(name.strip())
+        return kept
+
+    def _clean_skills(
+        self, skills: list[str], description: str, *, already_grounded: bool = False
+    ) -> list[str]:
+        """Normalize, filter, (ground,) deduplicate, and sort skills.
+
+        ``already_grounded`` (evidence-span mode) skips the keyword grounding check — the spans
+        were verified upstream, and keyword grounding would wrongly drop the cross-domain skills
+        evidence-span exists to keep."""
         seen: set[str] = set()
         cleaned: list[str] = []
         for skill in skills:
             if not skill or not skill.strip():
                 continue
             normalized = normalize_skill(skill)
-            if not normalized or is_hard_negative(normalized):
+            if not normalized:
                 continue
-            if not self._is_grounded(normalized, description):
+            stripped = normalized.strip()
+            # Soft-skill traits (the hard-negative blocklist) are always dropped. The len<=2
+            # sub-rule, though, is relaxed in evidence-span mode: a span-verified short skill
+            # (R, Go) is real and must survive, whereas keyword mode drops it as noise.
+            if len(stripped) <= 2:
+                if not already_grounded:
+                    continue
+            elif is_hard_negative(stripped):
+                continue
+            if not already_grounded and not self._is_grounded(normalized, description):
                 logger.warning("Dropping ungrounded skill '%s' from description", skill)
                 continue
             if normalized not in seen:

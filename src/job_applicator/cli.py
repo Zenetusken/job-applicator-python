@@ -1353,7 +1353,13 @@ def match(
         # Match
         runtime = _make_runtime(settings, name="match")
         with console.status("Computing embeddings and matching..."):
-            matcher = JobMatcher(settings.embedding, settings.llm, runtime, reporter=reporter)
+            matcher = JobMatcher(
+                settings.embedding,
+                settings.llm,
+                runtime,
+                reporter=reporter,
+                grounding_mode=settings.skills.grounding_mode,
+            )
             matches = await matcher.rank_jobs(resume_data, jobs, top_k=top_k)
 
         # Filter by min score
@@ -1781,7 +1787,13 @@ def batch(
             console.print(f"[green]Loaded {len(jobs)} jobs[/green]")
 
         runtime = _make_runtime(settings, name="batch")
-        matcher = JobMatcher(settings.embedding, settings.llm, runtime, reporter=reporter)
+        matcher = JobMatcher(
+            settings.embedding,
+            settings.llm,
+            runtime,
+            reporter=reporter,
+            grounding_mode=settings.skills.grounding_mode,
+        )
         with console.status("Computing match scores..."):
             matches = await matcher.rank_jobs(resume_data, jobs, top_k=top_k)
 
@@ -2441,7 +2453,13 @@ def tailor(
         if min_score > 0:
             from job_applicator.embeddings.matching import JobMatcher
 
-            matcher = JobMatcher(settings.embedding, settings.llm, runtime, reporter=reporter)
+            matcher = JobMatcher(
+                settings.embedding,
+                settings.llm,
+                runtime,
+                reporter=reporter,
+                grounding_mode=settings.skills.grounding_mode,
+            )
             with console.status("Computing match score..."):
                 pre_match = await matcher.match_resume_to_job(resume_data, job)
             pre_match_score = pre_match.score

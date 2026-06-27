@@ -28,6 +28,24 @@ Domain-general skill canonicalization + grounding on the existing local stack (Q
 both already loaded; 12 GB GPU), without heavy new dependencies, preserving the hallucination guard
 that grounding provides (a skill must be *claimed in the text*, not merely plausible).
 
+## Empirics — evidence-span fidelity probe (2026-06-26)
+
+Before building any evidence-span plumbing, a live probe tested the approach's core assumption on
+the local 4B (Qwen3.5-4B, temp 0): *does it emit evidence spans that are verifiable substrings of
+the source?* Schematic prompt (no concrete example span — the 4B copies them verbatim), 4
+descriptions across 2 software + 2 non-software domains, strict span check (lowercase + collapse
+whitespace + strip punctuation).
+
+**Result: 30/30 skills span-verified, 0% false-negative rate** — software (asyncio, FastAPI,
+Kubernetes…), nursing (patient assessment, IV insertion, ventilator management, BLS, ACLS), and
+finance (discounted cash flow models, variance analysis, Excel, CFA) all grounded by verbatim
+spans. Strict span-grounding does NOT drop correct skills here, and it grounds exactly the
+cross-domain skills the keyword/map grounding cannot.
+
+**Decision: pursue evidence-span grounding** (approach #1 below). The embedding-grounding variant
+stays the documented fallback (would have been chosen had span fidelity been low). One-off probe
+kept at `scratchpad/probe_evidence_spans.py` (not committed to src).
+
 ## Proposed approach
 
 ### 1. Grounding: substring → verify-the-citation (LLM evidence spans)
@@ -60,9 +78,23 @@ domain-agnostic* stop-list rather than a growing tech list.
   dropping the synthesize-a-compound-from-any-noun behavior keeps single-word skills grounded in
   *any* domain (e.g. "phlebotomy training" keeps `phlebotomy`), even though normalization stays
   software-only.
-- **Phase 1:** evidence-span grounding behind a config flag; A/B against the current keyword
-  grounding on the eval set; default-on when ≥ parity on tech and clearly better cross-domain.
-- **Phase 2:** embedding-dedup normalization; demote `NORMALIZATION_MAP` to a cache.
+- **Phase 1 — IMPLEMENTED (default-off):** evidence-span grounding behind `skills.grounding_mode`
+  (`keyword` default | `evidence_span`). `SkillEvidence` / `SkillExtractionOutputV2` schema, span
+  verification under aggressive normalization, **mode in the cache key** (no cross-mode
+  contamination), degrade-to-keyword fallback when structured output is unavailable, + unit guards
+  and a deterministic cross-domain eval scaffold. Live-validated: a nursing job grounds *patient
+  assessment / IV insertion / ventilator management* — domains keyword/map cannot reach.
+  An **adversarial multi-agent code review (2026-06-27)** then hardened the guard: span
+  verification is now **word-boundary-anchored** (a short span can't ground inside a larger word —
+  "Ada" ⊄ "adaptable"), punctuation is a clause boundary (not a join), short span-verified skills
+  survive (`R`/`Go`), and a degraded result is no longer cached under the evidence_span key. +7
+  `extract()`-level / degrade / no-masking unit guards closed the test gap the review found.
+  **Remaining:** the live multi-domain A/B (precision/recall vs keyword) and the default-on flip.
+- **Phase 2:** embedding-dedup normalization; demote `NORMALIZATION_MAP` to a cache. Also the
+  **name↔span coherence** check — catch a name/evidence mismatch (name `Java` for span
+  `JavaScript`) WITHOUT dropping a legitimate canonicalization (name `PostgreSQL` for span
+  `Postgres`). Deferred from Phase 1 because no string check separates the two (both are prefix
+  relations); it needs name↔span embeddings.
 - **Phase 3 (optional):** ESCO/taxonomy backbone.
 
 ## Validation
