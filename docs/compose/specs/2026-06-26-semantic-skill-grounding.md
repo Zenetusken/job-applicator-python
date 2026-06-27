@@ -97,6 +97,25 @@ domain-agnostic* stop-list rather than a growing tech list.
   relations); it needs name↔span embeddings.
 - **Phase 3 (optional):** ESCO/taxonomy backbone.
 
+## Phase-2 A/B pilot — no-gold objective metrics (2026-06-27)
+
+Evidence_span vs keyword, temp 0, 5 descriptions × 4 domains (a first signal, not a benchmark;
+recall-vs-gold is intentionally deferred — the gold set must come from the user / real sources,
+not the method's author, to avoid designer-grades-own-work bias). `scratchpad/grounding_ab.py`.
+
+- **Software no-regression (gates the default-on flip): evidence_span captured 9/9 and 7/7 of
+  keyword's skills — zero regression on keyword's home domain.**
+- **Cross-domain: keyword 0 / evidence_span 8 (nursing), 3 / 8 (finance), 0 / 8 (trades).**
+  Keyword grounds nothing outside software (empty `NORMALIZATION_MAP`); evidence_span grounds the
+  real domain skills (IV insertion, discounted cash flow models, NEC code compliance, …).
+- **C-leak (name/evidence mismatch) rate: 0/40 = 0%** — the deferred-C case is not observed at
+  temp 0; the deferral is data-validated (the model names its spans faithfully).
+- **Guard activity: 0/40 spans dropped** at temp 0 — confirms temp 0 as the setting (the earlier
+  single BLS drop was a temp-0.7 artifact; one 0.7 sample is noise).
+
+**Read:** the default-on flip is justified by the no-regression + cross-domain signal. Remaining
+before flipping: a larger N and a **user-blessed gold set** for the recall half.
+
 ## Validation
 
 - **Multi-domain eval set:** labelled (résumé, JD) pairs across ≥4 domains (software, nursing,
