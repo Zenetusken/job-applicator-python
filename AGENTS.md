@@ -184,8 +184,10 @@ src/job_applicator/
   suffix checks. It is also used to drop look-alike hosts when importing cookies from a browser.
 - **LinkedIn description extraction clicks cards.** The scraper clicks each card, waits for content
   change, clicks the correct "show more" button, then extracts with a 5 000-char cap.
-- **`--verbose` and `--log-file` work both before and after the command.** `--verbose` emits a
-  structured `VerboseReport`; `--log-file` persists it to disk.
+- **`--verbose` and `--log-file` work both before and after the *data* commands** (search, match,
+  tailor, apply, batch, generate-cover-letter, ats-check). `--verbose` emits a structured
+  `VerboseReport`; `--log-file` persists it to disk. The status-only `status`/`doctor`/`check-session`
+  don't take them (they record nothing into a reporter).
 - **JSON output goes to stdout, logs go to stderr.** Enables `job-applicator match --json | jq .`
   without Rich wrapping corruption.
 - **Batch runs persist progress for crash recovery.** State lives in
