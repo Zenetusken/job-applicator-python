@@ -7,7 +7,7 @@ _Last synced: 2026-06-26_
 
 ## Snapshot
 
-- **Stats:** 64 source modules (`src/job_applicator/`), 1066 fast unit tests (`pytest -m unit` — the green gate, no browser/GPU); 1109 total = 1066 unit + 9 integration + 34 live (`-m live`) needing vLLM (`localhost:8000`) + GPU. Tests auto-marked by location in `tests/conftest.py`. Live tests skip cleanly when the configured LLM endpoint is unreachable.
+- **Stats:** 64 source modules (`src/job_applicator/`), ~1066 fast unit tests (`pytest -m unit` — the green gate, no browser/GPU); ~1109 total = ~1066 unit + 9 integration + 34 live (`-m live`) needing vLLM (`localhost:8000`) + GPU. Tests auto-marked by location in `tests/conftest.py`. Live tests skip cleanly when the configured LLM endpoint is unreachable.
 - **Python:** 3.12+ (dev box 3.12.8). Mypy strict; ruff (100-char lines, double quotes).
 - **Quality gates (all must pass, in order):**
   `ruff check src/ tests/` → `ruff format --check src/ tests/` →
