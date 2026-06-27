@@ -36,8 +36,9 @@ serve = [
     # OPTIONAL: self-host the OpenAI-compatible LLM endpoint locally (scripts/serve-vllm.sh).
     # Normally job-applicator is just a CLIENT of an existing endpoint (see [llm] api_base);
     # install this only for a standalone box with no shared/remote LLM. Large; needs a CUDA GPU.
-    # The CUDA 13.0 wheel is preferred on modern drivers (NVIDIA 575+); vLLM will pull the
-    # matching torch/CUDA runtime automatically.
+    # vllm 0.23 pins torch==2.11.0, whose PyPI wheel is the CUDA 13.0 build (it bundles
+    # nvidia-*-cu13), so a plain `pip install` lands the cu13 stack with no extra index.
+    # pip selects it unconditionally — running it needs an NVIDIA 575+ / CUDA 13 driver.
     "vllm>=0.23,<0.24",
 ]
 pdf = [

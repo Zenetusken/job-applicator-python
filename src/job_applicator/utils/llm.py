@@ -13,7 +13,7 @@ from job_applicator.exceptions import LLMError
 from job_applicator.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from job_applicator.config import LLMResilienceConfig
+    from job_applicator.config import LLMConfig, LLMResilienceConfig
 
 logger = get_logger("utils.llm")
 
@@ -75,6 +75,18 @@ def llm_call_error(exc: Exception, api_base: str) -> LLMError:
             f"`job-applicator doctor`. (cause: {exc})"
         )
     return LLMError(f"LLM call failed: {exc}")
+
+
+def litellm_model(config: LLMConfig) -> str:
+    """Build the litellm model id for a completion against ``config``.
+
+    OpenAI-compatible endpoints (local vLLM, LM Studio, …) are reached through
+    litellm's OpenAI provider, which requires the ``openai/`` prefix; with no
+    ``api_base`` set we pass the bare id and let litellm route by provider. Single
+    source of truth so every consumer (cover letter, tailor, style, skills, PDF
+    formatting) constructs the id identically rather than re-deriving the rule.
+    """
+    return f"openai/{config.model}" if config.api_base else config.model
 
 
 def strip_thinking_process(text: str | None) -> str:

@@ -34,7 +34,10 @@ timeout_ms = 30000
 api_base = "http://localhost:8000/v1"
 api_key = "not-needed-for-local"
 model = "cyankiwi/Qwen3.5-4B-AWQ-4bit"
-max_tokens = 1024
+# Upper bound per completion. 4096 fits full résumé tailoring; cover letters and
+# style analysis need less (style analysis self-caps at 1024 internally). Setting
+# this below ~4096 can truncate tailored résumés. Matches the built-in default.
+max_tokens = 4096
 temperature = 0.7
 
 # Targets

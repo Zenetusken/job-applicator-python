@@ -207,7 +207,9 @@ async def _cover_letter_workflow(
                     )
                     from litellm import acompletion
 
-                    model = f"openai/{config.model}" if config.api_base else config.model
+                    from job_applicator.utils.llm import litellm_model
+
+                    model = litellm_model(config)
                     response = await acompletion(
                         model=model,
                         api_base=config.api_base,

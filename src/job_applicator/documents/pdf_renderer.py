@@ -25,7 +25,7 @@ from job_applicator.documents.job_category import detect_job_category
 from job_applicator.documents.sign_off import extract_sign_off
 from job_applicator.exceptions import LLMError, PDFRenderError
 from job_applicator.models import CoverLetterResult, JobListing, TailoredResume
-from job_applicator.utils.llm import LLMRuntime, quiet_litellm
+from job_applicator.utils.llm import LLMRuntime, litellm_model, quiet_litellm
 from job_applicator.utils.path import safe_filename_slug
 
 # Characters that must be escaped when they appear unescaped in Typst source.
@@ -264,7 +264,7 @@ class PDFRenderer:
         category: str,
     ) -> FormattedResume:
         config = self.settings.llm
-        model = f"openai/{config.model}" if config.api_base else config.model
+        model = litellm_model(config)
         prompt = _build_resume_format_prompt(tailored, job, category)
         client = await self._get_client()
 
@@ -301,7 +301,7 @@ class PDFRenderer:
         category: str,
     ) -> FormattedCoverLetter:
         config = self.settings.llm
-        model = f"openai/{config.model}" if config.api_base else config.model
+        model = litellm_model(config)
         prompt = _build_cover_letter_format_prompt(result, job, category)
         client = await self._get_client()
 

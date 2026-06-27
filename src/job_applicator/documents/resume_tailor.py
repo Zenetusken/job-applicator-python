@@ -17,7 +17,7 @@ from job_applicator.models import (
     StyleGuide,
     TailoredResume,
 )
-from job_applicator.utils.llm import CircuitOpenError, LLMRuntime, quiet_litellm
+from job_applicator.utils.llm import CircuitOpenError, LLMRuntime, litellm_model, quiet_litellm
 from job_applicator.utils.logging import get_logger
 from job_applicator.utils.retry import async_retry
 
@@ -1186,9 +1186,7 @@ class ResumeTailor:
                 quiet_litellm()
                 from litellm import acompletion
 
-                model = (
-                    f"openai/{self._config.model}" if self._config.api_base else self._config.model
-                )
+                model = litellm_model(self._config)
 
                 response = await acompletion(
                     model=model,

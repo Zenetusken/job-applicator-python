@@ -31,11 +31,13 @@
 #                  12 GB cards to avoid the cudagraph-profiling OOM with
 #                  Qwen3.5-style hybrid models.
 #
-# Isolation rule: this script NEVER reads or writes Doc_Flo configuration. By
-# default it runs job-applicator's own vLLM binary from .venv/bin/vllm and
-# applies job-applicator's own parameters. If another app already has vLLM
-# running on the target port, we check whether its command line is compatible;
-# use RESTART=1 to stop it and start a fresh instance with this config.
+# Isolation rule: this script NEVER reads or writes Doc_Flo configuration, and it
+# NEVER silently falls back to a vllm on $PATH (historically a sibling project's).
+# By default it runs job-applicator's own vLLM binary from .venv/bin/vllm; if that
+# is absent it errors and asks you to install the serve extra or set VLLM_BIN
+# explicitly, rather than reaching for whatever vllm happens to be on PATH. If
+# another app already has vLLM running on the target port, we check whether its
+# command line is compatible; use RESTART=1 to stop it and start a fresh instance.
 set -euo pipefail
 
 MODEL="${MODEL:-cyankiwi/Qwen3.5-4B-AWQ-4bit}"
@@ -97,11 +99,17 @@ VLLM_BIN="${VLLM_BIN:-}"
 if [ -z "$VLLM_BIN" ]; then
     if [ -x "$PROJECT_DIR/.venv/bin/vllm" ]; then
         VLLM_BIN="$PROJECT_DIR/.venv/bin/vllm"
-    elif command -v vllm >/dev/null 2>&1; then
-        VLLM_BIN="$(command -v vllm)"
     else
-        echo "error: 'vllm' not found — install the serve extra:  pip install -e \".[serve]\"" >&2
-        echo "       or point VLLM_BIN at a shared vLLM executable." >&2
+        # Isolation: do NOT silently adopt a vllm on $PATH (historically a sibling
+        # project's) — that reintroduces the cross-project coupling this script
+        # exists to remove. Require an explicit opt-in instead.
+        echo "error: no isolated vLLM at $PROJECT_DIR/.venv/bin/vllm." >&2
+        echo "       Install the serve extra:  pip install -e \".[serve]\"" >&2
+        if command -v vllm >/dev/null 2>&1; then
+            echo "       or use a system vLLM explicitly:  VLLM_BIN=$(command -v vllm) $0" >&2
+        else
+            echo "       or set VLLM_BIN to a vllm executable." >&2
+        fi
         exit 1
     fi
 fi
