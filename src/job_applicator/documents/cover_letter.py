@@ -67,8 +67,16 @@ SYSTEM_PROMPT = f"""You are a cover letter writer. Write a tailored cover letter
 like a specific person wrote it for this specific role — not like AI-generated boilerplate.
 
 Content rules:
-- Use only experience, skills, and facts present in the resume and job description. Do not \
-invent metrics, employers, problem domains, or qualifications not in the resume.
+- The RESUME is the only source of the applicant's experience, skills, and facts. The job \
+description tells you what the ROLE needs — it is the target to address, NOT a source of things \
+to claim about the applicant. Do not invent metrics, employers, problem domains, or \
+qualifications not in the resume.
+- The applicant's claimed tools come from the resume only. Never name a specific vendor or \
+commercial product (a named SIEM, EDR, SOAR, IDS/IPS, vulnerability scanner, or ticketing product) \
+unless that exact name appears in the resume. When the role needs such a tool the resume lacks, \
+name the general capability instead (the category, e.g. "SIEM monitoring", "EDR", "incident \
+response") or speak to the applicant's transferable skills — never imply hands-on use of a named \
+product they have not used.
 - Highlight the most relevant experience; do not restate the whole resume.
 - Include exactly ONE concrete, specific detail FROM THE RESUME that shows the applicant's fit \
 for this role's requirements. Do NOT claim the applicant previously worked for the company \
@@ -99,6 +107,49 @@ Tone directive:
 naturally, emphasize the listed themes, avoid the listed patterns, and match its vocabulary \
 and sentence style.
 - When no tone directive is provided, use a professional but personable tone."""
+
+
+# Named security PRODUCTS a small model commonly pulls from a JD and wrongly attributes to the
+# applicant. Deterministic REGRESSION CATCH for the SOC domain (the user's reality), NOT a general
+# guard: named tools are unbounded, so this only catches known products — and is kept HIGH-PRECISION
+# (no common-English words like 'soar'/'snort'/'tenable' that would wrongly reject a clean letter;
+# the prompt covers those). The general signal is the matcher's `missing_skills` (tools the
+# candidate lacks) — thread that through if the generator ever receives the match result (the
+# `apply --from` funnel path has it; the standalone `--description` path does not). Human review
+# is the backstop.
+_NAMED_TOOLS: frozenset[str] = frozenset(
+    {
+        "arcsight",
+        "cortex xdr",
+        "cortex xsoar",
+        "crowdstrike",
+        "cylance",
+        "defender for endpoint",
+        "demisto",
+        "exabeam",
+        "fortinet",
+        "jira",
+        "logrhythm",
+        "metasploit",
+        "nessus",
+        "qradar",
+        "qualys",
+        "rapid7",
+        "securonix",
+        "sentinelone",
+        "servicenow",
+        "sourcefire",
+        "splunk",
+        "suricata",
+    }
+)
+
+
+def _word_present(term: str, haystack_lower: str) -> bool:
+    """Whether ``term`` (already lowercase) appears in ``haystack_lower`` not flanked by
+    alphanumerics — so 'snort' wouldn't match inside 'snorting' and a multi-word product name
+    matches only as a whole phrase."""
+    return re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", haystack_lower) is not None
 
 
 class CoverLetterGenerator:
@@ -200,6 +251,7 @@ class CoverLetterGenerator:
         # resume. Small models frequently hallucinate "I previously worked at X".
         if not self._company_in_resume(job.company, resume):
             self._reject_invented_company_employment(text, job.company)
+        self._reject_unlisted_named_tools(text, resume, job.company)
 
         validate_sign_off(text, user)
 
@@ -277,6 +329,28 @@ class CoverLetterGenerator:
         for pattern in employment_patterns:
             if re.search(pattern, norm_text):
                 raise LLMError(f"Generated cover letter falsely claims employment at {company}")
+
+    @staticmethod
+    def _reject_unlisted_named_tools(text: str, resume: ResumeData, company: str) -> None:
+        """Raise ``LLMError`` if the letter names a known security PRODUCT not in the résumé.
+
+        A small model often pulls a JD's named tool (Splunk, SourceFire, ServiceNow…) and
+        attributes hands-on experience to the applicant; the résumé is the only valid source of a
+        claimed tool. Presence is checked against the résumé's FULL text (a tool can live in an
+        experience bullet, not the skills list). A tool that matches the TARGET COMPANY's name is
+        allowed — naming the employer you are applying TO (e.g. a letter addressed to CrowdStrike)
+        is not a skill claim; many security products ARE companies a SOC analyst applies to. SOC-
+        scoped regression catch, not exhaustive — the prompt is the primary defence and human
+        review the backstop. Raising feeds the existing validate→retry→fail-closed loop, so the
+        model regenerates without the overclaim."""
+        resume_lower = resume.raw_text.lower()
+        company_lower = company.lower()
+        text_lower = text.lower()
+        for tool in sorted(_NAMED_TOOLS):
+            if _word_present(tool, resume_lower) or _word_present(tool, company_lower):
+                continue  # the candidate lists it, or it is the employer being addressed
+            if _word_present(tool, text_lower):
+                raise LLMError(f"Generated cover letter names a tool not in the résumé: {tool!r}")
 
     @classmethod
     def _humanize(cls, text: str) -> str:

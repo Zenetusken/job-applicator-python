@@ -482,6 +482,90 @@ def test_cover_letter_validation_rejects_invented_employment() -> None:
         generator._validate_output(bad_letter, user, job=job, resume=resume)
 
 
+def test_cover_letter_rejects_unlisted_named_tool() -> None:
+    """A letter claiming a named security product absent from the résumé is rejected — the 4B
+    pulls JD tools (Splunk, SourceFire, ServiceNow) and attributes them to the applicant."""
+    resume = ResumeData(
+        raw_text="Jane Roe\nSkills\nSIEM, incident response, Wireshark",
+        skills=["SIEM", "incident response"],
+    )
+    letter = "I have hands-on experience with Splunk in a busy SOC, triaging real alerts daily."
+    with pytest.raises(LLMError, match="names a tool not in"):
+        CoverLetterGenerator._reject_unlisted_named_tools(letter, resume, "Acme")
+
+
+def test_cover_letter_allows_named_tool_present_in_resume() -> None:
+    """A named tool the résumé actually lists is kept (not a false positive)."""
+    resume = ResumeData(raw_text="Jane Roe\nSkills\nSplunk, incident response", skills=["Splunk"])
+    CoverLetterGenerator._reject_unlisted_named_tools(
+        "I monitored alerts in Splunk daily and escalated incidents.", resume, "Acme"
+    )  # no raise
+
+
+def test_cover_letter_tool_check_uses_full_resume_text() -> None:
+    """Presence is checked against the FULL résumé text — a tool named only in an experience
+    bullet (not the skills list) counts as listed, so it is not wrongly rejected."""
+    resume = ResumeData(
+        raw_text="Jane Roe\nExperience\nAnalyst\n• Tuned ServiceNow workflows for the SOC team.",
+        skills=["incident response"],
+    )
+    CoverLetterGenerator._reject_unlisted_named_tools(
+        "I have configured ServiceNow ticketing to streamline escalation.", resume, "Acme"
+    )  # no raise
+
+
+def test_cover_letter_allows_generic_capability_words() -> None:
+    """Generic capability terms (SIEM/EDR/IDS-IPS) are not named products — they pass; the guard
+    targets specific vendor/product names, so an honest generic claim is never rejected."""
+    resume = ResumeData(
+        raw_text="Jane Roe\nSkills\nincident response", skills=["incident response"]
+    )
+    CoverLetterGenerator._reject_unlisted_named_tools(
+        "I bring hands-on SIEM monitoring, EDR, and IDS/IPS experience to the role.", resume, "Acme"
+    )  # no raise
+
+
+def test_cover_letter_allows_naming_the_target_security_vendor() -> None:
+    """Applying TO a security vendor (many products ARE companies a SOC analyst applies to) must
+    NOT be rejected for naming the employer — the target company is exempt from the tool check."""
+    resume = ResumeData(
+        raw_text="Jane Roe\nSkills\nincident response", skills=["incident response"]
+    )
+    CoverLetterGenerator._reject_unlisted_named_tools(
+        "I am eager to bring my incident-response skills to CrowdStrike.", resume, "CrowdStrike"
+    )  # no raise — CrowdStrike is the employer, not a claimed tool
+
+
+def test_cover_letter_validation_rejects_unlisted_tool_via_validate_output() -> None:
+    """Integration: the tool check is wired into _validate_output's retry loop (not only callable
+    directly), and only the EMPLOYER's name is exempt — a different named product still trips."""
+    config = LLMConfig()
+    generator = CoverLetterGenerator(config)
+    user = UserProfile(first_name="Jane", last_name="Roe", email="j@e.com", phone="")
+    job = JobListing(title="SOC Analyst", company="Acme", url="https://x/1", board=JobBoard.INDEED)
+    resume = ResumeData(raw_text="Jane Roe\nSkills\nSIEM, incident response", skills=["SIEM"])
+    letter = (
+        "Dear Hiring Team,\n\nI bring hands-on Splunk experience to your SOC. "
+        "This body is long enough to pass the minimum length check and keeps going.\n\n"
+        "Sincerely,\nJane Roe"
+    )
+    with pytest.raises(LLMError, match="names a tool not in"):
+        generator._validate_output(letter, user, job=job, resume=resume)
+
+
+def test_cover_letter_prompt_forbids_naming_unlisted_tools() -> None:
+    """The system prompt closes the JD-sourcing loophole and bans naming unlisted products, with
+    NO concrete product example (keyfigures-hallucination: a 4B parrots example tool names)."""
+    from job_applicator.documents.cover_letter import _NAMED_TOOLS, SYSTEM_PROMPT
+
+    low = SYSTEM_PROMPT.lower()
+    assert "only source of the applicant" in SYSTEM_PROMPT  # JD-sourcing loophole closed
+    assert "Never name a specific vendor" in SYSTEM_PROMPT
+    assert "unless that exact name appears in the resume" in SYSTEM_PROMPT
+    # No parrotable product NAME in the prompt (the real keyfigures risk; bare "e.g." is fine).
+    assert not any(tool in low for tool in _NAMED_TOOLS)
+
+
 def test_cover_letter_generator_template() -> None:
     config = LLMConfig()
     generator = CoverLetterGenerator(config)
