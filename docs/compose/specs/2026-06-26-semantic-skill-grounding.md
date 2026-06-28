@@ -146,10 +146,23 @@ account-safe) surfaced four issues. One is fixed; three shape Phase-2 priorities
   translating French JDs → English did *not* improve matches (one case got worse). The low French
   scores were mostly JD-vagueness + extraction-noise + genuine non-fit, not language. Minor
   residual: French skill *names* don't embed-match English CV names (canonical-naming facet, low).
-- **Match-score ≠ role-fit (calibration).** Score = 60% semantic + 40% skill-coverage → biased
-  toward skill-RICH JDs: detailed *intermediate* postings outscore vague *entry/junior* ones the
-  candidate fits better. The score is a skill-overlap measure, not an apply/fit signal — surface
-  that caveat in `match` output, or revisit scoring for skill-sparse JDs.
+- **Match-score ≠ role-fit (calibration) — SURFACED, not re-scored (2026-06-28).** Score = 60%
+  semantic + 40% skill-coverage → biased toward skill-RICH JDs: detailed *intermediate* postings
+  outscore vague *entry/junior* ones the candidate fits better. The score is a skill-overlap
+  measure, not an apply/fit signal. **Decision: surface the caveat; do NOT change the scoring
+  algorithm** — a re-score for skill-sparse JDs needs its own empirics + A/B and risks regressing
+  the tuned 60/40 blend, whereas the honesty fix is high-value and low-risk. Shipped: a
+  decision-framed caption on the ranking surfaces (`match`, `status`, `batch`) — *"skill-overlap,
+  not role-fit; sparse/junior JDs rank low — don't skip on score alone"* (the `match` caption adds
+  a `raise -k` hint, since `top_k` defaults to 5 and the low-ranked roles the caveat is about can
+  sit below the cut; the TUI list is scrollable and per-card-marked, so it needs no such hint);
+  `match --json` now exposes `semantic_score` / `skill_score` / `coverage_measured` (the caption's
+  machine form); and the TUI detail pane fixes the **semantic-only misread** — a JD with no
+  requirements has `skill_score` 0.0 *by convention*, which was rendered as a real "skill 0%" and
+  is now "coverage n/a — none listed". A single shared predicate `models.coverage_measured()`
+  defines the semantic-only case for the scorer (`_combined_score`) and both renderers, so the
+  convention has exactly one home. Guards: unit tests on the helper, the `--json` shape (measured
+  *and* semantic-only), and the TUI rendered string (both branches).
 
 ## Validation
 

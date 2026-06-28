@@ -285,6 +285,81 @@ def test_tui_detail_hides_placeholder_url() -> None:
     assert "@click=app.open_url" in app._detail_markup(_stored("https://linkedin.com/jobs/1"))
 
 
+def test_tui_detail_coverage_unknown_reads_na_not_zero() -> None:
+    """A job with no requirements (semantic-only score) must NOT render a misleading 'skill 0%' —
+    that 0.0 is a by-convention value, not a real coverage. Coverage reads 'n/a — none listed',
+    a measured job shows the real skill %, and both carry the skill-overlap-not-fit caveat."""
+    from datetime import UTC, datetime
+
+    from job_applicator.models import StoredJob
+
+    def _stored(matched: list[str], missing: list[str], skill_score: float) -> StoredJob:
+        return StoredJob(
+            id=1,
+            job=JobListing(title="Dev", company="Acme", url="https://x/1", board=JobBoard.INDEED),
+            match_score=0.62,
+            semantic_score=0.62,
+            skill_score=skill_score,
+            matched_skills=matched,
+            missing_skills=missing,
+            first_seen_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+
+    app = JobApplicatorApp(settings=AppSettings(), store=MagicMock(), app_state=MagicMock())
+
+    # semantic-only: no requirements → skill_score 0.0 by convention, NOT a real 0%
+    md_sem = app._detail_markup(_stored([], [], 0.0))
+    assert "coverage n/a" in md_sem  # honest: coverage was not measured
+    assert "none listed" in md_sem
+    assert "skill 0%" not in md_sem  # the misread is gone
+    assert "not role-fit" in md_sem  # the calibration caveat is surfaced
+
+    # measured: real requirements → the skill % is shown, no 'n/a'
+    md_meas = app._detail_markup(_stored(["python"], ["k8s"], 0.5))
+    assert "skill 50%" in md_meas
+    assert "coverage n/a" not in md_meas
+    assert "not role-fit" in md_meas
+
+    # measured-but-ZERO: requirements exist but none matched → a REAL "skill 0%", NOT "n/a".
+    # This pins the two-zeros distinction so a renderer that drops the missing-skills side of
+    # coverage_measured (regressing the real-0% case to "n/a") is caught.
+    md_zero = app._detail_markup(_stored([], ["k8s"], 0.0))
+    assert "skill 0%" in md_zero
+    assert "coverage n/a" not in md_zero
+
+
+async def test_tui_list_card_marks_coverage_unknown_score(tmp_path: Path) -> None:
+    """The list card marks a coverage-unknown score (no requirements) with '*' so a low rank
+    isn't misread as weak skills at list-scan time — before the detail pane is ever opened;
+    a measured score carries no marker. (`_job_card` reads the theme, so the app is mounted.)"""
+    from datetime import UTC, datetime
+
+    from job_applicator.jobs_store import JobStore
+    from job_applicator.models import StoredJob
+
+    def _stored(matched: list[str], missing: list[str]) -> StoredJob:
+        return StoredJob(
+            id=1,
+            job=JobListing(title="Dev", company="Acme", url="https://x/1", board=JobBoard.INDEED),
+            match_score=0.45,
+            semantic_score=0.45,
+            skill_score=0.0,
+            matched_skills=matched,
+            missing_skills=missing,
+            first_seen_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    app = JobApplicatorApp(settings=AppSettings(), store=store, app_state=MagicMock())
+    async with app.run_test():
+        assert "45%*" in str(app._job_card(_stored([], [])))  # semantic-only → marked
+        measured = str(app._job_card(_stored(["python"], ["k8s"])))
+        assert "45%*" not in measured  # measured → no marker
+        assert "45%" in measured
+
+
 async def test_tui_open_url_opens_browser(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """`o` opens the selected job's posting in the default browser (off-thread worker)."""
     import webbrowser

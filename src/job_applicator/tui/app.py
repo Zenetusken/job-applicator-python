@@ -34,6 +34,7 @@ from job_applicator.models import (
     Format,
     FunnelStatus,
     JobBoard,
+    coverage_measured,
     parse_salary_to_annual_min,
 )
 from job_applicator.tui.textfmt import format_job_description
@@ -450,6 +451,10 @@ class JobApplicatorApp(App[None]):
         meta = Text()
         score = s.match_score
         meta.append(f"{score:.0%}" if score is not None else "—", style=_score_style(score))
+        # Mark a coverage-unknown score (no requirements → semantic-only) so a low rank isn't
+        # misread as weak skills at list-scan time; the detail pane spells it out.
+        if score is not None and not coverage_measured(s.matched_skills, s.missing_skills):
+            meta.append("*", style="dim")
         meta.append("  ·  ", style="dim")
         meta.append(s.job.board.display_name, style=_BOARD_STYLE.get(s.job.board.value, "white"))
         if s.job.location:
@@ -568,10 +573,19 @@ class JobApplicatorApp(App[None]):
             f"Salary    {escape(j.salary) if j.salary else '—'}",
         ]
         if s.match_score is not None:
-            sem, skill = s.semantic_score or 0, s.skill_score or 0
+            sem = s.semantic_score or 0
+            if coverage_measured(s.matched_skills, s.missing_skills):
+                skill = s.skill_score or 0
+                breakdown = f"(semantic {sem:.0%} · skill {skill:.0%})"
+            else:
+                # No requirements listed → skill_score is 0.0 by convention, not a real 0%.
+                breakdown = f"(semantic {sem:.0%} · coverage n/a — none listed)"
             lines.append(
                 f"Match     [{_score_style(s.match_score)}]{s.match_score:.0%}[/]  "
-                f"[dim](semantic {sem:.0%} · skill {skill:.0%})[/dim]"
+                f"[dim]{breakdown}[/dim]"
+            )
+            lines.append(
+                "[dim]Score = skill-overlap, not role-fit — sparse/junior roles score low.[/dim]"
             )
         if s.matched_skills:
             lines.append(f"Skills ✓  {escape(', '.join(s.matched_skills[:8]))}")

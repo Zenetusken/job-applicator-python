@@ -17,6 +17,7 @@ from job_applicator.models import (
     TailorSession,
     UserProfile,
     VerboseReport,
+    coverage_measured,
     detect_seniority,
     parse_salary_to_annual_min,
 )
@@ -443,3 +444,13 @@ class TestParseSalaryToAnnualMin:
     def test_no_currency_conversion(self) -> None:
         # A CAD figure is read as-is (numeric only) — no FX applied.
         assert parse_salary_to_annual_min("$100,000 CAD") == 100_000
+
+
+def test_coverage_measured_distinguishes_semantic_only_from_measured() -> None:
+    """coverage_measured: True when the JD had requirements to score against, False in the
+    semantic-only case (none listed). Guards renderers from showing skill_score 0.0 — a
+    by-convention value, not a real 0% — as '0% of skills matched'."""
+    assert coverage_measured(["python"], []) is True  # matched only
+    assert coverage_measured([], ["k8s"]) is True  # missing only
+    assert coverage_measured(["python"], ["k8s"]) is True  # both sides present
+    assert coverage_measured([], []) is False  # semantic-only: no requirements at all

@@ -124,6 +124,7 @@ def test_status_table_renders(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     assert result.exit_code == 0, result.output
     assert "Funnel" in result.stdout
     assert "Engineer 1" in result.stdout
+    assert "skill-overlap" in result.stdout  # the calibration caption (shared _SCORE_CAVEAT)
 
 
 def test_status_empty_is_clean(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -187,6 +188,81 @@ def test_match_persists_scored_jobs(
     assert result.exit_code == 0, result.output
     assert store.upsert_match.call_count == 2
     assert len(json.loads(result.stdout)) == 2  # JSON stays pure on stdout
+
+
+def _semantic_only_match(job: JobListing) -> MatchResult:
+    """A match for a JD with NO requirements: skill_score is 0.0 by convention (not a real 0%)."""
+    return MatchResult(
+        job=job,
+        score=0.7,
+        semantic_score=0.7,
+        skill_score=0.0,
+        matched_skills=[],
+        missing_skills=[],
+        summary="ok",
+    )
+
+
+def _patch_match(monkeypatch: pytest.MonkeyPatch, sample_resume: object, matches: list) -> None:  # type: ignore[type-arg]
+    matcher_cls = MagicMock()
+    matcher_cls.return_value.rank_jobs = AsyncMock(return_value=matches)
+    monkeypatch.setattr("job_applicator.embeddings.matching.JobMatcher", matcher_cls)
+    monkeypatch.setattr(cli, "_get_jobs_store", lambda: MagicMock())
+    loader = MagicMock()
+    loader.load.return_value = sample_resume
+    monkeypatch.setattr("job_applicator.documents.resume.ResumeLoader", lambda: loader)
+
+
+def test_match_json_exposes_score_components_and_coverage_flag(
+    tmp_path: Path, sample_resume: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """match --json surfaces semantic_score, skill_score and a coverage_measured flag, so a
+    consumer can tell a semantic-only score (no requirements → skill_score 0.0 by convention)
+    from a genuinely measured one — the calibration the human caption carries, in machine form."""
+    jobs_file = tmp_path / "jobs.json"
+    jobs_file.write_text(
+        json.dumps(
+            [
+                {"title": "E1", "company": "C1", "url": "https://x/1", "board": "linkedin"},
+                {"title": "E2", "company": "C2", "url": "https://x/2", "board": "linkedin"},
+            ]
+        )
+    )
+    _patch_match(monkeypatch, sample_resume, [_match(_job(1)), _semantic_only_match(_job(2))])
+
+    result = CliRunner().invoke(
+        cli.app, ["match", "--resume", "/tmp/r.txt", "--jobs-file", str(jobs_file), "--json"]
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.stdout)  # pure JSON on stdout
+    assert {"semantic_score", "skill_score", "coverage_measured"} <= data[0].keys()
+    assert data[0]["coverage_measured"] is True  # measured row had requirements
+    assert data[1]["coverage_measured"] is False  # semantic-only row had none
+    assert data[1]["skill_score"] == 0.0  # exposed, but flagged unmeasured
+
+
+def test_match_table_shows_calibration_caption_and_coverage_marker(
+    tmp_path: Path, sample_resume: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The console match table carries the 'skill-overlap, not role-fit' caption, and a
+    coverage-unknown row is marked (with its legend) so a semantic-only score isn't misread."""
+    jobs_file = tmp_path / "jobs.json"
+    jobs_file.write_text(
+        json.dumps([{"title": "E2", "company": "C2", "url": "https://x/2", "board": "linkedin"}])
+    )
+    _patch_match(monkeypatch, sample_resume, [_semantic_only_match(_job(2))])
+
+    result = CliRunner().invoke(
+        cli.app, ["match", "--resume", "/tmp/r.txt", "--jobs-file", str(jobs_file)]
+    )
+    assert result.exit_code == 0, result.output
+    out = result.output
+    assert "skill-overlap" in out  # the calibration caption is present
+    assert "role-fit" in out
+    assert "requirements" in out  # the coverage-unknown legend (a semantic-only row present)
+    # "70%*" is the per-row marker abutting the score (Rich strips styles non-TTY) — distinct
+    # from the caption legend's standalone "*", so this catches a row-marker regression.
+    assert "70%*" in out
 
 
 # --------------------------------------------------- apply --from / saved-list

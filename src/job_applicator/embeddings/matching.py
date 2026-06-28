@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from job_applicator.config import EmbeddingConfig, LLMConfig
 from job_applicator.embeddings.service import EmbeddingService, EmbeddingVector
 from job_applicator.embeddings.skill_extraction import LLMSkillExtractor
-from job_applicator.models import JobListing, ResumeData
+from job_applicator.models import JobListing, ResumeData, coverage_measured
 from job_applicator.utils.llm import LLMRuntime
 from job_applicator.utils.logging import get_logger
 from job_applicator.utils.verbose import VerboseReporter
@@ -415,7 +415,7 @@ class JobMatcher:
         listed AND none extractable, or the extractor LLM is down) — rank on semantic similarity
         ALONE rather than injecting a neutral 0.5 floor (which would add a uniform +0.2 to every
         such job). The reported skill is 0.0 in that case (no coverage measured)."""
-        if not matched_skills and not missing_skills:
+        if not coverage_measured(matched_skills, missing_skills):
             return semantic_score, 0.0
         skill_score = self._compute_skill_score(matched_skills, missing_skills)
         return (0.6 * semantic_score) + (0.4 * skill_score), skill_score
