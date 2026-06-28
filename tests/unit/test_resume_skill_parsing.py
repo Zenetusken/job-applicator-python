@@ -49,3 +49,20 @@ def test_one_per_line_skills_still_parse() -> None:
     skills = _parse_skills(text)
     assert {"Python", "Java", "Kubernetes"} <= set(skills)
     assert not any("," in s for s in skills)
+
+
+def test_two_column_tabgrid_skills_strip_row_label() -> None:
+    """Two-column 'Category<tab>skill · skill' grids (the modern CV layout) parse to clean
+    skills — the bold row label is dropped, not glued onto the first skill of each row.
+    Regression: "Networking\tTCP/IP" was parsed as one skill, corrupting skill-coverage."""
+    text = (
+        "ANDREI TESTER\nandrei@example.com\n\n"
+        "SKILLS\n"
+        "Security ops\tSIEM · SOC monitoring · incident response\n"
+        "Networking\tTCP/IP · subnetting · firewalls\n\n"
+        "EXPERIENCE\nAnalyst at Acme (2019-Present)\n- Did things.\n"
+    )
+    skills = _parse_skills(text)
+    assert "SIEM" in skills and "TCP/IP" in skills, skills
+    assert not any("\t" in s for s in skills), f"tab/label leaked into a skill: {skills}"
+    assert not any(s.startswith(("Security ops", "Networking")) for s in skills), skills
