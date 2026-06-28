@@ -352,7 +352,9 @@ class TestLLMSkillExtractor:
     def extractor(
         self, llm_config: LLMConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> LLMSkillExtractor:
-        extractor = LLMSkillExtractor(llm_config)
+        # Keyword (legacy) path: these tests mock the plain `_call_llm` (string skills). The
+        # default is now evidence_span, so pin keyword explicitly.
+        extractor = LLMSkillExtractor(llm_config, grounding_mode="keyword")
         monkeypatch.setattr(extractor, "_cache_dir", tmp_path / "skill-extraction")
         extractor._cache_dir.mkdir(parents=True, exist_ok=True)
         return extractor

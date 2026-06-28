@@ -86,6 +86,19 @@ that wants a clean, uninterrupted focus block.
   `_run` needs changes the entanglement obstructs, and do it tests-first (characterization
   tests driving `batch` through `_process_one`) if so.
 
+## Known follow-ups (deferred)
+
+- **`grounding_mode="keyword"` opt-out is a dead knob on the interactive-`tailor` + TUI-tailor
+  *displayed* scores.** `ResumeTailor`'s bare-fallback `JobMatcher` (`documents/resume_tailor.py`
+  ~L650/L797) isn't threaded `settings.skills.grounding_mode` (it only receives an `LLMConfig`), so
+  those two paths always use the param default. Surfaced by the 2026-06-28 default flip
+  keyword→`evidence_span` (PR for `feat/grounding-evidence-span-default`): pre-existing (the bare
+  fallback ignored the knob before the flip too — it just *coincided* with the keyword default), but
+  the flip turned it from failing the opt-*in* into failing the opt-*out*. The `match` / `batch` /
+  apply-gate / TUI-match paths all honor the config knob. Fix = thread the mode through
+  `ResumeTailor` (ctor or `tailor()`/`refine()` param) + a wiring test asserting the tailor-internal
+  matcher's `_grounding_mode` follows config. Small, self-contained, tests-first.
+
 ## Operational
 
 - Re-validate the live E2E suite (Tier-1/Tier-2, batch, tailor) whenever vLLM or a

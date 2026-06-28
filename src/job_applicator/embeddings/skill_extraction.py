@@ -323,7 +323,7 @@ class LLMSkillExtractor:
     hard negatives, and verified against the original description.
     """
 
-    def __init__(self, config: LLMConfig, *, grounding_mode: str = "keyword") -> None:
+    def __init__(self, config: LLMConfig, *, grounding_mode: str = "evidence_span") -> None:
         self._config = config
         self._grounding_mode = grounding_mode
         self._cache_dir = Path.home() / ".job-applicator" / "skill-extraction"

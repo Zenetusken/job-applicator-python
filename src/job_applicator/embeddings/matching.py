@@ -53,7 +53,7 @@ class JobMatcher:
         runtime: LLMRuntime | None = None,
         reporter: VerboseReporter | None = None,
         *,
-        grounding_mode: str = "keyword",
+        grounding_mode: str = "evidence_span",
     ) -> None:
         self._config = embedding_config
         self._service = EmbeddingService(embedding_config)

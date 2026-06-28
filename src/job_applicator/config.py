@@ -88,15 +88,20 @@ class SkillConfig(BaseSettings):
     """Skill-extraction / grounding policy.
 
     ``grounding_mode`` selects how an LLM-extracted skill is verified against the source text:
-    - ``keyword`` (default): substring + tech-tuned compound/stopword heuristics (software-only).
-    - ``evidence_span``: the model returns the exact source phrase per skill and we verify that
-      span occurs in the text — domain-general. See
-      ``docs/compose/specs/2026-06-26-semantic-skill-grounding.md``.
+    - ``evidence_span`` (default): the model returns the exact source phrase per skill and we
+      verify that span occurs in the text — domain- AND language-general.
+    - ``keyword``: substring + tech-tuned compound/stopword heuristics (software-only). The
+      legacy mode; kept for opt-out / comparison.
+
+    Default flipped keyword→evidence_span on 2026-06-28 after a live A/B on 42 real Montréal JDs:
+    keyword left 70% of French-language postings coverage-blind (skills dropped → semantic-only →
+    buried), evidence_span recovered them (French coverage 30%→91%) with zero regression on what
+    keyword already grounded. See ``docs/compose/specs/2026-06-26-semantic-skill-grounding.md``.
     """
 
     model_config = SettingsConfigDict(env_prefix="JOB_APPLICATOR_SKILLS_")
 
-    grounding_mode: Literal["keyword", "evidence_span"] = "keyword"
+    grounding_mode: Literal["keyword", "evidence_span"] = "evidence_span"
 
 
 class TargetConfig(BaseSettings):

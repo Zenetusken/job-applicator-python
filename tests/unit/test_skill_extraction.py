@@ -10,8 +10,10 @@ from job_applicator.embeddings.skill_extraction import LLMSkillExtractor, _Extra
 
 @pytest.fixture
 def extractor(tmp_path: object, monkeypatch: pytest.MonkeyPatch) -> LLMSkillExtractor:
-    """Create an LLMSkillExtractor that writes its cache under a temp directory."""
-    inst = LLMSkillExtractor(LLMConfig(model="test"))
+    """A keyword-mode extractor (the legacy grounding path) writing its cache under a temp dir.
+    Pinned explicitly to ``keyword`` since the default is now ``evidence_span``; the evidence_span
+    path has its own fixtures in ``TestEvidenceSpanGrounding``."""
+    inst = LLMSkillExtractor(LLMConfig(model="test"), grounding_mode="keyword")
     monkeypatch.setattr(inst, "_cache_dir", tmp_path / "skill-extraction")
     inst._cache_dir.mkdir(parents=True, exist_ok=True)
     return inst
@@ -198,8 +200,10 @@ class TestEvidenceSpanGrounding:
     def _ext(mode: str = "evidence_span") -> LLMSkillExtractor:
         return LLMSkillExtractor(LLMConfig(model="test"), grounding_mode=mode)
 
-    def test_default_mode_is_keyword(self) -> None:
-        assert LLMSkillExtractor(LLMConfig(model="test"))._grounding_mode == "keyword"
+    def test_default_mode_is_evidence_span(self) -> None:
+        # Default flipped keyword→evidence_span (2026-06-28). Bare construction (via the conftest
+        # shim, which mirrors the real __init__ default) yields evidence_span.
+        assert LLMSkillExtractor(LLMConfig(model="test"))._grounding_mode == "evidence_span"
 
     def test_span_grounded_normalizes_case_whitespace_punctuation(self) -> None:
         ext = self._ext()

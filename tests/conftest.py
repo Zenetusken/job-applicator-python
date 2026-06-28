@@ -89,7 +89,7 @@ def _isolate_local_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     orig_init = LLMSkillExtractor.__init__
 
     def _patched_init(
-        self: LLMSkillExtractor, config: LLMConfig, *, grounding_mode: str = "keyword"
+        self: LLMSkillExtractor, config: LLMConfig, *, grounding_mode: str = "evidence_span"
     ) -> None:
         with monkeypatch.context() as m:
             m.setattr("pathlib.Path.home", lambda: tmp_path / "ja-state")
