@@ -97,6 +97,55 @@ domain-agnostic* stop-list rather than a growing tech list.
   relations); it needs name↔span embeddings.
 - **Phase 3 (optional):** ESCO/taxonomy backbone.
 
+## Phase-2 A/B pilot — no-gold objective metrics (2026-06-27)
+
+Evidence_span vs keyword, temp 0, 5 descriptions × 4 domains (a first signal, not a benchmark;
+recall-vs-gold is intentionally deferred — the gold set must come from the user / real sources,
+not the method's author, to avoid designer-grades-own-work bias). `scratchpad/grounding_ab.py`.
+
+- **Software no-regression (gates the default-on flip): evidence_span captured 9/9 and 7/7 of
+  keyword's skills — zero regression on keyword's home domain.**
+- **Cross-domain: keyword 0 / evidence_span 8 (nursing), 3 / 8 (finance), 0 / 8 (trades).**
+  Keyword grounds nothing outside software (empty `NORMALIZATION_MAP`); evidence_span grounds the
+  real domain skills (IV insertion, discounted cash flow models, NEC code compliance, …).
+- **C-leak (name/evidence mismatch) rate: 0/40 = 0%** — the deferred-C case is not observed at
+  temp 0; the deferral is data-validated (the model names its spans faithfully).
+- **Guard activity: 0/40 spans dropped** at temp 0 — confirms temp 0 as the setting (the earlier
+  single BLS drop was a temp-0.7 artifact; one 0.7 sample is noise).
+
+**Read:** the default-on flip is justified by the no-regression + cross-domain signal. Remaining
+before flipping: a larger N and a **user-blessed gold set** for the recall half.
+
+## Dogfooding findings — real SOC hunt (2026-06-28)
+
+Running the author's own CV through `search`→`match` against real Montréal SOC JDs (Indeed,
+account-safe) surfaced four issues. One is fixed; three shape Phase-2 priorities:
+
+- **Résumé tab-grid parser bug — FIXED (PR #95).** A two-column "Category⇥skill · skill" grid glued
+  the first skill of each row to its label ("Networking⇥TCP/IP"), corrupting ~one skill/row and
+  depressing every match. Parser now drops the leading "`<label>`⇥" prefix.
+- **JD extraction noise — ADDRESSED via a role-relevance prompt.** `evidence_span` was grounding
+  whatever is literally in the JD text — company-business ("protein engineering" from a biotech),
+  job *titles* ("Analyste SOC N2/N3"), *tier labels*. **Grounded ≠ role-relevant.** Fix:
+  `SKILL_SYSTEM_PROMPT_EVIDENCE` is now scoped to "skills the CANDIDATE must have for THIS role;
+  exclude the company's business, the job title, and tier labels." Measured (drops noise, keeps
+  real skills) and — the discriminating adversarial test — it does NOT strip a *security firm's*
+  SIEM/IDS/EDR as "company business" (broad and narrow exclusion clauses gave identical output, so
+  the broad clause shipped per the pre-registered rule). Guarded by a live eval
+  (`scripts/eval_extraction_precision.py`, OUT of the unit gate — a prompt can't have a unit test;
+  4/4 cases clean). **Scope note:** the prompt now also *incidentally* canonicalizes/translates
+  names (French JD → English names), drifting the name from its verbatim evidence span — which
+  makes the deferred **C** (name↔evidence coherence) MORE needed, not less. The English-naming is
+  incidental and not relied upon.
+- **Cross-lingual matching — RE-DIAGNOSED; whole-JD translation is OFF the table.** Empirically,
+  translating French JDs → English did *not* improve matches (one case got worse). The low French
+  scores were mostly JD-vagueness + extraction-noise + genuine non-fit, not language. Minor
+  residual: French skill *names* don't embed-match English CV names (canonical-naming facet, low).
+- **Match-score ≠ role-fit (calibration).** Score = 60% semantic + 40% skill-coverage → biased
+  toward skill-RICH JDs: detailed *intermediate* postings outscore vague *entry/junior* ones the
+  candidate fits better. The score is a skill-overlap measure, not an apply/fit signal — surface
+  that caveat in `match` output, or revisit scoring for skill-sparse JDs.
+
 ## Validation
 
 - **Multi-domain eval set:** labelled (résumé, JD) pairs across ≥4 domains (software, nursing,

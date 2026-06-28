@@ -54,21 +54,28 @@ SKILL_SYSTEM_PROMPT = (
 )
 
 # Domain-general evidence-span variant (grounding_mode="evidence_span"): the model returns each
-# skill with the exact source phrase, which we verify is a substring of the text. No concrete
-# example pair (the 4B copies example spans verbatim). See the semantic-grounding spec.
+# skill with the exact source phrase, which we verify is a substring of the text. The prompt is
+# ROLE-RELEVANCE-scoped — only skills the candidate must have, NOT the company's business, the job
+# title, or tier labels (dogfood finding: a biotech JD grounded "protein engineering" from the
+# company blurb; a SOC JD grounded its own title "Analyste SOC N2/N3"). Validated safe on
+# security-firm JDs (it keeps SIEM/IDS/EDR, doesn't strip them as "company business"). The name may
+# canonicalize away from the (verbatim) evidence — name↔evidence coherence is the deferred C check.
+# No concrete example pair (the 4B copies example spans). See the semantic-grounding spec.
 SKILL_SYSTEM_PROMPT_EVIDENCE = (
-    "Extract the professional and technical skills explicitly required or mentioned in the "
-    "text — skills, tools, technologies, methods, certifications, and domain competencies of "
-    "any field.\n\n"
+    "Extract ONLY the professional/technical skills, tools, technologies, methods, and "
+    "certifications THE CANDIDATE must possess to perform THIS role — drawn from the "
+    "responsibilities and requirements.\n\n"
     "For EACH skill return two things:\n"
     "- name: its canonical, widely recognized name.\n"
     "- evidence: the EXACT verbatim phrase, copied word-for-word from the text, that mentions "
-    "it. Copy the characters as they appear; do NOT paraphrase, summarize, normalize, or "
-    "invent.\n\n"
-    "Rules:\n"
-    "- Only include skills actually present in the text.\n"
-    "- Ignore soft skills (communication, teamwork, leadership) and seniority, work "
-    "arrangement, location, and compensation.\n"
+    "it. Copy the characters as they appear; do NOT paraphrase or invent.\n\n"
+    "STRICTLY EXCLUDE — never return any of these as a skill:\n"
+    "- the company's own products, services, or industry/business (what the company sells or "
+    "makes);\n"
+    "- the job title or role name itself (e.g. 'SOC Analyst', 'Cybersecurity Specialist');\n"
+    "- seniority or tier labels (junior, senior, intermediate, L1, N1/N2/N3, Tier 2);\n"
+    "- soft skills, work arrangement, location, compensation;\n"
+    "- single letters or sentence fragments.\n\n"
     '- Return ONLY a JSON object: {"skills": [{"name": "...", "evidence": "..."}]}.'
 )
 
