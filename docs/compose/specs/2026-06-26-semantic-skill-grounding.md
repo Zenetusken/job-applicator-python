@@ -90,11 +90,16 @@ domain-agnostic* stop-list rather than a growing tech list.
   survive (`R`/`Go`), and a degraded result is no longer cached under the evidence_span key. +7
   `extract()`-level / degrade / no-masking unit guards closed the test gap the review found.
   **Remaining:** the live multi-domain A/B (precision/recall vs keyword) and the default-on flip.
-- **Phase 2:** embedding-dedup normalization; demote `NORMALIZATION_MAP` to a cache. Also the
-  **name↔span coherence** check — catch a name/evidence mismatch (name `Java` for span
-  `JavaScript`) WITHOUT dropping a legitimate canonicalization (name `PostgreSQL` for span
-  `Postgres`). Deferred from Phase 1 because no string check separates the two (both are prefix
-  relations); it needs name↔span embeddings.
+- **Phase 2:** embedding-dedup normalization; demote `NORMALIZATION_MAP` to a cache.
+- **C (name↔span coherence) — DEAD END, measured 2026-06-28.** The idea was to catch a name/evidence
+  mismatch (name `Java` for span `JavaScript`) WITHOUT dropping a legit canonicalization (`PostgreSQL`
+  /`Postgres`) or cross-lingual pair. No *string* check separates them (both prefix relations), so
+  the hope was *embeddings*. Measured (mxbai): **not separable** — `Java`↔`JavaScript` cosine
+  **0.756** is *higher* than legit `Kubernetes`↔`k8s` (0.588), `IDS/IPS`↔`intrusion detection`
+  (0.667), and cross-lingual `incident response`↔`réponse aux incidents` (0.738). Any threshold that
+  catches the mismatch drops real skills. Combined with C-leak measured at **0%** in practice, C is
+  **permanently deferred** unless a fundamentally different mechanism appears (e.g. an LLM judge, or
+  a skills taxonomy — Phase 3). Do not attempt embedding-coherence for C.
 - **Phase 3 (optional):** ESCO/taxonomy backbone.
 
 ## Phase-2 A/B pilot — no-gold objective metrics (2026-06-27)
