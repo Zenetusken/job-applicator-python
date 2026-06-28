@@ -356,6 +356,10 @@ class ResumeLoader:
                     # Split on middle bullets (two-column format)
                     parts = re.split(r"\s+[•·]\s+", stripped)
                     for part in parts:
+                        # Drop a leading "Category<tab>" label: two-column skills grids put the
+                        # bold row label before a tab, which otherwise contaminates the first
+                        # skill of each row (e.g. "Networking\tTCP/IP" must parse as "TCP/IP").
+                        part = part.rsplit("\t", 1)[-1]
                         # Remove leading bullets
                         part = re.sub(r"^[•·\-\|/]\s*", "", part).strip()
                         # >= 2 so common short skills survive (Go, C#, AI, ML, UX);
