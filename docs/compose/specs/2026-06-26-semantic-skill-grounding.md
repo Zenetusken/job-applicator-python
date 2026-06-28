@@ -116,6 +116,28 @@ not the method's author, to avoid designer-grades-own-work bias). `scratchpad/gr
 **Read:** the default-on flip is justified by the no-regression + cross-domain signal. Remaining
 before flipping: a larger N and a **user-blessed gold set** for the recall half.
 
+## Dogfooding findings — real SOC hunt (2026-06-28)
+
+Running the author's own CV through `search`→`match` against real Montréal SOC JDs (Indeed,
+account-safe) surfaced four issues. One is fixed; three shape Phase-2 priorities:
+
+- **Résumé tab-grid parser bug — FIXED (PR #95).** A two-column "Category⇥skill · skill" grid glued
+  the first skill of each row to its label ("Networking⇥TCP/IP"), corrupting ~one skill/row and
+  depressing every match. Parser now drops the leading "`<label>`⇥" prefix.
+- **JD extraction noise — the real precision work (open).** `evidence_span` grounds whatever is
+  literally in the JD text — including company-business ("auto spare parts" from a biotech,
+  "protein engineering"), job *titles* ("Cybersecurity Specialist"), and *tier labels* ("Analyste
+  SOC N2/N3"). **Grounded ≠ role-relevant.** This is the name↔role-relevance problem the redesign
+  was already circling; highest-value Phase-2 precision item.
+- **Cross-lingual matching — RE-DIAGNOSED; whole-JD translation is OFF the table.** Empirically,
+  translating French JDs → English did *not* improve matches (one case got worse). The low French
+  scores were mostly JD-vagueness + extraction-noise + genuine non-fit, not language. Minor
+  residual: French skill *names* don't embed-match English CV names (canonical-naming facet, low).
+- **Match-score ≠ role-fit (calibration).** Score = 60% semantic + 40% skill-coverage → biased
+  toward skill-RICH JDs: detailed *intermediate* postings outscore vague *entry/junior* ones the
+  candidate fits better. The score is a skill-overlap measure, not an apply/fit signal — surface
+  that caveat in `match` output, or revisit scoring for skill-sparse JDs.
+
 ## Validation
 
 - **Multi-domain eval set:** labelled (résumé, JD) pairs across ≥4 domains (software, nursing,
