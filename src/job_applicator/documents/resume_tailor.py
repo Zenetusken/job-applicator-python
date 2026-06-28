@@ -472,7 +472,13 @@ TAILOR_SYSTEM_PROMPT = (
     "DECISION FRAMEWORK — how to handle each section:\n\n"
     "1. CONTACT INFO — preserve exactly as-is. Do not reformat or reorder.\n\n"
     "2. PROFESSIONAL SUMMARY — rewrite entirely. This is the most important "
-    "section to tailor. Mirror the job posting's language. Mention the "
+    "section to tailor. Mirror the job posting's language, but state ONLY facts "
+    "already in the candidate's résumé — introduce no new claim. NEVER describe "
+    "the candidate with a credential/status they do not hold (no 'accredited', "
+    "'certified', 'licensed', 'qualified', 'expert'), and NEVER state or imply "
+    "they have worked in the job's environment, tech stack, or domain (e.g. do "
+    "not write 'within a cloud-native environment' unless the résumé says so) — "
+    "frame the target role as one they SEEK or are TRANSITIONING to. Mention the "
     "candidate's years of experience, key relevant skills from their actual "
     "skill list, and the type of role they seek. 2-3 sentences. "
     "Write in THIRD PERSON — never use 'I', 'my', or 'me'. "
@@ -538,6 +544,12 @@ TAILOR_SYSTEM_PROMPT = (
     "- NEVER add skills, tools, or technologies not in the original resume\n"
     "- NEVER invent experience, metrics, or responsibilities\n"
     "- NEVER add education, certifications, or credentials not in original\n"
+    "- NEVER describe the candidate with a credential or status word not in the "
+    "original (e.g. 'accredited', 'certified', 'licensed', 'chartered') — it "
+    "claims a qualification they may not hold\n"
+    "- NEVER present the job posting's environment, tech stack, tools, or domain "
+    "as the candidate's own experience — claim only what the original states; the "
+    "candidate may 'seek' or 'transition to' the role, not have worked in it\n"
     "- NEVER remove or shorten job titles — preserve the COMPLETE original "
     "title including all qualifiers (e.g., 'Claims Specialist Dental & Medical' "
     "must stay as-is, not shortened to 'Claims Specialist')\n"
@@ -555,7 +567,17 @@ TAILOR_SYSTEM_PROMPT = (
     "'• Helped customers with technical issues'\n\n"
     "AFTER bullet:\n"
     "'• Resolved 40+ daily technical support tickets across Windows, macOS, "
-    "and mobile platforms, maintaining a 95% first-call resolution rate'"
+    "and mobile platforms, maintaining a 95% first-call resolution rate'\n\n"
+    "HONESTY — do NOT overclaim:\n"
+    "BAD summary (invents a credential AND claims the job's environment as "
+    "experience):\n"
+    "'Accredited security professional with deep hands-on experience within a "
+    "cloud-native, Mac-first environment.'\n"
+    "GOOD summary (reframes the candidate's REAL background, seeks the role):\n"
+    "'Operations professional with 10+ years of triage and escalation "
+    "experience, now transitioning into security operations through hands-on "
+    "cybersecurity training. Seeking to apply this foundation as a Security "
+    "Analyst.'"
 )
 
 TAILOR_PROMPT_TEMPLATE = (
@@ -581,9 +603,55 @@ CHANGES_PROMPT_TEMPLATE = (
     "bullet-point summary of what changed and why.\n\n"
     "Original (first 500 chars):\n---\n{original_preview}\n---\n\n"
     "Tailored (first 500 chars):\n---\n{tailored_preview}\n---\n\n"
-    "Return ONLY 3-5 bullet points describing the key changes. "
-    "No thinking process, no explanation, just the bullet points."
+    "Return ONLY 3-5 bullet points describing the CONCRETE changes (what was "
+    "rephrased, reordered, or emphasized). Do NOT add assurances about honesty "
+    "or accuracy (e.g. 'no information was invented', 'nothing was fabricated') "
+    "— the tool does not guarantee that and the user reviews the result; only "
+    "describe the changes. No thinking process, no explanation, just the bullets."
 )
+
+# Credential/status words a tailored summary must not claim unless the candidate already holds
+# them. The tailor LLM (a 4B) will occasionally promote the candidate with a credential they lack
+# ("Accredited security professional"); the section-level guards don't cover the freeform summary,
+# so `_strip_unearned_credentials` is the deterministic backstop. Human review remains the final
+# check — this catches the clearest class, not every possible overclaim.
+_CREDENTIAL_TERMS = ("accredited", "certified", "licensed", "chartered", "credentialed")
+# Summary-type headers that stay INSIDE the credential-scrub region. The scrub region is the
+# LEADING block — top of the résumé down to the first NON-summary section header — so a labelled
+# summary (under any of these) AND a header-less leading paragraph are both covered (a 4B that
+# overclaims often omits/renames the header). Skills/experience/etc. end the region.
+_SUMMARY_SYNONYMS = frozenset(
+    {
+        "summary",
+        "professional summary",
+        "career summary",
+        "profile",
+        "professional profile",
+        "objective",
+        "career objective",
+        "about",
+        "about me",
+        "summary of qualifications",
+    }
+)
+_CREDENTIAL_HEADER_RE = re.compile(
+    r"^\*{0,2}\s*(?:certifications?|licen[sc]es?|credentials?|accreditations?)\s*\*{0,2}$",
+    re.IGNORECASE,
+)
+_SKILLS_HEADER_RE = re.compile(
+    r"^\*{0,2}\s*(?:(?:technical|core|key|professional|relevant|soft)\s+)?"
+    r"(?:skills|competencies|proficiencies)\s*\*{0,2}$",
+    re.IGNORECASE,
+)
+
+
+def _is_summary_header(stripped: str) -> bool:
+    """Whether *stripped* is a summary-type header (markdown/ATX/colon-tolerant). These stay inside
+    the credential-scrub leading region, unlike skills/experience/etc. which end it."""
+    cleaned = re.sub(r"^[#*\s]+", "", stripped)
+    cleaned = re.sub(r"[*\s:]+$", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip().lower()
+    return cleaned in _SUMMARY_SYNONYMS
 
 
 def _skills_match(skill_lower: str, orig: str) -> bool:
@@ -700,6 +768,7 @@ class ResumeTailor:
         )
         tailored_text = self._strip_hallucinated_education(tailored_text, resume.raw_text)
         tailored_text = self._strip_empty_certifications_languages(tailored_text, resume.raw_text)
+        tailored_text = self._strip_unearned_credentials(tailored_text, resume.raw_text)
         changes = await self._summarize_changes(resume.raw_text, tailored_text)
 
         return TailoredResume(
@@ -786,6 +855,7 @@ class ResumeTailor:
         refined_text = self._strip_empty_certifications_languages(
             refined_text, original_resume.raw_text
         )
+        refined_text = self._strip_unearned_credentials(refined_text, original_resume.raw_text)
         refined_text = self._require_nonempty(refined_text)
         changes = await self._summarize_changes(current_tailored.tailored_text, refined_text)
 
@@ -888,6 +958,97 @@ class ResumeTailor:
         if not text.strip():
             raise LLMError("Tailored résumé is empty")
         return text
+
+    @staticmethod
+    def _section_body(text: str, header_re: re.Pattern[str]) -> str:
+        """Return the lines under the first header matching ``header_re``, up to the next
+        section header (markdown-bold-aware)."""
+        out: list[str] = []
+        in_section = False
+        for line in text.split("\n"):
+            stripped = line.strip()
+            if header_re.match(stripped):
+                in_section = True
+                continue
+            if in_section and _looks_like_section_header(stripped):
+                break
+            if in_section:
+                out.append(line)
+        return "\n".join(out)
+
+    @staticmethod
+    def _remove_credential_words(line: str, terms: list[str]) -> str:
+        """Strip credential words (plus an adjacent connector) from a line and repair the prose so
+        the sentence stays readable (e.g. 'Accredited security pro' → 'Security pro'). Returns a
+        line UNTOUCHED if it holds none of the terms (so we never reflow lines we didn't change);
+        grammar repair is best-effort — rare residue (a/an agreement) is left for human review."""
+        cleaned = line
+        removed = False
+        for term in terms:
+            new = re.sub(rf"(?i)\b{re.escape(term)}\b(?:\s*,\s*|\s+and\s+|\s+)?", "", cleaned)
+            if new != cleaned:
+                removed = True
+                cleaned = new
+        if not removed:
+            return line
+        cleaned = re.sub(r"\s{2,}", " ", cleaned)
+        cleaned = re.sub(r",\s*,", ", ", cleaned)  # commas doubled by a removal
+        cleaned = re.sub(r"\s+,", ",", cleaned)  # a space left before a comma
+        cleaned = re.sub(r"^\s*(?:and|,)\s+", "", cleaned, flags=re.IGNORECASE)  # leading connector
+        cleaned = cleaned.strip()
+        if not re.search(r"[A-Za-z0-9]", cleaned):  # nothing but punctuation left → drop the line
+            return ""
+        if cleaned[0].islower():
+            cleaned = cleaned[0].upper() + cleaned[1:]
+        return cleaned
+
+    @staticmethod
+    def _lead_region(text: str) -> str:
+        """The leading block (name/contact/summary) up to the first NON-summary section header."""
+        out: list[str] = []
+        for line in text.split("\n"):
+            stripped = line.strip()
+            if _looks_like_section_header(stripped) and not _is_summary_header(stripped):
+                break
+            out.append(line)
+        return "\n".join(out)
+
+    def _strip_unearned_credentials(self, tailored: str, original: str) -> str:
+        """Remove credential/status claims (e.g. 'accredited', 'certified') from the tailored
+        summary that the candidate does not hold in the original.
+
+        The scrub region is the LEADING block — top of the résumé to the first NON-summary section
+        header — so it covers a labelled summary under ANY header AND a header-less leading
+        paragraph (the layout a 4B that just overclaimed often emits). A term survives only if the
+        ORIGINAL already claims it in a credential-plausible context (its leading/summary block,
+        certifications, or skills section) — NOT a benign 'certified' verb in an experience bullet.
+        Deterministic backstop for the freeform summary the section-level guards skip; HUMAN REVIEW
+        remains the final check (this catches the clearest class, not every possible overclaim)."""
+        earned_ctx = (
+            self._lead_region(original)
+            + "\n"
+            + self._section_body(original, _CREDENTIAL_HEADER_RE)
+            + "\n"
+            + self._section_body(original, _SKILLS_HEADER_RE)
+        ).lower()
+        unearned = [t for t in _CREDENTIAL_TERMS if t not in earned_ctx]
+        if not unearned:
+            return tailored
+
+        out: list[str] = []
+        in_lead = True  # the leading region (name/contact/summary) before the first real section
+        for line in tailored.split("\n"):
+            stripped = line.strip()
+            if (
+                in_lead
+                and _looks_like_section_header(stripped)
+                and not _is_summary_header(stripped)
+            ):
+                in_lead = False  # reached skills/experience/etc. — past the summary
+            if in_lead and stripped and not _is_summary_header(stripped):
+                line = self._remove_credential_words(line, unearned)
+            out.append(line)
+        return "\n".join(out)
 
     def _validate_skills(self, text: str, original_skills: list[str]) -> str:
         """Strip skills from tailored text that aren't in the original resume.
