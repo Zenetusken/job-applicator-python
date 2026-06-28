@@ -32,7 +32,7 @@ from job_applicator.factories import (
     _make_runtime,
     _make_scraper,
 )
-from job_applicator.models import BatchRunSpec, DoctorReport, Format
+from job_applicator.models import BatchRunSpec, DoctorReport, Format, coverage_measured
 from job_applicator.utils.console import console, err_console
 from job_applicator.utils.cookies import (
     _cookies_from_browser,
@@ -65,6 +65,12 @@ app = typer.Typer(
 )
 
 T = TypeVar("T")
+
+# Shared calibration caveat for the Score columns: the score is a skill-OVERLAP measure
+# (60% semantic + 40% coverage), NOT a role-fit signal. `match` (a fresh ranking) extends this
+# with the scan-the-full-list guidance; the funnel/pipeline tables (`status`, `batch`) use the
+# short form. See docs/compose/specs/2026-06-26-semantic-skill-grounding.md.
+_SCORE_CAVEAT = "Score = skill-overlap (60% semantic · 40% coverage), not role-fit"
 
 
 @dataclass
@@ -1405,6 +1411,9 @@ def match(
                 {
                     "rank": i + 1,
                     "score": round(m.score, 4),
+                    "semantic_score": round(m.semantic_score, 4),
+                    "skill_score": round(m.skill_score, 4),
+                    "coverage_measured": coverage_measured(m.matched_skills, m.missing_skills),
                     "title": m.job.title,
                     "company": m.job.company,
                     "url": str(m.job.url),
@@ -1417,8 +1426,26 @@ def match(
             sys.stdout.write(json.dumps(output, indent=2) + "\n")
             return
 
-        # Display results
-        table = Table(title=f"Top {len(matches)} Job Matches")
+        # Display results. The caption names what the score IS (skill-overlap, not role-fit) and
+        # what that does to ranking — sparse/junior JDs underscore and sort low, so a low rank is
+        # not a low fit. A "*" marks coverage-unknown rows (no requirements listed → the score is
+        # semantic-only), so a 0-requirement score isn't misread as a weak skill match.
+        any_unmeasured = any(
+            not coverage_measured(m.matched_skills, m.missing_skills) for m in matches
+        )
+        caption = (
+            f"{_SCORE_CAVEAT} — sparse/junior JDs rank low; don't skip on score alone "
+            f"(showing top {top_k} — raise -k to see lower-ranked roles you may still fit)."
+        )
+        if any_unmeasured:
+            caption += (
+                "\n* no requirements listed — score is semantic-only (coverage not measured)."
+            )
+        table = Table(
+            title=f"Top {len(matches)} Job Matches",
+            caption=caption,
+            caption_justify="left",
+        )
         table.add_column("Rank", style="dim")
         table.add_column("Score", style="cyan")
         table.add_column("Job", style="green")
@@ -1433,9 +1460,12 @@ def match(
                 score_style = "yellow"
             else:
                 score_style = "red"
+            score_cell = f"[{score_style}]{match.score:.0%}[/{score_style}]"
+            if not coverage_measured(match.matched_skills, match.missing_skills):
+                score_cell += "[dim]*[/dim]"
             table.add_row(
                 str(i),
-                f"[{score_style}]{match.score:.0%}[/{score_style}]",
+                score_cell,
                 match.job.title,
                 match.job.company,
                 ", ".join(match.matched_skills[:3]) or "-",
@@ -1567,7 +1597,11 @@ def status(
         )
         return
 
-    table = Table(title=f"Recent jobs (showing {min(limit, len(rows))} of {len(rows)})")
+    table = Table(
+        title=f"Recent jobs (showing {min(limit, len(rows))} of {len(rows)})",
+        caption=f"{_SCORE_CAVEAT}.",
+        caption_justify="left",
+    )
     table.add_column("Stage", style="cyan")
     table.add_column("Score")
     table.add_column("Title", style="green")
@@ -2151,7 +2185,11 @@ def batch(
         if as_json:
             sys.stdout.write(json.dumps(summary, indent=2) + "\n")
         else:
-            table = Table(title="Batch Results")
+            table = Table(
+                title="Batch Results",
+                caption=f"{_SCORE_CAVEAT}.",
+                caption_justify="left",
+            )
             table.add_column("Job", style="cyan")
             table.add_column("Company", style="green")
             table.add_column("Score")

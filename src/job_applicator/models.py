@@ -188,6 +188,19 @@ def parse_salary_to_annual_min(text: str | None) -> int | None:
     return annual if annual >= _MIN_PLAUSIBLE_ANNUAL else None
 
 
+def coverage_measured(matched_skills: list[str], missing_skills: list[str]) -> bool:
+    """Whether a match had requirements to measure skill coverage against.
+
+    True  → ``skill_score`` is a real coverage fraction (matched / total requirements).
+    False → the *semantic-only* case: the JD listed (and the extractor found) no requirements,
+    so the score is semantic similarity alone and ``skill_score`` is 0.0 *by convention* — NOT
+    because the candidate matched none of them. Renderers MUST NOT show that 0.0 as
+    "0% of skills matched"; it means coverage was not measured. Single source of the
+    semantic-only predicate, shared by the scorer (``JobMatcher._combined_score``) and the
+    CLI/TUI renderers so the convention has exactly one definition."""
+    return bool(matched_skills or missing_skills)
+
+
 class UserProfile(BaseModel):
     """User data for form filling."""
 
