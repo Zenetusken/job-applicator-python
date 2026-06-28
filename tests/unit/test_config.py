@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from job_applicator.config import AppSettings, BrowserConfig, LLMConfig
+from job_applicator.config import AppSettings, BrowserConfig, LLMConfig, SkillConfig
 
 
 def test_browser_config_defaults() -> None:
@@ -14,6 +14,20 @@ def test_browser_config_defaults() -> None:
     assert config.headless is True
     assert config.slow_mo == 0
     assert config.viewport_width == 1920
+
+
+def test_skill_config_default_is_evidence_span() -> None:
+    # Production default flipped keyword→evidence_span (2026-06-28): domain/language-general
+    # grounding by default, after a live A/B showed keyword buried French-language SOC postings
+    # (French coverage 30%→91%, zero software regression). The match/TUI/batch/apply paths all
+    # read this, so the default IS the production behavior.
+    assert SkillConfig().grounding_mode == "evidence_span"
+
+
+def test_skill_config_env_override_to_keyword(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The legacy keyword mode stays selectable for opt-out / comparison.
+    monkeypatch.setenv("JOB_APPLICATOR_SKILLS_GROUNDING_MODE", "keyword")
+    assert SkillConfig().grounding_mode == "keyword"
 
 
 def test_llm_config_defaults() -> None:

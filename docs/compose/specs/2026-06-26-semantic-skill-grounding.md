@@ -78,8 +78,9 @@ domain-agnostic* stop-list rather than a growing tech list.
   dropping the synthesize-a-compound-from-any-noun behavior keeps single-word skills grounded in
   *any* domain (e.g. "phlebotomy training" keeps `phlebotomy`), even though normalization stays
   software-only.
-- **Phase 1 — IMPLEMENTED (default-off):** evidence-span grounding behind `skills.grounding_mode`
-  (`keyword` default | `evidence_span`). `SkillEvidence` / `SkillExtractionOutputV2` schema, span
+- **Phase 1 — IMPLEMENTED · DEFAULT-ON (2026-06-28):** evidence-span grounding behind
+  `skills.grounding_mode` (`evidence_span` default | `keyword` legacy). `SkillEvidence` /
+  `SkillExtractionOutputV2` schema, span
   verification under aggressive normalization, **mode in the cache key** (no cross-mode
   contamination), degrade-to-keyword fallback when structured output is unavailable, + unit guards
   and a deterministic cross-domain eval scaffold. Live-validated: a nursing job grounds *patient
@@ -89,7 +90,7 @@ domain-agnostic* stop-list rather than a growing tech list.
   "Ada" ⊄ "adaptable"), punctuation is a clause boundary (not a join), short span-verified skills
   survive (`R`/`Go`), and a degraded result is no longer cached under the evidence_span key. +7
   `extract()`-level / degrade / no-masking unit guards closed the test gap the review found.
-  **Remaining:** the live multi-domain A/B (precision/recall vs keyword) and the default-on flip.
+  **Done:** the live A/B (Montréal SOC, below) and the default-on flip (2026-06-28).
 - **Phase 2:** embedding-dedup normalization; demote `NORMALIZATION_MAP` to a cache.
 - **C (name↔span coherence) — DEAD END, measured 2026-06-28.** The idea was to catch a name/evidence
   mismatch (name `Java` for span `JavaScript`) WITHOUT dropping a legit canonicalization (`PostgreSQL`
@@ -118,8 +119,34 @@ not the method's author, to avoid designer-grades-own-work bias). `scratchpad/gr
 - **Guard activity: 0/40 spans dropped** at temp 0 — confirms temp 0 as the setting (the earlier
   single BLS drop was a temp-0.7 artifact; one 0.7 sample is noise).
 
-**Read:** the default-on flip is justified by the no-regression + cross-domain signal. Remaining
-before flipping: a larger N and a **user-blessed gold set** for the recall half.
+**Read:** the default-on flip is justified by the no-regression + cross-domain signal. The larger-N,
+user-blessed recall signal that gated it landed via the live SOC hunt below → flipped 2026-06-28.
+
+## Default-on flip — live Montréal SOC A/B (2026-06-28)
+
+The gating evidence came from the author's own hunt, not a synthetic set: **42 unique real Montréal
+Indeed JDs** (4 FR/EN queries, deduped), his real CV, keyword vs evidence_span via the CLI
+`match --json` (`scratchpad/match_{keyword,evidence_span}.json`). Objective, no-gold metrics:
+
+- **Coverage (jobs with *measured* skill coverage, not collapsed to semantic-only):** overall
+  keyword **15/42 (36%)** → evidence_span **36/42 (86%)**; **French 10/33 (30%) → 30/33 (91%)**;
+  English 5/9 (56%) → 6/9 (67%).
+- **Zero regression:** all **15/15** keyword-measured jobs stay measured under evidence_span.
+- **Ranking:** the flagship target *"Analyste SOC" (Alten)* went **#9 62% semantic-only → #1 77%**
+  (grounded: network monitoring · SOC monitoring & triage · incident response); every
+  SOC/security-analyst-titled role ranked ≥ under evidence_span.
+
+**Mechanism:** keyword grounding keeps only software skills in the `NORMALIZATION_MAP`, so
+French/non-software SOC skills are dropped → coverage unmeasured → semantic-only → buried (and a
+French JD embeds weakly vs an English CV). In Montréal's French-majority market that systematically
+buried the most-relevant roles. evidence_span verifies the skill's span is *in the JD text*
+(language/domain-agnostic), recovering them — the cross-lingual issue's real fix on the *grounding*
+axis (whole-JD *translation* on the semantic axis stays off the table, measured earlier).
+
+**Flip:** `SkillConfig.grounding_mode` default `keyword`→`evidence_span` (+ the `JobMatcher` /
+`LLMSkillExtractor` param defaults, so the tailor flow's bare-fallback matcher stays consistent).
+Reversible via `[skills] grounding_mode = "keyword"` or `JOB_APPLICATOR_SKILLS_GROUNDING_MODE=keyword`;
+the degrade-to-keyword fallback keeps it safe where structured output is unavailable.
 
 ## Dogfooding findings — real SOC hunt (2026-06-28)
 
