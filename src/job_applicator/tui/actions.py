@@ -54,7 +54,7 @@ async def _load_style_guide(settings: AppSettings, style_guide_path: str) -> Sty
     from job_applicator.documents.cover_letter import CoverLetterGenerator
     from job_applicator.factories import _make_runtime
 
-    generator = CoverLetterGenerator(settings.llm, runtime=_make_runtime(settings))
+    generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=_make_runtime(settings))
     return await generator.load_style_guide(style_guide_path)
 
 
@@ -159,7 +159,7 @@ async def cover_letter_job(
             logger.warning("cover letter: tailored résumé unreadable; using the original")
     tone_section = ToneDetector().format_for_prompt(_detect_tone(job))
     style = await _load_style_guide(settings, style_guide_path)
-    generator = CoverLetterGenerator(settings.llm, runtime=_make_runtime(settings))
+    generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=_make_runtime(settings))
     letter = await generator.generate(
         job,
         _load_user_profile(settings, resume_name=resume_data.name),

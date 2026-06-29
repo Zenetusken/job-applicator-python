@@ -300,7 +300,9 @@ class PDFRenderer:
         job: JobListing | None,
         category: str,
     ) -> FormattedCoverLetter:
-        config = self.settings.llm
+        # The cover-letter step honours the [cover_letter] model override (the résumé formatter
+        # above stays on [llm]); the prose model and its PDF formatter use the same model.
+        config = self.settings.cover_letter_llm()
         model = litellm_model(config)
         prompt = _build_cover_letter_format_prompt(result, job, category)
         client = await self._get_client()

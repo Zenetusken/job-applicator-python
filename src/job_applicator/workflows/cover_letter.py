@@ -60,7 +60,7 @@ async def _generate_cover_letter(
     from job_applicator.documents.cover_letter import CoverLetterGenerator
     from job_applicator.models import CoverLetterResult
 
-    generator = CoverLetterGenerator(settings.llm, runtime=runtime)
+    generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=runtime)
     try:
         with console.status("Generating cover letter..."):
             letter = await generator.generate(
@@ -163,7 +163,7 @@ async def _refine_cover_letter(
     from job_applicator.models import ResumeData
 
     try:
-        generator = CoverLetterGenerator(settings.llm, runtime=runtime)
+        generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=runtime)
         user = _load_user_profile(settings, resume_name=resume_data.name if resume_data else "")
         with console.status("Refining cover letter..."):
             refined = await generator.refine(
