@@ -406,10 +406,14 @@ class CoverLetterGenerator:
         """
         norm_company = re.sub(r"[.,]", "", company.lower())
         norm_text = re.sub(r"[.,]", "", text.lower())
-        # Phrases that strongly imply a past employment relationship.
+        # Phrases that strongly imply a past employment relationship. NOTE: a bare "my" was
+        # deliberately removed from the second pattern — "my .{0,40}? <company>" false-fired on
+        # ordinary cover-letter phrasing ("my interest in <company>", "my passion for <company>"),
+        # which the 8B writes naturally (measured: ~45% false-reject). Real claims stay caught by
+        # the "<verb> at/for <company>" and "(i|my) <verb> <company>" patterns below.
         employment_patterns = [
             rf"\b(worked|employed|tenure|time) (at|for) {re.escape(norm_company)}\b",
-            rf"\b(former|previous|past|returning|my) .{{0,40}}? {re.escape(norm_company)}\b",
+            rf"\b(former|previous|past|returning) .{{0,40}}? {re.escape(norm_company)}\b",
             rf"\b{re.escape(norm_company)} .{{0,40}}? (employee|colleague|team member|tenure)\b",
             rf"\b(i|my) .{{0,30}}? (built|led|worked|spent|was) .{{0,30}}? "
             rf"{re.escape(norm_company)}\b",
