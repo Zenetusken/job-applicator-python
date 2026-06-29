@@ -40,6 +40,9 @@ serve = [
     # nvidia-*-cu13), so a plain `pip install` lands the cu13 stack with no extra index.
     # pip selects it unconditionally — running it needs an NVIDIA 575+ / CUDA 13 driver.
     "vllm>=0.23,<0.24",
+    # vLLM's flashinfer backend JIT-compiles some kernels on first use of an uncached model;
+    # the build invokes `ninja`, so it must be importable/on PATH (serve-vllm.sh adds the venv bin).
+    "ninja>=1.11",
 ]
 pdf = [
     "typst>=0.15,<0.16",
