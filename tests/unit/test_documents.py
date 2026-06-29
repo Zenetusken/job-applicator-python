@@ -962,6 +962,21 @@ def test_cover_letter_prompt_tightens_length_and_openings() -> None:
     assert "Never start more than one sentence with the same opening words" in SYSTEM_PROMPT
 
 
+def test_cover_letter_prompt_enforces_humility_and_grounding() -> None:
+    """The prompt forbids posturing/overreach + grounds coursework as learning, and the
+    overreach-driving 'single contribution' CTA clause is gone (audit findings 1-4)."""
+    from job_applicator.documents.cover_letter import SYSTEM_PROMPT
+
+    low = SYSTEM_PROMPT.lower()
+    assert "humility" in low  # the anti-posture rule exists
+    assert "uniquely positioned" in low  # named as banned
+    assert "will audit" in low  # forbids "I will audit/overhaul ... their systems"
+    assert "modest ask" in low  # the rewritten, non-grandiose CTA
+    assert "coursework and a personal home lab are learning" in low  # grounding-of-framing
+    assert "single contribution" not in low  # the overreach-driving clause was removed
+    assert "ai-generated boilerplate" not in low  # de-meta'd (was leaking as "without robotic")
+
+
 def test_company_in_resume_matches_structured_employer() -> None:
     resume = ResumeData(raw_text="...", experience=[ExperienceEntry(company="Globex")])
     assert CoverLetterGenerator._company_in_resume("Globex", resume) is True
