@@ -72,7 +72,9 @@ def test_cover_letter_llm_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_llm_config_defaults() -> None:
     config = LLMConfig()
-    assert config.model == "cyankiwi/Qwen3.5-4B-AWQ-4bit"
+    # Default base model is the 8B (text-only AWQ, fits 12 GB, grounds stack-heavy JDs the 4B
+    # couldn't); the 4B stays a pinnable fallback via JOB_APPLICATOR_LLM_MODEL.
+    assert config.model == "Qwen/Qwen3-8B-AWQ"
     assert config.temperature == 0.7
     # Sized for full résumé tailoring (not the old 1024 cap).
     assert config.max_tokens == 4096

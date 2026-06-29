@@ -16,7 +16,7 @@
 # Leave it running in its own terminal (or wrap it in a process manager / systemd
 # unit for always-on). Everything is env-overridable:
 #
-#   MODEL    model id            (default: cyankiwi/Qwen3.5-4B-AWQ-4bit)
+#   MODEL    model id            (default: Qwen/Qwen3-8B-AWQ)
 #   HOST     bind address        (default: 127.0.0.1)
 #   PORT     bind port           (default: 8000 — must match [llm] api_base)
 #   GPU_MEM  GPU memory fraction (default: 0.70 — tuned for 12 GB desktops;
@@ -40,7 +40,7 @@
 # command line is compatible; use RESTART=1 to stop it and start a fresh instance.
 set -euo pipefail
 
-MODEL="${MODEL:-cyankiwi/Qwen3.5-4B-AWQ-4bit}"
+MODEL="${MODEL:-Qwen/Qwen3-8B-AWQ}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8000}"
 # vLLM 0.23's V1 engine + cudagraph profiling can OOM on 12 GB desktop GPUs with
@@ -64,7 +64,7 @@ Usage: scripts/serve-vllm.sh [OPTIONS]
 Self-host an OpenAI-compatible vLLM endpoint for job-applicator.
 
 Environment variables:
-  MODEL           model id (default: cyankiwi/Qwen3.5-4B-AWQ-4bit)
+  MODEL           model id (default: Qwen/Qwen3-8B-AWQ)
   HOST            bind address (default: 127.0.0.1)
   PORT            bind port (default: 8000)
   GPU_MEM         GPU memory fraction (default: 0.70)
@@ -118,6 +118,12 @@ if [ ! -x "$VLLM_BIN" ]; then
     echo "error: VLLM_BIN is not an executable: $VLLM_BIN" >&2
     exit 1
 fi
+
+# Put the vLLM venv's bin on PATH so vLLM's flashinfer backend can find `ninja` when it
+# JIT-compiles a sampling/attention kernel for a model whose kernel isn't cached yet (a fresh
+# model — e.g. swapping the 4B for the 8B — fails with "No such file or directory: 'ninja'"
+# otherwise, even though ninja is in the venv). `ninja` ships in the `serve` extra.
+export PATH="$(dirname "$VLLM_BIN"):$PATH"
 
 # Auto-select the vLLM tool-call parser for known model families so that
 # structured-output / function-calling clients (e.g. instructor) work out of

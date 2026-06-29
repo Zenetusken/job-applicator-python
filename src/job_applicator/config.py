@@ -48,7 +48,11 @@ class LLMConfig(BaseSettings):
 
     api_base: str = "http://localhost:8000/v1"
     api_key: str = "not-needed-for-local"
-    model: str = "cyankiwi/Qwen3.5-4B-AWQ-4bit"
+    # Qwen3-8B-AWQ (genuine AWQ 4-bit, text-only, ~6.1 GB) — fits the 12 GB card alongside the
+    # embeddings and grounds stack-heavy job descriptions the 4B couldn't (measured: cover-letter
+    # employer-stack overclaim 5/6 → 0/5). The 4B (cyankiwi/Qwen3.5-4B-AWQ-4bit) stays a smaller,
+    # faster fallback you can pin via JOB_APPLICATOR_LLM_MODEL / [llm] model.
+    model: str = "Qwen/Qwen3-8B-AWQ"
     # Upper bound for a single completion. Sized for full résumé tailoring;
     # cover letters and style analysis stay well under this cap.
     max_tokens: int = 4096

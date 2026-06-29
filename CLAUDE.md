@@ -99,11 +99,19 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
 
 ## GPU Memory Layout
 
+Default base model is **`Qwen/Qwen3-8B-AWQ`** (genuine AWQ 4-bit, text-only, ~6.1 GB) — it
+fits the 12 GB card alongside the embeddings and grounds stack-heavy JDs the 4B couldn't
+(measured: cover-letter employer-stack overclaim 5/6 → 0/5). The smaller, faster
+`cyankiwi/Qwen3.5-4B-AWQ-4bit` stays a fallback (pin via `JOB_APPLICATOR_LLM_MODEL` / `[llm]
+model`, or `MODEL=… scripts/serve-vllm.sh`). The 4B and 8B can't co-reside on 12 GB, so it's
+one base model at a time; a per-step bigger model (the `[cover_letter]` override) is for a
+**cloud** endpoint.
+
 | Component | Allocation |
 |---|---|
-| vLLM (Qwen3.5-4B-AWQ, eager mode) | ~6.5 GB |
+| vLLM (Qwen3-8B-AWQ, eager mode, GPU_MEM=0.70) | ~8.4 GB (6.1 GB weights + KV) |
 | Embeddings (mxbai-embed-large-v1) | ~1.5 GB |
-| Free VRAM | ~4.0 GB |
+| Free VRAM | ~2.4 GB |
 
 ## Embedding Service
 
