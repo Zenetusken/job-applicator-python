@@ -85,7 +85,7 @@ async def tailor_job(
     resume_data = await asyncio.to_thread(ResumeLoader().load, settings.resume_path)
     style = await _load_style_guide(settings, style_guide_path)
     engine = ResumeTailor(settings.llm, runtime=_make_runtime(settings))
-    tailored = await engine.tailor(
+    tailored = await engine.tailor_verified(
         resume=resume_data, job=job, user_instructions="", style_guide=style
     )
     output_dir = await asyncio.to_thread(settings.ensure_output_dir)

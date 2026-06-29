@@ -38,7 +38,7 @@ def _patch_tailor_stack(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Magi
     import job_applicator.cli as cli
 
     engine = MagicMock()
-    engine.tailor = AsyncMock(return_value=_tailored("INITIAL"))
+    engine.tailor_verified = AsyncMock(return_value=_tailored("INITIAL"))
     engine.refine = AsyncMock(return_value=_tailored("REFINED"))
 
     audit = MagicMock(
@@ -329,7 +329,7 @@ def test_batch_pdf_flags_accepted(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     )
 
     engine = MagicMock()
-    engine.tailor = AsyncMock(
+    engine.tailor_verified = AsyncMock(
         return_value=_tailored(job_title="Dev", job_company="Acme", job_url=str(job.url))
     )
     monkeypatch.setattr(

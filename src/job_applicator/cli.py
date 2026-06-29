@@ -2022,7 +2022,7 @@ def batch(
                                     "type": "tailor",
                                 },
                             )
-                        tailored = await tailor_engine.tailor(
+                        tailored = await tailor_engine.tailor_verified(
                             resume=resume_data,
                             job=job,
                             user_instructions=user_instructions,
@@ -2523,8 +2523,8 @@ def tailor(
                 raise typer.Exit(1 if as_json else 0)
 
         try:
-            with console.status("Tailoring resume..."):
-                result = await tailor_engine.tailor(
+            with console.status("Tailoring + verifying resume..."):
+                result = await tailor_engine.tailor_verified(
                     resume_data, job, user_instructions, style, tone_profile
                 )
             session.add_attempt(result)

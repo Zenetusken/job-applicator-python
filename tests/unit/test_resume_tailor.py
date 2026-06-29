@@ -14,12 +14,53 @@ from job_applicator.documents.resume_tailor import (
     ResumeTailor,
     parse_sections,
 )
+from job_applicator.exceptions import GroundingUnavailableError
 from job_applicator.models import (
+    ClaimCheck,
+    GroundingReport,
     JobBoard,
     JobListing,
     ResumeData,
     TailoredResume,
 )
+
+
+def _tr(text: str) -> TailoredResume:
+    return TailoredResume(
+        original_path="",
+        tailored_text=text,
+        job_title="T",
+        job_company="C",
+        match_score=0.5,
+        semantic_score=0.5,
+        skill_score=0.5,
+        changes_summary="",
+    )
+
+
+async def test_verify_tailored_attaches_report_for_review() -> None:
+    # The résumé path SURFACES the grounding report; it never auto-strips (spec §6).
+    tailor = ResumeTailor(LLMConfig(model="m"))
+    tailor._verifier.verify = AsyncMock(  # type: ignore[method-assign]
+        return_value=GroundingReport(unsupported=[ClaimCheck(claim="x", grounded=False)])
+    )
+    out = await tailor.verify_tailored(
+        _tr("Maintained 100%."), ResumeData(raw_text="src", skills=[])
+    )
+    assert out.grounding_report is not None
+    assert len(out.grounding_report.unsupported) == 1
+    assert out.tailored_text == "Maintained 100%."  # text untouched — flagged, not stripped
+
+
+async def test_verify_tailored_failsafe_leaves_none() -> None:
+    # fail-safe (#4): a verifier failure leaves grounding_report=None — never blocked, never a
+    # false "verified clean".
+    tailor = ResumeTailor(LLMConfig(model="m"))
+    tailor._verifier.verify = AsyncMock(  # type: ignore[method-assign]
+        side_effect=GroundingUnavailableError("down")
+    )
+    out = await tailor.verify_tailored(_tr("anything"), ResumeData(raw_text="src", skills=[]))
+    assert out.grounding_report is None
 
 
 @pytest.fixture

@@ -428,6 +428,11 @@ class TailoredResume(BaseModel):
     output_path: str = Field(default="", description="Path where tailored resume was saved")
     cover_letter_path: str = Field(default="", description="Path to generated cover letter, if any")
     pdf_path: str = Field(default="", description="Path to generated PDF résumé, if any")
+    grounding_report: GroundingReport | None = Field(
+        default=None,
+        description="Honesty check of the tailored text vs the BASE résumé (None = not run or "
+        "verifier unavailable). Surfaced for human review — claims are never auto-stripped.",
+    )
 
     model_config = {"extra": "forbid"}
 

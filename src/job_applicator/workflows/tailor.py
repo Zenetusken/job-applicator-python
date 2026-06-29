@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from job_applicator.documents.resume_tailor import ResumeTailor
     from job_applicator.documents.tone_detector import ToneProfile
     from job_applicator.models import (
+        GroundingReport,
         JobListing,
         ResumeData,
         StyleGuide,
@@ -41,6 +42,33 @@ if TYPE_CHECKING:
         TailorSession,
     )
     from job_applicator.utils.verbose import VerboseReporter
+
+
+def _print_grounding_report(console: Console, report: GroundingReport | None) -> None:
+    """Surface the honesty check of the tailored text vs the base résumé (spec §6).
+
+    Flags for human review — NEVER auto-removes a claim (this is the document of record; the user
+    is its ground truth and the verifier has a measured precision residual). ``None`` means the
+    verifier was unavailable (fail-safe) — surfaced as such, never as 'verified clean'.
+    """
+    if report is None:
+        console.print("\n[dim]Grounding check not run for this version.[/dim]")
+        return
+    if report.clean:
+        console.print("\n[green]✓ Grounding: every claim is supported by your résumé.[/green]")
+        return
+    lines = [
+        f"• {c.claim}  [dim]({c.note or 'not in your résumé'})[/dim]" for c in report.unsupported
+    ]
+    lines += [f"• {gap}  [dim](could not verify — check it)[/dim]" for gap in report.coverage_gaps]
+    n = len(report.unsupported) + len(report.coverage_gaps)
+    console.print(
+        Panel(
+            "\n".join(lines),
+            title=f"⚠  {n} claim(s) to REVIEW — not auto-removed; verify vs your résumé or fix V1",
+            border_style="yellow",
+        )
+    )
 
 
 async def _tailor_workflow(
@@ -115,6 +143,11 @@ async def _tailor_workflow(
 
         console.print("\n[bold]Changes Made:[/bold]")
         console.print(strip_markdown_bold(result.changes_summary))
+
+        # The first version arrives pre-verified from tailor_verified; an interactively *refined*
+        # one is not re-verified here (surfaced as "not run", never as clean — the user is actively
+        # reviewing it, and the non-interactive --yes path always accepts the verified first draft).
+        _print_grounding_report(console, result.grounding_report)
 
         console.print("\n[bold]What would you like to do?[/bold]")
         action_table = Table(show_header=False, box=None)
