@@ -96,10 +96,6 @@ _CLICHES = (
 )
 _BANNED_PHRASES = "; ".join(f'"{c}"' for c in _CLICHES)
 
-# Showy verbs a small model reaches for that read as AI-generated in a plain cover letter. Stems,
-# so 'crafted'/'crafting' match. A pile-up (>=2 distinct) is the tell — one alone can be fine.
-_ORNATE_VERBS = ("conceptualiz", "operationaliz", "orchestrat", "craft", "curat", "envision")
-
 SYSTEM_PROMPT = f"""You are writing a cover letter as one specific real person — a thoughtful \
 career-changer applying for one specific role. Write a single, connected letter that tells a \
 coherent story, not a list of facts.
@@ -121,7 +117,8 @@ applicant actually did with them.
 talks. No literary metaphors, no scene-setting, no flowery abstractions: say what the applicant \
 did, not how elegant or dramatic it felt. Plain does NOT mean choppy — keep the sentences \
 connected and flowing.
-- Write 320 to 380 words — no fewer (a clipped letter reads as choppy) and never more than 380. \
+- Write a focused letter — long enough to develop the experience, short enough to stay tight \
+(roughly 200 to 300 words is plenty). Never pad to hit a number; every sentence earns its place. \
 Plain prose only — no markdown, bullets, bold, or backticks. Avoid tired filler: {_BANNED_PHRASES}.
 
 STAY TRUTHFUL — the résumé is the only source of facts:
@@ -406,10 +403,14 @@ class CoverLetterGenerator:
         """
         norm_company = re.sub(r"[.,]", "", company.lower())
         norm_text = re.sub(r"[.,]", "", text.lower())
-        # Phrases that strongly imply a past employment relationship.
+        # Phrases that strongly imply a past employment relationship. NOTE: a bare "my" was
+        # deliberately removed from the second pattern — "my .{0,40}? <company>" false-fired on
+        # ordinary cover-letter phrasing ("my interest in <company>", "my passion for <company>"),
+        # which the 8B writes naturally (measured: ~45% false-reject). Real claims stay caught by
+        # the "<verb> at/for <company>" and "(i|my) <verb> <company>" patterns below.
         employment_patterns = [
             rf"\b(worked|employed|tenure|time) (at|for) {re.escape(norm_company)}\b",
-            rf"\b(former|previous|past|returning|my) .{{0,40}}? {re.escape(norm_company)}\b",
+            rf"\b(former|previous|past|returning) .{{0,40}}? {re.escape(norm_company)}\b",
             rf"\b{re.escape(norm_company)} .{{0,40}}? (employee|colleague|team member|tenure)\b",
             rf"\b(i|my) .{{0,30}}? (built|led|worked|spent|was) .{{0,30}}? "
             rf"{re.escape(norm_company)}\b",
@@ -537,23 +538,12 @@ class CoverLetterGenerator:
         wc = len(text_for_sentences.split())
         if wc > 390:
             tells.append("too_long")
-        # Thinness floor: structured generation sometimes emits very short fields (measured: a
-        # 93-word letter — too thin to send). Below ~200 words it reads as underdeveloped; the
-        # floor sits well under the 320-380 target and above any short/mocked test text (which
-        # never reaches this branch — it needs >=4 longer sentences to even be analyzed here).
-        if 60 < wc < 200:
+        # Thinness floor: catch GENUINELY thin drafts (measured: a 93-word letter) WITHOUT
+        # over-firing on the 8B's natural ~200-word substance-complete length (its sweet spot —
+        # forcing longer just pads). Lowered 200 -> 150 when the base model became the 8B; still
+        # well above any short/mocked test text.
+        if 60 < wc < 150:
             tells.append("too_short")
-        # Repetitive openings: 3+ sentences starting with the same two words ("I envision …").
-        openers: dict[str, int] = {}
-        for s in sentences:
-            parts = s.split()
-            if len(parts) >= 2:
-                key = f"{parts[0]} {parts[1]}".lower()
-                openers[key] = openers.get(key, 0) + 1
-        if openers and max(openers.values()) >= 3:
-            tells.append("repeated_openings")
-        if sum(1 for stem in _ORNATE_VERBS if re.search(rf"\b{stem}", low)) >= 2:
-            tells.append("ornate_verbs")
         return tells
 
     @staticmethod
@@ -599,8 +589,8 @@ class CoverLetterGenerator:
         issues: list[str] = []
         if "too_short" in tells:
             issues.append(
-                "the letter is too thin — expand the body to 320-380 words with one concrete, "
-                "grounded example developed in full"
+                "the letter reads underdeveloped — add one more concrete, grounded example from "
+                "the résumé (do not pad to hit a word count)"
             )
         if "no_short_sentences" in tells:
             issues.append(
@@ -611,15 +601,6 @@ class CoverLetterGenerator:
         if "too_long" in tells:
             issues.append(
                 "tighten toward ~350 words across three paragraphs — cut padding, not facts"
-            )
-        if "repeated_openings" in tells:
-            issues.append(
-                "vary how sentences begin; never start several sentences with the same words"
-            )
-        if "ornate_verbs" in tells:
-            issues.append(
-                "replace showy verbs (craft, curate, conceptualize, orchestrate, envision) with "
-                "plain ones (build, run, design, lead)"
             )
         if "markdown" in tells:
             issues.append("remove all markdown and backticks")

@@ -1027,45 +1027,28 @@ def test_voice_tells_flags_too_thin_letter() -> None:
     assert "too_short" in CoverLetterGenerator._voice_tells(text)
 
 
-def test_voice_tells_flags_repeated_sentence_openings() -> None:
-    """Three+ sentences opening with the same two words ('I envision …') is a tell."""
-    text = (
-        "I envision a calm SOC. I envision fewer false positives. "
-        "I envision faster triage. The team already does solid work here."
-    )
-    assert "repeated_openings" in CoverLetterGenerator._voice_tells(text)
+def test_voice_tells_short_varied_letter_clears_length_tells() -> None:
+    """High-precision: a short, varied letter trips no spurious length tell (no re-prompt).
 
-
-def test_voice_tells_short_varied_letter_clears_new_tells() -> None:
-    """High-precision: a short, varied letter trips neither new tell (no spurious re-prompt)."""
+    (The `repeated_openings` and `ornate_verbs` detectors were dropped when the base model
+    became the 8B — they fired 0/20 in the ablation; the 8B doesn't need those 4B crutches.)
+    """
     text = (
         "Dear Team. I led operations for a decade. Triage is second nature to me. "
         "My home lab runs daily. Let us talk this week. Sincerely, Jane Roe"
     )
     tells = CoverLetterGenerator._voice_tells(text)
-    assert "too_long" not in tells and "repeated_openings" not in tells
-
-
-def test_voice_tells_flags_ornate_verb_pileup() -> None:
-    """Two+ showy verbs (craft/curate/conceptualize…) read as AI prose — a tell (→ re-prompt)."""
-    text = "I crafted a workflow. I curated my skills carefully. The team is strong already."
-    assert "ornate_verbs" in CoverLetterGenerator._voice_tells(text)
-
-
-def test_voice_tells_single_ornate_verb_is_fine() -> None:
-    """One ornate verb alone does NOT trip the pile-up tell (high-precision)."""
-    text = "I crafted a home lab. I led operations for a decade. The team is strong already."
-    assert "ornate_verbs" not in CoverLetterGenerator._voice_tells(text)
+    assert "too_long" not in tells and "too_short" not in tells
 
 
 def test_cover_letter_prompt_sets_length_target_and_opening_variety() -> None:
-    """The rebalanced prompt targets a COHERENT length (room for subordination, not a hard tight
-    cap that clipped letters into choppy fragments) and asks for opening variety."""
+    """The prompt targets a focused, no-padding length (the 8B self-caps at ~200 words — its
+    substance-complete sweet spot, measured) and asks for opening variety."""
     from job_applicator.documents.cover_letter import SYSTEM_PROMPT
 
     low = SYSTEM_PROMPT.lower()
-    assert "320 to 380 words" in low  # relaxed from "250-300 MAXIMUM", with a 380 hard cap
-    assert "never more than 380" in low  # hard upper cap (prevents the 472-word runaway)
+    assert "200 to 300 words" in low  # realistic for the 8B; was "320 to 380" in the 4B era
+    assert "never pad to hit a number" in low  # no-padding rule (don't force length)
     assert "should not all open with" in low  # variety, not a mandated short sentence
 
 
