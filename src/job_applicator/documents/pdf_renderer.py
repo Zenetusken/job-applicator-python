@@ -336,6 +336,15 @@ class PDFRenderer:
         # The templates append the comma after the closing word, so strip any the LLM included
         # ("Sincerely," -> "Sincerely") to avoid a doubled comma ("Sincerely,,") in the render.
         response.closing = response.closing.rstrip(" ,")
+        # The formatter LLM sometimes drops the sign-off (empty closing) even though the source
+        # letter has one — repair it from the source rather than failing the whole PDF render.
+        if (
+            extract_sign_off("\n".join(filter(None, [response.closing, response.signature])))
+            is None
+        ):
+            src = extract_sign_off(result.cover_letter_text)
+            if src is not None:
+                response.closing, response.signature = src[0].capitalize(), src[1]
         self._validate_cover_letter_sign_off(response)
         return response
 
