@@ -917,6 +917,51 @@ def test_voice_tells_excludes_trailing_sign_off_block() -> None:
     assert "no_short_sentences" in tells
 
 
+def test_voice_tells_flags_verbose_letter() -> None:
+    """A letter well over the 250-300 word target trips the verbosity tell (→ re-prompt)."""
+    text = "This sentence carries a handful of words to add up. " * 40  # ~400 words
+    assert "too_long" in CoverLetterGenerator._voice_tells(text)
+
+
+def test_voice_tells_flags_repeated_sentence_openings() -> None:
+    """Three+ sentences opening with the same two words ('I envision …') is a tell."""
+    text = (
+        "I envision a calm SOC. I envision fewer false positives. "
+        "I envision faster triage. The team already does solid work here."
+    )
+    assert "repeated_openings" in CoverLetterGenerator._voice_tells(text)
+
+
+def test_voice_tells_short_varied_letter_clears_new_tells() -> None:
+    """High-precision: a short, varied letter trips neither new tell (no spurious re-prompt)."""
+    text = (
+        "Dear Team. I led operations for a decade. Triage is second nature to me. "
+        "My home lab runs daily. Let us talk this week. Sincerely, Jane Roe"
+    )
+    tells = CoverLetterGenerator._voice_tells(text)
+    assert "too_long" not in tells and "repeated_openings" not in tells
+
+
+def test_voice_tells_flags_ornate_verb_pileup() -> None:
+    """Two+ showy verbs (craft/curate/conceptualize…) read as AI prose — a tell (→ re-prompt)."""
+    text = "I crafted a workflow. I curated my skills carefully. The team is strong already."
+    assert "ornate_verbs" in CoverLetterGenerator._voice_tells(text)
+
+
+def test_voice_tells_single_ornate_verb_is_fine() -> None:
+    """One ornate verb alone does NOT trip the pile-up tell (high-precision)."""
+    text = "I crafted a home lab. I led operations for a decade. The team is strong already."
+    assert "ornate_verbs" not in CoverLetterGenerator._voice_tells(text)
+
+
+def test_cover_letter_prompt_tightens_length_and_openings() -> None:
+    """The prompt caps length tightly and forbids repeated sentence openings."""
+    from job_applicator.documents.cover_letter import SYSTEM_PROMPT
+
+    assert "250-300 words MAXIMUM" in SYSTEM_PROMPT
+    assert "Never start more than one sentence with the same opening words" in SYSTEM_PROMPT
+
+
 def test_company_in_resume_matches_structured_employer() -> None:
     resume = ResumeData(raw_text="...", experience=[ExperienceEntry(company="Globex")])
     assert CoverLetterGenerator._company_in_resume("Globex", resume) is True

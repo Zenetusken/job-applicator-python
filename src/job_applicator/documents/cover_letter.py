@@ -64,6 +64,10 @@ _CLICHES = (
 )
 _BANNED_PHRASES = "; ".join(f'"{c}"' for c in _CLICHES)
 
+# Showy verbs a small model reaches for that read as AI-generated in a plain cover letter. Stems,
+# so 'crafted'/'crafting' match. A pile-up (>=2 distinct) is the tell — one alone can be fine.
+_ORNATE_VERBS = ("conceptualiz", "operationaliz", "orchestrat", "craft", "curat", "envision")
+
 SYSTEM_PROMPT = f"""You are a cover letter writer. Write a tailored cover letter that reads \
 like a specific person wrote it for this specific role — not like AI-generated boilerplate.
 
@@ -86,7 +90,8 @@ unless the resume explicitly lists that company as an employer.
 posting, or these instructions — so never refer to any of them inside the letter. Phrases like \
 "my resume", "a resume that listed", "without relying on a resume", "as the posting requires", or \
 "per your requirements" must never appear; state the qualification directly instead.
-- Keep it to 3-4 paragraphs (250-350 words), first person.
+- Keep it SHORT: exactly 3 paragraphs, 250-300 words MAXIMUM, first person. A long letter reads \
+as AI padding — cut every sentence that does not earn its place; never repeat a point.
 - Do not use placeholder text like [Company Name] or [Date]; use the real values provided.
 - Sign the letter using the applicant's name exactly as provided in the Applicant Profile. Do not \
 invent or abbreviate a different name in the signature.
@@ -99,9 +104,11 @@ phrases (e.g. do not gesture at a "blend" of qualities or restate how much they 
 Voice rules — these are what separate human writing from AI writing, follow them strictly:
 - Vary sentence length. Include at least one short sentence (under eight words). Never write \
 paragraph after paragraph of uniform ~30-word sentences.
-- Vary your verbs. Do not open multiple sentences with the same word, and do not reuse a \
-distinctive verb (e.g. "engineered", "architected", "designed") more than twice — the same verb \
-restated across sentences reads as machine-generated.
+- Vary how sentences begin AND which verbs you use. Never start more than one sentence with the \
+same opening words (do not write "I envision…" / "I conceptualized…" again and again), and do not \
+reuse a distinctive verb more than twice — repetition reads as machine-generated. Avoid ornate, \
+showy verbs ("craft", "curate", "conceptualize", "operationalize", "orchestrate", "architect"); \
+plain verbs read as human.
 - Write plain prose only. No markdown, no bullet points, no bold, and no backticks around \
 terms like asyncio or mypy.
 - State accomplishments directly. Do NOT stack trailing "-ing" clauses such as \
@@ -420,6 +427,21 @@ class CoverLetterGenerator:
             tells.append("no_short_sentences")
         if len(re.findall(r",\s+\w+ing\b", text)) >= 3:
             tells.append("participial_tails")
+        # Verbosity: a cover letter over ~350 words reads as padded (target is 250-300). Threshold
+        # well above any short/mocked test text, so it stays high-precision.
+        if len(text_for_sentences.split()) > 350:
+            tells.append("too_long")
+        # Repetitive openings: 3+ sentences starting with the same two words ("I envision …").
+        openers: dict[str, int] = {}
+        for s in sentences:
+            parts = s.split()
+            if len(parts) >= 2:
+                key = f"{parts[0]} {parts[1]}".lower()
+                openers[key] = openers.get(key, 0) + 1
+        if openers and max(openers.values()) >= 3:
+            tells.append("repeated_openings")
+        if sum(1 for stem in _ORNATE_VERBS if re.search(rf"\b{stem}", low)) >= 2:
+            tells.append("ornate_verbs")
         return tells
 
     @staticmethod
@@ -469,6 +491,17 @@ class CoverLetterGenerator:
             )
         if "participial_tails" in tells:
             issues.append("remove trailing '-ing' clauses; state each point as its own sentence")
+        if "too_long" in tells:
+            issues.append("cut it to 3 short paragraphs, 250-300 words — remove padding, not facts")
+        if "repeated_openings" in tells:
+            issues.append(
+                "vary how sentences begin; never start several sentences with the same words"
+            )
+        if "ornate_verbs" in tells:
+            issues.append(
+                "replace showy verbs (craft, curate, conceptualize, orchestrate, envision) with "
+                "plain ones (build, run, design, lead)"
+            )
         if "markdown" in tells:
             issues.append("remove all markdown and backticks")
         cliches = [t.split(":", 1)[1] for t in tells if t.startswith("cliche:")]
