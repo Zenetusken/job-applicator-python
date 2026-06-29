@@ -466,6 +466,21 @@ def test_cover_letter_humanize_strips_sign_off_at_top() -> None:
     assert cleaned.endswith("Sincerely,\nJohn Doe")
 
 
+def test_cover_letter_ensure_sign_off_appends_when_missing() -> None:
+    """A 4B forgets the closing ~1 in 4 times → append a deterministic sign-off (no fail-close),
+    rather than failing the whole generation over a forgotten FORMAT element."""
+    user = UserProfile(first_name="Jane", last_name="Roe", email="j@e.com", phone="")
+    out = CoverLetterGenerator._ensure_sign_off("Dear Team,\n\nA strong fit. Let us talk.", user)
+    assert out.rstrip().endswith("Sincerely,\nJane Roe")
+
+
+def test_cover_letter_ensure_sign_off_leaves_existing_untouched() -> None:
+    """An existing valid sign-off is not duplicated."""
+    user = UserProfile(first_name="Jane", last_name="Roe", email="j@e.com", phone="")
+    letter = "Dear Team,\n\nA strong fit.\n\nSincerely,\nJane Roe"
+    assert CoverLetterGenerator._ensure_sign_off(letter, user) == letter
+
+
 def test_cover_letter_validation_rejects_invented_employment() -> None:
     """A letter that falsely claims employment at the target company is rejected."""
     config = LLMConfig()
@@ -525,6 +540,43 @@ def test_cover_letter_allows_generic_capability_words() -> None:
     )  # no raise
 
 
+def test_cover_letter_rejects_unearned_credential() -> None:
+    """A letter claiming a credential the résumé lacks (e.g. 'accredited coursework') is rejected —
+    the cover letter borrows the résumé tailor's credential guard (quantified slip: ~11%)."""
+    resume = ResumeData(raw_text="Jane Roe\nSkills\nincident response, Wireshark", skills=["SIEM"])
+    letter = "I bring accredited cybersecurity training and a strong work ethic to your team."
+    with pytest.raises(LLMError, match="unearned credential"):
+        CoverLetterGenerator._reject_unearned_credentials(letter, resume)
+
+
+def test_cover_letter_allows_credential_present_in_resume() -> None:
+    """A credential the résumé genuinely holds is kept (not a false positive)."""
+    resume = ResumeData(
+        raw_text="Jane Roe\nCertifications\nCertified Ethical Hacker (CEH)", skills=["CEH"]
+    )
+    CoverLetterGenerator._reject_unearned_credentials(
+        "As a Certified Ethical Hacker, I bring hands-on skills to your SOC.", resume
+    )  # no raise
+
+
+def test_cover_letter_credential_terms_cover_key_status_words() -> None:
+    """The credential guard covers the high-precision status words (mirrors the résumé tailor's
+    list — PR #101; consolidate to one shared constant when both branches land)."""
+    from job_applicator.documents.cover_letter import _CREDENTIAL_TERMS
+
+    assert {"accredited", "certified", "licensed"} <= set(_CREDENTIAL_TERMS)
+
+
+def test_cover_letter_prompt_forbids_unearned_credentials() -> None:
+    """The prompt bans credential/status words not in the résumé (in-progress coursework isn't
+    'accredited' / 'certified')."""
+    from job_applicator.documents.cover_letter import SYSTEM_PROMPT
+
+    low = SYSTEM_PROMPT.lower()
+    assert "claim a credential" in low  # the credential/status prohibition
+    assert "accredited" in low  # named as a banned status word
+
+
 def test_cover_letter_allows_naming_the_target_security_vendor() -> None:
     """Applying TO a security vendor (many products ARE companies a SOC analyst applies to) must
     NOT be rejected for naming the employer — the target company is exempt from the tool check."""
@@ -559,10 +611,10 @@ def test_cover_letter_prompt_forbids_naming_unlisted_tools() -> None:
     from job_applicator.documents.cover_letter import _NAMED_TOOLS, SYSTEM_PROMPT
 
     low = SYSTEM_PROMPT.lower()
-    assert "only source of the applicant" in SYSTEM_PROMPT  # JD-sourcing loophole closed
-    assert "Never name a specific vendor" in SYSTEM_PROMPT
-    assert "unless that exact name appears in the resume" in SYSTEM_PROMPT
-    # No parrotable product NAME in the prompt (the real keyfigures risk; bare "e.g." is fine).
+    assert "only source of facts" in low  # JD-sourcing loophole closed
+    assert "name a specific product or vendor" in low
+    assert "does not list; name the general capability" in low
+    # No parrotable product NAME in the prompt (the real keyfigures risk).
     assert not any(tool in low for tool in _NAMED_TOOLS)
 
 
@@ -571,8 +623,9 @@ def test_cover_letter_prompt_bans_self_reference_and_filler() -> None:
     'without relying on a resume...' instruction-leak) and bans the 'unique blend' filler."""
     from job_applicator.documents.cover_letter import _CLICHES, SYSTEM_PROMPT
 
-    assert "never refer to any of them inside the letter" in SYSTEM_PROMPT
-    assert "without relying on a resume" in SYSTEM_PROMPT  # the exact leak named as banned
+    low = SYSTEM_PROMPT.lower()
+    assert "these instructions inside the letter" in low  # no meta-refs to résumé/posting/prompt
+    assert "coherent story" in low  # the prompt now LEADS with positive coherence guidance
     assert "unique blend" in _CLICHES  # banned cliché (single source: prompt ban + voice-tell)
 
 
@@ -628,7 +681,7 @@ def test_cover_letter_system_prompt_enforces_human_voice() -> None:
 
     low = SYSTEM_PROMPT.lower()
     assert "example" not in low  # no copy-pasteable few-shot text
-    assert "vary sentence length" in low
+    assert "vary how sentences begin and run" in low  # the de-choppified rhythm rule
     assert "proven track record" in low  # named as a banned cliché
     assert "plain prose" in low or "no markdown" in low
 
@@ -918,8 +971,9 @@ def test_voice_tells_excludes_trailing_sign_off_block() -> None:
 
 
 def test_voice_tells_flags_verbose_letter() -> None:
-    """A letter well over the 250-300 word target trips the verbosity tell (→ re-prompt)."""
-    text = "This sentence carries a handful of words to add up. " * 40  # ~400 words
+    """Only TRUE bloat (>420 words) trips the verbosity tell. Threshold raised from 350 — coherent
+    letters need room for subordinate clauses; clipping them short was what made prose choppy."""
+    text = "This sentence carries a handful of words to add up. " * 45  # ~450 words
     assert "too_long" in CoverLetterGenerator._voice_tells(text)
 
 
@@ -954,27 +1008,44 @@ def test_voice_tells_single_ornate_verb_is_fine() -> None:
     assert "ornate_verbs" not in CoverLetterGenerator._voice_tells(text)
 
 
-def test_cover_letter_prompt_tightens_length_and_openings() -> None:
-    """The prompt caps length tightly and forbids repeated sentence openings."""
+def test_cover_letter_prompt_sets_length_target_and_opening_variety() -> None:
+    """The rebalanced prompt targets a COHERENT length (room for subordination, not a hard tight
+    cap that clipped letters into choppy fragments) and asks for opening variety."""
     from job_applicator.documents.cover_letter import SYSTEM_PROMPT
 
-    assert "250-300 words MAXIMUM" in SYSTEM_PROMPT
-    assert "Never start more than one sentence with the same opening words" in SYSTEM_PROMPT
+    low = SYSTEM_PROMPT.lower()
+    assert "320 to 380 words" in low  # relaxed from "250-300 MAXIMUM", with a 380 hard cap
+    assert "never more than 380" in low  # hard upper cap (prevents the 472-word runaway)
+    assert "should not all open with" in low  # variety, not a mandated short sentence
 
 
 def test_cover_letter_prompt_enforces_humility_and_grounding() -> None:
     """The prompt forbids posturing/overreach + grounds coursework as learning, and the
-    overreach-driving 'single contribution' CTA clause is gone (audit findings 1-4)."""
+    overreach-driving 'single contribution' CTA clause stays gone (audit findings 1-4)."""
     from job_applicator.documents.cover_letter import SYSTEM_PROMPT
 
     low = SYSTEM_PROMPT.lower()
-    assert "humility" in low  # the anti-posture rule exists
-    assert "uniquely positioned" in low  # named as banned
-    assert "will audit" in low  # forbids "I will audit/overhaul ... their systems"
-    assert "modest ask" in low  # the rewritten, non-grandiose CTA
-    assert "coursework and a personal home lab are learning" in low  # grounding-of-framing
-    assert "single contribution" not in low  # the overreach-driving clause was removed
+    assert "be honest about level" in low  # the anti-posture / humility rule
+    assert "positioned to manage" in low  # bans "positioned to manage the employer's systems"
+    assert "audit, overhaul, or fix" in low  # bans offering to audit/overhaul their environment
+    assert "modest ask to talk" in low  # the modest, non-grandiose CTA
+    assert "inflate coursework or a personal home lab" in low  # grounding-of-framing
+    assert "single contribution" not in low  # the overreach-driving clause is gone
     assert "ai-generated boilerplate" not in low  # de-meta'd (was leaking as "without robotic")
+
+
+def test_cover_letter_prompt_leads_with_coherence_guidance() -> None:
+    """The rebalance: the prompt LEADS with positive flow guidance (write one connected story with
+    transitions, no acronym dumps) — the fix for the over-restricted, choppy/disconnected output."""
+    from job_applicator.documents.cover_letter import SYSTEM_PROMPT
+
+    low = SYSTEM_PROMPT.lower()
+    assert "not a list of facts" in low  # the headline reframe
+    assert "through-line" in low  # require a narrative arc
+    assert "connect each sentence to the one before it" in low  # require connective tissue
+    assert "do not dump lists of tools or acronyms" in low  # no acronym dumping
+    assert "three distinct paragraphs" in low  # restore paragraph breaks (no wall-of-text)
+    assert "no literary metaphors" in low  # rein in the purple/over-written register
 
 
 def test_company_in_resume_matches_structured_employer() -> None:
