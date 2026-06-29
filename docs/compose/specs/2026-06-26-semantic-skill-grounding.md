@@ -91,7 +91,15 @@ domain-agnostic* stop-list rather than a growing tech list.
   survive (`R`/`Go`), and a degraded result is no longer cached under the evidence_span key. +7
   `extract()`-level / degrade / no-masking unit guards closed the test gap the review found.
   **Done:** the live A/B (Montréal SOC, below) and the default-on flip (2026-06-28).
-- **Phase 2:** embedding-dedup normalization; demote `NORMALIZATION_MAP` to a cache.
+- **Phase 2 (embedding-dedup half) — DEAD END, measured 2026-06-28** (same wall as C; see
+  "Phase-2 embedding-dedup" below). The *canonical-from-LLM* half effectively shipped with the
+  evidence_span default (the role-relevance prompt emits canonical English names + translates), and
+  the `NORMALIZATION_MAP` is **already demoted in effect**: under evidence_span it no longer grounds
+  (only `normalize_skill` runs as a software fast-path), and the downstream embedding *match*
+  (cosine ≥ 0.75) collapses real synonyms regardless of canonical form — so normalization is mostly
+  cosmetic and does not move match accuracy. **Embedding-dedup to replace the map is non-viable**
+  (measured below). The only real cross-domain canonicalizer is the **Phase-3 taxonomy** (a knowledge
+  base, not cosine). Net: no Phase-2 build; keep the map as the software fast-path.
 - **C (name↔span coherence) — DEAD END, measured 2026-06-28.** The idea was to catch a name/evidence
   mismatch (name `Java` for span `JavaScript`) WITHOUT dropping a legit canonicalization (`PostgreSQL`
   /`Postgres`) or cross-lingual pair. No *string* check separates them (both prefix relations), so
@@ -102,6 +110,27 @@ domain-agnostic* stop-list rather than a growing tech list.
   **permanently deferred** unless a fundamentally different mechanism appears (e.g. an LLM judge, or
   a skills taxonomy — Phase 3). Do not attempt embedding-coherence for C.
 - **Phase 3 (optional):** ESCO/taxonomy backbone.
+
+## Phase-2 embedding-dedup — measured dead end (2026-06-28)
+
+Same non-separability as C, re-measured on the **real Montréal SOC skill set** (mxbai cosine). Can a
+single threshold merge same-skill/different-name pairs WITHOUT merging distinct skills?
+
+- **SHOULD-merge (same skill):** Azure↔Microsoft Azure 0.923, cloud↔Cloud-based technologies 0.751,
+  incident response↔réponse aux incidents 0.737, Administration de réseau↔Network administration
+  0.692, Kubernetes↔k8s 0.607.
+- **SHOULD-NOT-merge (distinct):** Administration de réseau↔Sécurisation de réseau **0.789**, Cadres
+  de sécurité↔systèmes de sécurité 0.785, ↔architectures de sécurité 0.770, Java↔JavaScript 0.755,
+  Gestion de crise↔Gestion de serveurs 0.745, SIEM↔SOAR 0.506.
+- **min(should-merge) 0.607 < max(should-NOT) 0.789 → NOT separable.** Distinct French security
+  skills outscore legit cross-lingual merges; a threshold ≤0.607 (to catch k8s↔Kubernetes) merges
+  every distinct security pair, one >0.789 catches only string-trivial variants string-matching
+  already handles.
+
+**Read:** do not build embedding-dedup normalization (`scratchpad/` probe is the record). The map
+stays the software fast-path — low matching impact, since the downstream embedding match (cosine
+≥ 0.75) already collapses real synonyms regardless of canonical form. Reliable cross-domain/-lingual
+canonicalization needs the **Phase-3 taxonomy** (ESCO/O*NET), a separate project — not cosine.
 
 ## Phase-2 A/B pilot — no-gold objective metrics (2026-06-27)
 
