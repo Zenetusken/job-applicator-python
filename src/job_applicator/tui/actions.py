@@ -85,7 +85,7 @@ async def tailor_job(
     resume_data = await asyncio.to_thread(ResumeLoader().load, settings.resume_path)
     style = await _load_style_guide(settings, style_guide_path)
     engine = ResumeTailor(settings.llm, runtime=_make_runtime(settings))
-    tailored = await engine.tailor(
+    tailored = await engine.tailor_verified(
         resume=resume_data, job=job, user_instructions="", style_guide=style
     )
     output_dir = await asyncio.to_thread(settings.ensure_output_dir)
@@ -160,7 +160,7 @@ async def cover_letter_job(
     tone_section = ToneDetector().format_for_prompt(_detect_tone(job))
     style = await _load_style_guide(settings, style_guide_path)
     generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=_make_runtime(settings))
-    letter = await generator.generate(
+    letter = await generator.generate_verified(
         job,
         _load_user_profile(settings, resume_name=resume_data.name),
         resume_data,

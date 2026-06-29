@@ -76,3 +76,12 @@ class LLMError(JobApplicatorError):
     ``CoverLetterError`` subclass — an LLM failure during tailoring is not a
     cover-letter error and must not be caught by ``except CoverLetterError``.
     """
+
+
+class GroundingUnavailableError(JobApplicatorError):
+    """The semantic grounding verifier could not run (endpoint down, circuit open, bad parse).
+
+    The fail-safe contract (spec §3 #4): a verifier failure must NEVER be masked as a clean,
+    verified document. Callers catch this, fall back to the deterministic English floor, and
+    surface "semantic check skipped" — never report the document as honesty-verified.
+    """

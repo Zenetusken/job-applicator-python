@@ -989,7 +989,7 @@ def apply(
                 ) -> tuple[str, str, str | None] | None:
                     async with sem:
                         try:
-                            letter = await generator.generate(
+                            letter = await generator.generate_verified(
                                 job, user_profile, resume_data, style_guide=style
                             )
                             pdf_path: str | None = None
@@ -1207,8 +1207,8 @@ def generate_cover_letter(
 
         tone_section = ToneDetector().format_for_prompt(tone_profile)
 
-        with err_console.status("Generating cover letter..."):  # progress → stderr
-            letter = await generator.generate(
+        with err_console.status("Generating + verifying cover letter..."):  # progress → stderr
+            letter = await generator.generate_verified(
                 job, user_profile, resume_data, style, tone_section=tone_section
             )
 
@@ -2022,7 +2022,7 @@ def batch(
                                     "type": "tailor",
                                 },
                             )
-                        tailored = await tailor_engine.tailor(
+                        tailored = await tailor_engine.tailor_verified(
                             resume=resume_data,
                             job=job,
                             user_instructions=user_instructions,
@@ -2100,7 +2100,7 @@ def batch(
                                     "type": "cover_letter",
                                 },
                             )
-                        letter = await cl_generator.generate(
+                        letter = await cl_generator.generate_verified(
                             job,
                             user_profile,
                             resume_data,
@@ -2523,8 +2523,8 @@ def tailor(
                 raise typer.Exit(1 if as_json else 0)
 
         try:
-            with console.status("Tailoring resume..."):
-                result = await tailor_engine.tailor(
+            with console.status("Tailoring + verifying resume..."):
+                result = await tailor_engine.tailor_verified(
                     resume_data, job, user_instructions, style, tone_profile
                 )
             session.add_attempt(result)

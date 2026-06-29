@@ -8,8 +8,9 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from job_applicator.config import LLMConfig
+from job_applicator.documents.grounding_verifier import GroundingVerifier
 from job_applicator.documents.style_analyzer import StyleAnalyzer
-from job_applicator.exceptions import LLMError
+from job_applicator.exceptions import GroundingUnavailableError, LLMError
 from job_applicator.models import (
     DateAuditResult,
     JobListing,
@@ -690,6 +691,10 @@ class ResumeTailor:
         # so the app's largest LLM calls are finally breaker-protected).
         self._runtime = runtime or LLMRuntime.defaults(name="resume-tailor")
         self._breaker = self._runtime.breaker
+        # Its OWN runtime/breaker (NOT this tailor's): a flaky verifier endpoint must never trip the
+        # circuit that guards real tailoring (#4 fail-safe — a verifier problem never blocks
+        # generation). Used ONLY by tailor_verified() — tailor() stays the pure primitive.
+        self._verifier = GroundingVerifier(config)
 
     @async_retry(
         max_attempts=2, base_delay=1.0, exceptions=(LLMError,), exclude=(CircuitOpenError,)
@@ -808,6 +813,39 @@ class ResumeTailor:
             changes_summary=changes,
             user_modifications=user_instructions,
         )
+
+    async def tailor_verified(
+        self,
+        resume: ResumeData,
+        job: JobListing,
+        user_instructions: str = "",
+        style_guide: StyleGuide | None = None,
+        tone_profile: ToneProfile | None = None,
+        matcher: JobMatcher | None = None,
+    ) -> TailoredResume:
+        """``tailor`` plus a language-agnostic grounding pass (spec §6).
+
+        The tailored text is verified against the BASE résumé and the report is ATTACHED to the
+        result for human review — claims are NEVER auto-stripped. This is the document of record:
+        the user is its ground truth, and the verifier has a measured precision residual, so a flag
+        is a question to the user, not a deletion. Non-blocking: a verifier failure is the fail-safe
+        (#4) — the tailored résumé is returned with ``grounding_report=None``, never blocked and
+        never reported as verified.
+        """
+        result = await self.tailor(
+            resume, job, user_instructions, style_guide, tone_profile, matcher
+        )
+        return await self.verify_tailored(result, resume)
+
+    async def verify_tailored(self, result: TailoredResume, resume: ResumeData) -> TailoredResume:
+        """Attach the grounding report (tailored text vs the BASE résumé) for human review (spec
+        §6). Non-blocking fail-safe (#4): a verifier failure leaves ``grounding_report=None`` and
+        never blocks. Reusable so an interactive refine can be re-verified the same way."""
+        try:
+            result.grounding_report = await self._verifier.verify(result.tailored_text, resume)
+        except GroundingUnavailableError as exc:
+            logger.info("Résumé grounding verification skipped (verifier unavailable): %s", exc)
+        return result
 
     @async_retry(
         max_attempts=2, base_delay=1.0, exceptions=(LLMError,), exclude=(CircuitOpenError,)

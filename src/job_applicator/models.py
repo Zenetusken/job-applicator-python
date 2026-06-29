@@ -365,6 +365,54 @@ class BatchRunSpec(BaseModel):
         return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
+class ClaimCheck(BaseModel):
+    """One factual claim found in a generated document, with the verifier's grounding verdict and
+    the verbatim source line it cited — so the verdict can be deterministically audited."""
+
+    model_config = {"extra": "forbid"}
+
+    claim: str = Field(description="The factual claim, quoted from the generated document")
+    grounded: bool = Field(description="True if the SOURCE résumé supports the claim")
+    source_quote: str = Field(
+        default="", description="Verbatim SOURCE text supporting it (empty if not grounded)"
+    )
+    note: str = Field(default="", description="Why it is not grounded (contradiction or silence)")
+
+
+class VerificationReport(BaseModel):
+    """Raw structured output of the grounding verifier — one ClaimCheck per enumerated claim."""
+
+    model_config = {"extra": "forbid"}
+
+    claims: list[ClaimCheck] = Field(default_factory=list)
+
+
+class GroundingReport(BaseModel):
+    """The AUDITED result surfaced to the user: claims the source does not support (model-flagged
+    OR deterministically overridden by audit) plus sentences the verifier never enumerated
+    (coverage gaps). ``complete`` is False when the enumeration missed content; ``clean`` only when
+    nothing is unsupported AND coverage is complete."""
+
+    # 'ignore' (not 'forbid') so the computed clean/complete below serialize into `tailor --json`
+    # AND survive the TailoredResume.model_validate_json round-trip (cli meta reload): on load the
+    # dumped computed keys are ignored and RECOMPUTED, never trusted from input. Safe because this
+    # is a verifier-OUTPUT model (never user input), so 'forbid' caught no real schema-drift here.
+    model_config = {"extra": "ignore"}
+
+    unsupported: list[ClaimCheck] = Field(default_factory=list)
+    coverage_gaps: list[str] = Field(default_factory=list)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def complete(self) -> bool:
+        return not self.coverage_gaps
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def clean(self) -> bool:
+        return not self.unsupported and self.complete
+
+
 class TailoredResume(BaseModel):
     """A resume tailored for a specific job, with full metadata."""
 
@@ -386,6 +434,11 @@ class TailoredResume(BaseModel):
     output_path: str = Field(default="", description="Path where tailored resume was saved")
     cover_letter_path: str = Field(default="", description="Path to generated cover letter, if any")
     pdf_path: str = Field(default="", description="Path to generated PDF résumé, if any")
+    grounding_report: GroundingReport | None = Field(
+        default=None,
+        description="Honesty check of the tailored text vs the BASE résumé (None = not run or "
+        "verifier unavailable). Surfaced for human review — claims are never auto-stripped.",
+    )
 
     model_config = {"extra": "forbid"}
 

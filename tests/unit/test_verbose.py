@@ -112,7 +112,9 @@ def test_gcl_json_stdout_is_pure_json(monkeypatch: pytest.MonkeyPatch, tmp_path:
     loader = MagicMock()
     loader.load.return_value = ResumeData(raw_text="Jane\njane@example.com\nPython, SQL")
     gen = MagicMock()
-    gen.generate = AsyncMock(return_value="Dear Hiring Manager,\n\nI build async Python systems.")
+    gen.generate_verified = AsyncMock(
+        return_value="Dear Hiring Manager,\n\nI build async Python systems."
+    )
     tone = MagicMock(primary="professional", confidence=0.9)
 
     monkeypatch.setattr("job_applicator.documents.resume.ResumeLoader", lambda: loader)

@@ -271,7 +271,7 @@ class TestGenerateCoverLetter:
             patch("job_applicator.workflows.cover_letter._load_user_profile") as mock_profile,
         ):
             mock_gen = mock_gen_cls.return_value
-            mock_gen.generate = AsyncMock(return_value="Dear Hiring Manager")
+            mock_gen.generate_verified = AsyncMock(return_value="Dear Hiring Manager")
             mock_profile.return_value = MagicMock()
             result = await _generate_cover_letter(
                 console,
@@ -309,7 +309,7 @@ class TestGenerateCoverLetter:
             patch("job_applicator.workflows.cover_letter._load_user_profile") as mock_profile,
         ):
             mock_gen = mock_gen_cls.return_value
-            mock_gen.generate = AsyncMock(side_effect=RuntimeError("LLM down"))
+            mock_gen.generate_verified = AsyncMock(side_effect=RuntimeError("LLM down"))
             mock_profile.return_value = MagicMock()
             result = await _generate_cover_letter(
                 console,
@@ -345,7 +345,7 @@ class TestGenerateCoverLetter:
             patch("job_applicator.workflows.cover_letter._load_user_profile") as mock_profile,
         ):
             mock_gen = mock_gen_cls.return_value
-            mock_gen.generate = AsyncMock(return_value="letter")
+            mock_gen.generate_verified = AsyncMock(return_value="letter")
             user_profile = MagicMock()
             mock_profile.return_value = user_profile
             await _generate_cover_letter(
@@ -359,7 +359,7 @@ class TestGenerateCoverLetter:
                 session,
                 runtime=LLMRuntime.defaults(),
             )
-            mock_gen.generate.assert_called_once_with(
+            mock_gen.generate_verified.assert_called_once_with(
                 job,
                 user_profile,
                 resume_data,
@@ -885,7 +885,7 @@ async def test_workflow_threads_one_shared_runtime_across_attempts() -> None:
     def capture_gen(config: object, runtime: object = None) -> MagicMock:
         captured.append(runtime)
         gen = MagicMock()
-        gen.generate = AsyncMock(return_value="Dear Hiring Manager, a strong letter.")
+        gen.generate_verified = AsyncMock(return_value="Dear Hiring Manager, a strong letter.")
         gen.refine = AsyncMock(return_value="refined")
         return gen
 

@@ -1219,7 +1219,7 @@ async def test_cover_letter_job_uses_tailored_resume_text(tmp_path: Path, monkey
 
     monkeypatch.setattr(
         "job_applicator.documents.cover_letter.CoverLetterGenerator",
-        lambda *a, **k: MagicMock(generate=_generate),
+        lambda *a, **k: MagicMock(generate_verified=_generate),
     )
     monkeypatch.setattr(
         "job_applicator.documents.resume.ResumeLoader",
@@ -1257,7 +1257,7 @@ async def test_cover_letter_job_uses_resume_name_for_sign_off(tmp_path: Path, mo
 
     monkeypatch.setattr(
         "job_applicator.documents.cover_letter.CoverLetterGenerator",
-        lambda *a, **k: MagicMock(generate=_generate),
+        lambda *a, **k: MagicMock(generate_verified=_generate),
     )
     monkeypatch.setattr(
         "job_applicator.documents.resume.ResumeLoader",

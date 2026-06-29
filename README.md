@@ -8,10 +8,12 @@ AI-powered job application tool using Playwright browser automation with modern 
 - **Session Reuse**: Sign in once in your real browser; the tool reuses the session — it never automates login (which would trip anti-bot defenses and risk your account)
 - **Region-Aware Browser**: Auto-detects the host's locale, IANA timezone, and Chrome version so geo-aware boards serve your real region
 - **Auto-Apply**: Automatically fill and submit job applications (dry-run by default; `--submit` to send)
-- **AI Cover Letters**: Generate personalized cover letters using LLM (litellm - supports 100+ providers). Dry runs generate the letter as a preview before you opt in with `--submit`
+- **AI Cover Letters**: Generate personalized cover letters using LLM (litellm - supports 100+ providers) as three connected paragraphs with deterministic honesty guards and an enforced sign-off. Dry runs generate the letter as a preview before you opt in with `--submit`
+- **Output-Language Policy**: The generated CV and cover letter always resolve the *same* language — `[llm] language = "auto"` mirrors the job posting's language, or force `"en"` / `"fr"` (a French posting yields a French packet with an in-language sign-off and localized PDF date)
+- **Grounding Verification (honesty layer)**: A language-agnostic LLM pass enumerates every claim in a generated document and cites the résumé line that grounds it; a deterministic audit then overrides any ungrounded claim. For cover letters this drives a regenerate-once-and-keep-the-cleaner-draft loop; for tailored résumés the unsupported claims are *surfaced for review* (printed as a "claims to review" panel and carried in `--json`), never silently stripped. Fail-safe: a verifier outage never passes off an unverified document as clean
 - **Resume Parsing**: Load and parse PDF/text/image resumes with intelligent skill extraction; OCR fallback for scanned PDFs
 - **Semantic Job Matching**: Match resumes to jobs using mxbai-embed-large-v1 embeddings
-- **Resume Tailoring**: LLM-powered resume rewriting for specific jobs with hallucination guards
+- **Resume Tailoring**: LLM-powered resume rewriting for specific jobs with hallucination guards and a surfaced grounding report
 - **Date Audit**: Pre-ingestion CV validation — checks ordering, staleness, timeline coherence
 - **Style Analysis**: Mimic writing style from one or more example resumes/cover letters (comma-separated paths); example guides in `docs/style-guide-examples/`
 - **Cover-Letter Sign-Off Enforcement**: Every generated cover letter is validated for a recognized closing word and a signature matching the applicant's name
@@ -34,9 +36,9 @@ AI-powered job application tool using Playwright browser automation with modern 
 | Component | Allocation |
 |---|---|
 | GPU | NVIDIA RTX 4070 (12 GB VRAM) |
-| vLLM (Qwen3.5-4B-AWQ, eager mode) | ~6.5 GB |
+| vLLM (Qwen3-8B-AWQ, eager mode, GPU_MEM=0.70) | ~8.4 GB (6.1 GB weights + KV) |
 | Embeddings (mxbai-embed-large-v1) | ~1.5 GB |
-| Free VRAM | ~4.0 GB |
+| Free VRAM | ~2.4 GB |
 
 ## Installation
 
@@ -63,7 +65,7 @@ vLLM, cloud OpenAI/Anthropic, Ollama, LM Studio, etc.
 ```toml
 [llm]
 api_base = "http://localhost:8000/v1"   # the endpoint you point at
-model = "cyankiwi/Qwen3.5-4B-AWQ-4bit"
+model = "Qwen/Qwen3-8B-AWQ"
 ```
 
 **2. Self-host a local vLLM.** For a standalone box with no shared/remote LLM
@@ -88,7 +90,7 @@ cudagraph profiler can OOM during startup; `ENFORCE_EAGER=1` avoids that by disa
 CUDA graphs. If you have ample VRAM you can run with `ENFORCE_EAGER=0` for higher
 throughput.
 
-The first launch **auto-downloads the model** from Hugging Face Hub (~4 GB for the
+The first launch **auto-downloads the model** from Hugging Face Hub (~6 GB for the
 default; cached to `~/.cache/huggingface`) — no separate step. Needs network on first
 run. (Embeddings likewise fetch `mxbai-embed-large-v1`, ~640 MB, on first use.)
 
@@ -257,8 +259,16 @@ resume_path = "/path/to/your/resume.pdf"
 [llm]
 api_base = "http://localhost:8000/v1"  # vLLM endpoint
 api_key = "not-needed-for-local"
-model = "cyankiwi/Qwen3.5-4B-AWQ-4bit"
+model = "Qwen/Qwen3-8B-AWQ"
+# Output language for the generated CV + cover letter: "auto" mirrors the job
+# posting's language, or force "en" / "fr". The two documents always resolve the
+# SAME language, so one application never mixes them.
+language = "auto"
 ```
+
+The smaller, faster `cyankiwi/Qwen3.5-4B-AWQ-4bit` remains a pinnable fallback (via
+`JOB_APPLICATOR_LLM_MODEL` / `[llm] model`) — the 8B grounds stack-heavy job descriptions
+the 4B couldn't, while still fitting the 12 GB card alongside the embeddings.
 
 ### Embedding Configuration
 
@@ -306,7 +316,7 @@ pytest -m unit
 ┌─────────────────────────────────────────────────────────────┐
 │                    GPU Memory (12 GB)                       │
 ├─────────────────────────────────────────────────────────────┤
-│  vLLM Orchestrator (Qwen3.5-4B-AWQ)     ~6.5 GB            │
+│  vLLM Orchestrator (Qwen3-8B-AWQ)       ~8.4 GB            │
 │  ├── Cover letter generation                               │
 │  ├── Style analysis                                        │
 │  └── Job description understanding                         │
@@ -316,6 +326,6 @@ pytest -m unit
 │  ├── Job matching                                          │
 │  └── Skill similarity                                      │
 ├─────────────────────────────────────────────────────────────┤
-│  Free VRAM                           ~3.3 GB               │
+│  Free VRAM                           ~2.4 GB               │
 └─────────────────────────────────────────────────────────────┘
 ```

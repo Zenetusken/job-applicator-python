@@ -411,7 +411,7 @@ def _patch_tailor_stack(
     )
     monkeypatch.setattr(
         "job_applicator.documents.resume_tailor.ResumeTailor",
-        lambda *a, **k: MagicMock(tailor=AsyncMock(return_value=tailored)),
+        lambda *a, **k: MagicMock(tailor_verified=AsyncMock(return_value=tailored)),
     )
 
     async def _wf(

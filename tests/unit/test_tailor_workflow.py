@@ -55,7 +55,7 @@ def _drive(
     import job_applicator.cli as cli
 
     engine = MagicMock()
-    engine.tailor = AsyncMock(return_value=_tailored("INITIAL"))
+    engine.tailor_verified = AsyncMock(return_value=_tailored("INITIAL"))
     engine.refine = AsyncMock(return_value=_tailored("REFINED"))
 
     audit = MagicMock(
@@ -118,7 +118,7 @@ def test_tailor_quit_discards_without_saving(
     """[Q] quits after the initial tailor: no refine, no files written."""
     result, engine, cl = _drive(monkeypatch, tmp_path, ["Q"])
     assert result.exit_code == 0, result.output
-    engine.tailor.assert_awaited_once()
+    engine.tailor_verified.assert_awaited_once()
     engine.refine.assert_not_awaited()
     cl.assert_not_awaited()
     assert not list(tmp_path.glob("tailored_*.txt"))
@@ -214,7 +214,7 @@ def test_tailor_yes_is_non_interactive(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert len(txts) == 1 and txts[0].read_text(encoding="utf-8") == "INITIAL"  # accepted + saved
     assert list(tmp_path.glob("tailored_*.meta.json"))  # meta written
     cl.assert_not_awaited()  # cover-letter offer skipped, not dragged into a 2nd interactive loop
-    engine.tailor.assert_awaited_once()
+    engine.tailor_verified.assert_awaited_once()
 
 
 def test_tailor_section_edit_refines_target_section(
@@ -277,7 +277,7 @@ def test_tailor_stale_but_ordered_cv_triggers_confirm_gate(
     )
     assert result.exit_code == 0, result.output  # typer.Exit(0) user-abort
     assert "Aborted. Please update your CV." in result.output
-    engine.tailor.assert_not_awaited()  # gate fired + aborted before any tailoring
+    engine.tailor_verified.assert_not_awaited()  # gate fired + aborted before any tailoring
 
 
 def test_tailor_clean_dates_show_coherent_message(
@@ -304,7 +304,7 @@ def test_tailor_yes_auto_proceeds_through_stale_date_gate(
     )
     assert result.exit_code == 0, result.output
     assert "--yes flag set, proceeding automatically." in result.output
-    engine.tailor.assert_awaited_once()
+    engine.tailor_verified.assert_awaited_once()
     assert len(list(tmp_path.glob("tailored_*.txt"))) == 1  # proceeded past the gate + tailored
 
 
@@ -335,7 +335,7 @@ def test_tailor_json_emits_tailored_resume(monkeypatch: pytest.MonkeyPatch, tmp_
     assert parsed["job_title"] == "Dev" and parsed["job_company"] == "Acme"
     assert parsed["output_path"]  # the saved artifact path is carried in the JSON
     assert "Tailored Resume Preview" not in result.stdout  # Rich preview lives on stderr
-    engine.tailor.assert_awaited_once()
+    engine.tailor_verified.assert_awaited_once()
     cl.assert_not_awaited()  # cover-letter offer skipped (non-interactive)
 
 
@@ -350,4 +350,4 @@ def test_tailor_json_min_score_abort_exits_nonzero(
     )
     assert result.exit_code != 0  # sub-threshold → non-zero (the gate-2a finding)
     assert result.stdout.strip() == ""  # nothing tailored → no JSON emitted
-    engine.tailor.assert_not_awaited()  # aborted before tailoring
+    engine.tailor_verified.assert_not_awaited()  # aborted before tailoring

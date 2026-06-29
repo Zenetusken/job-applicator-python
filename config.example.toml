@@ -33,7 +33,13 @@ timeout_ms = 30000
 [llm]
 api_base = "http://localhost:8000/v1"
 api_key = "not-needed-for-local"
-model = "cyankiwi/Qwen3.5-4B-AWQ-4bit"
+# Default base model (genuine AWQ 4-bit, ~6.1 GB, fits the 12 GB card alongside the
+# embeddings). The smaller cyankiwi/Qwen3.5-4B-AWQ-4bit is a pinnable fallback.
+model = "Qwen/Qwen3-8B-AWQ"
+# Output language for the generated CV + cover letter: "auto" mirrors the job
+# posting's language (FR/EN heuristic), or force "en" / "fr". The two documents
+# always resolve the SAME language, so one application never mixes them.
+language = "auto"
 # Upper bound per completion. 4096 fits full résumé tailoring; cover letters and
 # style analysis need less (style analysis self-caps at 1024 internally). Setting
 # this below ~4096 can truncate tailored résumés. Matches the built-in default.
