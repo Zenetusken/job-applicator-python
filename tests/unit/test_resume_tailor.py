@@ -932,3 +932,82 @@ async def test_summarize_changes_raises_not_fabricated(llm_config, monkeypatch) 
     monkeypatch.setattr(tailor, "_call_llm", _boom)
     with pytest.raises(LLMError):
         await tailor._summarize_changes("original resume text", "tailored resume text")
+
+
+class TestStripUnearnedCredentials:
+    """Deterministic backstop: remove credential/status claims the candidate doesn't hold from the
+    tailored SUMMARY — the freeform section the structured-section guards don't cover. Surfaced by
+    a live tailor that emitted 'Accredited security operations professional' for a candidate with
+    only in-progress coursework."""
+
+    def test_strips_unearned_credential_and_keeps_sentence_grammatical(self, llm_config) -> None:
+        tailor = ResumeTailor(llm_config)
+        original = "SUMMARY\nOperations professional seeking a security role.\n\nSKILLS\n• Linux\n"
+        tailored = (
+            "SUMMARY\nAccredited security operations professional with 10+ years.\n\n"
+            "SKILLS\n• Linux\n"
+        )
+        out = tailor._strip_unearned_credentials(tailored, original)
+        assert "accredited" not in out.lower()  # the unearned credential is gone
+        # the sentence is repaired (capitalized, no leading gap, no double space)
+        assert "Security operations professional with 10+ years." in out
+        assert "• Linux" in out  # other sections untouched
+
+    def test_preserves_credential_the_candidate_actually_holds(self, llm_config) -> None:
+        tailor = ResumeTailor(llm_config)
+        original = "SUMMARY\nAnalyst.\n\nCERTIFICATIONS\n• Certified Ethical Hacker\n"
+        tailored = "SUMMARY\nCertified security analyst seeking a SOC role.\n\nSKILLS\n• Nmap\n"
+        out = tailor._strip_unearned_credentials(tailored, original)
+        assert "Certified security analyst" in out  # a real, held credential is kept
+
+    def test_benign_credential_word_elsewhere_does_not_license_overclaim(self, llm_config) -> None:
+        # 'certified' as a verb in an EXPERIENCE bullet must NOT license a summary credential claim
+        # (the whole-document leak the summary-scoping closes).
+        tailor = ResumeTailor(llm_config)
+        original = (
+            "SUMMARY\nSupport specialist.\n\n"
+            "EXPERIENCE\nAgent\n• Certified that tickets were resolved before closing.\n"
+        )
+        tailored = (
+            "SUMMARY\nCertified support specialist seeking a security role.\n\nSKILLS\n• Linux\n"
+        )
+        out = tailor._strip_unearned_credentials(tailored, original)
+        assert "Certified support specialist" not in out
+        assert "Support specialist seeking a security role." in out
+
+    def test_handles_x_and_y_credential_phrase(self, llm_config) -> None:
+        tailor = ResumeTailor(llm_config)
+        original = "SUMMARY\nAnalyst.\n\nSKILLS\n• Linux\n"
+        tailored = "SUMMARY\nCertified and licensed analyst with experience.\n\nSKILLS\n• Linux\n"
+        out = tailor._strip_unearned_credentials(tailored, original)
+        assert "certified" not in out.lower() and "licensed" not in out.lower()
+        assert "Analyst with experience." in out  # 'X and Y' collapses cleanly
+
+    def test_only_scrubs_summary_not_other_sections(self, llm_config) -> None:
+        tailor = ResumeTailor(llm_config)
+        original = "SUMMARY\nAnalyst.\n\nSKILLS\n• Linux\n"
+        tailored = (
+            "SUMMARY\nAccredited analyst seeking a role.\n\n"
+            "EXPERIENCE\nAuditor\n• Certified compliance reports each quarter.\n"
+        )
+        out = tailor._strip_unearned_credentials(tailored, original)
+        assert "Accredited analyst" not in out  # summary scrubbed
+        assert "Certified compliance reports each quarter." in out  # experience bullet untouched
+
+    def test_strips_overclaim_under_unlabelled_and_variant_headers(self, llm_config) -> None:
+        """Covers a header-less leading paragraph and odd/missing summary labels — not just a bare
+        'SUMMARY' — since a 4B that overclaims often omits or renames the header (the silent-bypass
+        the adversarial review caught: the scrub region is the leading block, not one header)."""
+        tailor = ResumeTailor(llm_config)
+        original = "Jane Roe\njane@x.com\n\nOperations lead.\n\nSKILLS\n• Linux\n"
+        for header in ("", "PROFILE SUMMARY", "About", "Summary:"):
+            lead = f"{header}\n" if header else ""
+            tailored = (
+                "Jane Roe\njane@x.com\n\n"
+                f"{lead}"
+                "Accredited security analyst seeking a SOC role.\n\nSKILLS\n• Linux\n"
+            )
+            out = tailor._strip_unearned_credentials(tailored, original)
+            assert "accredited" not in out.lower(), f"header={header!r}"
+            assert "Security analyst seeking a SOC role." in out, f"header={header!r}"
+            assert "• Linux" in out  # the skills section is never scrubbed
