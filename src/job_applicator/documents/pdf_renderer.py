@@ -328,6 +328,12 @@ class PDFRenderer:
             response = await self._llm_runtime.run(_call)
         except Exception as exc:
             raise PDFRenderError(f"Failed to format cover letter for PDF: {exc}") from exc
+        # The LLM cannot know today's date (it hallucinates one, e.g. "2023-10-10"); set the
+        # letterhead date deterministically so it is always accurate.
+        response.date = datetime.now().strftime("%B %d, %Y")
+        # The templates append the comma after the closing word, so strip any the LLM included
+        # ("Sincerely," -> "Sincerely") to avoid a doubled comma ("Sincerely,,") in the render.
+        response.closing = response.closing.rstrip(" ,")
         self._validate_cover_letter_sign_off(response)
         return response
 

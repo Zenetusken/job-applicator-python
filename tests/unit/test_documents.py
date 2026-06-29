@@ -566,6 +566,24 @@ def test_cover_letter_prompt_forbids_naming_unlisted_tools() -> None:
     assert not any(tool in low for tool in _NAMED_TOOLS)
 
 
+def test_cover_letter_prompt_bans_self_reference_and_filler() -> None:
+    """The prompt forbids referencing the resume/posting/instructions inside the letter (the
+    'without relying on a resume...' instruction-leak) and bans the 'unique blend' filler."""
+    from job_applicator.documents.cover_letter import _CLICHES, SYSTEM_PROMPT
+
+    assert "never refer to any of them inside the letter" in SYSTEM_PROMPT
+    assert "without relying on a resume" in SYSTEM_PROMPT  # the exact leak named as banned
+    assert "unique blend" in _CLICHES  # banned cliché (single source: prompt ban + voice-tell)
+
+
+def test_cover_letter_humanize_collapses_doubled_signoff_comma() -> None:
+    """A model artifact like 'Sincerely,,' is collapsed to a single comma (minimal cleanup in the
+    existing _humanize, so the letter is properly LLM-generated with no malformed punctuation)."""
+    out = CoverLetterGenerator._humanize("Dear Team,\n\nA strong fit.\n\nSincerely,,\nJane Roe")
+    assert "Sincerely,," not in out
+    assert "Sincerely,\nJane Roe" in out
+
+
 def test_cover_letter_generator_template() -> None:
     config = LLMConfig()
     generator = CoverLetterGenerator(config)

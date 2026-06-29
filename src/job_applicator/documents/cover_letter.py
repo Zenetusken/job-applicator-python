@@ -60,6 +60,7 @@ _CLICHES = (
     "fast-paced environment",
     "do not hesitate",
     "perfect fit",
+    "unique blend",
 )
 _BANNED_PHRASES = "; ".join(f'"{c}"' for c in _CLICHES)
 
@@ -81,13 +82,19 @@ product they have not used.
 - Include exactly ONE concrete, specific detail FROM THE RESUME that shows the applicant's fit \
 for this role's requirements. Do NOT claim the applicant previously worked for the company \
 unless the resume explicitly lists that company as an employer.
+- Write ONLY the letter's own content. The reader sees the letter, NOT the resume, the job \
+posting, or these instructions — so never refer to any of them inside the letter. Phrases like \
+"my resume", "a resume that listed", "without relying on a resume", "as the posting requires", or \
+"per your requirements" must never appear; state the qualification directly instead.
 - Keep it to 3-4 paragraphs (250-350 words), first person.
 - Do not use placeholder text like [Company Name] or [Date]; use the real values provided.
 - Sign the letter using the applicant's name exactly as provided in the Applicant Profile. Do not \
 invent or abbreviate a different name in the signature.
-- The sign-off (e.g. "Sincerely, <name>") must be the VERY LAST text in the letter. Do not place \
-a sign-off at the beginning or middle of the letter.
-- Before the final sign-off, include a brief, direct call to action.
+- The sign-off (e.g. "Sincerely, <name>") must be the VERY LAST text in the letter, with a SINGLE \
+comma after the closing word. Do not place a sign-off at the beginning or middle of the letter.
+- End with a brief, direct call to action that is concrete and specific — a real next step or the \
+single contribution the applicant would make. Avoid vague enthusiasm and generic summarizing \
+phrases (e.g. do not gesture at a "blend" of qualities or restate how much they want the role).
 
 Voice rules — these are what separate human writing from AI writing, follow them strictly:
 - Vary sentence length. Include at least one short sentence (under eight words). Never write \
@@ -372,6 +379,9 @@ class CoverLetterGenerator:
         text = re.sub(r"(?m)^[ \t]*#{1,6}[ \t]*", "", text)  # markdown headings
         text = re.sub(r"(?m)^[ \t]*[-*+][ \t]+", "", text)  # markdown bullets (line-anchored)
         text = cls._strip_early_sign_off(text)
+        text = re.sub(
+            r",{2,}", ",", text
+        )  # collapse a doubled comma the model leaks ("Sincerely,,")
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text.strip()
 
