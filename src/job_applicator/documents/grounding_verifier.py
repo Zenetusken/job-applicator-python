@@ -15,8 +15,15 @@ grounded by quoting the English source line, and the overlap checks are on share
 from __future__ import annotations
 
 import re
+from typing import Any, cast
 
-from job_applicator.models import ClaimCheck, GroundingReport, VerificationReport
+from job_applicator.config import LLMConfig
+from job_applicator.exceptions import GroundingUnavailableError, LLMError
+from job_applicator.models import ClaimCheck, GroundingReport, ResumeData, VerificationReport
+from job_applicator.utils.llm import LLMRuntime, litellm_model, quiet_litellm
+from job_applicator.utils.logging import get_logger
+
+logger = get_logger("documents.grounding_verifier")
 
 # A grounded claim's cited quote must really come from the source: at least this fraction of the
 # quote's content words must appear in the source (robust to the model lightly reformatting a
@@ -99,3 +106,83 @@ def audit_report(report: VerificationReport, generated: str, source: str) -> Gro
         unsupported=unsupported,
         coverage_gaps=coverage_gaps(generated, report.claims),
     )
+
+
+VERIFIER_SYSTEM_PROMPT = (
+    "You are a strict résumé fact-checker. The SOURCE is the candidate's ORIGINAL résumé — the "
+    "ONLY source of truth about the candidate. The GENERATED text is a tailored résumé or cover "
+    "letter to check. Enumerate EVERY substantive factual claim in GENERATED (metrics and numbers, "
+    "skills, job duties, credentials, tools, experience). For each claim set grounded=true ONLY if "
+    "the SOURCE supports it, and copy the EXACT VERBATIM SOURCE text that supports it into "
+    "source_quote (verbatim, so it can be checked). A faithful TRANSLATION of a SOURCE fact is "
+    "grounded — the SOURCE may be English and the claim French; still quote the English SOURCE "
+    "text. Set grounded=false when the SOURCE contradicts the claim (SOURCE 'roughly 95%' vs claim "
+    "'100%') or is silent on it; put the reason in note and leave source_quote empty. A number is "
+    "grounded only if the SAME number appears in the SOURCE for the SAME fact. Coursework, an "
+    "in-progress certificate, or an 'exam pending' status is NOT a held credential: a claim of "
+    "HOLDING a certification or qualification is grounded=false unless the SOURCE states it as "
+    "completed. Enumerate every sentence so nothing is skipped."
+)
+
+
+class GroundingVerifier:
+    """Language-agnostic semantic honesty layer (spec §2): the model enumerates every claim in a
+    generated document and quotes the SOURCE line grounding each; the deterministic ``audit_report``
+    above then overrides any grounding whose evidence does not hold up.
+
+    Augments the deterministic English floor, never replaces it. **Fail-safe (#4):** any verifier
+    failure raises ``GroundingUnavailableError`` — it never returns a clean report on failure, so a
+    down endpoint can never be mistaken for an honesty-verified document.
+    """
+
+    def __init__(self, config: LLMConfig, runtime: LLMRuntime | None = None) -> None:
+        self._config = config
+        self._client: Any = None
+        self._runtime = runtime or LLMRuntime.defaults(name="grounding-verifier")
+
+    def _get_client(self) -> Any:
+        if self._client is None:
+            try:
+                quiet_litellm()
+                import instructor
+                from litellm import acompletion
+
+                self._client = instructor.from_litellm(acompletion)
+            except ImportError as exc:
+                raise GroundingUnavailableError("litellm or instructor not installed") from exc
+        return self._client
+
+    async def verify(self, generated: str, resume: ResumeData) -> GroundingReport:
+        """Verify ``generated`` against the BASE résumé (``resume.raw_text``) — never the JD or the
+        tailored intermediate (spec §2). Returns the audited ``GroundingReport``, or raises
+        ``GroundingUnavailableError`` (the fail-safe) when the verifier cannot run."""
+        source = resume.raw_text
+        model = litellm_model(self._config)
+        messages = [
+            {"role": "system", "content": VERIFIER_SYSTEM_PROMPT},
+            {"role": "user", "content": f"SOURCE (résumé):\n{source}\n\nGENERATED:\n{generated}"},
+        ]
+
+        async def _call(_prev: LLMError | None) -> VerificationReport:
+            client = self._get_client()
+            return cast(
+                VerificationReport,
+                await client.create(
+                    model=model,
+                    api_base=self._config.api_base,
+                    api_key=self._config.api_key,
+                    messages=messages,
+                    response_model=VerificationReport,
+                    max_retries=1,
+                    max_tokens=2000,
+                    temperature=0.1,
+                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                ),
+            )
+
+        try:
+            report = await self._runtime.run(_call)
+        except Exception as exc:
+            # Fail-safe (#4): ANY failure must not pass as clean — re-raise as the typed error.
+            raise GroundingUnavailableError(f"grounding verification failed: {exc}") from exc
+        return audit_report(report, generated, source)

@@ -6,12 +6,19 @@ user's real pair: "100% first-call" (fabricated — CV says 95%) vs "100% inboun
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from job_applicator.config import LLMConfig
 from job_applicator.documents.grounding_verifier import (
+    GroundingVerifier,
     audit_claim,
     audit_report,
     coverage_gaps,
 )
-from job_applicator.models import ClaimCheck, GroundingReport, VerificationReport
+from job_applicator.exceptions import GroundingUnavailableError
+from job_applicator.models import ClaimCheck, GroundingReport, ResumeData, VerificationReport
 
 SOURCE = (
     "Took over 100% of inbound email service requests from the sales team. "
@@ -123,3 +130,51 @@ def test_grounding_report_clean_and_complete() -> None:
     assert GroundingReport().clean and GroundingReport().complete
     r = GroundingReport(coverage_gaps=["something un-enumerated"])
     assert not r.complete and not r.clean
+
+
+# ---- GroundingVerifier (Slice 2): the LLM verify path is mocked; the audit is real ----
+
+_RESUME = ResumeData(raw_text=SOURCE, skills=["SIEM", "Wireshark"])
+
+
+async def test_verify_applies_the_real_audit_over_the_mocked_llm() -> None:
+    verifier = GroundingVerifier(LLMConfig(model="m"))
+    mocked = VerificationReport(
+        claims=[
+            gc(
+                "Maintained 100% first-contact resolution",
+                quote="roughly 95% first-contact resolution",
+            ),
+            gc("Skilled in SIEM", quote="Technical Skills: SIEM, Wireshark, Nmap, BIND9"),
+        ]
+    )
+    client = MagicMock()
+    client.create = AsyncMock(return_value=mocked)
+    with patch.object(verifier, "_get_client", return_value=client):
+        result = await verifier.verify(
+            "Maintained 100% first-contact resolution. Skilled in SIEM.", _RESUME
+        )
+    flagged = {u.claim for u in result.unsupported}
+    assert "Maintained 100% first-contact resolution" in flagged  # audit override (100 vs 95)
+    assert "Skilled in SIEM" not in flagged  # grounded survives the audit
+
+
+async def test_verify_failsafe_raises_never_returns_clean() -> None:
+    # A verifier failure must NOT be masked as a clean document (spec §3 #4).
+    verifier = GroundingVerifier(LLMConfig(model="m"))
+    client = MagicMock()
+    client.create = AsyncMock(side_effect=RuntimeError("endpoint down"))
+    with patch.object(verifier, "_get_client", return_value=client):
+        with pytest.raises(GroundingUnavailableError):
+            await verifier.verify("Anything at all.", _RESUME)
+
+
+async def test_verify_sources_the_base_resume_only() -> None:
+    # The SOURCE handed to the model is the base résumé, never the JD or a tailored intermediate.
+    verifier = GroundingVerifier(LLMConfig(model="m"))
+    client = MagicMock()
+    client.create = AsyncMock(return_value=VerificationReport(claims=[]))
+    with patch.object(verifier, "_get_client", return_value=client):
+        await verifier.verify("some generated document", _RESUME)
+    sent = client.create.call_args.kwargs["messages"][1]["content"]
+    assert SOURCE in sent
