@@ -26,6 +26,11 @@ class TestExtractSignOff:
             ("Yours truly,", "Andrei Petrov"),
             ("Respectfully,", "Andrei Petrov"),
             ("Thank you,", "Andrei Petrov"),
+            # French closings — a French packet for a French posting must be recognized too,
+            # else extract_sign_off returns None and the PDF formatter rejects the letter.
+            ("Cordialement,", "Andrei Petrov"),
+            ("Bien cordialement,", "Andrei Petrov"),
+            ("Salutations distinguées,", "Andrei Petrov"),
         ],
     )
     def test_extracts_common_two_line_sign_offs(self, closing: str, signature: str) -> None:
@@ -42,6 +47,7 @@ class TestExtractSignOff:
             "Sincerely, Andrei Petrov",
             "Best regards, Andrei Petrov",
             "Regards, A. Petrov",
+            "Cordialement, Andrei Petrov",
         ],
     )
     def test_extracts_common_single_line_sign_offs(self, closing_line: str) -> None:

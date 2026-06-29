@@ -57,6 +57,11 @@ class LLMConfig(BaseSettings):
     # cover letters and style analysis stay well under this cap.
     max_tokens: int = 4096
     temperature: float = 0.7
+    # Output language for generated documents: "auto" (mirror the job posting's language), "en",
+    # or "fr". Lives on [llm] so the cover-letter override (cover_letter_llm) inherits it — the CV
+    # and the cover letter always resolve the SAME language, so one application never mixes them.
+    # Resolved + logged per job by utils.language.resolve_output_language.
+    language: str = "auto"
 
 
 class LLMResilienceConfig(BaseSettings):

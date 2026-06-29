@@ -502,6 +502,17 @@ def test_cover_letter_ensure_sign_off_keeps_adverbial_sincerely() -> None:
     assert out.endswith("Sincerely,\nJane Roe")
 
 
+def test_cover_letter_ensure_sign_off_french_uses_cordialement() -> None:
+    """A French letter gets a French canonical close, and a model-emitted inline 'Cordialement'
+    is normalized to ONE (the English strip-list missed it → the double-sign-off bug in French)."""
+    user = UserProfile(first_name="Andrei", last_name="Petrov", email="a@e.com", phone="")
+    text = "Bonjour,\n\nJe suis un bon candidat.\n\nMerci. Cordialement, Andrei Petrov"
+    out = CoverLetterGenerator._ensure_sign_off(text, user, "French")
+    assert out.lower().count("cordialement") == 1
+    assert out.endswith("Cordialement,\nAndrei Petrov")
+    assert "Sincerely" not in out
+
+
 def test_cover_letter_validation_rejects_invented_employment() -> None:
     """A letter that falsely claims employment at the target company is rejected."""
     config = LLMConfig()

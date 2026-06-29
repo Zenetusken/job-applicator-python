@@ -25,8 +25,33 @@ from job_applicator.documents.job_category import detect_job_category
 from job_applicator.documents.sign_off import extract_sign_off
 from job_applicator.exceptions import LLMError, PDFRenderError
 from job_applicator.models import CoverLetterResult, JobListing, TailoredResume
+from job_applicator.utils.language import detect_language
 from job_applicator.utils.llm import LLMRuntime, litellm_model, quiet_litellm
 from job_applicator.utils.path import safe_filename_slug
+
+_FR_MONTHS = (
+    "janvier",
+    "février",
+    "mars",
+    "avril",
+    "mai",
+    "juin",
+    "juillet",
+    "août",
+    "septembre",
+    "octobre",
+    "novembre",
+    "décembre",
+)
+
+
+def _localized_date(language_code: str) -> str:
+    """Today's date as a letterhead string in the letter's language ('fr' -> '29 juin 2026')."""
+    now = datetime.now()
+    if language_code == "fr":
+        return f"{now.day} {_FR_MONTHS[now.month - 1]} {now.year}"
+    return now.strftime("%B %d, %Y")
+
 
 # Characters that must be escaped when they appear unescaped in Typst source.
 # Backslash and slash are handled separately because they participate in escape
@@ -331,8 +356,10 @@ class PDFRenderer:
         except Exception as exc:
             raise PDFRenderError(f"Failed to format cover letter for PDF: {exc}") from exc
         # The LLM cannot know today's date (it hallucinates one, e.g. "2023-10-10"); set the
-        # letterhead date deterministically so it is always accurate.
-        response.date = datetime.now().strftime("%B %d, %Y")
+        # letterhead date deterministically so it is always accurate — and in the LETTER'S language
+        # (a French letter must not carry an English month, "June 29"). The source letter is
+        # already in the resolved language, so detect from it.
+        response.date = _localized_date(detect_language(result.cover_letter_text))
         # The templates append the comma after the closing word, so strip any the LLM included
         # ("Sincerely," -> "Sincerely") to avoid a doubled comma ("Sincerely,,") in the render.
         response.closing = response.closing.rstrip(" ,")

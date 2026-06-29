@@ -17,6 +17,7 @@ from job_applicator.models import (
     StyleGuide,
     TailoredResume,
 )
+from job_applicator.utils.language import resolve_output_language
 from job_applicator.utils.llm import CircuitOpenError, LLMRuntime, litellm_model, quiet_litellm
 from job_applicator.utils.logging import get_logger
 from job_applicator.utils.retry import async_retry
@@ -763,6 +764,24 @@ class ResumeTailor:
         if style_guide:
             style_section = StyleAnalyzer.format_style_for_prompt(style_guide)
             prompt += f"\n\n{style_section}"
+
+        # Output language: the CV must match the cover letter (both resolve from [llm] language +
+        # the same job), so one application never mixes languages. Translate the PROSE (summary,
+        # bullets, section headings); keep skill names, company/school names, course names, and
+        # certifications verbatim (a French Québec CV keeps English technical terms).
+        language = resolve_output_language(self._config.language, job.description)
+        logger.info(
+            "Tailoring résumé in %s (language setting=%s) for %s",
+            language,
+            self._config.language,
+            job.title,
+        )
+        prompt += (
+            f"\n\nIMPORTANT: Write the ENTIRE tailored résumé in {language} — every section "
+            f"heading, the summary, and every bullet. Translate the prose, but keep skill names, "
+            f"company and school names, course names, and certifications VERBATIM (do not "
+            f"translate proper nouns or technical terms)."
+        )
 
         tailored_text = await self._call_llm(prompt)
         tailored_text = self._require_nonempty(tailored_text)

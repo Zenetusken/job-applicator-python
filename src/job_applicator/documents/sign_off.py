@@ -37,6 +37,18 @@ _SIGN_OFFS: tuple[str, ...] = (
     "truly",
     "best wishes",
     "best",
+    # French professional closings — the app generates a French packet for a French job posting,
+    # so a French "Cordialement," must be recognized too (otherwise extract_sign_off returns None
+    # and the PDF formatter rejects the letter as "not a recognized sign-off"). Longer first.
+    "veuillez agréer mes salutations distinguées",
+    "salutations distinguées",
+    "sincères salutations",
+    "meilleures salutations",
+    "bien cordialement",
+    "cordialement",
+    "respectueusement",
+    "bien à vous",
+    "salutations",
 )
 
 # Pre-compute a regex that matches a sign-off line, with optional trailing
