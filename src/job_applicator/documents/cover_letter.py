@@ -15,6 +15,7 @@ from job_applicator.documents.sign_off import extract_sign_off, validate_sign_of
 from job_applicator.documents.style_analyzer import StyleAnalyzer
 from job_applicator.exceptions import LLMError
 from job_applicator.models import JobListing, ResumeData, StyleGuide, UserProfile
+from job_applicator.utils.language import resolve_output_language
 from job_applicator.utils.llm import (
     CircuitOpenError,
     LLMRuntime,
@@ -209,6 +210,11 @@ def _word_present(term: str, haystack_lower: str) -> bool:
     return re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", haystack_lower) is not None
 
 
+def _canonical_sign_off(language: str) -> str:
+    """The sign-off word the app appends and expects, per resolved output language."""
+    return "Cordialement" if language == "French" else "Sincerely"
+
+
 class CoverLetterGenerator:
     """Generate AI-powered cover letters via litellm + instructor."""
 
@@ -320,16 +326,21 @@ class CoverLetterGenerator:
             validate_sign_off(text, user)
 
     @staticmethod
-    def _ensure_sign_off(text: str, user: UserProfile) -> str:
-        """Guarantee exactly ONE clean sign-off. Strip any closing the model emitted — the
-        structured ``closing`` field often ends with an INLINE "Sincerely, NAME" that
-        ``extract_sign_off`` misses, which used to double the sign-off — then append the canonical
-        one. The applicant's name is known, so this invents nothing; anchored to the end so an
-        adverbial "sincerely" mid-sentence is untouched."""
+    def _ensure_sign_off(text: str, user: UserProfile, language: str = "English") -> str:
+        """Guarantee exactly ONE clean sign-off in the resolved output language. Strip any closing
+        the model emitted — the structured ``closing`` field often ends with an INLINE
+        "Sincerely, NAME" that ``extract_sign_off`` misses, which used to double the sign-off —
+        then append the canonical one ("Sincerely," in English, "Cordialement," in French). The
+        applicant's name is known, so this invents nothing; anchored to the end so an adverbial
+        "sincerely" mid-sentence is untouched."""
         name = f"{user.first_name} {user.last_name}".strip()
+        # Bilingual: strip a model-emitted English OR French closing so the French path doesn't
+        # double-sign (the English strip-list missed "Cordialement").
         closings = (
             r"sincerely|regards|best regards|kind regards|warm regards|"
-            r"respectfully|yours sincerely|yours truly"
+            r"respectfully|yours sincerely|yours truly|"
+            r"cordialement|bien cordialement|salutations distinguées|sincères salutations|"
+            r"meilleures salutations|salutations|respectueusement|bien à vous"
         )
         cleaned = text.rstrip()
         # A trailing "<closing>, <the applicant's name>" (inline or on its own line), then a bare
@@ -338,7 +349,7 @@ class CoverLetterGenerator:
             rf"(?is)\s*\b(?:{closings})\b[,\s]+{re.escape(name)}\s*$", "", cleaned
         ).rstrip()
         cleaned = re.sub(rf"(?is)\s*\b(?:{closings})\b[,\s]*$", "", cleaned).rstrip()
-        return f"{cleaned}\n\nSincerely,\n{name}"
+        return f"{cleaned}\n\n{_canonical_sign_off(language)},\n{name}"
 
     @staticmethod
     def _strip_early_sign_off(text: str) -> str:
@@ -779,6 +790,14 @@ class CoverLetterGenerator:
             tone_section: Optional tone profile section to inject into the prompt
             tailored_resume_text: Optional tailored resume text as primary content source
         """
+        language = resolve_output_language(self._config.language, job.description)
+        logger.info(
+            "Generating cover letter in %s (language setting=%s) for %s at %s",
+            language,
+            self._config.language,
+            job.title,
+            job.company,
+        )
 
         async def _call(prev: LLMError | None) -> str:
             correction = (
@@ -815,7 +834,7 @@ class CoverLetterGenerator:
             )
 
         letter = await self._devoice(letter, _regen, user, job=job, resume=resume)
-        letter = self._ensure_sign_off(letter, user)
+        letter = self._ensure_sign_off(letter, user, language)
 
         logger.info(
             "Generated cover letter for %s at %s (%d chars)",
@@ -901,8 +920,10 @@ class CoverLetterGenerator:
         tailored_resume_text: str = "",
     ) -> str:
         """Build the prompt for cover letter generation."""
+        language = resolve_output_language(self._config.language, job.description)
         parts = [
-            "Write a cover letter for the following position:",
+            f"Write a cover letter for the following position. Write the ENTIRE letter in "
+            f"{language} — every sentence, including the sign-off.",
             "",
             f"Job Title: {job.title}",
             f"Company: {job.company}",
@@ -944,7 +965,7 @@ class CoverLetterGenerator:
                 "End the letter with a recognized sign-off line followed by the applicant's name. "
                 "The sign-off must be the very last text in the letter, for example:",
                 "",
-                f"Sincerely,\n{user.first_name} {user.last_name}",
+                f"{_canonical_sign_off(language)},\n{user.first_name} {user.last_name}",
             ]
         )
 
