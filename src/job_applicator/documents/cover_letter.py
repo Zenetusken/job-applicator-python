@@ -42,6 +42,38 @@ class CoverLetterOutput(BaseModel):
     )
 
 
+class CoverLetterDraft(BaseModel):
+    """A cover letter as THREE connected paragraphs. Assembled with blank lines between them so the
+    3-paragraph structure is deterministic — a 4B will not reliably produce paragraph breaks in
+    free prose (measured: 11/12 came out as a single wall-of-text paragraph)."""
+
+    model_config = {"extra": "forbid"}
+
+    opening: str = Field(
+        description=(
+            "First paragraph, 2-3 sentences, first person: who the applicant is, why they are "
+            "moving into this field, and a specific hook tying their REAL background to this role. "
+            "Plain and grounded — no literary metaphors or flourishes."
+        )
+    )
+    body: str = Field(
+        description=(
+            "Second paragraph, 3-5 CONNECTED sentences (use transitions, not a list): develop ONE "
+            "concrete experience or project drawn from the résumé and show how it transfers to "
+            "this role. Every claim must come from the résumé. NEVER present the employer's stack, "
+            "tools, or environment (a named cloud like AWS, 'cloud-native', 'Mac-first') as the "
+            "applicant's own experience. Do not dump lists of acronyms."
+        )
+    )
+    closing: str = Field(
+        description=(
+            "Third paragraph, 1-2 sentences: a brief, modest request to discuss the role. Do NOT "
+            "promise actions on the employer's systems. Do NOT include a 'Sincerely,' sign-off or "
+            "the applicant's name here — the sign-off is appended automatically."
+        )
+    )
+
+
 # Curated, high-precision AI clichés. Kept narrow on purpose: a blocklist that
 # over-reaches just flags ordinary prose. SINGLE SOURCE OF TRUTH — the SYSTEM_PROMPT
 # ban list is derived from this, and _voice_tells scores against it, so the
@@ -158,6 +190,20 @@ _NAMED_TOOLS: frozenset[str] = frozenset(
 # guard is on a separate unmerged branch — consolidate to one shared constant once both land.
 _CREDENTIAL_TERMS = ("accredited", "certified", "licensed", "chartered", "credentialed")
 
+# Phrases that almost always describe the EMPLOYER's environment or an inflated level — never the
+# applicant's grounded experience. Rejected (→ retry) when present in the letter but NOT the
+# résumé. The structured body field-description reduces these, but a 4B grounds only WEAKLY against
+# a JD that leads with a stack (measured: "cloud-native"/"Mac-first" persisted ~half the time), so
+# this is the deterministic floor. High-precision: each phrase is an overclaim unless the résumé
+# itself uses it.
+_OVERCLAIM_PHRASES = (
+    "cloud-native",
+    "cloud native",
+    "mac-first",
+    "uniquely positioned",
+    "mastered",
+)
+
 
 def _word_present(term: str, haystack_lower: str) -> bool:
     """Whether ``term`` (already lowercase) appears in ``haystack_lower`` not flanked by
@@ -267,6 +313,7 @@ class CoverLetterGenerator:
             self._reject_invented_company_employment(text, job.company)
         self._reject_unlisted_named_tools(text, resume, job.company)
         self._reject_unearned_credentials(text, resume)
+        self._reject_overclaim_phrases(text, resume)
 
         # A PRESENT sign-off must use the applicant's real name (catch a wrong/invented name). A
         # MISSING sign-off does NOT fail the draft — a 4B forgets the closing ~1 in 4 times, and
@@ -277,13 +324,24 @@ class CoverLetterGenerator:
 
     @staticmethod
     def _ensure_sign_off(text: str, user: UserProfile) -> str:
-        """Append a standard sign-off when the draft has none. A small model omits the closing
-        ~1 in 4 times; rather than fail the whole generation over a forgotten FORMAT element, add
-        one — the applicant's name is known, so this invents nothing."""
-        if extract_sign_off(text) is not None:
-            return text
+        """Guarantee exactly ONE clean sign-off. Strip any closing the model emitted — the
+        structured ``closing`` field often ends with an INLINE "Sincerely, NAME" that
+        ``extract_sign_off`` misses, which used to double the sign-off — then append the canonical
+        one. The applicant's name is known, so this invents nothing; anchored to the end so an
+        adverbial "sincerely" mid-sentence is untouched."""
         name = f"{user.first_name} {user.last_name}".strip()
-        return f"{text.rstrip()}\n\nSincerely,\n{name}"
+        closings = (
+            r"sincerely|regards|best regards|kind regards|warm regards|"
+            r"respectfully|yours sincerely|yours truly"
+        )
+        cleaned = text.rstrip()
+        # A trailing "<closing>, <the applicant's name>" (inline or on its own line), then a bare
+        # trailing closing word. Both anchored to $ so only a real sign-off block is removed.
+        cleaned = re.sub(
+            rf"(?is)\s*\b(?:{closings})\b[,\s]+{re.escape(name)}\s*$", "", cleaned
+        ).rstrip()
+        cleaned = re.sub(rf"(?is)\s*\b(?:{closings})\b[,\s]*$", "", cleaned).rstrip()
+        return f"{cleaned}\n\nSincerely,\n{name}"
 
     @staticmethod
     def _strip_early_sign_off(text: str) -> str:
@@ -397,6 +455,20 @@ class CoverLetterGenerator:
             if _word_present(term, text_lower) and not _word_present(term, resume_lower):
                 raise LLMError(f"Generated cover letter claims an unearned credential: {term!r}")
 
+    @staticmethod
+    def _reject_overclaim_phrases(text: str, resume: ResumeData) -> None:
+        """Raise ``LLMError`` if the letter claims an employer-environment or inflated-level phrase
+        (e.g. 'cloud-native', 'Mac-first', 'mastered', 'uniquely positioned') the résumé does not
+        contain. Structured generation grounds the body only weakly against a JD that leads with a
+        stack, so this is the deterministic floor; feeds the validate→retry→fail-closed loop."""
+        resume_lower = resume.raw_text.lower()
+        text_lower = text.lower()
+        for phrase in _OVERCLAIM_PHRASES:
+            if _word_present(phrase, text_lower) and not _word_present(phrase, resume_lower):
+                raise LLMError(
+                    f"Generated cover letter makes an unearned/environment claim: {phrase!r}"
+                )
+
     @classmethod
     def _humanize(cls, text: str) -> str:
         """Deterministically strip artifacts the LLM leaks into prose.
@@ -462,8 +534,15 @@ class CoverLetterGenerator:
         # clauses — clipping it short is what made letters choppy). This sits just past the 380
         # cap, so it catches a runaway letter while leaving the coherent target range clear, and
         # stays well above any short/mocked test text.
-        if len(text_for_sentences.split()) > 390:
+        wc = len(text_for_sentences.split())
+        if wc > 390:
             tells.append("too_long")
+        # Thinness floor: structured generation sometimes emits very short fields (measured: a
+        # 93-word letter — too thin to send). Below ~200 words it reads as underdeveloped; the
+        # floor sits well under the 320-380 target and above any short/mocked test text (which
+        # never reaches this branch — it needs >=4 longer sentences to even be analyzed here).
+        if 60 < wc < 200:
+            tells.append("too_short")
         # Repetitive openings: 3+ sentences starting with the same two words ("I envision …").
         openers: dict[str, int] = {}
         for s in sentences:
@@ -518,6 +597,11 @@ class CoverLetterGenerator:
         than a general instruction it already ignored on the first pass.
         """
         issues: list[str] = []
+        if "too_short" in tells:
+            issues.append(
+                "the letter is too thin — expand the body to 320-380 words with one concrete, "
+                "grounded example developed in full"
+            )
         if "no_short_sentences" in tells:
             issues.append(
                 "vary sentence length — include at least two short sentences (under 8 words)"
@@ -629,14 +713,21 @@ class CoverLetterGenerator:
                             {"role": "system", "content": SYSTEM_PROMPT},
                             {"role": "user", "content": user_message},
                         ],
-                        response_model=CoverLetterOutput,
+                        response_model=CoverLetterDraft,
                         max_retries=1,
                         max_tokens=self._config.max_tokens,
                         temperature=self._config.temperature,
                         extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                     )
                     self._instructor_usable = True
-                    return strip_thinking_process(response.cover_letter)
+                    # Assemble the three fields into paragraphs — blank lines make the 3-paragraph
+                    # structure deterministic (the fix for the wall-of-text). The sign-off is
+                    # appended later by `_ensure_sign_off`.
+                    parts = [
+                        strip_thinking_process(p).strip()
+                        for p in (response.opening, response.body, response.closing)
+                    ]
+                    return "\n\n".join(p for p in parts if p)
                 except Exception as exc:
                     if self._is_tool_call_config_error(exc):
                         self._instructor_usable = False

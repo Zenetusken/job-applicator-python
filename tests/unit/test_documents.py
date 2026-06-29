@@ -475,10 +475,31 @@ def test_cover_letter_ensure_sign_off_appends_when_missing() -> None:
 
 
 def test_cover_letter_ensure_sign_off_leaves_existing_untouched() -> None:
-    """An existing valid sign-off is not duplicated."""
+    """An existing valid sign-off is normalized to itself (strip-then-append is idempotent)."""
     user = UserProfile(first_name="Jane", last_name="Roe", email="j@e.com", phone="")
     letter = "Dear Team,\n\nA strong fit.\n\nSincerely,\nJane Roe"
     assert CoverLetterGenerator._ensure_sign_off(letter, user) == letter
+
+
+def test_cover_letter_ensure_sign_off_no_double_when_model_signs_inline() -> None:
+    """The structured `closing` field often ends with an INLINE 'Sincerely, NAME' that
+    extract_sign_off misses; _ensure_sign_off must normalize to exactly ONE sign-off (the
+    double-sign-off bug from structured generation)."""
+    user = UserProfile(first_name="Jane", last_name="Roe", email="j@e.com", phone="")
+    text = "Dear Team,\n\nA strong fit.\n\nPlease let me know. Sincerely, Jane Roe"
+    out = CoverLetterGenerator._ensure_sign_off(text, user)
+    assert out.lower().count("sincerely") == 1
+    assert out.endswith("Sincerely,\nJane Roe")
+    assert "Please let me know." in out  # the real closing sentence survives
+
+
+def test_cover_letter_ensure_sign_off_keeps_adverbial_sincerely() -> None:
+    """An adverbial 'sincerely' mid-sentence is NOT mistaken for a sign-off (anchored to end)."""
+    user = UserProfile(first_name="Jane", last_name="Roe", email="j@e.com", phone="")
+    text = "Dear Team,\n\nI am sincerely eager to help your SOC succeed."
+    out = CoverLetterGenerator._ensure_sign_off(text, user)
+    assert "sincerely eager" in out  # untouched
+    assert out.endswith("Sincerely,\nJane Roe")
 
 
 def test_cover_letter_validation_rejects_invented_employment() -> None:
@@ -556,6 +577,26 @@ def test_cover_letter_allows_credential_present_in_resume() -> None:
     )
     CoverLetterGenerator._reject_unearned_credentials(
         "As a Certified Ethical Hacker, I bring hands-on skills to your SOC.", resume
+    )  # no raise
+
+
+def test_cover_letter_rejects_environment_and_level_overclaims() -> None:
+    """An employer-stack or inflated-level claim absent from the résumé is rejected — the
+    deterministic floor for the worst-case JD that leads with a stack (HyperMabs: cloud-native/
+    Mac-first persisted ~half the time on structured-gen alone)."""
+    resume = ResumeData(raw_text="Jane Roe\nSkills\nincident response, Linux", skills=["Linux"])
+    for phrase in ("cloud-native", "Mac-first", "mastered", "uniquely positioned"):
+        with pytest.raises(LLMError, match="unearned/environment claim"):
+            CoverLetterGenerator._reject_overclaim_phrases(
+                f"I bring deep {phrase} experience to your team.", resume
+            )
+
+
+def test_cover_letter_allows_overclaim_phrase_present_in_resume() -> None:
+    """If the résumé itself uses the phrase, it is grounded and kept (no false positive)."""
+    resume = ResumeData(raw_text="Jane Roe\nBuilt cloud-native microservices at Acme", skills=[])
+    CoverLetterGenerator._reject_overclaim_phrases(
+        "I built cloud-native systems at Acme.", resume
     )  # no raise
 
 
@@ -790,9 +831,11 @@ class TestCoverLetterWithTone:
         generator = CoverLetterGenerator(config)
 
         mock_output = MagicMock()
-        mock_output.cover_letter = (
-            "Dear Hiring Manager,\n\nRefined cover letter.\n\nSincerely,\nJohn Doe"
+        mock_output.opening = "I am moving into security after years in client support."
+        mock_output.body = (
+            "My troubleshooting at Acme maps directly to incident triage and escalation."
         )
+        mock_output.closing = "I would welcome a brief conversation about the role."
         mock_client = MagicMock()
         mock_client.create = AsyncMock(return_value=mock_output)
 
@@ -975,6 +1018,13 @@ def test_voice_tells_flags_verbose_letter() -> None:
     letters need room for subordinate clauses; clipping them short was what made prose choppy."""
     text = "This sentence carries a handful of words to add up. " * 45  # ~450 words
     assert "too_long" in CoverLetterGenerator._voice_tells(text)
+
+
+def test_voice_tells_flags_too_thin_letter() -> None:
+    """A thin letter (60-200 words) trips the thinness floor — structured generation sometimes
+    emits very short fields (a measured 93-word letter, too thin to send)."""
+    text = "This sentence has a handful of words in it here. " * 12  # ~120 words
+    assert "too_short" in CoverLetterGenerator._voice_tells(text)
 
 
 def test_voice_tells_flags_repeated_sentence_openings() -> None:
