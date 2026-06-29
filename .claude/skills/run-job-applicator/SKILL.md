@@ -97,7 +97,7 @@ SMOKE OK
 The driver's checks, individually (all via the venv entrypoint):
 
 ```bash
-.venv/bin/job-applicator --version                       # → job-applicator v0.4.1
+.venv/bin/job-applicator --version                       # → job-applicator v0.5.0
 .venv/bin/job-applicator doctor                          # health: LLM, embeddings, browser, bins, config
 .venv/bin/job-applicator ats-check --resume r.docx --json | jq .is_compatible
 .venv/bin/job-applicator generate-cover-letter \
@@ -166,7 +166,7 @@ browser-wiring only. Run pytest from the repo root (it needs the repo CWD).
   `[time] INFO …` lines you see are on stderr.
 - **`playwright install` warns "BEWARE: your OS is not officially supported …
   downloading fallback build for ubuntu22.04-x64"** — harmless; the fallback works.
-- **`pip install -e` uninstalls then reinstalls `job-applicator-0.4.1`** (exit 0) —
+- **`pip install -e` uninstalls then reinstalls `job-applicator-0.5.0`** (exit 0) —
   normal for an editable reinstall, not an error.
 
 ## Troubleshooting

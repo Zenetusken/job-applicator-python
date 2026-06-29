@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-29
+
+### Added
+- **Grounding verifier — a language-agnostic honesty layer for generated documents.** An LLM
+  enumerates every claim in a generated CV or cover letter and cites the source line that grounds
+  it; a deterministic audit (`documents/grounding_verifier.py`) then overrides any ungrounded claim
+  (token-overlap + a numeric backstop covering percentages **and** standalone integers — years,
+  counts, team sizes) and flags coverage gaps. The SOURCE is always the BASE résumé, never the job
+  description or the tailored intermediate. Cover letters route through
+  `CoverLetterGenerator.generate_verified()` (regenerate once, keep the strictly-cleaner draft);
+  tailored résumés through `ResumeTailor.tailor_verified()`, which **surfaces** the report on
+  `TailoredResume.grounding_report` for human review (a "claims to review" panel + a key in
+  `tailor --json`) and **never auto-strips** — the résumé is the document of record. Fail-safe: any
+  verifier failure raises `GroundingUnavailableError`, never passing off an unverified document as
+  clean. Replaces per-language hardcoded honesty blocklists (which were unbounded and inert on
+  French) with one entailment pass; the English deterministic floor is kept as augmentation.
+- **Output-language policy.** `[llm] language` = `auto` (mirror the job posting's language) | `en` |
+  `fr`. It lives on `[llm]` so the cover-letter override inherits it — the generated CV and cover
+  letter always resolve the **same** language, so one application never mixes them. French resolves
+  an in-language sign-off ("Cordialement,"), a localized PDF date, and recognized French closings.
+- **Structured cover-letter generation.** Cover letters are generated as three connected paragraphs
+  via a structured (instructor) step, with deterministic honesty guards and an enforced sign-off.
+
+### Changed
+- **Default base model is now `Qwen/Qwen3-8B-AWQ`** (genuine AWQ 4-bit, ~6.1 GB), replacing
+  `cyankiwi/Qwen3.5-4B-AWQ-4bit` (kept as a pinnable fallback via `JOB_APPLICATOR_LLM_MODEL` /
+  `[llm] model`). The 8B grounds stack-heavy job descriptions the 4B couldn't (measured: cover-letter
+  employer-stack overclaim 5/6 → 0/5) while still fitting the 12 GB card alongside the embeddings
+  (`GPU_MEM=0.70`, eager mode: ~8.4 GB vLLM + ~1.5 GB embeddings). Generation guardrails were
+  re-tuned for the larger model, and `llm.max_tokens` raised to `4096`.
+- **`scripts/serve-vllm.sh` puts the vLLM venv's `bin` on `PATH`** so flashinfer can JIT-compile a
+  kernel for a fresh model (the 8B fails with `No such file or directory: 'ninja'` otherwise);
+  `ninja` now ships in the `serve` extra.
+- **Single source of truth for the litellm model id.** All completion callers build it via
+  `utils.llm.litellm_model(config)` instead of re-deriving the `openai/` prefix in six places.
+- **Docs corrected on how the CUDA 13.0 wheel is obtained.** `vllm 0.23` pins `torch==2.11.0`,
+  whose PyPI wheel is the cu13 build (bundles `nvidia-*-cu13`), so a plain `pip install` lands the
+  cu13 stack with no extra index; pip selects it unconditionally and it needs a CUDA-13 driver to
+  run. (README, pyproject, AGENTS.md.)
+
 ### Fixed
 - **Serve script no longer silently piggybacks on a `$PATH` vLLM.** `scripts/serve-vllm.sh` now
   uses only job-applicator's own `.venv/bin/vllm` or an explicit `VLLM_BIN`; if neither exists it
@@ -14,14 +54,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (historically a sibling project's), closing the last cross-project coupling in the self-host path.
 - **`config.example.toml` no longer caps `max_tokens` at 1024.** It now ships `4096` to match the
   built-in default, so bootstrapping from the example doesn't silently truncate tailored résumés.
-
-### Changed
-- **Single source of truth for the litellm model id.** All completion callers build it via
-  `utils.llm.litellm_model(config)` instead of re-deriving the `openai/` prefix in six places.
-- **Docs corrected on how the CUDA 13.0 wheel is obtained.** `vllm 0.23` pins `torch==2.11.0`,
-  whose PyPI wheel is the cu13 build (bundles `nvidia-*-cu13`), so a plain `pip install` lands the
-  cu13 stack with no extra index; pip selects it unconditionally and it needs a CUDA-13 driver to
-  run. (README, pyproject, AGENTS.md.)
 
 ## [0.4.1] - 2026-06-25
 
