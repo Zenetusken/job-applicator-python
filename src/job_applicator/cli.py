@@ -1942,8 +1942,11 @@ def batch(
 
             cl_generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=runtime)
             if settings.style_guide_path:
+                # Style analysis feeds RÉSUMÉ tailoring → keep it on [llm], not the [cover_letter]
+                # override (which is only for cover-letter prose).
+                style_generator = CoverLetterGenerator(settings.llm, runtime=runtime)
                 with err_console.status("Loading style guide..."):
-                    style = await cl_generator.load_style_guide(
+                    style = await style_generator.load_style_guide(
                         settings.style_guide_path, ocr_mode=effective_ocr_mode
                     )
                 err_console.print(f"[green]Style loaded: {style.tone}[/green]")
@@ -2411,7 +2414,9 @@ def tailor(
         if settings.style_guide_path:
             from job_applicator.documents.cover_letter import CoverLetterGenerator
 
-            generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=runtime)
+            # Style analysis feeds RÉSUMÉ tailoring → stays on [llm], not the [cover_letter] model
+            # override (which is only for cover-letter prose). `tailor` writes no cover letter.
+            generator = CoverLetterGenerator(settings.llm, runtime=runtime)
             with err_console.status("Analyzing writing style..."):
                 style = await generator.load_style_guide(
                     settings.style_guide_path, ocr_mode=effective_ocr_mode
@@ -2829,9 +2834,10 @@ max_tokens = __LLM_MAX_TOKENS__
 temperature = __LLM_TEMPERATURE__
 
 # Optional: route ONLY the cover-letter step (prose + its PDF formatting) to a different model or
-# endpoint — a larger local model, or a cloud API — for cleaner prose, while extraction and the
-# overclaim guards stay on [llm]. Unset fields inherit [llm]. Also settable via the env vars
-# JOB_APPLICATOR_COVER_LETTER_MODEL / _API_BASE / _API_KEY.
+# endpoint — a larger local model, or a cloud API — for cleaner prose, while extraction, the
+# overclaim guards, and résumé tailoring stay on [llm]. Unset fields inherit [llm]. Fields you omit
+# here can also come from JOB_APPLICATOR_COVER_LETTER_MODEL / _API_BASE / _API_KEY (a field set in
+# this table takes precedence over its env var).
 # [cover_letter]
 # model = "gpt-4o"
 # api_base = "https://api.openai.com/v1"
