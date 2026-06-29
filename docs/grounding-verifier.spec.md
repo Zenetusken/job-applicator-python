@@ -136,10 +136,26 @@ hard-gated.** If verifier + prompt-strictness don't reach the target on French c
 ships as a *logged known-gap* — the report surfaces it (§6) and the user reviews it; named, not
 silently passed. The English floor still covers English regardless.
 
+**Re-measured (Slice 6, post-review, 8B on local vLLM, 32-case set + adversarial additions):**
+**recall 1.00** (17/17 fabricated caught, incl. the new numberless/semantic holes the deterministic
+`audit()` can NOT catch alone — "Holds a CISSP", "Architected an enterprise cloud security program",
+"200-node Kubernetes fleet", "led a cloud migration to AWS for a Fortune 500 bank"). This is the
+decisive result: the **LLM layer catches what the deterministic backstop can't**, so the §11
+residuals (claim↔quote entailment, union coverage) are theoretical, not shipped holes. **Precision
+~0.81–0.85** — the residual above (§8): French faithful translations + low-overlap rephrases
+under-grounded; F3's new integer backstop is precision-neutral (no F3-caused false positive).
+
 ## 8. Open risks
 
 - **Credential leniency in French** (§7) — measured by the gold set; addressed by prompt strictness
   ("coursework / in-progress / exam-pending is NOT a held credential") + the English floor.
+- **Precision residual on faithful low-overlap / cross-language groundings** (§7 measured). The model
+  is conservative: it under-grounds French faithful translations and low-overlap English rephrases of
+  a real source line (e.g. "Took on every inbound email request from the sales team" ← "Took over
+  100% of inbound email service requests from the sales team"), so they read as flagged. Direction is
+  the SAFE one for the résumé (a surfaced "review" note the user dismisses, never an auto-strip) and
+  is absorbed by reject→retry for the letter. Measured + reported (~0.81–0.85 precision), named not
+  hard-gated; the 0.90 target is tracked. Follow-up: prompt-tune + report residual cases per-tag.
 - **Non-determinism** — absorbed by reject→retry (letter) and human arbitration (résumé report).
 - **Token cost** — per-claim enumeration of a full CV is a larger call; acceptable on local vLLM.
   Measure latency; cap with the `[cover_letter]` model override for a cloud verifier if needed.

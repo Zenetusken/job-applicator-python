@@ -15,6 +15,8 @@
     {"claim": "Plus de 10 ans d'expérience en gestion des opérations", "label": "grounded", "lang": "fr", "category": "tenure"},
     {"claim": "Compétences en SIEM, Wireshark et Nmap", "label": "grounded", "lang": "fr", "category": "skill"},
     {"claim": "A construit un serveur DNS BIND9 auto-hébergé dans un laboratoire personnel", "label": "grounded", "lang": "fr", "category": "experience"},
+    {"claim": "Took on every inbound email request from the sales team", "label": "grounded", "lang": "en", "category": "experience"},
+    {"claim": "Served as the customer service lead at a Montréal linen supplier", "label": "grounded", "lang": "en", "category": "role"},
 
     {"claim": "Maintained 100% first-contact resolution without Tier 2 escalation", "label": "fabricated", "lang": "en", "category": "number"},
     {"claim": "Achieved first-call resolution for all cases", "label": "fabricated", "lang": "en", "category": "number"},
@@ -28,6 +30,10 @@
     {"claim": "Détient une certification en cybersécurité", "label": "fabricated", "lang": "fr", "category": "credential"},
     {"claim": "A administré Splunk et CrowdStrike dans un environnement AWS", "label": "fabricated", "lang": "fr", "category": "tool"},
     {"claim": "Quinze ans d'expérience en cybersécurité", "label": "fabricated", "lang": "fr", "category": "tenure"},
-    {"claim": "A dirigé une équipe SOC de quinze analystes", "label": "fabricated", "lang": "fr", "category": "experience"}
+    {"claim": "A dirigé une équipe SOC de quinze analystes", "label": "fabricated", "lang": "fr", "category": "experience"},
+    {"claim": "Holds a CISSP certification", "label": "fabricated", "lang": "en", "category": "credential"},
+    {"claim": "Architected an enterprise cloud security program from the ground up", "label": "fabricated", "lang": "en", "category": "experience"},
+    {"claim": "Managed a 200-node Kubernetes production fleet", "label": "fabricated", "lang": "en", "category": "experience"},
+    {"claim": "With over a decade in operations, single-handedly led a cloud migration to AWS for a Fortune 500 bank", "label": "fabricated", "lang": "en", "category": "experience"}
   ]
 }
