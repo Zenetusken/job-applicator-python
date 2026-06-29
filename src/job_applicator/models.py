@@ -365,6 +365,48 @@ class BatchRunSpec(BaseModel):
         return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
+class ClaimCheck(BaseModel):
+    """One factual claim found in a generated document, with the verifier's grounding verdict and
+    the verbatim source line it cited — so the verdict can be deterministically audited."""
+
+    model_config = {"extra": "forbid"}
+
+    claim: str = Field(description="The factual claim, quoted from the generated document")
+    grounded: bool = Field(description="True if the SOURCE résumé supports the claim")
+    source_quote: str = Field(
+        default="", description="Verbatim SOURCE text supporting it (empty if not grounded)"
+    )
+    note: str = Field(default="", description="Why it is not grounded (contradiction or silence)")
+
+
+class VerificationReport(BaseModel):
+    """Raw structured output of the grounding verifier — one ClaimCheck per enumerated claim."""
+
+    model_config = {"extra": "forbid"}
+
+    claims: list[ClaimCheck] = Field(default_factory=list)
+
+
+class GroundingReport(BaseModel):
+    """The AUDITED result surfaced to the user: claims the source does not support (model-flagged
+    OR deterministically overridden by audit) plus sentences the verifier never enumerated
+    (coverage gaps). ``complete`` is False when the enumeration missed content; ``clean`` only when
+    nothing is unsupported AND coverage is complete."""
+
+    model_config = {"extra": "forbid"}
+
+    unsupported: list[ClaimCheck] = Field(default_factory=list)
+    coverage_gaps: list[str] = Field(default_factory=list)
+
+    @property
+    def complete(self) -> bool:
+        return not self.coverage_gaps
+
+    @property
+    def clean(self) -> bool:
+        return not self.unsupported and self.complete
+
+
 class TailoredResume(BaseModel):
     """A resume tailored for a specific job, with full metadata."""
 
