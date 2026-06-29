@@ -27,7 +27,7 @@ ruff format src/ tests/
 # Release (see RELEASING.md)
 bash scripts/release.sh <version>   # bump version, update CHANGELOG.md, tag, build dist
 
-# Tests — ~1066 fast unit tests (the green gate); ~1109 total = ~1066 unit + 9 integration + 34 live
+# Tests — ~1175 fast unit tests (the green gate); ~1219 total = ~1175 unit + 9 integration + 35 live
 pytest -m unit -v               # or: pytest tests/unit/ -v   (auto-marked by location)
 pytest -m unit -v -k test_name  # single test
 
@@ -85,12 +85,13 @@ src/job_applicator/
 ├── scrapers/           # base.py (BrowserPolicy) → linkedin.py, indeed.py
 ├── applicators/        # base.py → linkedin.py (Easy Apply, dry-run gated), indeed.py
 ├── documents/          # cover letter, résumé parsing/tailoring, style/tone/ATS/OCR/sign-off/artifacts
+│                       #   grounding_verifier.py (language-agnostic honesty layer)
 │                       #   PDF rendering: pdf_renderer.py, formatted_models.py, job_category.py,
 │                       #   templates/ (Typst), artifacts.py
 ├── embeddings/         # embedding service + job matching
 ├── tui/                # Textual full-screen UI over the funnel store
 └── utils/              # logging, LLM retry/breaker/circuit, cookies, console, diff, region,
-                        # URL, secure store, text, verbose, profile, path
+                        # URL, secure store, text, verbose, profile, path, language (output FR/EN)
 ```
 
 ## Conventions
@@ -139,6 +140,20 @@ src/job_applicator/
   and `_strip_hallucinated_education()` in `documents/resume_tailor.py` keep the output aligned
   with the original résumé. Skill/tool matching uses fuzzy, non-greedy logic in
   `embeddings/matching.py`.
+- **Grounding verifier is the language-agnostic honesty layer.** `documents/grounding_verifier.py`:
+  an LLM enumerates each claim in a generated doc + cites the SOURCE line; a deterministic audit
+  (`audit_report` — token-overlap + percentage backstop + coverage check) overrides ungrounded
+  verdicts. SOURCE is ALWAYS the BASE résumé (`resume.raw_text`) — never the JD or the tailored
+  intermediate. `CoverLetterGenerator.generate_verified()` regenerates ONCE and keeps the
+  strictly-cleaner draft; `ResumeTailor.tailor_verified()` SURFACES the result on
+  `TailoredResume.grounding_report` (never auto-strips — the résumé is the document of record).
+  Fail-safe: a verifier failure raises `GroundingUnavailableError`, never a clean report. The pure
+  audit core is unit-tested (runs on the fast gate); the LLM pass is `-m live`.
+- **Output language is a packet-level policy.** `[llm] language` = `auto` (mirror the JD) | `en` |
+  `fr`, resolved by `utils/language.py` (small FR/EN heuristic, logged per job). It lives on `[llm]`
+  so `cover_letter_llm` inherits it — the CV and cover letter ALWAYS resolve the SAME language.
+  French gets an in-language sign-off ("Cordialement,"), a localized PDF date, and recognized French
+  closings in `documents/sign_off.py`.
 - **Tailoring includes a date audit.** `ResumeDateValidator` checks chronological ordering,
   staleness, and education-date age before generating output.
 - **Skills are normalized and hard-negative filtered before matching/validation.**
@@ -235,8 +250,10 @@ Local vLLM must be running at `http://localhost:8000/v1`. Check with:
 curl -s http://localhost:8000/v1/models
 ```
 
-Default model: `cyankiwi/Qwen3.5-4B-AWQ-4bit`. Override via `JOB_APPLICATOR_LLM_MODEL` env var or
-`config.toml`. Default `llm.max_tokens` is `4096`.
+Default model: `Qwen/Qwen3-8B-AWQ` (genuine AWQ 4-bit, ~6.1 GB — fits the 12 GB card alongside the
+embeddings and grounds stack-heavy JDs the 4B couldn't). The smaller, faster
+`cyankiwi/Qwen3.5-4B-AWQ-4bit` is a pinnable fallback. Override via `JOB_APPLICATOR_LLM_MODEL` env
+var or `config.toml`. Default `llm.max_tokens` is `4096`.
 
 To self-host, install the `[serve]` extra (vLLM 0.23.x, CUDA 13.0 wheel) and run
 `scripts/serve-vllm.sh`. The script runs job-applicator's own `.venv/bin/vllm` (or an explicit
@@ -245,10 +262,13 @@ present it errors. Defaults: `GPU_MEM=0.70`, `MAX_MODEL_LEN=8192`, and `ENFORCE_
 on 12 GB cards to avoid vLLM 0.23's V1 cudagraph-profiling OOM). Override with `VLLM_BIN`,
 `GPU_MEM`, `MAX_MODEL_LEN`, and `ENFORCE_EAGER` env vars.
 
-`serve-vllm.sh` auto-sets `--tool-call-parser qwen3_xml --enable-auto-tool-choice` for Qwen3.5
-(and Qwen3) models. Cover-letter and style-guide generation use instructor in TOOLS mode, which
-needs this parser; without it they still work but fall back to direct litellm completion. The
-fallback is less reliable for structured output, so keep the parser enabled for local vLLM.
+`serve-vllm.sh` auto-sets `--tool-call-parser qwen3_xml --enable-auto-tool-choice` for Qwen3
+(and Qwen3.5) models, and puts the vLLM venv's bin on `PATH` so flashinfer can JIT-compile a
+kernel for a fresh model (the 8B fails with `No such file or directory: 'ninja'` otherwise; `ninja`
+ships in the `serve` extra). Cover-letter, grounding-verifier, and style-guide generation use
+instructor in TOOLS mode, which needs this parser; without it they still work but fall back to
+direct litellm completion. The fallback is less reliable for structured output, so keep the parser
+enabled for local vLLM.
 
 ## ATS Compatibility Checking
 
@@ -265,11 +285,11 @@ that generate cover letters. The default dry-run `apply` does not run the ATS pr
 ## Testing
 
 - Tests are auto-marked by location (`tests/conftest.py`): `pytest -m unit` / `-m live` /
-  `-m integration` all work. Unit suite (`pytest -m unit`, ~1066) is fast — no browser/GPU; the green
+  `-m integration` all work. Unit suite (`pytest -m unit`, ~1175) is fast — no browser/GPU; the green
   gate.
 - 9 integration tests live in `tests/integration/` and exercise browser automation wiring + PDF
   rendering.
-- The 34 live tests at `tests/` root carry `-m live`; they need vLLM (`localhost:8000`) + GPU; run
+- The 35 live tests at `tests/` root carry `-m live`; they need vLLM (`localhost:8000`) + GPU; run
   them manually.
 - Tests use fixtures from `tests/conftest.py`.
 - Embedding tests mock the model (CPU fallback).

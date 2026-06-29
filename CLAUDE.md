@@ -63,6 +63,22 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
 
 - Headless browser by default, `--headed` flag for debugging
 - AI-powered cover letters via litellm (works with local vLLM or cloud APIs)
+- **Output language is a packet-level policy.** `[llm] language` = `auto` (mirror the job posting's
+  language) | `en` | `fr` lives on `[llm]` so the cover-letter override (`cover_letter_llm`)
+  inherits it — the CV and the cover letter always resolve the SAME language, so one application
+  never mixes them. French resolves an in-language sign-off ("Cordialement,"), a localized PDF date,
+  and recognized French sign-offs. Resolution (`utils/language.py`) is a deliberately small FR/EN
+  heuristic, logged per job so a misdetect is catchable.
+- **Grounding verifier — the honesty layer (language-agnostic).** Rather than enumerate banned terms
+  per language, an LLM enumerates every claim in a generated document and cites the source line that
+  grounds it; a deterministic audit (`documents/grounding_verifier.py`) then overrides any ungrounded
+  claim (token-overlap + a percentage backstop) and flags coverage gaps. The SOURCE is always the
+  BASE résumé (never the JD or the tailored intermediate). Cover letters route through
+  `CoverLetterGenerator.generate_verified()` (regenerate ONCE, keep the strictly-cleaner draft);
+  tailored résumés through `ResumeTailor.tailor_verified()`, which SURFACES the report on
+  `TailoredResume.grounding_report` for human review (a "claims to review" panel + `--json`) and
+  NEVER auto-strips — the résumé is the document of record. Fail-safe: any verifier failure raises
+  `GroundingUnavailableError`, so a down endpoint can never pass off an unverified document as clean.
 - **LLM endpoint is external by default.** The generation features are a *client* of an
   OpenAI-compatible endpoint (`[llm] api_base`, default `localhost:8000`); the app never starts
   one. Embeddings run in-process. Optional `[serve]` extra (vLLM 0.23.x, CUDA 13.0 wheel) +

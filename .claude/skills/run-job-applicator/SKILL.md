@@ -48,10 +48,11 @@ curl -s http://localhost:8000/v1/models    # is one already up?
 bash scripts/serve-vllm.sh                 # otherwise self-host — project's own script (needs `serve` extra + GPU; not run this session)
 ```
 
-`scripts/serve-vllm.sh` defaults to job-applicator's own `.venv/bin/vllm`,
-`GPU_MEM=0.70`, `MAX_MODEL_LEN=8192`, and `ENFORCE_EAGER=1`. The eager default
-avoids a vLLM 0.23 V1 cudagraph-profiling OOM on 12 GB cards with Qwen3.5-style
-hybrid models.
+`scripts/serve-vllm.sh` defaults to job-applicator's own `.venv/bin/vllm`, model
+`Qwen/Qwen3-8B-AWQ`, `GPU_MEM=0.70`, `MAX_MODEL_LEN=8192`, and `ENFORCE_EAGER=1`. The
+eager default avoids a vLLM 0.23 V1 cudagraph-profiling OOM on 12 GB cards. It also puts
+the venv bin on `PATH` so flashinfer can JIT-compile a kernel for a fresh model (`ninja`,
+from the `serve` extra).
 
 ## Run (agent path) — the driver
 
@@ -96,7 +97,7 @@ SMOKE OK
 The driver's checks, individually (all via the venv entrypoint):
 
 ```bash
-.venv/bin/job-applicator --version                       # → job-applicator v0.2.0
+.venv/bin/job-applicator --version                       # → job-applicator v0.4.1
 .venv/bin/job-applicator doctor                          # health: LLM, embeddings, browser, bins, config
 .venv/bin/job-applicator ats-check --resume r.docx --json | jq .is_compatible
 .venv/bin/job-applicator generate-cover-letter \
@@ -143,10 +144,10 @@ letter, but real submission requires `apply --submit`.
 ## Test
 
 ```bash
-.venv/bin/python -m pytest -m unit -q      # 876 passed — the fast green gate (no browser/GPU/vLLM)
+.venv/bin/python -m pytest -m unit -q      # ~1175 passed — the fast green gate (no browser/GPU/vLLM)
 ```
 
-`pytest -m live` (34 tests) needs vLLM + GPU; `pytest -m integration` (5) is
+`pytest -m live` (35 tests) needs vLLM + GPU; `pytest -m integration` (9) is
 browser-wiring only. Run pytest from the repo root (it needs the repo CWD).
 
 ## Gotchas
@@ -165,7 +166,7 @@ browser-wiring only. Run pytest from the repo root (it needs the repo CWD).
   `[time] INFO …` lines you see are on stderr.
 - **`playwright install` warns "BEWARE: your OS is not officially supported …
   downloading fallback build for ubuntu22.04-x64"** — harmless; the fallback works.
-- **`pip install -e` uninstalls then reinstalls `job-applicator-0.2.0`** (exit 0) —
+- **`pip install -e` uninstalls then reinstalls `job-applicator-0.4.1`** (exit 0) —
   normal for an editable reinstall, not an error.
 
 ## Troubleshooting
