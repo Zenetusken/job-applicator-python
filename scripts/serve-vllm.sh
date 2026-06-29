@@ -10,7 +10,7 @@
 #     pip install -e ".[serve]"
 #     scripts/serve-vllm.sh
 #
-# The first run downloads the model from Hugging Face Hub (~4 GB for the default)
+# The first run downloads the model from Hugging Face Hub (~6 GB for the default 8B)
 # to ~/.cache/huggingface; later runs reuse it. Gated models need HF_TOKEN.
 #
 # Leave it running in its own terminal (or wrap it in a process manager / systemd

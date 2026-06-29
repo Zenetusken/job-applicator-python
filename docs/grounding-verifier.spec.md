@@ -141,9 +141,12 @@ silently passed. The English floor still covers English regardless.
 `audit()` can NOT catch alone — "Holds a CISSP", "Architected an enterprise cloud security program",
 "200-node Kubernetes fleet", "led a cloud migration to AWS for a Fortune 500 bank"). This is the
 decisive result: the **LLM layer catches what the deterministic backstop can't**, so the §11
-residuals (claim↔quote entailment, union coverage) are theoretical, not shipped holes. **Precision
-~0.81–0.85** — the residual above (§8): French faithful translations + low-overlap rephrases
-under-grounded; F3's new integer backstop is precision-neutral (no F3-caused false positive).
+claim↔quote-entailment residual is theoretical, not a shipped hole. (The cases are single-claim, so
+they exercise the entailment direction — the model flagging numberless/semantic fabrications — but
+NOT the union-coverage residual, whose pooling-across-multiple-claims mechanism stays named-but-
+unmeasured; it is a backstop behind the model's primary flag.) **Precision ~0.81–0.85** — the
+residual above (§8): French faithful translations + low-overlap rephrases under-grounded; F3's new
+integer backstop is precision-neutral (no F3-caused false positive).
 
 ## 8. Open risks
 
