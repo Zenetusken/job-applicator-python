@@ -3,7 +3,7 @@
 The LLM verifier (added in a later slice) enumerates every claim in a generated document and
 quotes the SOURCE line it believes grounds each one. This module does NOT trust that judgement: it
 verifies the EVIDENCE. ``audit_claim`` overrides a "grounded" verdict when the cited quote is not
-really in the source (token-overlap) or when a percentage in the claim is absent from its quote;
+really in the source (token-overlap) or when a number in the claim is absent from its quote;
 ``coverage_gaps`` catches the structural miss-direction — a sentence the verifier never enumerated
 (a fabrication that would otherwise pass silently).
 
@@ -35,6 +35,10 @@ _COVERAGE_OVERLAP = 0.5
 
 _WORD_RE = re.compile(r"[a-z0-9]{3,}")
 _PCT_RE = re.compile(r"(\d+)\s*%")
+# Standalone integers (years, counts, team sizes) — NOT a digit glued to letters ('BIND9',
+# 'SHA256'), which is a proper noun, not a metric. Case-insensitive boundary so 'BIND9' is excluded
+# regardless of case.
+_NUM_RE = re.compile(r"(?<![a-zA-Z0-9])\d+(?![a-zA-Z0-9])")
 _SENT_SPLIT_RE = re.compile(r"[.!?\n]+")
 
 
@@ -44,8 +48,14 @@ def _tokens(text: str) -> set[str]:
 
 
 def _pcts(text: str) -> set[str]:
-    """Percentages only (a digit inside a proper noun like 'BIND9' is NOT a metric)."""
+    """Percentages only (e.g. '95%')."""
     return set(_PCT_RE.findall(text))
+
+
+def _nums(text: str) -> set[str]:
+    """Standalone integers — years, counts, team sizes (e.g. '15', '200', '50'). Excludes a digit
+    glued to letters ('BIND9', 'SHA256'): a proper noun, not a metric."""
+    return set(_NUM_RE.findall(text))
 
 
 def _overlap(part: set[str], whole: set[str]) -> float:
@@ -63,10 +73,16 @@ def audit_claim(check: ClaimCheck, source: str) -> str | None:
     quote_tokens = _tokens(check.source_quote)
     if quote_tokens and _overlap(quote_tokens, _tokens(source)) < _QUOTE_OVERLAP:
         return "cited quote is not in the résumé (hallucinated grounding)"
-    # Numeric backstop: a percentage in the claim must appear in its cited quote, so '100%' cannot
-    # be grounded by a '95%' line even if the model mis-judges.
+    # Numeric backstop: a number in the claim must appear in its cited quote, so '100%' cannot be
+    # grounded by a '95%' line and '15 years' cannot be grounded by a '10+ years' line, even if the
+    # model mis-judges. Percentages are checked as percentages AND as standalone integers — the
+    # integer pass is STRICTLY ADDITIONAL (it never relaxes the percentage check; a percentage whose
+    # value also appears as a bare number in the quote is still caught by the percentage pass).
     if not _pcts(check.claim) <= _pcts(check.source_quote):
         return f"claim percentage {_pcts(check.claim) or '∅'} is not in the cited quote"
+    if not _nums(check.claim) <= _nums(check.source_quote):
+        missing = _nums(check.claim) - _nums(check.source_quote)
+        return f"claim number(s) {missing} not in the cited quote"
     return None
 
 

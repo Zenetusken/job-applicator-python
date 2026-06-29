@@ -231,9 +231,13 @@ class CoverLetterGenerator:
         # tool-call-parser). Cached per generator instance so a failed probe is not
         # retried on every cover letter in a batch run.
         self._instructor_usable: bool | None = None
-        # Shares this generator's breaker/runtime. Used ONLY by generate_verified() — generate()
-        # stays the pure primitive (no verifier call), so the fast unit gate never fires a live LLM.
-        self._verifier = GroundingVerifier(config, runtime=self._runtime)
+        # Its OWN runtime/breaker (NOT this generator's): a flaky verifier endpoint must never
+        # record failures on the breaker that guards real generation — repeated verify failures on
+        # a shared breaker could trip the circuit and block the letter itself, inverting the
+        # fail-safe intent (#4: a verifier problem never blocks generation). Used ONLY by
+        # generate_verified() — generate() stays the pure primitive (no verifier call), so the fast
+        # unit gate never fires a live LLM.
+        self._verifier = GroundingVerifier(config)
 
     def _get_client(self) -> Any:
         """Lazy-load instructor client.
@@ -882,8 +886,11 @@ class CoverLetterGenerator:
         if report.clean:
             return letter
 
-        def score(r: GroundingReport) -> int:
-            return len(r.unsupported) + len(r.coverage_gaps)
+        def score(r: GroundingReport) -> tuple[int, int]:
+            # Lexicographic: a confirmed UNSUPPORTED claim outweighs a softer coverage gap, so a
+            # retry that drops a fabrication but rewords into one extra uncovered sentence still
+            # wins. Equal-weighting them would discard that honesty gain (tuple compare, not sum).
+            return (len(r.unsupported), len(r.coverage_gaps))
 
         logger.info(
             "Grounding flagged %d unsupported + %d coverage gap(s); regenerating once",
@@ -903,7 +910,21 @@ class CoverLetterGenerator:
             retry_report = await self._verifier.verify(retry, resume)
         except GroundingUnavailableError:
             return letter
-        return retry if score(retry_report) < score(report) else letter
+        kept, kept_report = (
+            (retry, retry_report) if score(retry_report) < score(report) else (letter, report)
+        )
+        if not kept_report.clean:
+            # F5 (fail-safe visibility): the single best-effort retry did not fully ground the
+            # letter. The letter is disposable, so we still return the cleaner draft — but never
+            # SILENTLY: a residual flag is logged so a shipped-but-flagged letter is observable
+            # (the letter path surfaces no report to the user, unlike the résumé path).
+            logger.warning(
+                "Cover letter still has %d unsupported claim(s) + %d coverage gap(s) after retry "
+                "(kept the cleaner draft); review before sending",
+                len(kept_report.unsupported),
+                len(kept_report.coverage_gaps),
+            )
+        return kept
 
     @staticmethod
     def _grounding_correction(report: GroundingReport) -> str:

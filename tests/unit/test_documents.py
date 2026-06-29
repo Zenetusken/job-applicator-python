@@ -1221,6 +1221,21 @@ async def test_generate_verified_keeps_original_when_retry_not_strictly_better()
     assert await gen.generate_verified(*_cl_inputs()) == "LETTER A"  # original kept
 
 
+async def test_generate_verified_prefers_fewer_unsupported_over_fewer_gaps() -> None:
+    # F7: a retry that drops a real UNSUPPORTED claim but rewords into extra coverage gaps must
+    # still win — a confirmed fabrication outweighs a softer coverage gap (lexicographic compare).
+    # The old sum-equal-weighting (1 == 0+? ) would discard this honesty gain.
+    gen = CoverLetterGenerator(LLMConfig(model="m"))
+    gen.generate = AsyncMock(side_effect=["LETTER A", "LETTER B"])  # type: ignore[method-assign]
+    gen._verifier.verify = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            GroundingReport(unsupported=[_flag("fabricated metric")]),  # original: 1 unsup, 0 gaps
+            GroundingReport(coverage_gaps=["x", "y"]),  # retry: 0 unsup, 2 gaps
+        ]
+    )
+    assert await gen.generate_verified(*_cl_inputs()) == "LETTER B"  # honesty win kept
+
+
 async def test_generate_verified_clean_skips_reprompt() -> None:
     gen = CoverLetterGenerator(LLMConfig(model="m"))
     gen.generate = AsyncMock(return_value="LETTER A")  # type: ignore[method-assign]

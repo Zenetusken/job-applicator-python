@@ -47,15 +47,31 @@ entailment job, not a similarity job.
   patterns; a naive verifier just trusts the 8B's judgment (which slips). So: per-claim, the model
   must **quote the verbatim source line** that grounds each claim, then a **deterministic `audit()`
   overrides** it — (a) the quote must really be in the source (token-overlap ≥ 0.7, robust to light
-  reformatting; a fabricated quote shares few words), and (b) **numeric backstop**: a *percentage*
-  in the claim must appear in its cited quote, so "100%" can't be grounded by a "95%" line even if
-  the model mis-judges. Percentages only — a digit inside a proper noun ("BIND9") is not a metric.
+  reformatting; a fabricated quote shares few words), and (b) **numeric backstop**: a *number* in
+  the claim — a percentage OR a standalone integer (years, counts, team sizes) — must appear in its
+  cited quote, so "100%" can't be grounded by a "95%" line and "15 years" can't be grounded by a
+  "10+ years" line, even if the model mis-judges. A digit glued to letters ("BIND9", "SHA256") is a
+  proper noun, not a metric, and is excluded.
   - **Coverage check (the structural miss-direction).** `audit()` overrides *grounded* verdicts and
     the model flags *not-grounded* ones — but a fabrication the model **never enumerates** is
     neither, so it passes silently, and the gold set can't catch it (it measures recall on claims we
     already know to look for). So a deterministic **coverage check**: every substantive sentence of
     the GENERATED doc must map to ≥1 enumerated claim (token-overlap). An uncovered sentence → the
     enumeration was incomplete → the **fail-safe path** (#4), never a clean pass.
+  - **Scope of the deterministic backstop (named, NOT overclaimed).** `audit()` is a BACKSTOP behind
+    the model's judgment, not a complete entailment checker. It deterministically catches a
+    fabricated *quote* (not in the source) and a fabricated *number* (absent from its quote). It does
+    NOT independently verify that a quote semantically *entails* its claim: a **numberless**
+    fabrication grounded by a real-but-unrelated quote (e.g. a bare "Holds a CISSP" cited against an
+    unrelated real line) passes the deterministic layer — it is caught only by the model's
+    grounded/not judgment and the English floor (§4), not by `audit()`. Coverage is **union-based** (a
+    sentence is covered if its tokens appear ACROSS the enumerated claims), so a fabrication whose
+    tokens scatter across unrelated claims can still read as "covered". Both residuals are **measured
+    by the gold set (§7) and named in §11** — not silently assumed away. A deterministic claim↔quote
+    token gate was **rejected**: it re-runs the "enumerate the bad" mistake and false-positives on
+    faithful rephrasing (the user's own "Owned the complete inbound email funnel" ← "Took over 100%
+    of inbound email…" overlaps ~0.33 → a token gate would flag his honest claim). The semantic
+    entailment job belongs to the LLM layer; the gold set verifies the LLM does it.
 - **#3 — gold set, both directions (a `live` measurement, not a unit gate).** Avoid the old
   clean-rate blind spot. A labeled set — **≥20–30 per direction**, grounded + fabricated, EN + FR;
   the user's real pair + the credential and cross-language cases as the seed; I author the labels,
@@ -158,3 +174,13 @@ This session's arc — structured cover-letter generation (#103), the 8B base (#
 - Retiring any deterministic guard (follow-up, gold-set-gated).
 - Languages beyond FR/EN (the design is language-agnostic; the gold set is FR/EN only for now).
 - Verifying the JD-derived relevance of a claim (the verifier checks grounding, not job-fit).
+- **Deterministic claim↔quote entailment** for a numberless fabrication grounded by a real but
+  unrelated quote (§3 "scope of the deterministic backstop"). Rejected as a deterministic gate (it
+  false-positives on faithful rephrasing); the LLM layer + the English floor cover it, and the gold
+  set (§7) measures whether they do. A follow-up only if the gold set shows the LLM layer misses it.
+- **Per-claim coverage** (coverage is currently union-based; a per-claim gate risks flagging
+  legitimate sentences that combine two real claims). Gold-set-gated follow-up.
+- **Re-verifying the interactive REFINE paths** (cover-letter `refine`, the post-refine résumé). The
+  primary `generate_verified` / `tailor_verified` paths verify; an interactive refine is a fast
+  human-in-the-loop edit that does NOT re-run the verifier. Surfaced honestly in-product ("not
+  grounding-checked"), not silently assumed clean. Re-verifying refine is a follow-up.

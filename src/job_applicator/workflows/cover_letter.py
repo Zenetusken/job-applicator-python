@@ -184,6 +184,13 @@ async def _refine_cover_letter(
             attempt=attempt + 1,
         )
         session.add_attempt(new_result)
+        # I4 (named, not silent): refine is a fast human-in-the-loop edit and does NOT re-run the
+        # grounding verifier that the primary generate_verified path ran. Surface that honestly so a
+        # refined draft is never assumed to carry the same honesty pass as the original.
+        console.print(
+            "[dim]Note: this refined draft was not grounding-checked — review any new claims "
+            "against your résumé before sending.[/dim]"
+        )
         return True
     except Exception as exc:
         console.print(f"[red]LLM error: {escape(str(exc))}[/red]")

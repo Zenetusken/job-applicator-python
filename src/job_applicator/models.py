@@ -393,15 +393,21 @@ class GroundingReport(BaseModel):
     (coverage gaps). ``complete`` is False when the enumeration missed content; ``clean`` only when
     nothing is unsupported AND coverage is complete."""
 
-    model_config = {"extra": "forbid"}
+    # 'ignore' (not 'forbid') so the computed clean/complete below serialize into `tailor --json`
+    # AND survive the TailoredResume.model_validate_json round-trip (cli meta reload): on load the
+    # dumped computed keys are ignored and RECOMPUTED, never trusted from input. Safe because this
+    # is a verifier-OUTPUT model (never user input), so 'forbid' caught no real schema-drift here.
+    model_config = {"extra": "ignore"}
 
     unsupported: list[ClaimCheck] = Field(default_factory=list)
     coverage_gaps: list[str] = Field(default_factory=list)
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def complete(self) -> bool:
         return not self.coverage_gaps
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def clean(self) -> bool:
         return not self.unsupported and self.complete

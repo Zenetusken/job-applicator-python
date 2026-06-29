@@ -72,7 +72,7 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
 - **Grounding verifier — the honesty layer (language-agnostic).** Rather than enumerate banned terms
   per language, an LLM enumerates every claim in a generated document and cites the source line that
   grounds it; a deterministic audit (`documents/grounding_verifier.py`) then overrides any ungrounded
-  claim (token-overlap + a percentage backstop) and flags coverage gaps. The SOURCE is always the
+  claim (token-overlap + a numeric backstop) and flags coverage gaps. The SOURCE is always the
   BASE résumé (never the JD or the tailored intermediate). Cover letters route through
   `CoverLetterGenerator.generate_verified()` (regenerate ONCE, keep the strictly-cleaner draft);
   tailored résumés through `ResumeTailor.tailor_verified()`, which SURFACES the report on

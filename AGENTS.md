@@ -142,7 +142,7 @@ src/job_applicator/
   `embeddings/matching.py`.
 - **Grounding verifier is the language-agnostic honesty layer.** `documents/grounding_verifier.py`:
   an LLM enumerates each claim in a generated doc + cites the SOURCE line; a deterministic audit
-  (`audit_report` — token-overlap + percentage backstop + coverage check) overrides ungrounded
+  (`audit_report` — token-overlap + numeric backstop + coverage check) overrides ungrounded
   verdicts. SOURCE is ALWAYS the BASE résumé (`resume.raw_text`) — never the JD or the tailored
   intermediate. `CoverLetterGenerator.generate_verified()` regenerates ONCE and keeps the
   strictly-cleaner draft; `ResumeTailor.tailor_verified()` SURFACES the result on

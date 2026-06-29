@@ -72,6 +72,32 @@ def test_audit_leaves_not_grounded_to_the_model() -> None:
     assert audit_claim(c, SOURCE) is None
 
 
+def test_audit_catches_fabricated_non_percentage_number() -> None:
+    # F3: the numeric backstop covers standalone integers (years/counts/team sizes), not just
+    # percentages — '10+ years' grounds '10', not the fabricated '15'. The user's claims are
+    # metric-heavy, so a number absent from its quote must be caught even without a '%'.
+    src = "10+ years of experience in IT support and operations."
+    c = gc("15 years of experience in IT support", quote="10+ years of experience in IT support")
+    reason = audit_claim(c, src)
+    assert reason is not None and "number" in reason
+
+
+def test_audit_excludes_digit_glued_to_letters() -> None:
+    # F3 boundary: 'BIND9'/'SHA256' are proper nouns, not metrics — their digits never trip the
+    # numeric backstop, so a real tool name is not mistaken for a fabricated count.
+    src = "Technical Skills: BIND9, SHA256 hashing, Nmap."
+    c = gc("Configured BIND9 and SHA256 hashing", quote="Technical Skills: BIND9, SHA256 hashing")
+    assert audit_claim(c, src) is None
+
+
+def test_audit_passes_faithful_integer_match() -> None:
+    # F3 precision: a faithful claim whose integer DOES appear in the quote stays grounded (the
+    # backstop only fires on a number ABSENT from its quote).
+    src = "Resolved 200 tickets across a team of 5 analysts."
+    c = gc("Resolved 200 tickets", quote="Resolved 200 tickets across a team of 5 analysts")
+    assert audit_claim(c, src) is None
+
+
 # ---- coverage_gaps: a fabrication the verifier never enumerated must not pass silently ----
 
 
@@ -157,6 +183,29 @@ async def test_verify_applies_the_real_audit_over_the_mocked_llm() -> None:
     flagged = {u.claim for u in result.unsupported}
     assert "Maintained 100% first-contact resolution" in flagged  # audit override (100 vs 95)
     assert "Skilled in SIEM" not in flagged  # grounded survives the audit
+
+
+async def test_verify_returns_clean_on_grounded_and_covered_doc() -> None:
+    # I2: pin the SUCCESS path end-to-end — a fully grounded + fully covered report passes the REAL
+    # audit cleanly. The other verify tests exercise overrides/failure; without this, no unit test
+    # ever runs verify()->audit_report->clean, so a bug in that wiring would stay green.
+    verifier = GroundingVerifier(LLMConfig(model="m"))
+    generated = "Took over 100% of inbound email. Skilled in SIEM."
+    mocked = VerificationReport(
+        claims=[
+            gc(
+                "Took over 100% of inbound email",
+                quote="Took over 100% of inbound email service requests",
+            ),
+            gc("Skilled in SIEM", quote="Technical Skills: SIEM, Wireshark, Nmap, BIND9"),
+        ]
+    )
+    client = MagicMock()
+    client.create = AsyncMock(return_value=mocked)
+    with patch.object(verifier, "_get_client", return_value=client):
+        result = await verifier.verify(generated, _RESUME)
+    assert result.clean and result.complete
+    assert result.unsupported == [] and result.coverage_gaps == []
 
 
 async def test_verify_failsafe_raises_never_returns_clean() -> None:

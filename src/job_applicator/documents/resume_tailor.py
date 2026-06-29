@@ -691,8 +691,10 @@ class ResumeTailor:
         # so the app's largest LLM calls are finally breaker-protected).
         self._runtime = runtime or LLMRuntime.defaults(name="resume-tailor")
         self._breaker = self._runtime.breaker
-        # Used ONLY by tailor_verified() — tailor() stays the pure primitive (no verifier call).
-        self._verifier = GroundingVerifier(config, runtime=self._runtime)
+        # Its OWN runtime/breaker (NOT this tailor's): a flaky verifier endpoint must never trip the
+        # circuit that guards real tailoring (#4 fail-safe — a verifier problem never blocks
+        # generation). Used ONLY by tailor_verified() — tailor() stays the pure primitive.
+        self._verifier = GroundingVerifier(config)
 
     @async_retry(
         max_attempts=2, base_delay=1.0, exceptions=(LLMError,), exclude=(CircuitOpenError,)
