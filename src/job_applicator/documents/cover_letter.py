@@ -10,11 +10,12 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from job_applicator.config import LLMConfig
+from job_applicator.documents.grounding_verifier import GroundingVerifier
 from job_applicator.documents.resume import ResumeLoader
 from job_applicator.documents.sign_off import extract_sign_off, validate_sign_off
 from job_applicator.documents.style_analyzer import StyleAnalyzer
-from job_applicator.exceptions import LLMError
-from job_applicator.models import JobListing, ResumeData, StyleGuide, UserProfile
+from job_applicator.exceptions import GroundingUnavailableError, LLMError
+from job_applicator.models import GroundingReport, JobListing, ResumeData, StyleGuide, UserProfile
 from job_applicator.utils.language import resolve_output_language
 from job_applicator.utils.llm import (
     CircuitOpenError,
@@ -230,6 +231,9 @@ class CoverLetterGenerator:
         # tool-call-parser). Cached per generator instance so a failed probe is not
         # retried on every cover letter in a batch run.
         self._instructor_usable: bool | None = None
+        # Shares this generator's breaker/runtime. Used ONLY by generate_verified() — generate()
+        # stays the pure primitive (no verifier call), so the fast unit gate never fires a live LLM.
+        self._verifier = GroundingVerifier(config, runtime=self._runtime)
 
     def _get_client(self) -> Any:
         """Lazy-load instructor client.
@@ -779,6 +783,7 @@ class CoverLetterGenerator:
         style_guide: StyleGuide | None = None,
         tone_section: str = "",
         tailored_resume_text: str = "",
+        grounding_correction: str = "",
     ) -> str:
         """Generate a cover letter for a job application.
 
@@ -789,6 +794,9 @@ class CoverLetterGenerator:
             style_guide: Optional style guide to mimic writing patterns
             tone_section: Optional tone profile section to inject into the prompt
             tailored_resume_text: Optional tailored resume text as primary content source
+            grounding_correction: Optional instruction (from a grounding-verifier retry) appended to
+                every generation attempt, so the redraft drops the unsupported claims. Empty by
+                default — ``generate`` stays the pure primitive; ``generate_verified`` supplies it.
         """
         language = resolve_output_language(self._config.language, job.description)
         logger.info(
@@ -800,7 +808,7 @@ class CoverLetterGenerator:
         )
 
         async def _call(prev: LLMError | None) -> str:
-            correction = (
+            correction = grounding_correction + (
                 f"\n\nThe previous draft was rejected ({prev}). Return a corrected version."
                 if prev
                 else ""
@@ -830,7 +838,7 @@ class CoverLetterGenerator:
                 style_guide,
                 tone_section,
                 tailored_resume_text,
-                correction=correction,
+                correction=grounding_correction + correction,
             )
 
         letter = await self._devoice(letter, _regen, user, job=job, resume=resume)
@@ -843,6 +851,70 @@ class CoverLetterGenerator:
             len(letter),
         )
         return letter
+
+    async def generate_verified(
+        self,
+        job: JobListing,
+        user: UserProfile,
+        resume: ResumeData,
+        style_guide: StyleGuide | None = None,
+        tone_section: str = "",
+        tailored_resume_text: str = "",
+    ) -> str:
+        """``generate`` plus a language-agnostic grounding pass (spec §6).
+
+        Generate the letter, verify it against the BASE résumé, and — if it claims anything the
+        résumé does not support — regenerate ONCE with those claims as a correction, keeping the
+        draft with STRICTLY fewer problems. A verifier false positive (its measured precision
+        residual) therefore can never strip a grounded claim: a persistent flag keeps the original.
+        Fail-safe (#4): a verifier failure never blocks generation — the deterministic floor inside
+        ``generate`` already ran, so we log and return the floor-validated letter, never reporting
+        it as grounding-verified.
+        """
+        letter = await self.generate(
+            job, user, resume, style_guide, tone_section, tailored_resume_text
+        )
+        try:
+            report = await self._verifier.verify(letter, resume)
+        except GroundingUnavailableError as exc:
+            logger.info("Grounding verification skipped (verifier unavailable): %s", exc)
+            return letter
+        if report.clean:
+            return letter
+
+        def score(r: GroundingReport) -> int:
+            return len(r.unsupported) + len(r.coverage_gaps)
+
+        logger.info(
+            "Grounding flagged %d unsupported + %d coverage gap(s); regenerating once",
+            len(report.unsupported),
+            len(report.coverage_gaps),
+        )
+        retry = await self.generate(
+            job,
+            user,
+            resume,
+            style_guide,
+            tone_section,
+            tailored_resume_text,
+            grounding_correction=self._grounding_correction(report),
+        )
+        try:
+            retry_report = await self._verifier.verify(retry, resume)
+        except GroundingUnavailableError:
+            return letter
+        return retry if score(retry_report) < score(report) else letter
+
+    @staticmethod
+    def _grounding_correction(report: GroundingReport) -> str:
+        """A correction naming the claims the résumé does not support, for one regeneration."""
+        claims = "; ".join(c.claim for c in report.unsupported[:6])
+        detail = f" Specifically remove or fix: {claims}." if claims else ""
+        return (
+            "\n\nIMPORTANT: some statements were not supported by the résumé. Keep ONLY what the "
+            "résumé supports — invent nothing, and do not inflate any number or credential."
+            + detail
+        )
 
     async def refine(
         self,

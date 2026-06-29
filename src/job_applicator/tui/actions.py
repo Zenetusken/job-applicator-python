@@ -160,7 +160,7 @@ async def cover_letter_job(
     tone_section = ToneDetector().format_for_prompt(_detect_tone(job))
     style = await _load_style_guide(settings, style_guide_path)
     generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=_make_runtime(settings))
-    letter = await generator.generate(
+    letter = await generator.generate_verified(
         job,
         _load_user_profile(settings, resume_name=resume_data.name),
         resume_data,

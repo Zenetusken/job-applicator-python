@@ -10,9 +10,16 @@ import pytest
 from job_applicator.config import LLMConfig
 from job_applicator.documents.cover_letter import CoverLetterGenerator
 from job_applicator.documents.resume import ResumeLoader
-from job_applicator.exceptions import DocumentError, LLMError, ResumeNotFoundError
+from job_applicator.exceptions import (
+    DocumentError,
+    GroundingUnavailableError,
+    LLMError,
+    ResumeNotFoundError,
+)
 from job_applicator.models import (
+    ClaimCheck,
     ExperienceEntry,
+    GroundingReport,
     JobBoard,
     JobListing,
     ResumeData,
@@ -1183,6 +1190,53 @@ async def test_generate_revoice_is_graceful_on_error() -> None:
     letter = await generator.generate(*_cl_inputs())
     assert generator._complete.await_count == 2
     assert letter == CoverLetterGenerator._humanize(ROBOTIC_LETTER)  # first usable draft preserved
+
+
+# --- generate_verified: the grounding-pass composite (Slice 4); generate() + verifier mocked ----
+
+
+def _flag(claim: str) -> ClaimCheck:
+    return ClaimCheck(claim=claim, grounded=False, note="unsupported")
+
+
+async def test_generate_verified_keeps_cleaner_retry() -> None:
+    gen = CoverLetterGenerator(LLMConfig(model="m"))
+    gen.generate = AsyncMock(side_effect=["LETTER A", "LETTER B"])  # type: ignore[method-assign]
+    gen._verifier.verify = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[GroundingReport(unsupported=[_flag("x"), _flag("y")]), GroundingReport()]
+    )
+    assert await gen.generate_verified(*_cl_inputs()) == "LETTER B"  # the cleaner retry wins
+
+
+async def test_generate_verified_keeps_original_when_retry_not_strictly_better() -> None:
+    # a persistent flag (e.g. a verifier false positive) must NOT let the retry win — no strip.
+    gen = CoverLetterGenerator(LLMConfig(model="m"))
+    gen.generate = AsyncMock(side_effect=["LETTER A", "LETTER B"])  # type: ignore[method-assign]
+    gen._verifier.verify = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            GroundingReport(unsupported=[_flag("x")]),
+            GroundingReport(unsupported=[_flag("x")]),
+        ]
+    )
+    assert await gen.generate_verified(*_cl_inputs()) == "LETTER A"  # original kept
+
+
+async def test_generate_verified_clean_skips_reprompt() -> None:
+    gen = CoverLetterGenerator(LLMConfig(model="m"))
+    gen.generate = AsyncMock(return_value="LETTER A")  # type: ignore[method-assign]
+    gen._verifier.verify = AsyncMock(return_value=GroundingReport())  # type: ignore[method-assign]
+    assert await gen.generate_verified(*_cl_inputs()) == "LETTER A"
+    assert gen.generate.await_count == 1  # no retry on a clean report
+
+
+async def test_generate_verified_failsafe_returns_letter() -> None:
+    # fail-safe (#4): a verifier failure never blocks — return the floor-validated letter.
+    gen = CoverLetterGenerator(LLMConfig(model="m"))
+    gen.generate = AsyncMock(return_value="LETTER A")  # type: ignore[method-assign]
+    gen._verifier.verify = AsyncMock(  # type: ignore[method-assign]
+        side_effect=GroundingUnavailableError("verifier down")
+    )
+    assert await gen.generate_verified(*_cl_inputs()) == "LETTER A"
 
 
 # --- Multi-file style-guide loader --------------------------------------------------

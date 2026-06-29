@@ -62,8 +62,8 @@ async def _generate_cover_letter(
 
     generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=runtime)
     try:
-        with console.status("Generating cover letter..."):
-            letter = await generator.generate(
+        with console.status("Generating + verifying cover letter..."):
+            letter = await generator.generate_verified(
                 job,
                 _load_user_profile(settings, resume_name=resume_data.name),
                 resume_data,

@@ -161,7 +161,7 @@ def test_generate_cover_letter_pdf_flags(monkeypatch: pytest.MonkeyPatch, tmp_pa
         ) as mock_render,
     ):
         mock_gen = mock_gen_cls.return_value
-        mock_gen.generate = AsyncMock(return_value="Dear Hiring Manager,")
+        mock_gen.generate_verified = AsyncMock(return_value="Dear Hiring Manager,")
 
         result = CliRunner().invoke(
             cli.app,
@@ -210,7 +210,7 @@ def test_generate_cover_letter_default_txt_writes_file(
 
     with patch("job_applicator.documents.cover_letter.CoverLetterGenerator") as mock_gen_cls:
         mock_gen = mock_gen_cls.return_value
-        mock_gen.generate = AsyncMock(return_value="Dear Hiring Manager,")
+        mock_gen.generate_verified = AsyncMock(return_value="Dear Hiring Manager,")
 
         result = CliRunner().invoke(
             cli.app,
@@ -262,7 +262,7 @@ def test_generate_cover_letter_both_writes_txt_and_pdf(
         ),
     ):
         mock_gen = mock_gen_cls.return_value
-        mock_gen.generate = AsyncMock(return_value="Dear Hiring Manager,")
+        mock_gen.generate_verified = AsyncMock(return_value="Dear Hiring Manager,")
 
         result = CliRunner().invoke(
             cli.app,
@@ -439,7 +439,7 @@ def test_apply_pdf_flags_accepted(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
         ) as mock_render,
     ):
         mock_gen = mock_gen_cls.return_value
-        mock_gen.generate = AsyncMock(return_value="Dear Hiring Manager,")
+        mock_gen.generate_verified = AsyncMock(return_value="Dear Hiring Manager,")
 
         result = CliRunner().invoke(
             cli.app,
