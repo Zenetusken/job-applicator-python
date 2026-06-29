@@ -6,7 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from job_applicator.config import AppSettings, BrowserConfig, LLMConfig, SkillConfig
+from job_applicator.config import (
+    AppSettings,
+    BrowserConfig,
+    CoverLetterConfig,
+    LLMConfig,
+    SkillConfig,
+)
 
 
 def test_browser_config_defaults() -> None:
@@ -28,6 +34,40 @@ def test_skill_config_env_override_to_keyword(monkeypatch: pytest.MonkeyPatch) -
     # The legacy keyword mode stays selectable for opt-out / comparison.
     monkeypatch.setenv("JOB_APPLICATOR_SKILLS_GROUNDING_MODE", "keyword")
     assert SkillConfig().grounding_mode == "keyword"
+
+
+def test_cover_letter_config_defaults_to_no_override() -> None:
+    # No [cover_letter] override → all fields None.
+    cl = CoverLetterConfig()
+    assert cl.model is None and cl.api_base is None and cl.api_key is None
+
+
+def test_cover_letter_llm_inherits_main_llm_when_unset() -> None:
+    # Default: the cover-letter step uses [llm] UNCHANGED — same object, identical behaviour.
+    settings = AppSettings()
+    assert settings.cover_letter_llm() is settings.llm
+
+
+def test_cover_letter_llm_applies_overrides_without_touching_main_llm() -> None:
+    # An override routes ONLY the cover-letter step; unset fields inherit [llm]; [llm] is untouched.
+    settings = AppSettings(cover_letter={"model": "big-prose-model"})  # type: ignore[arg-type]
+    cl = settings.cover_letter_llm()
+    assert cl.model == "big-prose-model"
+    assert cl.api_base == settings.llm.api_base  # unset → inherits [llm]
+    assert cl.api_key == settings.llm.api_key
+    assert cl.temperature == settings.llm.temperature
+    assert settings.llm.model != "big-prose-model"  # [llm] itself unchanged
+
+
+def test_cover_letter_llm_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Settable via env: route the prose step to a cloud model while [llm] stays local.
+    monkeypatch.setenv("JOB_APPLICATOR_COVER_LETTER_MODEL", "claude-opus")
+    monkeypatch.setenv("JOB_APPLICATOR_COVER_LETTER_API_BASE", "https://api.anthropic.example/v1")
+    settings = AppSettings()
+    cl = settings.cover_letter_llm()
+    assert cl.model == "claude-opus"
+    assert cl.api_base == "https://api.anthropic.example/v1"
+    assert cl.api_key == settings.llm.api_key  # api_key unset → inherits [llm]
 
 
 def test_llm_config_defaults() -> None:

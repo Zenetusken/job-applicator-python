@@ -300,7 +300,9 @@ class PDFRenderer:
         job: JobListing | None,
         category: str,
     ) -> FormattedCoverLetter:
-        config = self.settings.llm
+        # The cover-letter step honours the [cover_letter] model override (the résumé formatter
+        # above stays on [llm]); the prose model and its PDF formatter use the same model.
+        config = self.settings.cover_letter_llm()
         model = litellm_model(config)
         prompt = _build_cover_letter_format_prompt(result, job, category)
         client = await self._get_client()
@@ -328,6 +330,12 @@ class PDFRenderer:
             response = await self._llm_runtime.run(_call)
         except Exception as exc:
             raise PDFRenderError(f"Failed to format cover letter for PDF: {exc}") from exc
+        # The LLM cannot know today's date (it hallucinates one, e.g. "2023-10-10"); set the
+        # letterhead date deterministically so it is always accurate.
+        response.date = datetime.now().strftime("%B %d, %Y")
+        # The templates append the comma after the closing word, so strip any the LLM included
+        # ("Sincerely," -> "Sincerely") to avoid a doubled comma ("Sincerely,,") in the render.
+        response.closing = response.closing.rstrip(" ,")
         self._validate_cover_letter_sign_off(response)
         return response
 

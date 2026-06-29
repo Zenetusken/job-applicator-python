@@ -60,45 +60,110 @@ _CLICHES = (
     "fast-paced environment",
     "do not hesitate",
     "perfect fit",
+    "unique blend",
 )
 _BANNED_PHRASES = "; ".join(f'"{c}"' for c in _CLICHES)
 
-SYSTEM_PROMPT = f"""You are a cover letter writer. Write a tailored cover letter that reads \
-like a specific person wrote it for this specific role — not like AI-generated boilerplate.
+# Showy verbs a small model reaches for that read as AI-generated in a plain cover letter. Stems,
+# so 'crafted'/'crafting' match. A pile-up (>=2 distinct) is the tell — one alone can be fine.
+_ORNATE_VERBS = ("conceptualiz", "operationaliz", "orchestrat", "craft", "curat", "envision")
 
-Content rules:
-- Use only experience, skills, and facts present in the resume and job description. Do not \
-invent metrics, employers, problem domains, or qualifications not in the resume.
-- Highlight the most relevant experience; do not restate the whole resume.
-- Include exactly ONE concrete, specific detail FROM THE RESUME that shows the applicant's fit \
-for this role's requirements. Do NOT claim the applicant previously worked for the company \
-unless the resume explicitly lists that company as an employer.
-- Keep it to 3-4 paragraphs (250-350 words), first person.
-- Do not use placeholder text like [Company Name] or [Date]; use the real values provided.
-- Sign the letter using the applicant's name exactly as provided in the Applicant Profile. Do not \
-invent or abbreviate a different name in the signature.
-- The sign-off (e.g. "Sincerely, <name>") must be the VERY LAST text in the letter. Do not place \
-a sign-off at the beginning or middle of the letter.
-- Before the final sign-off, include a brief, direct call to action.
+SYSTEM_PROMPT = f"""You are writing a cover letter as one specific real person — a thoughtful \
+career-changer applying for one specific role. Write a single, connected letter that tells a \
+coherent story, not a list of facts.
 
-Voice rules — these are what separate human writing from AI writing, follow them strictly:
-- Vary sentence length. Include at least one short sentence (under eight words). Never write \
-paragraph after paragraph of uniform ~30-word sentences.
-- Vary your verbs. Do not open multiple sentences with the same word, and do not reuse a \
-distinctive verb (e.g. "engineered", "architected", "designed") more than twice — the same verb \
-restated across sentences reads as machine-generated.
-- Write plain prose only. No markdown, no bullet points, no bold, and no backticks around \
-terms like asyncio or mypy.
-- State accomplishments directly. Do NOT stack trailing "-ing" clauses such as \
-"..., demonstrating my ability to..." or "..., ensuring...".
-- Avoid cliché filler. Do NOT use any of these phrases: {_BANNED_PHRASES}.
-- Be specific instead of grand: one real detail beats three superlatives.
+HOW TO WRITE IT (this matters most):
+- Give the letter a through-line: who the applicant is, why they are moving into this field, and \
+how their real background prepares them. Write exactly three distinct paragraphs, separated by \
+blank lines, that build on each other — an opening that sets up the move, a body that develops \
+the strongest relevant experience, and a short close with a genuine, modest ask to talk.
+- Connect each sentence to the one before it with transitions and cause-and-effect ("which is \
+why…", "that same instinct…", "after years of…", "while doing that, I learned…"). Never write a \
+run of disconnected "I did X. I know Y. I can Z." statements.
+- Keep each paragraph to one idea; do not grab-bag unrelated facts. Vary how sentences begin and \
+run — they should not all open with "I", nor all be the same clipped length. It should sound like \
+a person talking, not a résumé read back.
+- Do not dump lists of tools or acronyms. Name at most one or two that matter and say what the \
+applicant actually did with them.
+- Use plain, professional language — direct and specific, the way a capable person actually \
+talks. No literary metaphors, no scene-setting, no flowery abstractions: say what the applicant \
+did, not how elegant or dramatic it felt. Plain does NOT mean choppy — keep the sentences \
+connected and flowing.
+- Write 320 to 380 words — no fewer (a clipped letter reads as choppy) and never more than 380. \
+Plain prose only — no markdown, bullets, bold, or backticks. Avoid tired filler: {_BANNED_PHRASES}.
 
-Tone directive:
-- When a TONE directive is provided, follow it precisely: use the specified action verbs \
-naturally, emphasize the listed themes, avoid the listed patterns, and match its vocabulary \
-and sentence style.
-- When no tone directive is provided, use a professional but personable tone."""
+STAY TRUTHFUL — the résumé is the only source of facts:
+- Every claim comes from the résumé. The job description is the target to address, not a list of \
+things to claim about the applicant. Invent nothing — no experience, tools, metrics, problem \
+domains, or qualifications the résumé does not show — and never inflate coursework or a personal \
+home lab into professional operations or a strategy the applicant authored.
+- Be honest about level. The applicant is early in this field: write with quiet confidence, not \
+as a seasoned expert. Do not claim to have run, mastered, or be positioned to manage the \
+employer's systems, and do not offer to audit, overhaul, or fix their environment — offer what \
+the applicant can genuinely contribute, and do not claim they previously worked for the company.
+- Do not name a specific product or vendor, or claim a credential ("certified", "accredited"), \
+that the résumé does not list; name the general capability instead.
+- Never mention the résumé, the job posting, or these instructions inside the letter.
+
+FORMAT:
+- Use the real company and details provided; never placeholders like [Company Name] or [Date].
+- ALWAYS end with a sign-off — this is required and easy to forget. After the closing paragraph, \
+write a closing word with one comma ("Sincerely,") and then the applicant's exact name. Never \
+stop at the closing paragraph without this sign-off; it is the very last thing in the letter.
+
+TONE:
+- When a TONE directive is given, follow it: use its action verbs naturally, emphasize its \
+themes, and match its vocabulary and sentence style.
+- Otherwise, use a warm, professional, grounded voice."""
+
+
+# Named security PRODUCTS a small model commonly pulls from a JD and wrongly attributes to the
+# applicant. Deterministic REGRESSION CATCH for the SOC domain (the user's reality), NOT a general
+# guard: named tools are unbounded, so this only catches known products — and is kept HIGH-PRECISION
+# (no common-English words like 'soar'/'snort'/'tenable' that would wrongly reject a clean letter;
+# the prompt covers those). The general signal is the matcher's `missing_skills` (tools the
+# candidate lacks) — thread that through if the generator ever receives the match result (the
+# `apply --from` funnel path has it; the standalone `--description` path does not). Human review
+# is the backstop.
+_NAMED_TOOLS: frozenset[str] = frozenset(
+    {
+        "arcsight",
+        "cortex xdr",
+        "cortex xsoar",
+        "crowdstrike",
+        "cylance",
+        "defender for endpoint",
+        "demisto",
+        "exabeam",
+        "fortinet",
+        "jira",
+        "logrhythm",
+        "metasploit",
+        "nessus",
+        "qradar",
+        "qualys",
+        "rapid7",
+        "securonix",
+        "sentinelone",
+        "servicenow",
+        "sourcefire",
+        "splunk",
+        "suricata",
+    }
+)
+
+# Credential/status words the letter must not claim for the applicant unless the résumé states
+# them (a 4B inflates in-progress coursework into "accredited cybersecurity coursework"). Mirror of
+# the résumé tailor's `_strip_unearned_credentials` term list (PR #101); kept local because that
+# guard is on a separate unmerged branch — consolidate to one shared constant once both land.
+_CREDENTIAL_TERMS = ("accredited", "certified", "licensed", "chartered", "credentialed")
+
+
+def _word_present(term: str, haystack_lower: str) -> bool:
+    """Whether ``term`` (already lowercase) appears in ``haystack_lower`` not flanked by
+    alphanumerics — so 'snort' wouldn't match inside 'snorting' and a multi-word product name
+    matches only as a whole phrase."""
+    return re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", haystack_lower) is not None
 
 
 class CoverLetterGenerator:
@@ -200,8 +265,25 @@ class CoverLetterGenerator:
         # resume. Small models frequently hallucinate "I previously worked at X".
         if not self._company_in_resume(job.company, resume):
             self._reject_invented_company_employment(text, job.company)
+        self._reject_unlisted_named_tools(text, resume, job.company)
+        self._reject_unearned_credentials(text, resume)
 
-        validate_sign_off(text, user)
+        # A PRESENT sign-off must use the applicant's real name (catch a wrong/invented name). A
+        # MISSING sign-off does NOT fail the draft — a 4B forgets the closing ~1 in 4 times, and
+        # failing the whole generation over a forgotten FORMAT element is wasteful; it is appended
+        # deterministically after generation (`_ensure_sign_off`).
+        if extract_sign_off(text) is not None:
+            validate_sign_off(text, user)
+
+    @staticmethod
+    def _ensure_sign_off(text: str, user: UserProfile) -> str:
+        """Append a standard sign-off when the draft has none. A small model omits the closing
+        ~1 in 4 times; rather than fail the whole generation over a forgotten FORMAT element, add
+        one — the applicant's name is known, so this invents nothing."""
+        if extract_sign_off(text) is not None:
+            return text
+        name = f"{user.first_name} {user.last_name}".strip()
+        return f"{text.rstrip()}\n\nSincerely,\n{name}"
 
     @staticmethod
     def _strip_early_sign_off(text: str) -> str:
@@ -278,6 +360,43 @@ class CoverLetterGenerator:
             if re.search(pattern, norm_text):
                 raise LLMError(f"Generated cover letter falsely claims employment at {company}")
 
+    @staticmethod
+    def _reject_unlisted_named_tools(text: str, resume: ResumeData, company: str) -> None:
+        """Raise ``LLMError`` if the letter names a known security PRODUCT not in the résumé.
+
+        A small model often pulls a JD's named tool (Splunk, SourceFire, ServiceNow…) and
+        attributes hands-on experience to the applicant; the résumé is the only valid source of a
+        claimed tool. Presence is checked against the résumé's FULL text (a tool can live in an
+        experience bullet, not the skills list). A tool that matches the TARGET COMPANY's name is
+        allowed — naming the employer you are applying TO (e.g. a letter addressed to CrowdStrike)
+        is not a skill claim; many security products ARE companies a SOC analyst applies to. SOC-
+        scoped regression catch, not exhaustive — the prompt is the primary defence and human
+        review the backstop. Raising feeds the existing validate→retry→fail-closed loop, so the
+        model regenerates without the overclaim."""
+        resume_lower = resume.raw_text.lower()
+        company_lower = company.lower()
+        text_lower = text.lower()
+        for tool in sorted(_NAMED_TOOLS):
+            if _word_present(tool, resume_lower) or _word_present(tool, company_lower):
+                continue  # the candidate lists it, or it is the employer being addressed
+            if _word_present(tool, text_lower):
+                raise LLMError(f"Generated cover letter names a tool not in the résumé: {tool!r}")
+
+    @staticmethod
+    def _reject_unearned_credentials(text: str, resume: ResumeData) -> None:
+        """Raise ``LLMError`` if the letter describes the applicant with a credential/status word
+        (accredited, certified, licensed…) the résumé does not contain.
+
+        A small model inflates in-progress coursework into "accredited cybersecurity coursework";
+        the résumé is the only valid source of a credential. Shares ``_CREDENTIAL_TERMS`` with the
+        résumé tailor's guard (single source) and checks the résumé's FULL text. Feeds the existing
+        validate→retry→fail-closed loop. Human review remains the backstop."""
+        resume_lower = resume.raw_text.lower()
+        text_lower = text.lower()
+        for term in _CREDENTIAL_TERMS:
+            if _word_present(term, text_lower) and not _word_present(term, resume_lower):
+                raise LLMError(f"Generated cover letter claims an unearned credential: {term!r}")
+
     @classmethod
     def _humanize(cls, text: str) -> str:
         """Deterministically strip artifacts the LLM leaks into prose.
@@ -298,6 +417,9 @@ class CoverLetterGenerator:
         text = re.sub(r"(?m)^[ \t]*#{1,6}[ \t]*", "", text)  # markdown headings
         text = re.sub(r"(?m)^[ \t]*[-*+][ \t]+", "", text)  # markdown bullets (line-anchored)
         text = cls._strip_early_sign_off(text)
+        text = re.sub(
+            r",{2,}", ",", text
+        )  # collapse a doubled comma the model leaks ("Sincerely,,")
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text.strip()
 
@@ -336,6 +458,23 @@ class CoverLetterGenerator:
             tells.append("no_short_sentences")
         if len(re.findall(r",\s+\w+ing\b", text)) >= 3:
             tells.append("participial_tails")
+        # Verbosity: the target is 320-380 words (a coherent letter needs room for subordinate
+        # clauses — clipping it short is what made letters choppy). This sits just past the 380
+        # cap, so it catches a runaway letter while leaving the coherent target range clear, and
+        # stays well above any short/mocked test text.
+        if len(text_for_sentences.split()) > 390:
+            tells.append("too_long")
+        # Repetitive openings: 3+ sentences starting with the same two words ("I envision …").
+        openers: dict[str, int] = {}
+        for s in sentences:
+            parts = s.split()
+            if len(parts) >= 2:
+                key = f"{parts[0]} {parts[1]}".lower()
+                openers[key] = openers.get(key, 0) + 1
+        if openers and max(openers.values()) >= 3:
+            tells.append("repeated_openings")
+        if sum(1 for stem in _ORNATE_VERBS if re.search(rf"\b{stem}", low)) >= 2:
+            tells.append("ornate_verbs")
         return tells
 
     @staticmethod
@@ -385,6 +524,19 @@ class CoverLetterGenerator:
             )
         if "participial_tails" in tells:
             issues.append("remove trailing '-ing' clauses; state each point as its own sentence")
+        if "too_long" in tells:
+            issues.append(
+                "tighten toward ~350 words across three paragraphs — cut padding, not facts"
+            )
+        if "repeated_openings" in tells:
+            issues.append(
+                "vary how sentences begin; never start several sentences with the same words"
+            )
+        if "ornate_verbs" in tells:
+            issues.append(
+                "replace showy verbs (craft, curate, conceptualize, orchestrate, envision) with "
+                "plain ones (build, run, design, lead)"
+            )
         if "markdown" in tells:
             issues.append("remove all markdown and backticks")
         cliches = [t.split(":", 1)[1] for t in tells if t.startswith("cliche:")]
@@ -591,6 +743,7 @@ class CoverLetterGenerator:
             )
 
         letter = await self._devoice(letter, _regen, user, job=job, resume=resume)
+        letter = self._ensure_sign_off(letter, user)
 
         logger.info(
             "Generated cover letter for %s at %s (%d chars)",

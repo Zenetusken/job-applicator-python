@@ -132,6 +132,22 @@ class OutputConfig(BaseSettings):
     template_dir: Path | None = None
 
 
+class CoverLetterConfig(BaseSettings):
+    """Optional model override for the cover-letter step.
+
+    The local 4B is excellent for the structured/honesty work (skill extraction, the overclaim
+    guards) but leans on ornate, generic prose. Set any of these to route ONLY cover-letter
+    generation (the prose + its PDF formatting) to a different model or endpoint — a larger local
+    model, or a cloud API — while the rest of the pipeline stays on ``[llm]``. Each unset field
+    inherits ``[llm]``, so the default behaviour is unchanged."""
+
+    model_config = SettingsConfigDict(env_prefix="JOB_APPLICATOR_COVER_LETTER_")
+
+    model: str | None = None
+    api_base: str | None = None
+    api_key: str | None = None
+
+
 class AppSettings(BaseSettings):
     """Top-level application settings."""
 
@@ -155,6 +171,22 @@ class AppSettings(BaseSettings):
     skills: SkillConfig = Field(default_factory=SkillConfig)
     target: TargetConfig = Field(default_factory=TargetConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
+    cover_letter: CoverLetterConfig = Field(default_factory=CoverLetterConfig)
+
+    def cover_letter_llm(self) -> LLMConfig:
+        """LLMConfig for the cover-letter step: ``[llm]`` with any ``[cover_letter]`` overrides
+        (model / api_base / api_key) applied. Returns ``[llm]`` unchanged when nothing is
+        overridden, so default behaviour is identical to before this option existed."""
+        overrides = {
+            field: value
+            for field, value in (
+                ("model", self.cover_letter.model),
+                ("api_base", self.cover_letter.api_base),
+                ("api_key", self.cover_letter.api_key),
+            )
+            if value is not None
+        }
+        return self.llm.model_copy(update=overrides) if overrides else self.llm
 
     @classmethod
     def settings_customise_sources(
