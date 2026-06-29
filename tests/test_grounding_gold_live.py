@@ -2,9 +2,13 @@
 
 REPORTED, not a fast-gate unit test — a nondeterministic live LLM call (needs vLLM at :8000), so
 it lives at the tests/ root and is auto-marked ``live``. It runs the verifier against the seed gold
-set, prints precision + recall (both directions, per category), and asserts only a conservative
-gross-regression floor on the live tier. The 0.9 targets are tracked over time, and the credential
-row is reported separately (the French-credential leniency is a known, non-gating residual, §7).
+set and prints recall + precision (both directions, per category).
+
+Precision is scored in TWO partitions (spec §7/§8): grounded cases tagged ``"residual": true`` are
+the NAMED residual — cross-language / low-overlap faithful groundings the model under-grounds —
+reported separately and NOT gated. **CORE precision** (every other grounded case) carries the strict
+gross-regression floor: those cases ground reliably (measured 0 false positives over N=5), so a core
+false positive is a real regression, not the accepted residual. The 0.9 targets are tracked.
 """
 
 from __future__ import annotations
@@ -25,45 +29,62 @@ async def test_grounding_gold_set_precision_recall() -> None:
     resume = ResumeData(raw_text=gold["source"], skills=[])
     verifier = GroundingVerifier(AppSettings().llm)
 
-    tp = fp = fn = tn = 0
+    tp = fn = 0  # fabricated caught / missed
+    core_fp = core_tn = 0  # grounded, NOT residual-tagged
+    res_flagged = res_total = 0  # grounded, residual-tagged (the named §7/§8 residual)
     cat_recall: defaultdict[str, list[int]] = defaultdict(lambda: [0, 0])  # [caught, total]
-    notes: list[str] = []
+    miss_notes: list[str] = []  # fabricated misses + CORE false positives (both are regressions)
+    res_notes: list[str] = []  # residual flags (expected, reported)
+
     for case in gold["cases"]:
         report = await verifier.verify(case["claim"], resume)
         flagged = bool(report.unsupported) or bool(report.coverage_gaps)
-        fabricated = case["label"] == "fabricated"
-        if fabricated and flagged:
-            tp += 1
-        elif fabricated and not flagged:
-            fn += 1
-            notes.append(f"MISS [{case['lang']}/{case['category']}]: {case['claim'][:50]}")
-        elif not fabricated and flagged:
-            fp += 1
-            notes.append(f"FALSE-POS [{case['lang']}/{case['category']}]: {case['claim'][:50]}")
-        else:
-            tn += 1
-        if fabricated:
+        tag = f"{case['lang']}/{case['category']}"
+        if case["label"] == "fabricated":
+            if flagged:
+                tp += 1
+            else:
+                fn += 1
+                miss_notes.append(f"MISS [{tag}]: {case['claim'][:50]}")
             cat_recall[case["category"]][0] += int(flagged)
             cat_recall[case["category"]][1] += 1
+        elif case.get("residual"):  # grounded, named residual
+            res_total += 1
+            if flagged:
+                res_flagged += 1
+                res_notes.append(f"residual [{tag}]: {case['claim'][:48]}")
+        else:  # grounded, core
+            if flagged:
+                core_fp += 1
+                miss_notes.append(f"CORE FALSE-POS [{tag}]: {case['claim'][:46]}")
+            else:
+                core_tn += 1
 
-    precision = tp / (tp + fp) if (tp + fp) else 1.0
+    overall_fp = core_fp + res_flagged
     recall = tp / (tp + fn) if (tp + fn) else 1.0
+    core_precision = tp / (tp + core_fp) if (tp + core_fp) else 1.0
+    overall_precision = tp / (tp + overall_fp) if (tp + overall_fp) else 1.0
+
     print(f"\n=== grounding gold set: {len(gold['cases'])} cases ===")
-    print(f"  recall (fabrications caught):   {recall:.2f}  [tp={tp} fn={fn}]   target >=0.90")
-    print(f"  precision (real claims kept):   {precision:.2f}  [fp={fp} tn={tn}]   target >=0.90")
+    print(f"  recall:          {recall:.2f}  [tp={tp} fn={fn}]   target >=0.90")
+    print(f"  CORE precision:  {core_precision:.2f}  [fp={core_fp} tn={core_tn}]  floor >=0.90")
+    print(f"  overall prec:    {overall_precision:.2f}  [fp={overall_fp}]  tracked, not gated")
+    print(f"  residual:        {res_flagged}/{res_total} flagged  reported, not gated (§7/§8)")
     print("  per-category recall (fabricated only):")
     for cat, (caught, total) in sorted(cat_recall.items()):
         print(f"    {cat:12} {caught}/{total}")
-    for note in notes:
+    for note in res_notes:
+        print(f"  {note}")
+    for note in miss_notes:
         print(f"  {note}")
 
-    # Live-tier GROSS-REGRESSION floor only, NOT the 0.9 target (tracked over time, reported above).
-    # The set now includes deliberately-hard adversarial cases (numberless/semantic fabrications +
-    # low-overlap and cross-language FAITHFUL groundings) that probe the precision residual (§7/§8):
-    # the model under-grounds French faithful translations and low-overlap rephrases (~0.81 to 0.85
-    # precision, nondeterministic). So the precision FLOOR sits below that named residual; it fires
-    # only on a GROSS regression (e.g. the model grounding nothing), never on the accepted residual.
+    # GROSS-REGRESSION floors (live tier; the 0.9 targets are tracked above, not asserted).
+    # Recall: robustly 1.00, floor well below. CORE precision: non-residual grounded cases ground
+    # reliably (measured 0 FP over N=5), so the floor is STRICT — a core false positive is a real
+    # regression. The residual (cross-language / low-overlap faithful groundings, spec §7/§8) is
+    # reported above and deliberately NOT gated; it must never silently drag the core guard down.
     assert recall >= 0.70, f"recall {recall:.2f} below the gross-regression floor"
-    assert precision >= 0.78, (
-        f"precision {precision:.2f} below the gross-regression floor — real claims mass-stripped"
+    assert core_precision >= 0.90, (
+        f"CORE precision {core_precision:.2f} below floor — non-residual grounded claims are being "
+        f"stripped (a real regression, not the accepted §7/§8 residual)"
     )
