@@ -144,7 +144,9 @@ def test_apply_json_empty_result_emits_empty_array() -> None:
 
 def test_apply_submit_records_each_application() -> None:
     """--submit applies with submit=True and records each outcome in local state."""
-    result, applicator, st = _drive(["-q", "python", "-n", "2", "--submit", "--no-cover-letter"])
+    result, applicator, st = _drive(
+        ["-q", "python", "-n", "2", "--submit", "--yes", "--no-cover-letter"]
+    )
     assert result.exit_code == 0, result.output
     assert applicator.apply.await_count == 2
     for call in applicator.apply.await_args_list:
@@ -156,7 +158,7 @@ def test_apply_submit_skips_already_applied() -> None:
     """On submit, jobs the local state marks as already-applied are skipped (no apply call)."""
     st = MagicMock(**{"has_applied.return_value": True, "count_today.return_value": 0})
     result, applicator, _ = _drive(
-        ["-q", "python", "-n", "2", "--submit", "--no-cover-letter"], state=st
+        ["-q", "python", "-n", "2", "--submit", "--yes", "--no-cover-letter"], state=st
     )
     assert result.exit_code == 0, result.output
     applicator.apply.assert_not_awaited()
@@ -166,7 +168,9 @@ def test_apply_submit_skips_already_applied() -> None:
 def test_apply_submit_stops_at_daily_cap() -> None:
     """On submit, the daily application cap short-circuits the apply loop."""
     st = MagicMock(**{"has_applied.return_value": False, "count_today.return_value": 9999})
-    result, applicator, _ = _drive(["-q", "python", "--submit", "--no-cover-letter"], state=st)
+    result, applicator, _ = _drive(
+        ["-q", "python", "--submit", "--yes", "--no-cover-letter"], state=st
+    )
     assert result.exit_code == 0, result.output
     applicator.apply.assert_not_awaited()
     assert "cap reached" in result.output.lower()
@@ -179,7 +183,9 @@ def test_apply_submit_paces_between_applications(monkeypatch: pytest.MonkeyPatch
     # non-default value) so the asserted 2.0 literal stays meaningful.
     monkeypatch.setenv("JOB_APPLICATOR_TARGET_DELAY_BETWEEN_APPLICATIONS_S", "2.0")
     with patch("job_applicator.workflows.apply.asyncio.sleep", new_callable=AsyncMock) as sleep:
-        result, applicator, _ = _drive(["-q", "python", "-n", "2", "--submit", "--no-cover-letter"])
+        result, applicator, _ = _drive(
+            ["-q", "python", "-n", "2", "--submit", "--yes", "--no-cover-letter"]
+        )
     assert result.exit_code == 0, result.output
     assert applicator.apply.await_count == 2
     sleep.assert_awaited_once_with(2.0)  # the configured gap, once, between the two applications
@@ -193,6 +199,47 @@ def test_apply_dry_run_does_not_pace_between_applications(monkeypatch: pytest.Mo
         result, _applicator, _ = _drive(["-q", "python", "-n", "2", "--no-cover-letter"])
     assert result.exit_code == 0, result.output
     sleep.assert_not_awaited()
+
+
+def test_apply_submit_without_yes_aborts_noninteractive() -> None:
+    """--submit without --yes in a non-interactive context (CI / piped stdin) must REFUSE to send
+    real applications: exit 1, a clear stderr message, and no apply call. With the dry-run default,
+    this gate means a mistyped command or a script can't fire applications at the real account."""
+    result, applicator, _ = _drive(["-q", "python", "--submit", "--no-cover-letter"])
+    assert result.exit_code == 1, result.output
+    assert "refus" in result.stderr.lower()
+    applicator.apply.assert_not_awaited()
+
+
+def test_apply_submit_interactive_decline_aborts() -> None:
+    """An interactive --submit run the user DECLINES at the confirmation prompt sends nothing."""
+    with (
+        patch("job_applicator.cli._stdin_is_interactive", return_value=True),
+        patch("typer.confirm", return_value=False),
+    ):
+        result, applicator, _ = _drive(["-q", "python", "--submit", "--no-cover-letter"])
+    assert result.exit_code == 1, result.output
+    applicator.apply.assert_not_awaited()
+
+
+def test_apply_submit_interactive_accept_proceeds() -> None:
+    """An interactive --submit run the user CONFIRMS proceeds to apply each job."""
+    with (
+        patch("job_applicator.cli._stdin_is_interactive", return_value=True),
+        patch("typer.confirm", return_value=True),
+    ):
+        result, applicator, _ = _drive(["-q", "python", "-n", "2", "--submit", "--no-cover-letter"])
+    assert result.exit_code == 0, result.output
+    assert applicator.apply.await_count == 2
+
+
+def test_apply_submit_json_requires_yes() -> None:
+    """--submit --json must not prompt (it would corrupt JSON stdout): it REQUIRES --yes, refusing
+    otherwise even when stdin is a TTY."""
+    with patch("job_applicator.cli._stdin_is_interactive", return_value=True):
+        result, applicator, _ = _drive(["-q", "python", "--submit", "--json", "--no-cover-letter"])
+    assert result.exit_code == 1, result.output
+    applicator.apply.assert_not_awaited()
 
 
 def _drive_cover_letter(
