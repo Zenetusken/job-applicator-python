@@ -417,11 +417,32 @@ async def test_linkedin_extract_job_salary_none_when_absent(app_settings: AppSet
     assert job.salary is None
 
 
-async def test_scrape_listings_all_cards_fail_raises_scraper_error(
-    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+async def _extract_raises(*_a: object, **_k: object) -> None:
+    """_extract_job stub: extraction throws → the loop's `failures` counter increments."""
+    raise RuntimeError("stale field selector")
+
+
+async def _extract_returns_none(*_a: object, **_k: object) -> None:
+    """_extract_job stub: stale TITLE/href selector → returns None with NO exception, so the
+    loop's `failures` counter stays 0 (the R1 path a `failures`-keyed guard silently missed)."""
+    return None
+
+
+@pytest.mark.parametrize(
+    "extract_stub",
+    [_extract_raises, _extract_returns_none],
+    ids=["cards-raise", "cards-return-none-R1"],
+)
+async def test_scrape_listings_cards_present_but_zero_jobs_raises(
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch, extract_stub: object
 ) -> None:
-    """LinkedIn: cards present but EVERY extraction fails → ScraperError (stale field selectors),
-    never a silent empty list — the honest-failure twin of the Indeed guard."""
+    """LinkedIn: cards present but EVERY extraction yields no job → ScraperError, never a silent
+    empty list (the honest-failure twin of the Indeed guard).
+
+    Both failure sub-modes must fail loud and are parametrized: extraction RAISING (`failures` > 0)
+    and extraction RETURNING None (a stale TITLE/href selector — `failures` stays 0; the R1
+    regression the old `failures`-keyed guard returned [] on). The guard keys on cards being
+    present (`total`), not on `failures`."""
     import job_applicator.scrapers.linkedin as lk
     from job_applicator.exceptions import ScraperError
     from job_applicator.models import JobBoard
@@ -441,14 +462,11 @@ async def test_scrape_listings_all_cards_fail_raises_scraper_error(
     async def _wait(*_a: object, **_k: object) -> bool:
         return True
 
-    async def _boom(*_a: object, **_k: object) -> None:
-        raise RuntimeError("stale field selector")
-
     monkeypatch.setattr(scraper, "_new_stealth_page", _page)
     monkeypatch.setattr(lk, "navigate", _noop)
     monkeypatch.setattr(lk, "random_delay", _noop)
     monkeypatch.setattr(lk, "wait_for_selector", _wait)
-    monkeypatch.setattr(scraper, "_extract_job", _boom)
+    monkeypatch.setattr(scraper, "_extract_job", extract_stub)
 
     params = SearchParams(query="python", max_results=5, board=JobBoard.LINKEDIN)
     with pytest.raises(ScraperError):
