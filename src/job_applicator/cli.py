@@ -409,6 +409,13 @@ def _tui_tty_ok() -> bool:
     return sys.stdout.isatty() and sys.stdin.isatty()
 
 
+def _stdin_is_interactive() -> bool:
+    """True when stdin is a real terminal, so a confirmation prompt can actually be answered.
+    A piped/redirected/CI stdin is not interactive — there we require an explicit flag rather
+    than hang on a prompt nobody can answer."""
+    return sys.stdin.isatty()
+
+
 def _launch_tui() -> None:
     """Run the TUI, turning a store-construction failure into a clean message — the
     stores are built before the event loop, outside the app's own error handling."""
@@ -828,6 +835,12 @@ def apply(
         "--submit/--no-submit",
         help="Actually submit applications (default: dry run — fills forms, never submits).",
     ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Skip the --submit confirmation prompt (required for non-interactive / --json use).",
+    ),
     validate: bool = typer.Option(
         False,
         "--validate",
@@ -862,9 +875,25 @@ def apply(
     """
     _merge_verbose_ctx(ctx, verbose, log_file)
     if submit:
+        # Gate real submission BEFORE the "WILL be sent" warning, so a run we're about to refuse
+        # doesn't first claim it will send. A prompt can't be answered non-interactively (and would
+        # corrupt --json stdout), so there we REQUIRE --yes rather than proceed; otherwise confirm
+        # interactively (the warning still precedes the prompt). --yes bypasses for intentional
+        # non-interactive use — so a mistyped command or a script can't fire real applications.
+        if not yes and (as_json or not _stdin_is_interactive()):
+            err_console.print(
+                "[red]Refusing to send real applications without confirmation. Re-run with --yes "
+                "to confirm (required for non-interactive or --json use).[/red]"
+            )
+            raise typer.Exit(1)
         err_console.print(
             "[bold red]--submit set: real applications WILL be sent on your account.[/bold red]"
         )
+        if not yes and not typer.confirm(
+            "Send real applications to your real LinkedIn account?", err=True
+        ):
+            err_console.print("[yellow]Aborted — no applications were sent.[/yellow]")
+            raise typer.Exit(1)
     else:
         err_console.print(
             "[dim]Dry run: forms are filled but NOT submitted. Pass --submit to apply.[/dim]"
