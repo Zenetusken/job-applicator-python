@@ -1783,7 +1783,7 @@ def batch(
         from datetime import datetime as dt
         from pathlib import Path
 
-        from job_applicator.batch_state import BatchJobStatus, BatchState
+        from job_applicator.batch_state import BatchJobStatus, BatchRunStatus, BatchState
         from job_applicator.documents.job_category import detect_job_category
         from job_applicator.documents.resume import ResumeLoader
         from job_applicator.documents.resume_tailor import ResumeTailor
@@ -1930,21 +1930,21 @@ def batch(
         # One spec is the single source for the run id AND the resume-match key.
         effective_run_id = run_id or run_spec.run_id()
 
-        resuming = False
-        if resume_run:
-            existing = batch_state.find_existing_run(run_spec)
-            if existing:
-                effective_run_id = existing
-                resuming = True
-                if not as_json:
-                    console.print(f"[cyan]Resuming batch run {effective_run_id}...[/cyan]")
-            else:
-                if not as_json:
-                    console.print(
-                        "[yellow]No incomplete batch run found; starting a new run.[/yellow]"
-                    )
-
-        if not resuming:
+        # Auto-resume an incomplete (RUNNING or FAILED) run of this EXACT spec — so a re-run after
+        # a crash / partial failure CONTINUES instead of start_run(reset=True) silently wiping its
+        # progress. --resume-run now just ASSERTS a resumable run exists (errors if none).
+        existing = batch_state.find_existing_run(run_spec)
+        if resume_run and existing is None:
+            if not as_json:
+                console.print(
+                    "[red]--resume-run: no incomplete batch run found for this spec.[/red]"
+                )
+            raise typer.Exit(1)
+        if existing is not None:
+            effective_run_id = existing
+            if not as_json:
+                console.print(f"[cyan]Resuming batch run {effective_run_id}...[/cyan]")
+        else:
             batch_state.start_run(run_spec, run_id=effective_run_id)
         completed_urls = set(batch_state.list_completed_jobs(effective_run_id))
 
@@ -2200,7 +2200,17 @@ def batch(
         with console.status("Processing jobs in parallel..."):
             batch_results = await asyncio.gather(*(_process_one(m) for m in matches))
 
-        batch_state.complete_run(effective_run_id)
+        # Mark the run FAILED if any job failed, so a partial-failure run stays resumable
+        # (find_existing_run matches FAILED) instead of COMPLETED. Keyed on the boolean result
+        # FLAGS (not error-message truthiness) so an empty-message failure — e.g. a bare
+        # TimeoutError on the LLM endpoint — still counts (it sets tailored/cover_letter False).
+        any_failed = any(
+            r.get("tailored") is False or r.get("cover_letter") is False for r in batch_results
+        )
+        batch_state.complete_run(
+            effective_run_id,
+            BatchRunStatus.FAILED if any_failed else BatchRunStatus.COMPLETED,
+        )
 
         if reporter and batch_reports:
             reporter.record_batch_tailoring(batch_reports)
