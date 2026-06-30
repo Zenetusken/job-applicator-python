@@ -316,7 +316,14 @@ async def _tailor_workflow(
             continue
 
         elif choice == "D":
-            render_diff(console, session.original_text, result.tailored_text, max_lines=0)
+            # Strip markdown bold the same way the inline preview diff does (L122) — the raw
+            # tailored text carries `**header**` markers the PDF formatter consumes, not the human.
+            render_diff(
+                console,
+                session.original_text,
+                strip_markdown_bold(result.tailored_text),
+                max_lines=0,
+            )
             continue
 
         elif choice == "V":
@@ -330,7 +337,8 @@ async def _tailor_workflow(
             hist_table.add_column("Instructions")
             hist_table.add_column("Preview", style="dim")
             for i, att in enumerate(session.attempts):
-                preview = att.tailored_text[:60].replace("\n", " ")
+                # Strip bold before slicing so the 60-char window holds content, not `**` markers.
+                preview = strip_markdown_bold(att.tailored_text)[:60].replace("\n", " ")
                 marker = "\u2192" if i == session.current_index else " "
                 hist_table.add_row(
                     marker,
@@ -386,7 +394,8 @@ async def _tailor_workflow(
 
             target_section = sections[sec_idx]
             console.print(f"\n[dim]Editing: {target_section.name}[/dim]")
-            console.print(f"[dim]{target_section.text[:200]}...[/dim]\n")
+            # Strip bold before slicing — the section body keeps raw `**` from parse_sections.
+            console.print(f"[dim]{strip_markdown_bold(target_section.text)[:200]}...[/dim]\n")
 
             sec_instructions = console.input("[bold]Instructions for this section: [/bold]").strip()
             if not sec_instructions:
