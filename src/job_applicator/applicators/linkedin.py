@@ -129,6 +129,18 @@ class LinkedInApplicator(BaseApplicator):
         if cover_letter:
             cl_field = await page.query_selector('textarea[aria-label*="cover" i]')
             if cl_field:
+                # Paste-like: focus + a brief human pause so the sequence reads as a deliberate
+                # paste (click → text appears) rather than a value materializing on its own. The
+                # focus-click is GUARDED — click imposes Receives-Events/Stable actionability that
+                # fill does not, so a present-but-obscured textarea must NOT abort the apply; on any
+                # click failure, fall straight through to the plain fill (the prior behaviour).
+                # fill() still sets the whole value in one shot, so this only ADDS a trusted event +
+                # pause — it does not make the value-set itself non-atomic.
+                try:
+                    await cl_field.click()
+                    await random_delay(0.5, 1.0)
+                except Exception as e:
+                    logger.debug("Cover-letter focus-click skipped (%s); filling directly", e)
                 await cl_field.fill(cover_letter)
                 validation.cover_letter_field_found = True
 
