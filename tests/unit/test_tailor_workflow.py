@@ -47,6 +47,8 @@ def _drive(
     output_format: str | None = None,
     template: str | None = None,
     category: str | None = None,
+    initial_text: str = "INITIAL",
+    refined_text: str = "REFINED",
 ):
     """Drive the `tailor` command through its interactive loop.
 
@@ -55,8 +57,8 @@ def _drive(
     import job_applicator.cli as cli
 
     engine = MagicMock()
-    engine.tailor_verified = AsyncMock(return_value=_tailored("INITIAL"))
-    engine.refine_verified = AsyncMock(return_value=_tailored("REFINED"))
+    engine.tailor_verified = AsyncMock(return_value=_tailored(initial_text))
+    engine.refine_verified = AsyncMock(return_value=_tailored(refined_text))
 
     audit = MagicMock(
         entries=[],
@@ -351,3 +353,45 @@ def test_tailor_json_min_score_abort_exits_nonzero(
     assert result.exit_code != 0  # sub-threshold → non-zero (the gate-2a finding)
     assert result.stdout.strip() == ""  # nothing tailored → no JSON emitted
     engine.tailor_verified.assert_not_awaited()  # aborted before tailoring
+
+
+# --- Markdown-bold stripping in the SECONDARY interactive views -----------------------------
+# The main preview (Panel + inline diff) and the saved .txt already strip `**header**`; these
+# three secondary views (the [D] full diff, the [V] history table, the [S] section preview)
+# render the raw tailored text, so the markers leaked through to the human. Each test feeds a
+# distinctive `**MARKER**` and asserts the wrapped form is gone but the content remains.
+
+
+def test_tailor_full_diff_strips_markdown_bold(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """[D] (full diff) shows de-markdowned text, not raw `**BOLDDIFF**`."""
+    result, _engine, _cl = _drive(
+        monkeypatch, tmp_path, ["D", "Q"], initial_text="Profile **BOLDDIFF** line\nbody text"
+    )
+    assert result.exit_code == 0, result.output
+    assert "**BOLDDIFF**" not in result.output  # the markers are stripped from the diff
+    assert "BOLDDIFF" in result.output  # ...but the content itself still shows
+
+
+def test_tailor_history_preview_strips_markdown_bold(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """[V] history-table preview de-markdowns each attempt (≥2 attempts needed to render it)."""
+    result, _engine, _cl = _drive(
+        monkeypatch, tmp_path, ["R", "V", "", "Q"], refined_text="Profile **BOLDHIST** line body"
+    )
+    assert result.exit_code == 0, result.output
+    assert "**BOLDHIST**" not in result.output  # history preview no longer leaks the markers
+    assert "BOLDHIST" in result.output
+
+
+def test_tailor_section_preview_strips_markdown_bold(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """[S] section preview de-markdowns the section body (parse_sections keeps raw `**`)."""
+    sections = [SimpleNamespace(name="Summary", text="Profile **BOLDSEC** summary body")]
+    result, _engine, _cl = _drive(monkeypatch, tmp_path, ["S", "1", "", "Q"], sections=sections)
+    assert result.exit_code == 0, result.output
+    assert "**BOLDSEC**" not in result.output  # section preview no longer leaks the markers
+    assert "BOLDSEC" in result.output
