@@ -34,6 +34,7 @@ from job_applicator.models import JobBoard, JobListing, SessionHealth
 from job_applicator.scrapers.base import BaseScraper, BrowserPolicy, SearchParams
 from job_applicator.utils.cookies import load_cookies
 from job_applicator.utils.logging import get_logger
+from job_applicator.utils.path import set_owner_only
 from job_applicator.utils.region import detect_indeed_domain
 from job_applicator.utils.retry import async_retry
 from job_applicator.utils.url import host_matches
@@ -314,6 +315,7 @@ class IndeedScraper(BaseScraper):
         """
         try:
             _DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+            set_owner_only(_DEBUG_DIR, 0o700)
             (_DEBUG_DIR / "indeed-last-scrape.html").write_text(
                 await page.content(), encoding="utf-8"
             )
@@ -472,6 +474,7 @@ class IndeedScraper(BaseScraper):
         the failing card, and the card + page HTML. Best-effort — never raises."""
         try:
             _DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+            set_owner_only(_DEBUG_DIR, 0o700)
             (_DEBUG_DIR / "indeed-failed-card.html").write_text(
                 await page.content(), encoding="utf-8"
             )

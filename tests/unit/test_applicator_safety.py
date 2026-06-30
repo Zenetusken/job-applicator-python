@@ -166,3 +166,26 @@ async def test_easy_apply_cover_letter_focus_click_failure_still_fills(
     assert result.status == ApplicationStatus.SKIPPED  # dry run completed, not aborted to FAILED
     assert result.dry_run is not None
     assert result.dry_run.cover_letter_field_found is True
+
+
+@pytest.mark.asyncio
+async def test_fill_form_fields_skips_already_populated_field(app_settings: AppSettings) -> None:
+    """D4 (finding 8b): a field the site already pre-filled (e.g. a session-prefilled email) is NOT
+    clobbered with a possibly-stale config value — it's left as-is and reported as filled."""
+    app_settings.profile_name = "Jane Doe"
+    app_settings.target.linkedin_email = "config@example.com"
+    applicator = LinkedInApplicator(MagicMock(), app_settings)
+
+    el = AsyncMock()
+    el.input_value = AsyncMock(return_value="prefilled@site.com")  # site already populated it
+
+    async def query_selector(selector: str) -> object | None:
+        return el if "email" in selector else None  # only the email field is present
+
+    page = AsyncMock()
+    page.query_selector = query_selector
+
+    filled, _errors = await applicator._fill_form_fields(page)
+
+    assert "email" in filled
+    el.fill.assert_not_awaited()  # NOT overwritten with the config value

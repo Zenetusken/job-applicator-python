@@ -42,6 +42,7 @@ from job_applicator.utils.cookies import (
 )
 from job_applicator.utils.llm import SERVE_SCRIPT
 from job_applicator.utils.logging import setup_logging
+from job_applicator.utils.path import set_owner_only
 from job_applicator.utils.profile import _detect_tone, _load_user_profile
 from job_applicator.utils.verbose import VerboseReporter
 from job_applicator.workflows.apply import _apply_to_jobs
@@ -2923,6 +2924,7 @@ cover_letter_template = "__OUTPUT_COVER_LETTER_TEMPLATE__"
 
     try:
         config_path.write_text(config_content)
+        set_owner_only(config_path, 0o600)  # may later hold credentials / api keys
         console.print("[green]Created config.toml[/green]")
         console.print("Edit it with your credentials, or set environment variables.")
 

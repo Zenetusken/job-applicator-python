@@ -23,7 +23,7 @@ from job_applicator.models import (
     JobListing,
 )
 from job_applicator.utils.logging import get_logger
-from job_applicator.utils.path import safe_filename_slug
+from job_applicator.utils.path import safe_filename_slug, set_owner_only
 
 logger = get_logger("applicators.linkedin")
 
@@ -85,6 +85,7 @@ class LinkedInApplicator(BaseApplicator):
                 # re-navigating to a fresh page (which hid the real error).
                 try:
                     _DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+                    set_owner_only(_DEBUG_DIR, 0o700)  # screenshots may show the authed profile
                     name = (
                         f"error_{safe_filename_slug(job.company)}_"
                         f"{safe_filename_slug(job.title)}.png"
@@ -262,6 +263,11 @@ class LinkedInApplicator(BaseApplicator):
                 el = await page.query_selector(selector)
                 if el:
                     try:
+                        # D4 (finding 8b): don't clobber a value the site already pre-filled
+                        # (e.g. a session-prefilled email) with a possibly-stale config value.
+                        if (await el.input_value()).strip():
+                            filled.append(label)
+                            continue
                         await el.fill(value)
                         filled.append(label)
                     except Exception as e:

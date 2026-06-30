@@ -18,6 +18,8 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
+from job_applicator.utils.path import set_owner_only
+
 # Path to the TOML config file. Overridable via JOB_APPLICATOR_CONFIG_FILE so
 # tests and alternate deployments can point at a different file.
 CONFIG_FILE_ENV_VAR = "JOB_APPLICATOR_CONFIG_FILE"
@@ -232,6 +234,7 @@ class AppSettings(BaseSettings):
         """
         path = Path(self.output_dir)
         path.mkdir(parents=True, exist_ok=True)
+        set_owner_only(path, 0o700)  # tailored résumés / cover letters are the user's data
         return path
 
     def get_resume_path(self) -> Path:

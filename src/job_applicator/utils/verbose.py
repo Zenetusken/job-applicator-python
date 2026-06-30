@@ -19,6 +19,7 @@ from job_applicator.models import (
     TailoringReport,
     VerboseReport,
 )
+from job_applicator.utils.path import set_owner_only
 
 
 class VerboseReporter:
@@ -172,7 +173,9 @@ class VerboseReporter:
             self._render_terminal(console)
         if log_file:
             try:
-                Path(log_file).write_text(self.report.model_dump_json(indent=2), encoding="utf-8")
+                p = Path(log_file)
+                p.write_text(self.report.model_dump_json(indent=2), encoding="utf-8")
+                set_owner_only(p, 0o600)  # the report can hold résumé-derived PII
             except (IsADirectoryError, PermissionError, OSError) as exc:
                 if console is not None:
                     console.print(f"[yellow]Warning: Could not write verbose log: {exc}[/yellow]")
