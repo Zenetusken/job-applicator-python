@@ -847,6 +847,30 @@ class ResumeTailor:
             logger.info("Résumé grounding verification skipped (verifier unavailable): %s", exc)
         return result
 
+    async def refine_verified(
+        self,
+        original_resume: ResumeData,
+        current_tailored: TailoredResume,
+        user_feedback: str,
+        job: JobListing,
+        matcher: JobMatcher | None = None,
+        tone_profile: ToneProfile | None = None,
+        style_guide: StyleGuide | None = None,
+    ) -> TailoredResume:
+        """``refine`` plus the grounding pass (spec §6), so an interactively refined version carries
+        the same honesty report as the primary — ATTACHED for human review, never auto-stripped.
+        Non-blocking fail-safe (#4), like ``tailor_verified``."""
+        result = await self.refine(
+            original_resume,
+            current_tailored,
+            user_feedback,
+            job,
+            matcher,
+            tone_profile,
+            style_guide,
+        )
+        return await self.verify_tailored(result, original_resume)
+
     @async_retry(
         max_attempts=2, base_delay=1.0, exceptions=(LLMError,), exclude=(CircuitOpenError,)
     )

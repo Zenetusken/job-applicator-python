@@ -144,9 +144,9 @@ async def _tailor_workflow(
         console.print("\n[bold]Changes Made:[/bold]")
         console.print(strip_markdown_bold(result.changes_summary))
 
-        # The first version arrives pre-verified from tailor_verified; an interactively *refined*
-        # one is not re-verified here (surfaced as "not run", never as clean — the user is actively
-        # reviewing it, and the non-interactive --yes path always accepts the verified first draft).
+        # Every version carries its own grounding report: the first from tailor_verified, an
+        # interactively refined one from refine_verified — so a refined draft gets the SAME honesty
+        # pass as the primary (surfaced, never auto-stripped). Fail-safe leaves it "not run".
         _print_grounding_report(console, result.grounding_report)
 
         console.print("\n[bold]What would you like to do?[/bold]")
@@ -270,7 +270,7 @@ async def _tailor_workflow(
             refined: TailoredResume | None = await _llm_with_retry(
                 console,
                 partial(
-                    tailor_engine.refine,
+                    tailor_engine.refine_verified,
                     resume_data,
                     result,
                     "",
@@ -298,7 +298,7 @@ async def _tailor_workflow(
             refined = await _llm_with_retry(
                 console,
                 partial(
-                    tailor_engine.refine,
+                    tailor_engine.refine_verified,
                     resume_data,
                     result,
                     user_instructions,
@@ -402,7 +402,7 @@ async def _tailor_workflow(
             refined = await _llm_with_retry(
                 console,
                 partial(
-                    tailor_engine.refine,
+                    tailor_engine.refine_verified,
                     resume_data,
                     result,
                     user_instructions,

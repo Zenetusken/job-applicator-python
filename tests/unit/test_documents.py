@@ -1254,6 +1254,34 @@ async def test_generate_verified_failsafe_returns_letter() -> None:
     assert await gen.generate_verified(*_cl_inputs()) == "LETTER A"
 
 
+async def test_refine_verified_returns_letter_and_report() -> None:
+    # #4: the interactive cover-letter refine gets the SAME grounding pass — returns the refined
+    # letter AND its report (surfaced for review, never auto-retried).
+    gen = CoverLetterGenerator(LLMConfig(model="m"))
+    gen.refine = AsyncMock(return_value="REFINED LETTER")  # type: ignore[method-assign]
+    gen._verifier.verify = AsyncMock(  # type: ignore[method-assign]
+        return_value=GroundingReport(unsupported=[_flag("x")])
+    )
+    job, user, resume = _cl_inputs()
+    letter, report = await gen.refine_verified(job, user, resume, "current", "make it formal")
+    assert letter == "REFINED LETTER"
+    assert report is not None and len(report.unsupported) == 1
+    gen.refine.assert_awaited_once()  # type: ignore[attr-defined]
+
+
+async def test_refine_verified_failsafe_returns_none_report() -> None:
+    # fail-safe (#4): a verifier failure on refine returns (letter, None) — letter still delivered,
+    # report surfaced as "not run", never blocked or falsely "clean".
+    gen = CoverLetterGenerator(LLMConfig(model="m"))
+    gen.refine = AsyncMock(return_value="REFINED LETTER")  # type: ignore[method-assign]
+    gen._verifier.verify = AsyncMock(  # type: ignore[method-assign]
+        side_effect=GroundingUnavailableError("down")
+    )
+    job, user, resume = _cl_inputs()
+    letter, report = await gen.refine_verified(job, user, resume, "current", "make it formal")
+    assert letter == "REFINED LETTER" and report is None
+
+
 # --- Multi-file style-guide loader --------------------------------------------------
 
 

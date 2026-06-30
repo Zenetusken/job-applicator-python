@@ -937,6 +937,30 @@ class CoverLetterGenerator:
             + detail
         )
 
+    async def refine_verified(
+        self,
+        job: JobListing,
+        user: UserProfile,
+        resume: ResumeData,
+        current_text: str,
+        user_feedback: str,
+        style_guide: StyleGuide | None = None,
+        tone_section: str = "",
+    ) -> tuple[str, GroundingReport | None]:
+        """``refine`` plus a grounding pass on the refined letter (spec §6). Returns the letter and
+        its report (``None`` on fail-safe) so the interactive refine surfaces the same honesty check
+        as the primary generate_verified path. No auto-retry — a refine is the user's explicit edit;
+        the report is surfaced for the user to act on, never used to silently regenerate."""
+        letter = await self.refine(
+            job, user, resume, current_text, user_feedback, style_guide, tone_section
+        )
+        try:
+            report = await self._verifier.verify(letter, resume)
+        except GroundingUnavailableError as exc:
+            logger.info("Cover-letter refine grounding skipped (verifier unavailable): %s", exc)
+            report = None
+        return letter, report
+
     async def refine(
         self,
         job: JobListing,

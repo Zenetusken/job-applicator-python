@@ -527,7 +527,7 @@ class TestRefineCoverLetter:
             ),
         ):
             mock_gen = mock_gen_cls.return_value
-            mock_gen.refine = AsyncMock(return_value="refined letter")
+            mock_gen.refine_verified = AsyncMock(return_value=("refined letter", None))
             await _refine_cover_letter(
                 console,
                 settings,
@@ -570,7 +570,7 @@ class TestRefineCoverLetter:
             ),
         ):
             mock_gen = mock_gen_cls.return_value
-            mock_gen.refine = AsyncMock(side_effect=RuntimeError("fail"))
+            mock_gen.refine_verified = AsyncMock(side_effect=RuntimeError("fail"))
             await _refine_cover_letter(
                 console,
                 settings,
@@ -886,7 +886,7 @@ async def test_workflow_threads_one_shared_runtime_across_attempts() -> None:
         captured.append(runtime)
         gen = MagicMock()
         gen.generate_verified = AsyncMock(return_value="Dear Hiring Manager, a strong letter.")
-        gen.refine = AsyncMock(return_value="refined")
+        gen.refine_verified = AsyncMock(return_value=("refined", None))
         return gen
 
     console = MagicMock(spec=Console)

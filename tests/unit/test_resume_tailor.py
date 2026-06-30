@@ -63,6 +63,21 @@ async def test_verify_tailored_failsafe_leaves_none() -> None:
     assert out.grounding_report is None
 
 
+async def test_refine_verified_reverifies_the_refined_result() -> None:
+    # #4: an interactively refined résumé gets the SAME grounding pass as the primary — refine()
+    # then verify_tailored(), the report attached for review (never auto-stripped).
+    tailor = ResumeTailor(LLMConfig(model="m"))
+    tailor.refine = AsyncMock(return_value=_tr("REFINED text"))  # type: ignore[method-assign]
+    tailor._verifier.verify = AsyncMock(  # type: ignore[method-assign]
+        return_value=GroundingReport(unsupported=[ClaimCheck(claim="y", grounded=False)])
+    )
+    resume = ResumeData(raw_text="src", skills=[])
+    out = await tailor.refine_verified(resume, _tr("CURRENT"), "feedback", MagicMock())
+    assert out.tailored_text == "REFINED text"
+    assert out.grounding_report is not None and len(out.grounding_report.unsupported) == 1
+    tailor.refine.assert_awaited_once()  # type: ignore[attr-defined]
+
+
 @pytest.fixture
 def sample_resume():
     return ResumeData(
