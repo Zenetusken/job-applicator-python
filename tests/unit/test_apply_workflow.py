@@ -12,6 +12,7 @@ from collections.abc import Callable
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
 from job_applicator.models import (
@@ -24,6 +25,14 @@ from job_applicator.models import (
     ResumeData,
     UserProfile,
 )
+
+
+@pytest.fixture(autouse=True)
+def _pin_apply_delay(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the inter-application pacing delay to 0 for this file — keeps the real asyncio.sleep
+    out of the suite runtime and decoupled from the dev box's ./config.toml (which may set a long
+    delay). Pacing tests override it to a known value in their own body."""
+    monkeypatch.setenv("JOB_APPLICATOR_TARGET_DELAY_BETWEEN_APPLICATIONS_S", "0")
 
 
 def _jobs(n: int = 2) -> list[JobListing]:
@@ -161,6 +170,29 @@ def test_apply_submit_stops_at_daily_cap() -> None:
     assert result.exit_code == 0, result.output
     applicator.apply.assert_not_awaited()
     assert "cap reached" in result.output.lower()
+
+
+def test_apply_submit_paces_between_applications(monkeypatch: pytest.MonkeyPatch) -> None:
+    """On submit, consecutive real applications are paced by delay_between_applications_s —
+    one inter-application sleep between two applies, and none trailing the last."""
+    # Pin the delay via env (outranks the dev box's real ./config.toml, which may set a
+    # non-default value) so the asserted 2.0 literal stays meaningful.
+    monkeypatch.setenv("JOB_APPLICATOR_TARGET_DELAY_BETWEEN_APPLICATIONS_S", "2.0")
+    with patch("job_applicator.workflows.apply.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        result, applicator, _ = _drive(["-q", "python", "-n", "2", "--submit", "--no-cover-letter"])
+    assert result.exit_code == 0, result.output
+    assert applicator.apply.await_count == 2
+    sleep.assert_awaited_once_with(2.0)  # the configured gap, once, between the two applications
+
+
+def test_apply_dry_run_does_not_pace_between_applications(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dry runs are previews already paced by the per-step delays inside apply(); the
+    inter-application sleep is submit-gated, so it must NOT fire on a dry run."""
+    monkeypatch.setenv("JOB_APPLICATOR_TARGET_DELAY_BETWEEN_APPLICATIONS_S", "2.0")
+    with patch("job_applicator.workflows.apply.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        result, _applicator, _ = _drive(["-q", "python", "-n", "2", "--no-cover-letter"])
+    assert result.exit_code == 0, result.output
+    sleep.assert_not_awaited()
 
 
 def _drive_cover_letter(

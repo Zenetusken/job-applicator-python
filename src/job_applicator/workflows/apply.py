@@ -8,6 +8,7 @@ already-applied state, then renders the per-job results. ``typer.Exit`` propagat
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from collections import Counter
 from typing import TYPE_CHECKING
@@ -58,6 +59,7 @@ async def _apply_to_jobs(
             return
 
     app_results: list[ApplicationResult] = []
+    did_apply = False
     for job in jobs[:limit]:
         job_url = str(job.url)
         if submit and state.has_applied(
@@ -85,12 +87,23 @@ async def _apply_to_jobs(
                 )
                 break
 
+        # Submit-gated inter-application pacing — the knob (config.py:122) was dead. Dry runs are
+        # already spaced by apply()'s per-step random_delays, so only real submissions sleep, and
+        # only when a prior apply ran: a gap between applications, never trailing the last one.
+        if submit and did_apply:
+            delay_s = settings.target.delay_between_applications_s
+            # Show a status during the pause — a user-configured long delay (e.g. 30s) would
+            # otherwise look like a hang.
+            with console.status(f"Pacing {delay_s:g}s before the next application…"):
+                await asyncio.sleep(delay_s)
+
         with console.status(f"Applying to {job.title} at {job.company}..."):
             job_letter = cover_letters.get(job_url)
             ar: ApplicationResult = await applicator.apply(job, job_letter, submit=submit)
             app_results.append(ar)
             if submit:
                 state.record(ar)
+        did_apply = True
 
     if reporter and app_results:
         written: list[str] = []
