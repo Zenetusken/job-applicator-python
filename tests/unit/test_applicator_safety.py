@@ -6,6 +6,7 @@ application unless the caller explicitly opts in with submit=True.
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -189,3 +190,27 @@ async def test_fill_form_fields_skips_already_populated_field(app_settings: AppS
 
     assert "email" in filled
     el.fill.assert_not_awaited()  # NOT overwritten with the config value
+
+
+def test_validated_resume_upload_path_checks_existence_and_type(
+    app_settings: AppSettings, tmp_path: Path
+) -> None:
+    """The resume is validated (exists + a LinkedIn-supported type) before upload, so a missing /
+    wrong-type file fails with a clean typed error, not an opaque Playwright failure mid-apply."""
+    from job_applicator.applicators.linkedin import _validated_resume_upload_path
+    from job_applicator.exceptions import FormFillingError, ResumeNotFoundError
+
+    app_settings.resume_path = str(tmp_path / "missing.pdf")
+    with pytest.raises(ResumeNotFoundError):
+        _validated_resume_upload_path(app_settings)
+
+    txt = tmp_path / "resume.txt"
+    txt.write_text("plain text resume")
+    app_settings.resume_path = str(txt)
+    with pytest.raises(FormFillingError):  # exists but unsupported type
+        _validated_resume_upload_path(app_settings)
+
+    pdf = tmp_path / "resume.pdf"
+    pdf.write_text("%PDF-fake")
+    app_settings.resume_path = str(pdf)
+    assert _validated_resume_upload_path(app_settings) == pdf  # exists + supported
