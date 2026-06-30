@@ -15,7 +15,13 @@ from playwright_stealth import Stealth
 from job_applicator.config import BrowserConfig
 from job_applicator.exceptions import BrowserError
 from job_applicator.utils.logging import get_logger
-from job_applicator.utils.region import detect_chrome_user_agent, detect_locale, detect_timezone
+from job_applicator.utils.region import (
+    detect_chrome_user_agent,
+    detect_locale,
+    detect_timezone,
+    navigator_languages,
+    navigator_platform_for_ua,
+)
 
 if TYPE_CHECKING:
     from pyvirtualdisplay import Display
@@ -26,6 +32,20 @@ logger = get_logger("browser.manager")
 # localStorage, IndexedDB, service workers, history) between runs. LinkedIn
 # fingerprints this state; a fresh context every time looks like a bot.
 PROFILE_DIR = Path.home() / ".job-applicator" / "browser-profile"
+
+
+def _aligned_stealth(user_agent: str, locale: str) -> Stealth:
+    """Build a Stealth whose navigator overrides match the advertised UA + locale.
+
+    playwright_stealth defaults to navigator.platform='Win32' and navigator.languages=('en-US',
+    'en'), which contradict a Linux UA or a non-US locale — a detectable fingerprint
+    inconsistency. Aligning them keeps platform/languages consistent with what the context
+    already advertises (the resolved user_agent / locale).
+    """
+    return Stealth(
+        navigator_platform_override=navigator_platform_for_ua(user_agent),
+        navigator_languages_override=navigator_languages(locale),
+    )
 
 
 class BrowserManager:
@@ -58,7 +78,6 @@ class BrowserManager:
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
         self._persistent_context: BrowserContext | None = None
-        self._stealth = Stealth()
         self._display: Display | None = None
         self._tmp_profile: tempfile.TemporaryDirectory[str] | None = None
         self._active_profile_dir: Path | None = None  # the dir actually launched with
@@ -150,8 +169,11 @@ class BrowserManager:
                 timezone_id=resolved_tz,
             )
             self._persistent_context.set_default_timeout(self._config.timeout_ms)
-            # Apply stealth to the persistent context
-            await self._stealth.apply_stealth_async(self._persistent_context)
+            # Apply stealth, with navigator overrides aligned to the advertised UA + locale — the
+            # library defaults (Win32 platform + en-US/en languages) otherwise contradict a Linux
+            # UA or a non-US locale, a detectable fingerprint inconsistency.
+            stealth = _aligned_stealth(resolved_ua, resolved_locale)
+            await stealth.apply_stealth_async(self._persistent_context)
             logger.info(
                 "Browser launched (headless=%s, locale=%s, tz=%s)",
                 self._config.headless,

@@ -247,6 +247,34 @@ def _platform_ua_token() -> str:
     return "X11; Linux x86_64"
 
 
+def navigator_platform_for_ua(user_agent: str) -> str:
+    """The ``navigator.platform`` value consistent with the OS token in ``user_agent``.
+
+    playwright_stealth otherwise hardcodes ``Win32``; aligning navigator.platform with the
+    advertised UA removes a platform-vs-UA contradiction (a Win32 platform under a Linux UA is a
+    classic bot tell). Derived from the resolved UA, so it stays consistent even with a pinned UA.
+    """
+    if "Windows" in user_agent:
+        return "Win32"
+    if "Macintosh" in user_agent or "Mac OS X" in user_agent:
+        return "MacIntel"
+    return "Linux x86_64"
+
+
+def navigator_languages(locale: str) -> tuple[str, ...]:
+    """``navigator.languages`` consistent with the advertised ``locale``.
+
+    Returns ``(locale, base-lang)`` (e.g. ``("fr-CA", "fr")``), or just ``(locale,)`` for a bare
+    language tag. playwright_stealth otherwise hardcodes ``("en-US", "en")``; aligning the primary
+    language with the context locale removes a languages-vs-locale contradiction. A bare-lang
+    locale must NOT duplicate — ``("en", "en")`` would itself be a tell (no real browser repeats a
+    language).
+    """
+    if "-" not in locale:
+        return (locale,)
+    return (locale, locale.split("-")[0])
+
+
 @functools.lru_cache(maxsize=1)
 def _detect_chrome_major() -> str | None:
     candidates = (
