@@ -462,7 +462,7 @@ def search(
     query: str = typer.Option(..., "--query", "-q", help="Search query."),
     location: str = typer.Option("", "--location", "-l", help="Location filter."),
     remote: bool = typer.Option(False, "--remote", "-r", help="Remote jobs only."),
-    max_results: int = typer.Option(25, "--max", "-n", help="Max results."),
+    max_results: int = typer.Option(25, "--max", "-n", min=1, max=50, help="Max results (1-50)."),
     headed: bool = typer.Option(False, "--headed", help="Run browser in headed mode."),
     as_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
     verbose: bool = _verbose_option(),
@@ -814,7 +814,7 @@ def apply(
     from_ref: str = typer.Option(
         "", "--from", help="Apply to a stored job by id or URL (from `status`); skips searching."
     ),
-    limit: int = typer.Option(5, "--limit", "-n", help="Max applications."),
+    limit: int = typer.Option(5, "--limit", "-n", min=1, max=25, help="Max applications (1-25)."),
     cover_letter: bool = typer.Option(True, "--cover-letter/--no-cover-letter", help="AI cover."),
     headed: bool = typer.Option(False, "--headed", help="Run browser in headed mode."),
     resume_path: str = typer.Option("", "--resume", help="Path to resume file."),
@@ -1305,7 +1305,7 @@ def match(
     ctx: typer.Context,
     resume_path: str = typer.Option("", "--resume", help="Path to resume file."),
     jobs_file: str = typer.Option("", "--jobs-file", help="JSON file with job listings."),
-    top_k: int = typer.Option(5, "--top-k", "-k", min=1, help="Number of top matches."),
+    top_k: int = typer.Option(5, "--top-k", "-k", min=1, max=25, help="Top matches (1-25)."),
     min_score: float = typer.Option(
         0.0, "--min-score", min=0.0, max=1.0, help="Minimum match score (0.0-1.0)."
     ),
@@ -1695,7 +1695,7 @@ def batch(
         "", "--query", "-q", help="Search query (alternative to --jobs-file)."
     ),
     site: str = typer.Option("linkedin", "--site", "-s", help="Job board for --query."),
-    top_k: int = typer.Option(5, "--top-k", "-k", min=1, help="Max jobs to tailor."),
+    top_k: int = typer.Option(5, "--top-k", "-k", min=1, max=25, help="Jobs to tailor (1-25)."),
     min_score: float = typer.Option(
         0.0, "--min-score", min=0.0, max=1.0, help="Skip jobs below this score."
     ),
