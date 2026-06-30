@@ -982,6 +982,7 @@ def apply(
             # in the form. LLM calls are local, so the preview is worth the cost.
             cover_letters: dict[str, str] = {}
             cover_letter_pdf_paths: dict[str, str] = {}
+            cover_letter_failures: set[str] = set()  # urls whose requested letter failed
             if cover_letter and settings.resume_path:
                 from job_applicator.documents.cover_letter import CoverLetterGenerator
                 from job_applicator.documents.job_category import detect_job_category
@@ -1016,7 +1017,7 @@ def apply(
 
                 async def _gen_one(
                     job: JobListing,
-                ) -> tuple[str, str, str | None] | None:
+                ) -> tuple[str, str | None, str | None]:
                     async with sem:
                         try:
                             letter = await generator.generate_verified(
@@ -1051,16 +1052,17 @@ def apply(
                         except Exception as exc:
                             msg = f"Cover letter failed for {job.title}: {exc}"
                             err_console.print(f"[yellow]{msg}[/yellow]")
-                            return None
+                            return str(job.url), None, None  # url known; None letter = FAILED
 
                 with err_console.status("Generating cover letters (parallel)..."):
                     results_cl = await asyncio.gather(*(_gen_one(j) for j in jobs[:limit]))
-                    for entry in results_cl:
-                        if entry is not None:
-                            url, letter, pdf_path = entry
+                    for url, letter, pdf_path in results_cl:
+                        if letter is not None:
                             cover_letters[url] = letter
                             if pdf_path:
                                 cover_letter_pdf_paths[url] = pdf_path
+                        else:
+                            cover_letter_failures.add(url)  # NEW-1: track requested-but-failed
 
             # Apply to jobs
 
@@ -1079,6 +1081,7 @@ def apply(
                 console=err_console if as_json else console,
                 reporter=reporter,
                 cover_letter_pdf_paths=cover_letter_pdf_paths,
+                cover_letter_failures=cover_letter_failures,
             )
 
     try:
