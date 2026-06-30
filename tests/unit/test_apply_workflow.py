@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
+from job_applicator.config import AppSettings
 from job_applicator.models import (
     ApplicationResult,
     ApplicationStatus,
@@ -549,3 +550,126 @@ def test_apply_style_guide_messages_go_to_stderr_not_stdout() -> None:
     assert "Dry run" in result.stderr
     data = _extract_json_array(stdout)
     assert len(data) == 1
+
+
+async def _run_loop(
+    app_settings: AppSettings,
+    jobs: list[JobListing],
+    *,
+    submit: bool,
+    cover_letter_failures: set[str] | None = None,
+    record_side_effect: Exception | None = None,
+) -> MagicMock:
+    """Call _apply_to_jobs directly with a mock applicator + state; return the applicator mock."""
+    from job_applicator.workflows import apply as apply_mod
+
+    app_settings.target.delay_between_applications_s = 0  # no real pacing sleep in the unit suite
+    applicator = MagicMock()
+
+    async def _apply(
+        job: JobListing, letter: str | None, submit: bool = False
+    ) -> ApplicationResult:
+        status = ApplicationStatus.SUBMITTED if submit else ApplicationStatus.PENDING
+        return ApplicationResult(job=job, status=status)
+
+    applicator.apply = AsyncMock(side_effect=_apply)
+    st = MagicMock(**{"has_applied.return_value": False, "count_today.return_value": 0})
+    if record_side_effect is not None:
+        st.record.side_effect = record_side_effect
+
+    with patch.object(apply_mod, "ApplicationState", return_value=st):
+        await apply_mod._apply_to_jobs(
+            jobs,
+            applicator,
+            {},
+            app_settings,
+            "linkedin",
+            len(jobs),
+            submit=submit,
+            validate=False,
+            as_json=False,
+            console=MagicMock(),
+            reporter=None,
+            cover_letter_failures=cover_letter_failures,
+        )
+    return applicator
+
+
+@pytest.mark.asyncio
+async def test_apply_skips_submit_when_cover_letter_failed(app_settings: AppSettings) -> None:
+    """NEW-1 (fail-loud): on a real --submit, a job whose REQUESTED cover letter FAILED to generate
+    is skipped (not applied), never silently submitted letterless — a real application missing its
+    intended letter is spent + unrecoverable, unlike a skipped job."""
+    jobs = _jobs(2)
+    applicator = await _run_loop(
+        app_settings, jobs, submit=True, cover_letter_failures={str(jobs[0].url)}
+    )
+    applied = {str(c.args[0].url) for c in applicator.apply.await_args_list}
+    assert str(jobs[0].url) not in applied  # failed-letter job NOT submitted
+    assert str(jobs[1].url) in applied  # the other job still applied
+
+
+@pytest.mark.asyncio
+async def test_apply_dry_run_proceeds_when_cover_letter_failed(app_settings: AppSettings) -> None:
+    """The fail-loud skip is SUBMIT-only: a dry run sends no real application, so a failed-letter
+    job still runs (failure surfaced, nothing account-spending)."""
+    jobs = _jobs(2)
+    applicator = await _run_loop(
+        app_settings, jobs, submit=False, cover_letter_failures={str(jobs[0].url)}
+    )
+    assert applicator.apply.await_count == 2  # both applied in dry run
+
+
+@pytest.mark.asyncio
+async def test_apply_loop_stops_on_record_failure_no_cap_bypass(app_settings: AppSettings) -> None:
+    """NEW-2 (fail-CLOSED): a StateError from state.record must STOP the loop, never continue. Under
+    WAL a read can succeed while a write fails, freezing count_today — so continuing would bypass
+    the daily cap and send a real apply to EVERY job. The loop breaks after the first unrecorded
+    apply (bounded to one), never mass-applies."""
+    from job_applicator.state import StateError
+
+    jobs = _jobs(5)  # 5 jobs, but the cap must NOT be bypassed when record keeps failing
+    applicator = await _run_loop(
+        app_settings, jobs, submit=True, record_side_effect=StateError("database is locked")
+    )
+    assert applicator.apply.await_count == 1  # stopped after the first apply, never reached 5
+
+
+@pytest.mark.asyncio
+async def test_apply_failed_letter_job_surfaced_as_failed(
+    app_settings: AppSettings, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A skipped failed-letter job is surfaced as a FAILED result in --json (not silently dropped),
+    so a scripted --submit --json run can detect the letter never went out."""
+    from job_applicator.workflows import apply as apply_mod
+
+    app_settings.target.delay_between_applications_s = 0
+    jobs = _jobs(1)
+    applicator = MagicMock()
+
+    async def _apply(
+        job: JobListing, letter: str | None, submit: bool = False
+    ) -> ApplicationResult:
+        return ApplicationResult(job=job, status=ApplicationStatus.SUBMITTED)
+
+    applicator.apply = AsyncMock(side_effect=_apply)
+    st = MagicMock(**{"has_applied.return_value": False, "count_today.return_value": 0})
+    with patch.object(apply_mod, "ApplicationState", return_value=st):
+        await apply_mod._apply_to_jobs(
+            jobs,
+            applicator,
+            {},
+            app_settings,
+            "linkedin",
+            1,
+            submit=True,
+            validate=False,
+            as_json=True,
+            console=MagicMock(),
+            reporter=None,
+            cover_letter_failures={str(jobs[0].url)},
+        )
+    data = json.loads(capsys.readouterr().out)
+    assert data[0]["status"] == "failed"
+    assert "cover letter" in (data[0]["error"] or "").lower()
+    applicator.apply.assert_not_awaited()  # the real apply never happened

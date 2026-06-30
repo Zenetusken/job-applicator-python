@@ -17,7 +17,7 @@ import typer
 from rich.markup import escape
 from rich.table import Table
 
-from job_applicator.state import ApplicationState
+from job_applicator.state import ApplicationState, StateError
 
 if TYPE_CHECKING:
     from rich.console import Console
@@ -42,6 +42,7 @@ async def _apply_to_jobs(
     console: Console,
     reporter: VerboseReporter | None,
     cover_letter_pdf_paths: dict[str, str] | None = None,
+    cover_letter_failures: set[str] | None = None,
 ) -> None:
     """Apply to each job (dry-run unless ``submit``) and render results."""
     from job_applicator.models import ApplicationResult, ApplicationStatus
@@ -59,6 +60,7 @@ async def _apply_to_jobs(
             return
 
     app_results: list[ApplicationResult] = []
+    failed_letters = cover_letter_failures or set()
     did_apply = False
     for job in jobs[:limit]:
         job_url = str(job.url)
@@ -78,8 +80,35 @@ async def _apply_to_jobs(
             )
             continue
 
+        # NEW-1 (fail-loud): a REQUESTED cover letter that failed to generate must NOT be silently
+        # submitted letterless on a real apply — a sent letterless application is spent and
+        # unrecoverable, so skip the job (recoverable). Dry runs send nothing, so they proceed.
+        if submit and job_url in failed_letters:
+            console.print(
+                f"[red]Skipping {job.title} at {job.company} — cover letter generation failed; "
+                "not submitting a letterless application.[/red]"
+            )
+            app_results.append(
+                ApplicationResult(
+                    job=job,
+                    status=ApplicationStatus.FAILED,
+                    error_message=(
+                        "Cover letter generation failed — not submitted (re-run when the verifier/"
+                        "LLM endpoint is back, or use --no-cover-letter to apply without a letter)."
+                    ),
+                )
+            )
+            continue
+
         if submit:
-            today_count = state.count_today(board=site)
+            try:
+                today_count = state.count_today(board=site)
+            except StateError as exc:
+                # Can't verify the cap → STOP rather than risk exceeding it.
+                console.print(
+                    f"[red]Cannot read the daily cap ({exc}); stopping the apply loop.[/red]"
+                )
+                break
             if today_count >= daily_cap:
                 console.print(
                     f"[yellow]Daily application cap reached ({today_count}/{daily_cap}). "
@@ -102,7 +131,28 @@ async def _apply_to_jobs(
             ar: ApplicationResult = await applicator.apply(job, job_letter, submit=submit)
             app_results.append(ar)
             if submit:
-                state.record(ar)
+                try:
+                    state.record(ar)
+                except StateError as exc:
+                    # The apply already happened but couldn't be recorded. STOP fail-closed: under
+                    # WAL a read can succeed while a write fails, so count_today freezes and the
+                    # daily cap would be bypassed if we kept applying. Break (the partial results
+                    # still render below) + warn LOUDLY — a SUBMITTED-but-unrecorded apply may be
+                    # re-applied next run.
+                    sent = ar.status == ApplicationStatus.SUBMITTED
+                    detail = (
+                        f"Applied to {job.title} but FAILED to record it — it may be re-applied "
+                        "next run; note it manually."
+                        if sent
+                        else f"Failed to record the {ar.status.value} result for {job.title}."
+                    )
+                    console.print(
+                        f"[red]⚠ {detail} ({exc}) Stopping — cannot verify the daily cap once "
+                        "recording fails.[/red]"
+                    )
+                    if reporter:
+                        reporter.record_error(detail)
+                    break
         did_apply = True
 
     if reporter and app_results:
