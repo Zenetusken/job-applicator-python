@@ -149,3 +149,29 @@ def test_detect_chrome_user_agent_falls_back(monkeypatch: pytest.MonkeyPatch) ->
     assert region.detect_chrome_user_agent() == region._DEFAULT_USER_AGENT
     region._detect_chrome_major.cache_clear()
     region.detect_chrome_user_agent.cache_clear()
+
+
+def test_navigator_platform_for_ua_matches_os_token() -> None:
+    """navigator.platform must match the OS token in the advertised UA (not stealth's Win32
+    default) — a Win32 platform under a Linux UA is a classic fingerprint contradiction."""
+    assert (
+        region.navigator_platform_for_ua("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36")
+        == "Linux x86_64"
+    )
+    assert (
+        region.navigator_platform_for_ua("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit")
+        == "Win32"
+    )
+    assert (
+        region.navigator_platform_for_ua("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Apple")
+        == "MacIntel"
+    )
+
+
+def test_navigator_languages_aligns_with_locale() -> None:
+    """navigator.languages must lead with the advertised locale (not stealth's en-US default); a
+    bare-lang locale returns a single entry — a duplicated ('en', 'en') would itself be a tell."""
+    assert region.navigator_languages("fr-CA") == ("fr-CA", "fr")
+    assert region.navigator_languages("en-CA") == ("en-CA", "en")
+    assert region.navigator_languages("en-US") == ("en-US", "en")
+    assert region.navigator_languages("en") == ("en",)

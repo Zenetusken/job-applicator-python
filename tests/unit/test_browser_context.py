@@ -318,3 +318,17 @@ async def test_fill_form_fields_surfaces_present_but_failed_fill(app_settings: A
     assert "firstName" in errors  # present-but-failed → surfaced
     assert "firstName" not in filled
     assert "lastName" not in errors  # absent → not an error
+
+
+def test_aligned_stealth_overrides_match_ua_and_locale() -> None:
+    """The stealth navigator overrides are aligned with the advertised UA + locale (not the
+    library's Win32 / en-US defaults), so navigator.platform/languages don't contradict the
+    Linux UA / fr-CA locale the context advertises."""
+    from job_applicator.browser.manager import _aligned_stealth
+
+    stealth = _aligned_stealth(
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/149.0.0.0 Safari/537.36",
+        "fr-CA",
+    )
+    assert stealth.navigator_platform_override == "Linux x86_64"
+    assert stealth.navigator_languages_override == ("fr-CA", "fr")
