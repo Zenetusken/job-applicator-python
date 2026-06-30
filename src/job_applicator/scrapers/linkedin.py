@@ -361,14 +361,24 @@ class LinkedInScraper(BaseScraper):
                     total,
                     failures,
                 )
-            if not jobs and failures:
-                # Cards were present but EVERY one failed to extract → stale field selectors
-                # against the live DOM (a genuinely empty search returns 0 CARDS above, handled
-                # separately). FAIL LOUDLY — mirrors the Indeed honest-failure guard — instead of
-                # silently reporting 0 jobs.
+            if not jobs and total:
+                # Cards were present (total > 0) but NOT ONE yielded a job. Key on `total`, NOT
+                # `failures`: a stale TITLE/href selector makes _extract_job RETURN None (it does
+                # not raise), so `failures` stays 0 — a failures-keyed guard would silently return
+                # [], the exact masking this prevents (R1). FAIL LOUDLY, consistent with the 0-cards
+                # guard above which already treats a LinkedIn empty as suspicious (not a silent []);
+                # max_results=0 leaves total=0 and is a legitimate empty, excluded here.
+                # TRADE-OFF (DOM-dependent, UNVERIFIED against live LinkedIn): a genuinely-empty
+                # search that still renders a title-less card-matching element would raise here too.
+                # A loud, disambiguable error is the chosen failure mode over a silent [] that masks
+                # a broken scrape — so the message names BOTH causes rather than asserting "stale".
                 raise ScraperError(
-                    f"Found {total} LinkedIn job card(s) but extracted 0 jobs ({failures} failed) "
-                    "— the field selectors are stale against the current LinkedIn DOM."
+                    f"Found {total} LinkedIn job card(s) but extracted 0 jobs "
+                    f"({failures} threw, {total - failures} returned no title/href). "
+                    "The title/field selectors are likely stale against the live LinkedIn "
+                    "DOM — or this search genuinely has no matches and rendered only "
+                    "non-card elements. Re-run a broader, known-populated search to "
+                    "disambiguate."
                 )
             logger.info("Scraped %d jobs from LinkedIn", len(jobs))
             return jobs
