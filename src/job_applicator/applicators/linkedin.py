@@ -16,6 +16,7 @@ from job_applicator.browser.actions import (
 )
 from job_applicator.browser.manager import BrowserManager
 from job_applicator.config import AppSettings
+from job_applicator.exceptions import FormFillingError
 from job_applicator.models import (
     ApplicationResult,
     ApplicationStatus,
@@ -29,6 +30,24 @@ logger = get_logger("applicators.linkedin")
 
 # Error screenshots land here (not cwd), with slugified names — see the apply() failure path.
 _DEBUG_DIR = Path.home() / ".job-applicator" / "debug"
+
+# LinkedIn's resume upload accepts these document types.
+_RESUME_UPLOAD_TYPES = (".pdf", ".doc", ".docx")
+
+
+def _validated_resume_upload_path(config: AppSettings) -> Path:
+    """The configured resume validated for upload — it EXISTS (via ``config.get_resume_path``) and
+    is a LinkedIn-supported type. Raises a clean typed error BEFORE ``set_input_files`` so a
+    missing / wrong-type resume fails with a clear message, not an opaque Playwright error
+    mid-apply (which would otherwise surface as a bare FAILED with a stack-trace-ish detail).
+    """
+    path = config.get_resume_path()  # ResumeNotFoundError if missing (previously dead code)
+    if path.suffix.lower() not in _RESUME_UPLOAD_TYPES:
+        raise FormFillingError(
+            f"Resume type {path.suffix or '(none)'!r} is not supported for LinkedIn upload "
+            "(use .pdf / .doc / .docx); convert it and retry."
+        )
+    return path
 
 
 class LinkedInApplicator(BaseApplicator):
@@ -122,7 +141,8 @@ class LinkedInApplicator(BaseApplicator):
         # Upload resume if file input exists
         resume_input = await page.query_selector('input[type="file"]')
         if resume_input and self._config.resume_path:
-            await resume_input.set_input_files(self._config.resume_path)
+            resume_path = _validated_resume_upload_path(self._config)  # exists + supported type
+            await resume_input.set_input_files(str(resume_path))
             validation.resume_uploaded = True
             await random_delay(1.0, 2.0)
 
