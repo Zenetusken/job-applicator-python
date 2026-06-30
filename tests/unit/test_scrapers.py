@@ -10,7 +10,7 @@ import pytest
 from playwright.async_api import Error as PlaywrightError
 
 from job_applicator.config import AppSettings
-from job_applicator.exceptions import LoginRequiredError
+from job_applicator.exceptions import LoginRequiredError, RateLimitError, ScraperError
 from job_applicator.scrapers.base import SearchParams
 from job_applicator.scrapers.linkedin import LinkedInScraper, _is_authenticated_url
 
@@ -105,6 +105,7 @@ async def test_ensure_session_true_when_logged_in(
     scraper._load_cookies = AsyncMock(return_value=False)
     page = AsyncMock()
     page.url = "https://www.linkedin.com/feed/"
+    page.title = AsyncMock(return_value="Feed | LinkedIn")
     scraper._new_stealth_page = AsyncMock(return_value=page)
 
     assert await scraper._ensure_session(MagicMock()) is True
@@ -122,10 +123,67 @@ async def test_ensure_session_false_when_logged_out(
     scraper._load_cookies = AsyncMock(return_value=False)
     page = AsyncMock()
     page.url = "https://www.linkedin.com/uas/login"
+    page.title = AsyncMock(return_value="Sign In | LinkedIn")
     scraper._new_stealth_page = AsyncMock(return_value=page)
 
     assert await scraper._ensure_session(MagicMock()) is False
     assert scraper._logged_in is False
+
+
+@pytest.mark.asyncio
+async def test_ensure_session_raises_scraper_error_on_security_checkpoint(
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A LinkedIn security checkpoint must raise a distinct ScraperError, NOT be mis-diagnosed as
+    'no session' (False -> LoginRequiredError -> 'run login'), which is the wrong remedy for a
+    possibly-flagged account (re-running login automation raises the account's risk)."""
+    monkeypatch.setattr("job_applicator.scrapers.linkedin.random_delay", AsyncMock())
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    scraper._load_cookies = AsyncMock(return_value=False)
+    page = AsyncMock()
+    page.url = "https://www.linkedin.com/checkpoint/challenge/"
+    page.title = AsyncMock(return_value="Security Verification | LinkedIn")
+    scraper._new_stealth_page = AsyncMock(return_value=page)
+    with pytest.raises(ScraperError):
+        await scraper._ensure_session(MagicMock())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "title",
+    [
+        "You've reached the weekly limit",
+        "Monthly limit reached",
+        "You've reached the commercial use limit",
+        "Too many requests",
+    ],
+)
+async def test_raise_if_blocked_rate_limit_raises_rate_limit_error(
+    app_settings: AppSettings, title: str
+) -> None:
+    """A LinkedIn rate-limit / usage-limit interstitial (weekly/monthly/commercial-use/too-many)
+    raises the typed RateLimitError (so a caller can back off), not the generic 'blocked' error."""
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    page = MagicMock()
+    page.url = "https://www.linkedin.com/feed/"
+    page.title = AsyncMock(return_value=title)
+    with pytest.raises(RateLimitError):
+        await scraper._raise_if_blocked(page)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "title",
+    ["Feed | LinkedIn", "Verify your email | LinkedIn"],  # the 2nd is a benign near-miss
+)
+async def test_raise_if_blocked_passes_benign_pages(app_settings: AppSettings, title: str) -> None:
+    """A normal page — including a benign 'verify your email' page — is NOT a block: only the
+    CAPTCHA wording 'verify you are ...' counts, so a legitimate run is never aborted."""
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    page = MagicMock()
+    page.url = "https://www.linkedin.com/feed/"
+    page.title = AsyncMock(return_value=title)
+    await scraper._raise_if_blocked(page)  # no raise
 
 
 @pytest.mark.asyncio
@@ -146,6 +204,30 @@ async def test_interactive_login_saves_session_on_detect(
     assert await scraper.interactive_login(timeout_s=5) is True
     assert scraper._logged_in is True
     scraper._save_cookies.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_interactive_login_opens_login_page_on_checkpoint(
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A checkpoint during the pre-check must NOT abort `login` — opening the login page is exactly
+    how the user manually clears a checkpoint. interactive_login falls through to the manual
+    flow."""
+    monkeypatch.setattr("job_applicator.scrapers.linkedin.random_delay", AsyncMock())
+    navigated = AsyncMock()
+    monkeypatch.setattr("job_applicator.scrapers.linkedin.navigate", navigated)
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    scraper._get_context = AsyncMock(return_value=MagicMock())
+    scraper._ensure_session = AsyncMock(side_effect=ScraperError("checkpoint"))  # pre-check blocks
+    scraper._save_cookies = AsyncMock()
+    page = AsyncMock()
+    page.url = "https://www.linkedin.com/feed/"  # poll detects sign-in once the manual flow opens
+    scraper._new_stealth_page = AsyncMock(return_value=page)
+
+    result = await scraper.interactive_login(timeout_s=5)
+
+    assert result is True  # did NOT abort — fell through, opened login, detected sign-in
+    navigated.assert_awaited()  # the login page was opened (the manual remedy for a checkpoint)
 
 
 def test_is_authenticated_url_rejects_logged_out_redirect() -> None:
@@ -177,6 +259,16 @@ async def test_has_active_session_false_on_transient_error(
 
     assert await scraper.has_active_session() is False  # NavigationError swallowed
     page.close.assert_awaited_once()  # page still cleaned up
+
+
+@pytest.mark.asyncio
+async def test_has_active_session_false_on_anti_bot_block(app_settings: AppSettings) -> None:
+    """A best-effort session check degrades an anti-bot block (ScraperError) to False, like a
+    transient failure — so `import-cookies --verify` reports cleanly, not a raw traceback."""
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    scraper._get_context = AsyncMock(return_value=MagicMock())
+    scraper._ensure_session = AsyncMock(side_effect=ScraperError("checkpoint"))
+    assert await scraper.has_active_session() is False
 
 
 @pytest.mark.asyncio
@@ -487,6 +579,8 @@ async def test_scrape_listings_no_cards_raises_scraper_error(
     page = MagicMock()
     page.query_selector_all = AsyncMock(return_value=[])  # no cards
     page.close = AsyncMock()
+    page.url = "https://www.linkedin.com/jobs/search"
+    page.title = AsyncMock(return_value="Jobs | LinkedIn")  # not a block; falls to the guard
 
     async def _page(_ctx: object) -> object:
         return page

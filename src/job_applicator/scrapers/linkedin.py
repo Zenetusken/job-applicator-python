@@ -18,7 +18,12 @@ from job_applicator.browser.actions import (
 )
 from job_applicator.browser.manager import BrowserManager
 from job_applicator.config import AppSettings
-from job_applicator.exceptions import LoginRequiredError, NavigationError, ScraperError
+from job_applicator.exceptions import (
+    LoginRequiredError,
+    NavigationError,
+    RateLimitError,
+    ScraperError,
+)
 from job_applicator.models import JobBoard, JobListing, SessionHealth
 from job_applicator.scrapers.base import BaseScraper, SearchParams
 from job_applicator.utils.cookies import load_cookies, save_cookies
@@ -122,6 +127,46 @@ class LinkedInScraper(BaseScraper):
         )
         return False
 
+    async def _raise_if_blocked(self, page: Page) -> None:
+        """Raise a precise typed error if the page is a LinkedIn anti-bot wall.
+
+        A security checkpoint/challenge served to a flagged account otherwise fails
+        ``_is_authenticated_url`` and is mis-diagnosed as "no session" — prescribing re-login, the
+        wrong remedy for a flagged account (re-running login automation raises the account's risk).
+        A rate-limit interstitial otherwise surfaces as the generic "stale or blocked" 0-cards
+        error. Detect both via URL + title tokens (mirrors ``IndeedScraper._is_blocked``) and raise
+        the right error so the caller STOPS / backs off rather than retrying or re-authenticating.
+        A title that can't be read is treated as "not blocked".
+        """
+        url = page.url.lower()
+        try:
+            title = (await page.title()).lower()
+        except PlaywrightError:
+            title = ""
+        if (
+            "/checkpoint" in url
+            or "/challenge" in url
+            or "captcha" in url
+            or "security verification" in title
+            or "unusual activity" in title
+            or "verify you are" in title  # CAPTCHA wording; NOT the benign "verify your email"
+        ):
+            raise ScraperError(
+                "LinkedIn served a security checkpoint/challenge — the account may be under "
+                "review. Sign in manually in a real browser to clear it; do NOT re-run login "
+                "automation (it raises the account's risk). Stop automated runs until resolved."
+            )
+        if (
+            "too many requests" in title
+            or "commercial use limit" in title  # LinkedIn's canonical (monthly) search cap
+            or "weekly limit" in title
+            or "monthly limit" in title
+        ):
+            raise RateLimitError(
+                "LinkedIn returned a rate-limit / usage-limit interstitial. Back off and retry "
+                "later, and reduce search/apply volume."
+            )
+
     async def _ensure_session(self, context: BrowserContext) -> bool:
         """Return True if an authenticated LinkedIn session is already active.
 
@@ -136,6 +181,8 @@ class LinkedInScraper(BaseScraper):
         try:
             await page.goto(f"{LINKEDIN_BASE}/feed/", wait_until="domcontentloaded", timeout=15_000)
             await random_delay(1.0, 2.0)
+            # A checkpoint/challenge here must be surfaced as itself, not mis-read as "no session".
+            await self._raise_if_blocked(page)
             if _is_authenticated_url(page.url):
                 self._logged_in = True
                 logger.info("Reusing existing LinkedIn session")
@@ -163,8 +210,11 @@ class LinkedInScraper(BaseScraper):
         """
         try:
             return await self._ensure_session(await self._get_context())
-        except NavigationError:
-            logger.warning("Session check could not load the feed; treating as no session.")
+        except (NavigationError, ScraperError):
+            # A transient failure OR an anti-bot block both mean "no usable session right now".
+            # This is a best-effort check (import-cookies --verify), so degrade to False rather
+            # than raise; the block itself is already logged.
+            logger.warning("Session check could not confirm a usable session; treating as none.")
             return False
 
     async def check_session(self) -> SessionHealth:
@@ -213,9 +263,10 @@ class LinkedInScraper(BaseScraper):
             if await self._ensure_session(context):
                 logger.info("Already signed in — existing session is active.")
                 return True
-        except NavigationError:
-            # A transient pre-check failure must not abort the login command;
-            # fall through and open the login page.
+        except (NavigationError, ScraperError):
+            # A transient pre-check failure OR an anti-bot checkpoint/rate-limit must not abort the
+            # login command — opening the login page IS how the user manually clears a checkpoint.
+            # Fall through and open it.
             logger.info("Could not pre-check existing session; opening the login page.")
 
         page = await self._new_stealth_page(context)
@@ -316,7 +367,9 @@ class LinkedInScraper(BaseScraper):
             if not found or not cards:
                 # 0 cards is ambiguous (genuinely-empty search vs stale container selectors /
                 # unauthenticated / anti-bot block) — FAIL LOUDLY rather than report a silent
-                # empty result that masks a probable failure.
+                # empty result that masks a probable failure. Classify a checkpoint / rate-limit
+                # first (a precise typed error the caller can act on) before the generic message.
+                await self._raise_if_blocked(page)
                 raise ScraperError(
                     "No LinkedIn job cards found on the results page — the container selectors "
                     "are stale, the session is unauthenticated, or the search was blocked."
