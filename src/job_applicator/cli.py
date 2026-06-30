@@ -1531,6 +1531,156 @@ def match(
 
 
 @app.command()
+def rescore(
+    ctx: typer.Context,
+    resume_path: str = typer.Option("", "--resume", help="Résumé file (default: config)."),
+    board: str = typer.Option("", "--board", help="Only rescore one board's jobs (e.g. linkedin)."),
+    limit: int = typer.Option(10_000, "--limit", "-n", min=1, help="Max stored jobs to rescore."),
+    as_json: bool = typer.Option(False, "--json", help="Emit the rescore deltas as JSON."),
+    ocr_mode: OCRMode = typer.Option(OCRMode.AUTO, "--ocr-mode", help="OCR mode for the résumé."),
+    force_ocr: bool = typer.Option(False, "--force-ocr", help="Force OCR (= --ocr-mode on)."),
+    verbose: bool = _verbose_option(),
+    log_file: str | None = _log_file_option(),
+) -> None:
+    """Re-score stored funnel jobs against the current résumé — WITHOUT re-scraping.
+
+    Account-safe: it reads only your local funnel store + résumé and never scrapes or touches
+    your LinkedIn/Indeed account. It recomputes scores exactly like ``match`` — same embeddings
+    and the configured grounding mode, so ``evidence_span`` grounding uses the local LLM
+    endpoint (start vLLM, as for ``match``) — and writes them back IN PLACE (the funnel stage is
+    preserved). Run it after your résumé changes so the saved scores reflect the current CV.
+    """
+    _merge_verbose_ctx(ctx, verbose, log_file)
+    settings = _get_settings()
+    if resume_path:
+        settings.resume_path = resume_path
+    setup_logging(settings.log_level)
+    effective_ocr_mode = _resolve_ocr_mode(ocr_mode, force_ocr)
+
+    reporter = _get_reporter(
+        ctx=ctx,
+        command="rescore",
+        args={"resume": settings.resume_path, "board": board, "limit": limit},
+        config=_sanitize_config(settings),
+    )
+
+    async def _run() -> None:
+        from job_applicator.documents.resume import ResumeLoader
+        from job_applicator.embeddings.matching import JobMatcher
+
+        if not settings.resume_path:
+            err_console.print("[red]Résumé path required. Use --resume or set it in config.[/red]")
+            raise typer.Exit(1)
+
+        loader = ResumeLoader()
+        resume_data = loader.load(settings.resume_path, ocr_mode=effective_ocr_mode)
+
+        # Account-safe source: STORED jobs only — never the network or a scraper.
+        store = _get_jobs_store()
+        stored = store.list_jobs(board=board or None, limit=limit)
+        if not stored:
+            if as_json:
+                sys.stdout.write("[]\n")
+            else:
+                console.print(
+                    "[yellow]No stored jobs to rescore. Run `search`/`match` first.[/yellow]"
+                )
+            return
+
+        before = {str(s.job.url): s.match_score for s in stored}
+        jobs = [s.job for s in stored]
+
+        runtime = _make_runtime(settings, name="rescore")
+        with console.status(f"Re-scoring {len(jobs)} stored jobs (no scraping)..."):
+            matcher = JobMatcher(
+                settings.embedding,
+                settings.llm,
+                runtime,
+                reporter=reporter,
+                grounding_mode=settings.skills.grounding_mode,
+            )
+            matches = await matcher.rank_jobs(resume_data, jobs, top_k=len(jobs))
+
+        # Write the refreshed scores back IN PLACE (keyed on job_url; funnel stage preserved).
+        # Unlike `match` (which swallows store errors as best-effort — the display is its real
+        # output), a write error here fails LOUD: the write IS rescore's deliverable, so a
+        # surfaced failure (re-run to retry) beats silently leaving scores stale.
+        for m in matches:
+            store.upsert_match(m)
+
+        rows = [(m, before.get(str(m.job.url))) for m in matches]
+
+        if as_json:
+            import json
+
+            payload = [
+                {
+                    "url": str(m.job.url),
+                    "title": m.job.title,
+                    "company": m.job.company,
+                    "score": round(m.score, 4),
+                    "score_before": round(old, 4) if old is not None else None,
+                    "delta": round(m.score - old, 4) if old is not None else None,
+                    "semantic_score": round(m.semantic_score, 4),
+                    "skill_score": round(m.skill_score, 4),
+                    "coverage_measured": coverage_measured(m.matched_skills, m.missing_skills),
+                }
+                for m, old in rows
+            ]
+            sys.stdout.write(json.dumps(payload, indent=2) + "\n")
+            return
+
+        console.print(
+            f"[green]Re-scored {len(matches)} stored jobs[/green] against "
+            f"[bold]{resume_data.name or settings.resume_path}[/bold] "
+            "[dim](no re-scraping — funnel stages preserved)[/dim]"
+        )
+        scored = [(m, old, m.score - old) for m, old in rows if old is not None]
+        if scored:
+            rose = sum(1 for _, _, d in scored if d > 0.01)
+            fell = sum(1 for _, _, d in scored if d < -0.01)
+            mean_d = sum(d for _, _, d in scored) / len(scored)
+            console.print(
+                f"  {rose} rose · {fell} fell · {len(scored) - rose - fell} ~unchanged "
+                f"· mean Δ {mean_d:+.3f}"
+            )
+            movers = sorted(scored, key=lambda x: -abs(x[2]))[:5]
+            mover_table = Table(title="Biggest score changes")
+            mover_table.add_column("Δ", style="cyan")
+            mover_table.add_column("Now", style="green")
+            mover_table.add_column("Was", style="dim")
+            mover_table.add_column("Job")
+            mover_table.add_column("Company")
+            for m, old, d in movers:
+                arrow = "↑" if d > 0 else "↓"
+                mover_table.add_row(
+                    f"{arrow}{abs(d):.0%}",
+                    f"{m.score:.0%}",
+                    f"{old:.0%}",
+                    m.job.title[:34],
+                    m.job.company[:20],
+                )
+            console.print(mover_table)
+        console.print("[dim]`job-applicator status` now reflects the refreshed scores.[/dim]")
+
+    try:
+        asyncio.run(_run())
+    except JobApplicatorError as exc:
+        if reporter:
+            reporter.record_error(str(exc))
+        err_console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
+        raise typer.Exit(1) from exc
+    except Exception as exc:
+        if reporter:
+            reporter.record_error(str(exc))
+        raise
+    finally:
+        if reporter:
+            log_file = ctx.obj.log_file if isinstance(ctx.obj, VerboseContext) else None
+            reporter.render(err_console, log_file)
+
+
+@app.command()
 def status(
     as_json: bool = typer.Option(False, "--json", help="Output the funnel as JSON."),
     limit: int = typer.Option(20, "--limit", "-n", min=1, help="Max recent jobs to show."),
