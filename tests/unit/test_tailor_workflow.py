@@ -56,7 +56,7 @@ def _drive(
 
     engine = MagicMock()
     engine.tailor_verified = AsyncMock(return_value=_tailored("INITIAL"))
-    engine.refine = AsyncMock(return_value=_tailored("REFINED"))
+    engine.refine_verified = AsyncMock(return_value=_tailored("REFINED"))
 
     audit = MagicMock(
         entries=[],
@@ -119,7 +119,7 @@ def test_tailor_quit_discards_without_saving(
     result, engine, cl = _drive(monkeypatch, tmp_path, ["Q"])
     assert result.exit_code == 0, result.output
     engine.tailor_verified.assert_awaited_once()
-    engine.refine.assert_not_awaited()
+    engine.refine_verified.assert_not_awaited()
     cl.assert_not_awaited()
     assert not list(tmp_path.glob("tailored_*.txt"))
 
@@ -135,7 +135,7 @@ def test_tailor_accept_saves_without_cover_letter(
     assert txts[0].read_text(encoding="utf-8") == "INITIAL"
     assert len(list(tmp_path.glob("tailored_*.meta.json"))) == 1
     cl.assert_not_awaited()
-    engine.refine.assert_not_awaited()
+    engine.refine_verified.assert_not_awaited()
 
 
 def test_tailor_accept_then_cover_letter(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -185,18 +185,18 @@ def test_tailor_retry_refines_then_quit(monkeypatch: pytest.MonkeyPatch, tmp_pat
     """[R] refines via the engine (empty instructions), then [Q] discards."""
     result, engine, _cl = _drive(monkeypatch, tmp_path, ["R", "Q"])
     assert result.exit_code == 0, result.output
-    engine.refine.assert_awaited_once()
+    engine.refine_verified.assert_awaited_once()
     assert not list(tmp_path.glob("tailored_*.txt"))
 
 
 def test_tailor_input_refines_with_instructions(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """[I] refines with the user's instructions threaded into engine.refine."""
+    """[I] refines with the user's instructions threaded into engine.refine_verified."""
     result, engine, _ = _drive(monkeypatch, tmp_path, ["I", "emphasize customer service", "Q"])
     assert result.exit_code == 0, result.output
-    engine.refine.assert_awaited_once()
-    assert "emphasize customer service" in engine.refine.await_args.args
+    engine.refine_verified.assert_awaited_once()
+    assert "emphasize customer service" in engine.refine_verified.await_args.args
 
 
 def test_tailor_yes_is_non_interactive(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -229,8 +229,8 @@ def test_tailor_section_edit_refines_target_section(
         monkeypatch, tmp_path, ["S", "1", "fix the summary", "Q"], sections=sections
     )
     assert result.exit_code == 0, result.output
-    engine.refine.assert_awaited_once()
-    instructions = engine.refine.await_args.args[2]
+    engine.refine_verified.assert_awaited_once()
+    instructions = engine.refine_verified.await_args.args[2]
     assert "fix the summary" in instructions
     assert "Summary" in instructions  # section-scoped
 
@@ -241,7 +241,7 @@ def test_tailor_diff_then_quit_changes_nothing(
     """[D] is display-only: no refine, no save, loop continues to [Q]."""
     result, engine, _ = _drive(monkeypatch, tmp_path, ["D", "Q"])
     assert result.exit_code == 0, result.output
-    engine.refine.assert_not_awaited()
+    engine.refine_verified.assert_not_awaited()
     assert not list(tmp_path.glob("tailored_*.txt"))
 
 
@@ -252,7 +252,7 @@ def test_tailor_history_with_one_attempt_then_quit(
     result, engine, _ = _drive(monkeypatch, tmp_path, ["V", "Q"])
     assert result.exit_code == 0, result.output
     assert "No previous attempts yet" in result.output
-    engine.refine.assert_not_awaited()
+    engine.refine_verified.assert_not_awaited()
 
 
 def test_tailor_invalid_choice_then_quit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -260,7 +260,7 @@ def test_tailor_invalid_choice_then_quit(monkeypatch: pytest.MonkeyPatch, tmp_pa
     result, engine, _ = _drive(monkeypatch, tmp_path, ["X", "Q"])
     assert result.exit_code == 0, result.output
     assert "Invalid choice" in result.output
-    engine.refine.assert_not_awaited()
+    engine.refine_verified.assert_not_awaited()
     assert not list(tmp_path.glob("tailored_*.txt"))
 
 

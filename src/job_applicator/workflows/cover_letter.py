@@ -165,8 +165,8 @@ async def _refine_cover_letter(
     try:
         generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=runtime)
         user = _load_user_profile(settings, resume_name=resume_data.name if resume_data else "")
-        with console.status("Refining cover letter..."):
-            refined = await generator.refine(
+        with console.status("Refining + verifying cover letter..."):
+            refined, report = await generator.refine_verified(
                 job=job,
                 user=user,
                 resume=resume_data or ResumeData(raw_text=""),
@@ -184,13 +184,19 @@ async def _refine_cover_letter(
             attempt=attempt + 1,
         )
         session.add_attempt(new_result)
-        # I4 (named, not silent): refine is a fast human-in-the-loop edit and does NOT re-run the
-        # grounding verifier that the primary generate_verified path ran. Surface that honestly so a
-        # refined draft is never assumed to carry the same honesty pass as the original.
-        console.print(
-            "[dim]Note: this refined draft was not grounding-checked — review any new claims "
-            "against your résumé before sending.[/dim]"
-        )
+        # #4: the refined letter is re-verified — the SAME honesty pass as generate_verified —
+        # surfaced for review, never auto-retried (refine is the user's explicit edit). Fail-safe
+        # (verifier down) -> report is None, surfaced as "not run", never as clean.
+        if report is None:
+            console.print("[dim]Grounding check not run for this refined draft.[/dim]")
+        elif report.clean:
+            console.print("[green]✓ Grounding: every claim is supported by your résumé.[/green]")
+        else:
+            n = len(report.unsupported) + len(report.coverage_gaps)
+            console.print(
+                f"[yellow]⚠ {n} claim(s) to review in the refined draft — not supported by your "
+                f"résumé; review before sending.[/yellow]"
+            )
         return True
     except Exception as exc:
         console.print(f"[red]LLM error: {escape(str(exc))}[/red]")

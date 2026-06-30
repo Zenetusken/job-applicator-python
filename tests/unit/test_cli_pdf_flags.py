@@ -39,7 +39,7 @@ def _patch_tailor_stack(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Magi
 
     engine = MagicMock()
     engine.tailor_verified = AsyncMock(return_value=_tailored("INITIAL"))
-    engine.refine = AsyncMock(return_value=_tailored("REFINED"))
+    engine.refine_verified = AsyncMock(return_value=_tailored("REFINED"))
 
     audit = MagicMock(
         entries=[],

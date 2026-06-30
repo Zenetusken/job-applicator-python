@@ -203,7 +203,15 @@ This session's arc — structured cover-letter generation (#103), the 8B base (#
 
 ## 11. Out of scope (named, not silent)
 
-- Retiring any deterministic guard (follow-up, gold-set-gated).
+- **Retiring any deterministic guard — AUDITED (gold-probed), decision: KEEP all.** The verifier
+  (Variant C) subsumes the concrete-fabrication guards *live* (invented-employment, unlisted-tools,
+  unearned-credentials, and most overclaim phrases like "cloud-native"/"Mac-first" — all 3/3), but
+  does NOT subsume `_reject_overclaim_phrases`'s proficiency-LEVEL inflation on a *grounded* skill
+  ("I have mastered SIEM…" ← coursework: 0/3 caught — the verifier grounds the skill and misses the
+  level claim). Kept all honesty guards regardless: they are the FAST UNIT-GATE honesty floor (the
+  verifier is live-only, §4), so retiring even a subsumed one would drop honesty-regression coverage
+  off the green gate, and the asymmetric cost of a silent off-gate regression outweighs the code
+  saved. The verifier AUGMENTS, it never replaces (§4).
 - Languages beyond FR/EN (the design is language-agnostic; the gold set is FR/EN only for now).
 - Verifying the JD-derived relevance of a claim (the verifier checks grounding, not job-fit).
 - **Deterministic claim↔quote entailment** for a numberless fabrication grounded by a real but
@@ -212,7 +220,9 @@ This session's arc — structured cover-letter generation (#103), the 8B base (#
   set (§7) measures whether they do. A follow-up only if the gold set shows the LLM layer misses it.
 - **Per-claim coverage** (coverage is currently union-based; a per-claim gate risks flagging
   legitimate sentences that combine two real claims). Gold-set-gated follow-up.
-- **Re-verifying the interactive REFINE paths** (cover-letter `refine`, the post-refine résumé). The
-  primary `generate_verified` / `tailor_verified` paths verify; an interactive refine is a fast
-  human-in-the-loop edit that does NOT re-run the verifier. Surfaced honestly in-product ("not
-  grounding-checked"), not silently assumed clean. Re-verifying refine is a follow-up.
+- ~~Re-verifying the interactive REFINE paths~~ **DONE.** Both refine paths now re-verify via
+  `CoverLetterGenerator.refine_verified` (returns the letter + its report) and
+  `ResumeTailor.refine_verified` (`refine` + `verify_tailored`), so an interactively refined draft
+  carries the SAME honesty pass as the primary — surfaced for review (clean / "N claims to review"),
+  never auto-stripped or auto-retried (the refine is the user's explicit edit). Fail-safe: a verifier
+  failure surfaces "not run", never a false clean.
