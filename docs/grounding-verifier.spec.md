@@ -144,9 +144,10 @@ decisive result: the **LLM layer catches what the deterministic backstop can't**
 claim↔quote-entailment residual is theoretical, not a shipped hole. (The cases are single-claim, so
 they exercise the entailment direction — the model flagging numberless/semantic fabrications — but
 NOT the union-coverage residual, whose pooling-across-multiple-claims mechanism stays named-but-
-unmeasured; it is a backstop behind the model's primary flag.) **Precision ~0.81–0.85** — the
-residual above (§8): French faithful translations + low-overlap rephrases under-grounded; F3's new
-integer backstop is precision-neutral (no F3-caused false positive).
+unmeasured; it is a backstop behind the model's primary flag.) **Precision ~0.81–0.85 overall** —
+the residual (§8, since scored per-tag: CORE precision 1.00 / residual 3/3): French faithful
+translations + low-overlap rephrases under-grounded; F3's new integer backstop is precision-neutral
+(no F3-caused false positive).
 
 ## 8. Open risks
 
@@ -157,8 +158,12 @@ integer backstop is precision-neutral (no F3-caused false positive).
   a real source line (e.g. "Took on every inbound email request from the sales team" ← "Took over
   100% of inbound email service requests from the sales team"), so they read as flagged. Direction is
   the SAFE one for the résumé (a surfaced "review" note the user dismisses, never an auto-strip) and
-  is absorbed by reject→retry for the letter. Measured + reported (~0.81–0.85 precision), named not
-  hard-gated; the 0.90 target is tracked. Follow-up: prompt-tune + report residual cases per-tag.
+  is absorbed by reject→retry for the letter. **Scored per-tag (implemented):** the live harness
+  partitions grounded cases into CORE (measured 0 false positives over N=5 → strict ≥0.90 floor, the
+  real gross-regression guard) and the `"residual": true`-tagged cases (reported as flagged/total,
+  NOT gated). Measured: CORE precision 1.00, residual 3/3, recall 1.00 — so the named residual no
+  longer drags a lowered overall floor (it replaced the earlier overall ≥0.78). Remaining follow-up:
+  prompt-tune to actually GROUND these cases (the LLM's conservatism), not just isolate them.
 - **Non-determinism** — absorbed by reject→retry (letter) and human arbitration (résumé report).
 - **Token cost** — per-claim enumeration of a full CV is a larger call; acceptable on local vLLM.
   Measure latency; cap with the `[cover_letter]` model override for a cloud verifier if needed.
