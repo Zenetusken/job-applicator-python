@@ -133,6 +133,26 @@ class BatchState:
         now = datetime.now(UTC).isoformat()
         try:
             with self._connect() as conn:
+                # Guard: refuse to reset a run_id that already belongs to a DIFFERENT spec — an
+                # explicit --run-id reuse must never silently wipe an unrelated run's progress.
+                prior = conn.execute(
+                    "SELECT site, query, jobs_file, resume_path, top_k, min_score, cover_letter "
+                    "FROM batch_runs WHERE run_id = ?",
+                    (run_id,),
+                ).fetchone()
+                if prior is not None and (
+                    prior[0] != spec.site
+                    or prior[1] != spec.query
+                    or prior[2] != spec.jobs_file
+                    or prior[3] != spec.resume_path
+                    or prior[4] != spec.top_k
+                    or prior[5] != spec.min_score
+                    or bool(prior[6]) != spec.cover_letter
+                ):
+                    raise BatchStateError(
+                        f"run_id {run_id!r} already belongs to a different batch run; omit "
+                        "--run-id (or use a new one) to avoid overwriting it."
+                    )
                 conn.execute(
                     """
                     INSERT INTO batch_runs (
@@ -167,11 +187,12 @@ class BatchState:
         return run_id
 
     def find_existing_run(self, spec: BatchRunSpec) -> str | None:
-        """Return the most recent incomplete run_id matching the spec.
+        """Return the most recent INCOMPLETE (RUNNING or FAILED) run_id matching the spec.
 
-        Matches every spec identity field — the same source as ``BatchRunSpec.run_id()`` —
-        so a resume can't bind a run created with different processing params and then
-        silently adopt the new ones.
+        Matches every spec identity field — the same source as ``BatchRunSpec.run_id()`` — so a
+        resume can't bind a run created with different processing params. FAILED runs are matched
+        (not just RUNNING) so a partial-failure run can be resumed to retry its failures rather
+        than wiped + re-run; a COMPLETED run is excluded (it must not auto-resume).
         """
         try:
             with self._connect() as conn:
@@ -180,7 +201,7 @@ class BatchState:
                     SELECT run_id FROM batch_runs
                     WHERE site = ? AND query IS ? AND jobs_file IS ? AND resume_path = ?
                       AND top_k = ? AND min_score = ? AND cover_letter = ?
-                      AND status = ?
+                      AND status IN (?, ?)
                     ORDER BY updated_at DESC
                     LIMIT 1
                     """,
@@ -193,6 +214,7 @@ class BatchState:
                         spec.min_score,
                         spec.cover_letter,
                         BatchRunStatus.RUNNING,
+                        BatchRunStatus.FAILED,
                     ),
                 ).fetchone()
                 return row[0] if row else None

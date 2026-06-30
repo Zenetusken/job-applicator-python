@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from typer.testing import CliRunner
@@ -406,3 +406,83 @@ class TestBatchStyleGuide:
 
         assert result.exit_code == 0, result.output
         env["cl_generator"].load_style_guide.assert_awaited_once_with("style.pdf", ocr_mode="on")
+
+
+class TestBatchRecovery:
+    """Crash / partial-failure recovery for the batch command (auto-resume + FAILED status)."""
+
+    def test_batch_auto_resumes_an_existing_incomplete_run(
+        self, style_guide_batch_env: dict[str, object]
+    ) -> None:
+        """When an incomplete (RUNNING/FAILED) same-spec run exists, a re-run AUTO-RESUMES it (no
+        --resume-run flag needed) — start_run is NOT called, so the prior progress isn't wiped."""
+        env = style_guide_batch_env
+        bs = env["batch_state"]
+        bs.find_existing_run.return_value = "existing-run"
+        result = env["runner"].invoke(  # type: ignore[attr-defined]
+            env["app"],
+            [
+                "batch",
+                "--resume",
+                str(env["sample_resume_file"]),
+                "--jobs-file",
+                str(env["sample_jobs_file"]),
+                "--top-k",
+                "1",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        bs.start_run.assert_not_called()  # resumed, never reset (no silent wipe)
+        bs.list_completed_jobs.assert_called_with("existing-run")  # read the resumed run's progress
+
+    def test_batch_marks_run_failed_when_a_job_fails(
+        self, style_guide_batch_env: dict[str, object]
+    ) -> None:
+        """A job that fails (a tailor error) marks the run FAILED (not COMPLETED), so a correct
+        --resume-run can retry it instead of the run being unrecoverable."""
+        from job_applicator.batch_state import BatchRunStatus
+
+        env = style_guide_batch_env
+        # The CLI calls tailor_verified (not .tailor) — override THAT so the job genuinely fails.
+        env["tailor"].tailor_verified = AsyncMock(side_effect=RuntimeError("tailor blew up"))
+        bs = env["batch_state"]
+        result = env["runner"].invoke(  # type: ignore[attr-defined]
+            env["app"],
+            [
+                "batch",
+                "--resume",
+                str(env["sample_resume_file"]),
+                "--jobs-file",
+                str(env["sample_jobs_file"]),
+                "--top-k",
+                "1",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        bs.complete_run.assert_called_with(ANY, BatchRunStatus.FAILED)  # FAILED, not COMPLETED
+
+    def test_batch_marks_run_failed_on_empty_message_error(
+        self, style_guide_batch_env: dict[str, object]
+    ) -> None:
+        """A job failing with an EMPTY-message exception (a bare TimeoutError on the LLM endpoint)
+        still marks the run FAILED — the status keys on the result FLAGS, not the error-message
+        truthiness (a '' message is falsy → would WRONGLY mark the run COMPLETED + unresumable)."""
+        from job_applicator.batch_state import BatchRunStatus
+
+        env = style_guide_batch_env
+        env["tailor"].tailor_verified = AsyncMock(side_effect=TimeoutError())  # str() == ""
+        bs = env["batch_state"]
+        result = env["runner"].invoke(  # type: ignore[attr-defined]
+            env["app"],
+            [
+                "batch",
+                "--resume",
+                str(env["sample_resume_file"]),
+                "--jobs-file",
+                str(env["sample_jobs_file"]),
+                "--top-k",
+                "1",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        bs.complete_run.assert_called_with(ANY, BatchRunStatus.FAILED)  # not wrongly COMPLETED

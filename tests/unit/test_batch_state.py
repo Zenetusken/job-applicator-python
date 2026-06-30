@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from job_applicator.batch_state import BatchJobStatus, BatchState
+import pytest
+
+from job_applicator.batch_state import (
+    BatchJobStatus,
+    BatchRunStatus,
+    BatchState,
+    BatchStateError,
+)
 from job_applicator.models import BatchRunSpec, JobBoard, JobListing
 
 
@@ -55,6 +62,29 @@ def test_find_existing_run(tmp_path: Path) -> None:
 
     assert state.find_existing_run(_spec()) == "run-2"
     assert state.find_existing_run(_spec(site="indeed")) is None
+
+
+def test_find_existing_run_matches_failed_run(tmp_path: Path) -> None:
+    """A FAILED run (a partial failure) is still resumable — find_existing_run matches RUNNING and
+    FAILED, so a re-run after a partial failure retries it instead of wiping + re-running all.
+    A COMPLETED run is NOT matched (a finished batch shouldn't auto-resume)."""
+    state = BatchState(db_path=tmp_path / "batch.db")
+    state.start_run(_spec(), run_id="run-f")
+    state.complete_run("run-f", BatchRunStatus.FAILED)
+    assert state.find_existing_run(_spec()) == "run-f"  # FAILED is resumable
+    state.complete_run("run-f", BatchRunStatus.COMPLETED)
+    assert state.find_existing_run(_spec()) is None  # COMPLETED is not
+
+
+def test_start_run_refuses_different_spec_run_id_collision(tmp_path: Path) -> None:
+    """An explicit run_id that already belongs to a DIFFERENT spec must NOT be silently reset —
+    start_run refuses, so `--run-id X` can't wipe an unrelated run's progress."""
+    state = BatchState(db_path=tmp_path / "batch.db")
+    state.start_run(_spec(query="python"), run_id="shared-id")
+    state.record_job("shared-id", _make_job(), BatchJobStatus.COMPLETED)
+    with pytest.raises(BatchStateError):
+        state.start_run(_spec(query="rust"), run_id="shared-id")  # different spec, same id
+    assert state.find_existing_run(_spec(query="python")) == "shared-id"  # original intact
 
 
 def test_completed_jobs_filtered(tmp_path: Path) -> None:
