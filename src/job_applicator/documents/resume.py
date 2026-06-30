@@ -89,15 +89,57 @@ class ResumeLoader:
         return data
 
     def _load_docx(self, path: Path) -> ResumeData:
-        """Load a DOCX resume."""
+        """Load a DOCX resume.
+
+        Walks the document body in order, extracting BOTH paragraphs and table cells. Real
+        résumés routinely put the contact header and the skills section in tables; reading
+        only ``doc.paragraphs`` (the prior behaviour) silently dropped that content from the
+        text, so the email/phone/skills never reached matching or tailoring — a tailored CV
+        could even go out missing the contact block (audit AI-H5). Document order is preserved
+        so a leading contact table stays first, where ``parse_text``'s first-line name
+        heuristic can find it.
+        """
         try:
             from docx import Document
+            from docx.oxml.table import CT_Tbl
+            from docx.oxml.text.paragraph import CT_P
+            from docx.table import Table
+            from docx.text.paragraph import Paragraph
         except ImportError as exc:
             raise DocumentError("python-docx not installed. Run: pip install python-docx") from exc
 
         doc = Document(str(path))
-        paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-        text = "\n".join(paragraphs)
+        parts: list[str] = []
+        for child in doc.element.body.iterchildren():
+            if isinstance(child, CT_P):
+                line = Paragraph(child, doc).text
+                if line.strip():
+                    parts.append(line)
+            elif isinstance(child, CT_Tbl):
+                # Append each unique cell's text. python-docx repeats the same cell across a
+                # merged grid span, so dedup by the underlying <w:tc> element to avoid doubling
+                # merged contact/header cells. Best-effort PER TABLE: a structurally malformed
+                # grid (e.g. an orphan vMerge continuation — a real export artifact) raises in
+                # python-docx's grid walk, so skip that one table with a logged warning rather
+                # than failing the whole résumé. The table is collected atomically (extend only
+                # on success) so a mid-walk failure contributes nothing, never a partial table.
+                # Paragraphs and well-formed tables are unaffected — strictly more robust than
+                # the prior paragraphs-only reader, and the skip is disclosed (not masked).
+                try:
+                    cell_texts: list[str] = []
+                    seen: set[object] = set()
+                    for row in Table(child, doc).rows:
+                        for cell in row.cells:
+                            if cell._tc in seen:
+                                continue
+                            seen.add(cell._tc)
+                            cell_text = cell.text.strip()
+                            if cell_text:
+                                cell_texts.append(cell_text)
+                    parts.extend(cell_texts)
+                except Exception as exc:
+                    logger.warning("Skipping a malformed table in %s: %s", path.name, exc)
+        text = "\n".join(parts)
         return self.parse_text(text, method="docx")
 
     def _load_pdf(self, path: Path, ocr_mode: str = "auto") -> ResumeData:
