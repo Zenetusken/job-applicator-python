@@ -395,3 +395,49 @@ def test_tailor_section_preview_strips_markdown_bold(
     assert result.exit_code == 0, result.output
     assert "**BOLDSEC**" not in result.output  # section preview no longer leaks the markers
     assert "BOLDSEC" in result.output
+
+
+# --- Post-tailor integrity surface (tailored ATS + contact green-check) ----------------------
+
+
+def _capture_integrity(original: str, tailored: str) -> str:
+    """Render _print_post_tailor_integrity to a plain-text buffer for assertions."""
+    from io import StringIO
+
+    from rich.console import Console
+
+    from job_applicator.workflows.tailor import _print_post_tailor_integrity
+
+    buf = StringIO()
+    _print_post_tailor_integrity(
+        Console(file=buf, force_terminal=False, width=100), original, tailored
+    )
+    return buf.getvalue()
+
+
+def test_post_tailor_integrity_surfaces_ats_and_preserved_contact() -> None:
+    """The interactive view surfaces the tailored ATS score and a ✓ when contact survives."""
+    base = "Jane Doe\njane@example.com\n514-555-0199\nExperience\nAnalyst at ACME"
+    tailored = "Jane Doe\njane@example.com\n514-555-0199\nExperience\nSecurity Analyst at ACME"
+    out = _capture_integrity(base, tailored)
+    assert "Tailored ATS:" in out  # the score is surfaced
+    assert "Contact preserved" in out  # email present in the tailored output → green-check
+
+
+def test_post_tailor_integrity_flags_dropped_email() -> None:
+    """If tailoring drops the base email, the contact green-check flags it (defense-in-depth)."""
+    base = "Jane Doe\njane@example.com\n514-555-0199\nExperience\nAnalyst"
+    tailored = "Jane Doe\nExperience\nSecurity Analyst at ACME"  # email gone
+    out = _capture_integrity(base, tailored)
+    assert "Tailored ATS:" in out
+    assert "email" in out and "missing" in out.lower()  # ⚠ flagged, not a silent pass
+
+
+def test_post_tailor_integrity_phone_reformat_not_flagged() -> None:
+    """A faithful phone REFORMAT (country-code prefix added) is NOT flagged — the check compares
+    the national (last-10) number, so +1 normalization doesn't cry wolf on an advisory surface."""
+    base = "Jane Doe\njane@example.com\n514-555-0199\nExperience\nAnalyst at ACME"
+    tailored = "Jane Doe\njane@example.com\n+1 514-555-0199\nExperience\nSecurity Analyst"
+    out = _capture_integrity(base, tailored)
+    assert "Contact preserved" in out
+    assert "missing" not in out.lower()  # national number matches → no false alarm
