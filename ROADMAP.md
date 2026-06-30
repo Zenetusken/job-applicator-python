@@ -5,34 +5,47 @@ Living tracker of planned work. Detailed specs/plans/reports live under `docs/co
 implement → gate (`ruff` · `ruff format --check` · `mypy src/` · `pytest -m unit` ·
 `pytest -m live`) → code-review → commit → PR.
 
-## Planned — committed next (two arcs, back-to-back)
+## Planned — next arc: post-tailor structural-fidelity validation
 
-Both are committed and **sequenced to run immediately one after the other** — whichever starts
-first, the other follows directly with no gap. Recommended order: **Arc 1 (cleanup) first, Arc 2
-(redesign) second** — cleanup is small/independent/low-risk and clears the deck, and its
-device-robust embedding service feeds the redesign; the redesign is a deliberate multi-phase arc
-that wants a clean, uninterrupted focus block.
+The two previously-"committed next" arcs are **resolved** (re-measured 2026-06-30; details under
+Shipped):
 
-- **Arc 1 — Deferred UX/robustness cleanup** (out-of-scope items banked from PRs #90 / #91).
-  One small self-contained PR:
-  - **Tailored résumé strips markdown** — `**bold**` currently leaks into the tailored résumé
-    output/preview (cover letters already de-markdown; fix the `resume_tailor` / formatting path).
-  - **Cover-letter voice** — reduce repeated-verb tells (e.g. "engineered" ×4) via the de-AI
-    re-prompt.
-  - **TUI per-skill detail** — surface matched/missing skills per job (the CLI `match` table shows
-    them; the TUI shows only the score) — `tui/`.
-  - **`status` "Recent jobs" ordering** — worst→best today; make the sort intentional + documented.
-  - **Embeddings CPU fallback** — `embedding.device` defaults to `cuda` with no
-    `torch.cuda.is_available()` guard (`config.py` → `embeddings/service.py`); fall back to CPU on
-    non-CUDA boxes instead of crashing.
-- **Arc 2 — Domain-general (semantic) skill grounding** — spec:
-  `docs/compose/specs/2026-06-26-semantic-skill-grounding.md`. Retire the keyword grounding +
-  hardcoded (software-only) normalization for **LLM evidence-span grounding + embedding-dedup
-  normalization**; ESCO/O*NET taxonomy as the north star. Phased (flag → A/B on a multi-domain eval
-  set → default-on). This is the "keyword matching won't scale to other domains" fix.
+- **Arc 1 — UX/robustness cleanup** — landed incrementally across the grounding/apply work.
+  Measurement found `status` "Recent jobs" ordering and the embeddings CPU fallback already done,
+  and the TUI already surfaces per-job matched/missing skills. The tailored-résumé markdown leak's
+  last residual (three secondary interactive views — `[D]`/`[V]`/`[S]`) shipped in **PR #122**. The
+  cover-letter repeated-verb tell is **deferred pending an empirical 8B fire-rate probe** (see Known
+  follow-ups): it was banked pre-8B (PRs #90/#91), and a bigger base model tends to self-cap style
+  tells, so measure the raw fire rate on baited worst-case JDs before building a style guard.
+- **Arc 2 — Domain-general (semantic) skill grounding** — **Phase 1** (LLM evidence-span grounding)
+  shipped default-on (2026-06-28); **Phase 2** (embedding-dedup normalization) is a **measured dead
+  end**; **Phase 3** (ESCO/O*NET taxonomy) is an optional separate project. Full record:
+  `docs/compose/specs/2026-06-26-semantic-skill-grounding.md`.
+
+**Next arc — post-tailor structural-fidelity validation** (2026-06-24 audit #15 → findings
+AI-H2/AI-H3 + "ATS check not run on tailored output"). The grounding verifier guards *honesty* (no
+fabricated claims); this adds *structural fidelity*: after tailoring, re-parse the tailored text
+(`ResumeLoader.parse_text`) and verify it PRESERVED the base résumé's contact info (email/phone/name
+— AI-H2) and employment dates + job titles (AI-H3), then surface the ATS score (`ATSChecker` on the
+tailored output). Surfaced on `TailoredResume` like `grounding_report` — **never auto-stripped** (the
+résumé is the document of record). Gated: empirics (false-positive/negative of the fidelity diff on
+faithful rewording — needs vLLM up) → spec → implement → gate → review. Spec forthcoming.
+
+Remaining 2026-06-24 audit medium-term backlog stays queued behind this: selector health / fail-loud
+on LinkedIn DOM drift (#12), integration tests for state/batch/apply (#11), structured
+experience/education extraction (#14).
 
 ## Shipped
 
+- **Apply/batch + scraper hardening epoch** (PRs #115–#122, 2026-06-30): scraper stealth
+  fingerprint alignment + LinkedIn checkpoint/rate-limit detection (Track B), CLI volume-option
+  clamps (C2), owner-only perms on written artifacts + skip-prefilled email (Track D), fail-loud
+  cover-letter + fail-closed per-job state on the `apply` loop, batch crash/partial-failure
+  recovery, resume-upload existence+type validation, and the secondary-view markdown strip. Cleared
+  most of the 2026-06-24 comprehensive audit's Immediate + Short-term tier; gate green throughout.
+- **Grounding-verifier + output-language + 8B base** (v0.5.0, 2026-06-29): language-agnostic honesty
+  layer (`documents/grounding_verifier.py`), `[llm] language` packet policy, structured cover-letter
+  generation, and the move to `Qwen/Qwen3-8B-AWQ` as the default base model.
 - **Style-guide + sign-off release** (PR #35 / v0.3.6): structured cover-letter sign-off
   extraction/validation (`documents/sign_off.py`), applicant-name fallback from the parsed
   résumé, style-guide modal in the TUI (`g` key), and example guides in
@@ -88,6 +101,13 @@ that wants a clean, uninterrupted focus block.
 
 ## Known follow-ups (deferred)
 
+- **Cover-letter repeated-verb "voice tell"** (ROADMAP Arc-1 Item 2). `_voice_tells`
+  (`documents/cover_letter.py`) scores phrase-presence + structural tells but has **no intra-letter
+  repeated-token detector** (e.g. "engineered" ×4); the `_devoice` / `_voice_correction` re-prompt
+  loop exists but nothing triggers it on repetition. **Deferred pending measurement:** the tell was
+  banked pre-8B (PRs #90/#91); a bigger base model tends to self-cap style tells, so measure the raw
+  fire rate on baited worst-case JDs (needs vLLM up) BEFORE building — else mark wontfix. Adding a
+  style guard the model doesn't need risks over-restricting its prose.
 - **`grounding_mode="keyword"` opt-out is a dead knob on the interactive-`tailor` + TUI-tailor
   *displayed* scores.** `ResumeTailor`'s bare-fallback `JobMatcher` (`documents/resume_tailor.py`
   ~L650/L797) isn't threaded `settings.skills.grounding_mode` (it only receives an `LLMConfig`), so
