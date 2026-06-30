@@ -161,9 +161,17 @@ translations + low-overlap rephrases under-grounded; F3's new integer backstop i
   is absorbed by reject→retry for the letter. **Scored per-tag (implemented):** the live harness
   partitions grounded cases into CORE (measured 0 false positives over N=5 → strict ≥0.90 floor, the
   real gross-regression guard) and the `"residual": true`-tagged cases (reported as flagged/total,
-  NOT gated). Measured: CORE precision 1.00, residual 3/3, recall 1.00 — so the named residual no
-  longer drags a lowered overall floor (it replaced the earlier overall ≥0.78). Remaining follow-up:
-  prompt-tune to actually GROUND these cases (the LLM's conservatism), not just isolate them.
+  NOT gated). It replaced the earlier blunt overall ≥0.78 floor. **Prompt-tuned (done):** the
+  verifier prompt now grounds a faithful PARAPHRASE/TRANSLATION by MEANING (not shared words), which
+  grounded BOTH French residual cases — they are now CORE (measured: CORE precision 1.00 over 14
+  core, recall 1.00 over 21 fabricated). Measure-first found that ANY loosening — even a
+  translation-only clause — let a SCOPE inflation slip ("the entire company" from a "the sales team"
+  source) while the strict baseline caught it, so the prompt PAIRS the meaning-grounding with an
+  explicit inflation + SCOPE guard, validated EN+FR against adversarial inflations (added to the gold
+  set as `scope`-category recall guards). The ONE remaining residual is the English SAME-LANGUAGE
+  low-overlap rephrase: the 8B grounds cross-language translations but still under-grounds
+  same-language low-overlap, so it stays the named, per-tag-reported residual. Honest limit: the
+  honesty evidence is one SYNTHETIC source; the prompt was not validated against the user's real CV.
 - **Non-determinism** — absorbed by reject→retry (letter) and human arbitration (résumé report).
 - **Token cost** — per-claim enumeration of a full CV is a larger call; acceptable on local vLLM.
   Measure latency; cap with the `[cover_letter]` model override for a cloud verifier if needed.

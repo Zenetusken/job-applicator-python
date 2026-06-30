@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Grounding verifier now grounds faithful paraphrases and cross-language translations by meaning.**
+  The honesty-verifier prompt was tuned so a faithful restatement of a résumé fact — a reworded or
+  French↔English-translated version that adds and inflates nothing — is recognized as grounded
+  rather than flagged for low word overlap (it previously over-flagged faithful French translations
+  and low-overlap rephrasings). The added leniency is paired with an explicit inflation + **scope**
+  guard: a claim that broadens scope (e.g. a metric the résumé limits to "the sales team" claimed
+  for "the entire company") is still flagged. Validated EN+FR against adversarial inflations (now
+  permanent gold-set recall guards); the deterministic English honesty floor still applies on top.
+
 ## [0.5.0] - 2026-06-29
 
 ### Added

@@ -1,5 +1,5 @@
 {
-  "_doc": "Seed gold set for the grounding verifier (spec §3 #3). Synthetic source (no real PII), same fact-structure as the real case. Labels are the SEED — the user corrects/expands toward >=20-30 per direction. Scored both directions, EN+FR, per category. Live-tier, reported. A grounded case with \"residual\": true is the NAMED §7/§8 precision residual (cross-language / low-overlap faithful groundings the model under-grounds); the harness scores CORE precision (excluding these, strict floor) separately from the residual (reported, not gated).",
+  "_doc": "Seed gold set for the grounding verifier (spec §3 #3). Synthetic source (no real PII), same fact-structure as the real case. Labels are the SEED — the user corrects/expands toward >=20-30 per direction. Scored both directions, EN+FR, per category. Live-tier, reported. A grounded case with \"residual\": true is the NAMED §7/§8 precision residual (cross-language / low-overlap faithful groundings the model under-grounds); the harness scores CORE precision (excluding these, strict floor) separately from the residual (reported, not gated). The \"scope\"-category fabricated cases are RECALL guards for the meaning-grounding prompt (the verifier grounds faithful paraphrases/translations, so a faithful-LOOKING claim that BROADENS scope — 'the sales team' -> 'the entire company' — must still be flagged; these lock that in, EN+FR).",
   "source": "Jordan Lee — Operations professional with 10+ years of experience.\nCustomer Service Manager at Olympic Linen Supplies, Montréal.\nTook over 100% of inbound email service requests from the sales team.\nMaintained roughly 95% first-contact resolution without Tier 2 escalation.\nCareer-changer with an accredited cybersecurity foundation and coursework in SOC operations, SIEM, intrusion detection, and incident response.\nUndergraduate Certificate — Operational Cybersecurity (in progress; certification exam pending).\nBuilt a self-hosted BIND9 DNS server in a personal home lab.\nTechnical Skills: SIEM, Wireshark, Nmap, BIND9, Linux, incident response, threat intelligence.",
   "cases": [
     {"claim": "Took over 100% of inbound email service requests from the sales team", "label": "grounded", "lang": "en", "category": "number"},
@@ -10,12 +10,12 @@
     {"claim": "Built a self-hosted BIND9 DNS server in a home lab", "label": "grounded", "lang": "en", "category": "experience"},
     {"claim": "Customer Service Manager at Olympic Linen Supplies", "label": "grounded", "lang": "en", "category": "role"},
     {"claim": "Completed coursework in SOC operations and incident response", "label": "grounded", "lang": "en", "category": "credential"},
-    {"claim": "A pris en charge 100% des demandes par courriel de l'équipe des ventes", "label": "grounded", "lang": "fr", "category": "number", "residual": true, "residual_reason": "French faithful translation of the 100%-inbound line; the model under-grounds cross-language faithful translations (§7/§8)"},
+    {"claim": "A pris en charge 100% des demandes par courriel de l'équipe des ventes", "label": "grounded", "lang": "fr", "category": "number"},
     {"claim": "Maintenu environ 95% de résolution au premier contact", "label": "grounded", "lang": "fr", "category": "number"},
-    {"claim": "Plus de 10 ans d'expérience en gestion des opérations", "label": "grounded", "lang": "fr", "category": "tenure", "residual": true, "residual_reason": "French faithful translation of the 10+-years line; under-grounded, typically via a coverage gap (§7/§8)"},
+    {"claim": "Plus de 10 ans d'expérience en gestion des opérations", "label": "grounded", "lang": "fr", "category": "tenure"},
     {"claim": "Compétences en SIEM, Wireshark et Nmap", "label": "grounded", "lang": "fr", "category": "skill"},
     {"claim": "A construit un serveur DNS BIND9 auto-hébergé dans un laboratoire personnel", "label": "grounded", "lang": "fr", "category": "experience"},
-    {"claim": "Took on every inbound email request from the sales team", "label": "grounded", "lang": "en", "category": "experience", "residual": true, "residual_reason": "low-overlap faithful rephrase of the 100%-inbound line; the model under-grounds low-lexical-overlap rephrasings (§7/§8)"},
+    {"claim": "Took on every inbound email request from the sales team", "label": "grounded", "lang": "en", "category": "experience", "residual": true, "residual_reason": "low-overlap SAME-LANGUAGE rephrase of the 100%-inbound line; the ONLY residual left after the Variant C prompt-tune (which grounded the French translations) — the 8B grounds cross-language translations but still under-grounds same-language low-overlap rephrasings (§7/§8)"},
     {"claim": "Served as the customer service lead at a Montréal linen supplier", "label": "grounded", "lang": "en", "category": "role"},
 
     {"claim": "Maintained 100% first-contact resolution without Tier 2 escalation", "label": "fabricated", "lang": "en", "category": "number"},
@@ -34,6 +34,10 @@
     {"claim": "Holds a CISSP certification", "label": "fabricated", "lang": "en", "category": "credential"},
     {"claim": "Architected an enterprise cloud security program from the ground up", "label": "fabricated", "lang": "en", "category": "experience"},
     {"claim": "Managed a 200-node Kubernetes production fleet", "label": "fabricated", "lang": "en", "category": "experience"},
-    {"claim": "With over a decade in operations, single-handedly led a cloud migration to AWS for a Fortune 500 bank", "label": "fabricated", "lang": "en", "category": "experience"}
+    {"claim": "With over a decade in operations, single-handedly led a cloud migration to AWS for a Fortune 500 bank", "label": "fabricated", "lang": "en", "category": "experience"},
+    {"claim": "Handled 100% of the company's entire inbound email volume", "label": "fabricated", "lang": "en", "category": "scope"},
+    {"claim": "Owned the entire organization's inbound email", "label": "fabricated", "lang": "en", "category": "scope"},
+    {"claim": "A géré l'intégralité des courriels de toute l'entreprise", "label": "fabricated", "lang": "fr", "category": "scope"},
+    {"claim": "Skilled in SIEM, Splunk, and network traffic analysis", "label": "fabricated", "lang": "en", "category": "tool"}
   ]
 }
