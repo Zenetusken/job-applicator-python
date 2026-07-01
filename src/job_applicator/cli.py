@@ -1426,18 +1426,24 @@ def match(
         # Load jobs: an explicit --jobs-file, else the persisted funnel (search→match→tailor without
         # re-typing — consistent with bare `apply` reading the saved list). `match` already WRITES
         # scores back via upsert_match, so reading the funnel here closes the loop the docs promise.
+        store: JobStore | None = None
         jobs: list[JobListing] = []
         if jobs_file:
             jobs = _load_jobs_file(jobs_file)
         else:
-            jobs = [s.job for s in _get_jobs_store().list_jobs(limit=_MATCH_FUNNEL_LIMIT)]
+            # Read the funnel via a store we KEEP (reused for the persist below — no second
+            # schema-init). Fetch one extra row so a REAL overflow is distinguishable from a funnel
+            # sitting exactly at the cap (else the note fires when nothing was actually truncated).
+            store = _get_jobs_store()
+            stored = store.list_jobs(limit=_MATCH_FUNNEL_LIMIT + 1)
+            jobs = [s.job for s in stored[:_MATCH_FUNNEL_LIMIT]]
             if not jobs:
                 err_console.print(
-                    "[yellow]No jobs in the funnel yet. Run `job-applicator search -q ...` first, "
-                    "or pass --jobs-file <path>.[/yellow]"
+                    "[yellow]No jobs in the funnel yet. Provide --jobs-file <path>, or run "
+                    "`job-applicator search -q ...` first to fill it.[/yellow]"
                 )
                 raise typer.Exit(1)
-            if len(jobs) >= _MATCH_FUNNEL_LIMIT:
+            if len(stored) > _MATCH_FUNNEL_LIMIT:
                 err_console.print(
                     f"[dim]Ranking the {_MATCH_FUNNEL_LIMIT} most-recent funnel jobs; "
                     "pass --jobs-file to rank a specific set.[/dim]"
@@ -1465,7 +1471,7 @@ def match(
         # Persist scored jobs so they flow into tailor/apply and `status`.
         # Best-effort: a store hiccup must not sink the computed match results.
         try:
-            store = _get_jobs_store()
+            store = store or _get_jobs_store()  # reuse the funnel-read store when we have one
             for m in matches:
                 store.upsert_match(m)
         except JobApplicatorError as exc:

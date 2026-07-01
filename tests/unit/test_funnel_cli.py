@@ -230,7 +230,8 @@ def test_match_reads_funnel_when_no_jobs_file(
 
     result = CliRunner().invoke(cli.app, ["match", "--resume", "/tmp/r.txt", "--json"])
     assert result.exit_code == 0, result.output
-    store.list_jobs.assert_called_once_with(limit=cli._MATCH_FUNNEL_LIMIT)  # funnel is the source
+    # limit+1 so a REAL overflow is distinguishable from a funnel sitting exactly at the cap
+    store.list_jobs.assert_called_once_with(limit=cli._MATCH_FUNNEL_LIMIT + 1)
     ranked = matcher_cls.return_value.rank_jobs.await_args.args[1]
     assert [j.title for j in ranked] == ["Engineer 1", "Engineer 2"]  # the funnel jobs were ranked
     assert len(json.loads(result.stdout)) == 2  # JSON stays pure on stdout
@@ -252,8 +253,38 @@ def test_match_empty_funnel_guides_to_search(
 
     result = CliRunner().invoke(cli.app, ["match", "--resume", "/tmp/r.txt"])
     assert result.exit_code == 1, result.output
-    assert "search" in result.stderr.lower()
+    stderr = result.stderr.lower()
+    assert "search" in stderr  # guides to the primary path (fill the funnel)
+    assert "provide --jobs-file" in stderr  # keeps the qa-sanity B7 affordance intact
     matcher_cls.assert_not_called()
+
+
+def test_match_cap_note_fires_only_on_real_overflow(
+    sample_resume: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The 'ranking the N most-recent' note fires ONLY when the funnel actually overflows the cap
+    (list_jobs returns limit+1 rows), not when it sits EXACTLY at the cap — no false truncation
+    note when every stored job was in fact ranked."""
+    loader = MagicMock()
+    loader.load.return_value = sample_resume
+    monkeypatch.setattr("job_applicator.documents.resume.ResumeLoader", lambda: loader)
+    matcher_cls = MagicMock()
+    matcher_cls.return_value.rank_jobs = AsyncMock(return_value=[_match(_job(1))])
+    monkeypatch.setattr("job_applicator.embeddings.matching.JobMatcher", matcher_cls)
+
+    # Exactly at the cap: list_jobs(limit+1) returns exactly _MATCH_FUNNEL_LIMIT rows → NO overflow.
+    at_cap = [MagicMock(job=_job(i)) for i in range(cli._MATCH_FUNNEL_LIMIT)]
+    monkeypatch.setattr(cli, "_get_jobs_store", lambda: MagicMock(list_jobs=lambda limit: at_cap))
+    result = CliRunner().invoke(cli.app, ["match", "--resume", "/tmp/r.txt"])
+    assert result.exit_code == 0, result.output
+    assert "most-recent funnel jobs" not in result.stderr  # no false truncation note at the cap
+
+    # Over the cap: list_jobs returns limit+1 rows → real overflow → the note fires.
+    over = [MagicMock(job=_job(i)) for i in range(cli._MATCH_FUNNEL_LIMIT + 1)]
+    monkeypatch.setattr(cli, "_get_jobs_store", lambda: MagicMock(list_jobs=lambda limit: over))
+    result = CliRunner().invoke(cli.app, ["match", "--resume", "/tmp/r.txt"])
+    assert result.exit_code == 0, result.output
+    assert "most-recent funnel jobs" in result.stderr  # real truncation IS surfaced
 
 
 def _semantic_only_match(job: JobListing) -> MatchResult:
