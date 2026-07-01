@@ -18,6 +18,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from job_applicator.state import ApplicationState, StateError
+from job_applicator.utils.console import err_console  # status/progress → stderr (stdout stays data)
 
 if TYPE_CHECKING:
     from rich.console import Console
@@ -123,10 +124,10 @@ async def _apply_to_jobs(
             delay_s = settings.target.delay_between_applications_s
             # Show a status during the pause — a user-configured long delay (e.g. 30s) would
             # otherwise look like a hang.
-            with console.status(f"Pacing {delay_s:g}s before the next application…"):
+            with err_console.status(f"Pacing {delay_s:g}s before the next application…"):
                 await asyncio.sleep(delay_s)
 
-        with console.status(f"Applying to {job.title} at {job.company}..."):
+        with err_console.status(f"Applying to {job.title} at {job.company}..."):
             job_letter = cover_letters.get(job_url)
             ar: ApplicationResult = await applicator.apply(job, job_letter, submit=submit)
             app_results.append(ar)

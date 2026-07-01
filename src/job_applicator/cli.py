@@ -104,7 +104,7 @@ async def _llm_with_retry(  # noqa: UP047 — mypy doesn't support PEP 695 yet
     """
     while True:
         try:
-            with console.status(status_message):
+            with err_console.status(status_message):
                 return await operation()
         except Exception as exc:
             err_console.print(f"[red]LLM error: {escape(str(exc))}[/red]")
@@ -501,7 +501,7 @@ def search(
         async with _make_browser(site, settings) as browser:
             scraper = _make_scraper(site, browser, settings)
 
-            with console.status(f"Searching {site} for '{query}'..."):
+            with err_console.status(f"Searching {site} for '{query}'..."):
                 jobs = await scraper.scrape(params)
 
         if not jobs:
@@ -793,7 +793,7 @@ def import_cookies(
             scraper = LinkedInScraper(browser, settings)
             return await scraper.has_active_session()
 
-    with console.status("Verifying session by loading your LinkedIn feed once..."):
+    with err_console.status("Verifying session by loading your LinkedIn feed once..."):
         ok = asyncio.run(_verify())
     if ok:
         console.print("[green]✓ Session valid — `search` will reuse it headlessly.[/green]")
@@ -1395,7 +1395,7 @@ def match(
 
         # Match
         runtime = _make_runtime(settings, name="match")
-        with console.status("Computing embeddings and matching..."):
+        with err_console.status("Computing embeddings and matching..."):
             matcher = JobMatcher(
                 settings.embedding,
                 settings.llm,
@@ -1591,7 +1591,7 @@ def rescore(
         jobs = [s.job for s in stored]
 
         runtime = _make_runtime(settings, name="rescore")
-        with console.status(f"Re-scoring {len(jobs)} stored jobs (no scraping)..."):
+        with err_console.status(f"Re-scoring {len(jobs)} stored jobs (no scraping)..."):
             matcher = JobMatcher(
                 settings.embedding,
                 settings.llm,
@@ -1977,7 +1977,7 @@ def batch(
             async with _make_browser(site, settings) as browser:
                 scraper = _make_scraper(site, browser, settings)
                 params = SearchParams(query=query, max_results=top_k * 2, board=JobBoard(site))
-                with console.status(f"Searching {site}..."):
+                with err_console.status(f"Searching {site}..."):
                     jobs = await scraper.scrape(params)
         else:
             err_console.print("[red]Provide --jobs-file or --query.[/red]")
@@ -2015,7 +2015,7 @@ def batch(
             reporter=reporter,
             grounding_mode=settings.skills.grounding_mode,
         )
-        with console.status("Computing match scores..."):
+        with err_console.status("Computing match scores..."):
             matches = await matcher.rank_jobs(resume_data, jobs, top_k=top_k)
 
         if reporter and matches:
@@ -2347,7 +2347,7 @@ def batch(
 
                 return result
 
-        with console.status("Processing jobs in parallel..."):
+        with err_console.status("Processing jobs in parallel..."):
             batch_results = await asyncio.gather(*(_process_one(m) for m in matches))
 
         # Mark the run FAILED if any job failed, so a partial-failure run stays resumable
@@ -2690,7 +2690,7 @@ def tailor(
                 reporter=reporter,
                 grounding_mode=settings.skills.grounding_mode,
             )
-            with console.status("Computing match score..."):
+            with err_console.status("Computing match score..."):
                 pre_match = await matcher.match_resume_to_job(resume_data, job)
             pre_match_score = pre_match.score
             console.print(
@@ -2706,7 +2706,7 @@ def tailor(
                 raise typer.Exit(1 if as_json else 0)
 
         try:
-            with console.status("Tailoring + verifying resume..."):
+            with err_console.status("Tailoring + verifying resume..."):
                 result = await tailor_engine.tailor_verified(
                     resume_data, job, user_instructions, style, tone_profile
                 )
