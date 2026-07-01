@@ -399,14 +399,14 @@ class TestParseSalaryToAnnualMin:
 
     def test_annual_range_takes_lower_bound(self) -> None:
         # en-dash separator is exactly what Indeed emits — the parser must handle it
-        assert parse_salary_to_annual_min("$86,000–$112,000 a year") == 86_000  # noqa: RUF001
+        assert parse_salary_to_annual_min("$86,000–$112,000 a year") == 86_000
 
     def test_single_annual(self) -> None:
         assert parse_salary_to_annual_min("Up to $90,000") == 90_000
 
     def test_k_suffix_expands(self) -> None:
         assert parse_salary_to_annual_min("$50K") == 50_000
-        assert parse_salary_to_annual_min("$120k–$150k") == 120_000  # noqa: RUF001
+        assert parse_salary_to_annual_min("$120k–$150k") == 120_000
 
     def test_hourly_is_annualized(self) -> None:
         assert parse_salary_to_annual_min("$45 an hour") == 45 * 2080

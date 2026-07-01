@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from job_applicator.config import LLMConfig
 from job_applicator.documents.grounding_verifier import GroundingVerifier
-from job_applicator.documents.resume import section_header
+from job_applicator.documents.resume import MONTH_MAP, parse_date_range, section_header
 from job_applicator.documents.style_analyzer import StyleAnalyzer
 from job_applicator.exceptions import GroundingUnavailableError, LLMError
 from job_applicator.models import (
@@ -145,33 +145,6 @@ def parse_sections(text: str) -> list[ResumeSection]:
         )
 
     return sections
-
-
-MONTH_MAP = {
-    "january": 1,
-    "february": 2,
-    "march": 3,
-    "april": 4,
-    "may": 5,
-    "june": 6,
-    "july": 7,
-    "august": 8,
-    "september": 9,
-    "october": 10,
-    "november": 11,
-    "december": 12,
-    "jan": 1,
-    "feb": 2,
-    "mar": 3,
-    "apr": 4,
-    "jun": 6,
-    "jul": 7,
-    "aug": 8,
-    "sep": 9,
-    "oct": 10,
-    "nov": 11,
-    "dec": 12,
-}
 
 
 @dataclass
@@ -323,21 +296,15 @@ class ResumeDateValidator:
         )
 
     def _parse_all_dates(self, text: str) -> list[ParsedDate]:
-        """Extract all date entries from resume text."""
+        """Extract all date entries from resume text.
+
+        Uses the ONE shared hardened parser (``documents.resume.parse_date_range`` — YYYY /
+        Month YYYY en+fr / MM/YYYY / Present·Current·présent·actuel / –—-·to·à) so the validator and
+        the structured extractors can't drift. Sections via the shared ``section_header`` matcher.
+        """
         entries: list[ParsedDate] = []
         lines = text.split("\n")
         current_section = ""
-
-        # Pattern: "Month Year - Month Year" or "Month Year - Present"
-        # Also: "YYYY - YYYY" or "YYYY - Present"
-        date_pattern = re.compile(
-            r"(?:"
-            r"(?:(\w+)\s+)?(\d{4})\s*[-\u2013\u2014]\s*"
-            r"(?:(\w+)\s+)?(\d{4}|[Pp]resent)"
-            r"|"
-            r"(\d{4})\s*[-\u2013\u2014]\s*(\d{4}|[Pp]resent)"
-            r")"
-        )
 
         # Section headers — via the SHARED robust matcher (case-insensitive, qualifier/compound
         # tolerant), so 'PROFESSIONAL EXPERIENCE' / 'EDUCATION & CERTIFICATIONS' bucket correctly.
@@ -345,51 +312,24 @@ class ResumeDateValidator:
         # within-section ordering check compared across the real section boundary → a FALSE ordering
         # issue that aborts `tailor` on a valid CV.
         for i, line in enumerate(lines):
-            stripped = line.strip()
-
-            # Track current section
             sec = section_header(line)
             if sec:
                 current_section = sec
                 continue
 
-            # Look for dates
-            date_match = date_pattern.search(stripped)
-            if not date_match:
+            date_range = parse_date_range(line)
+            if date_range is None:
                 continue
-
-            # Find the label (previous non-empty line that looks like a title)
-            label = self._find_label(lines, i)
-
-            # Parse the date
-            if date_match.group(5):  # YYYY - YYYY format
-                start_year = int(date_match.group(5))
-                start_month = None
-                end_str = date_match.group(6)
-            else:  # Month Year - Month Year format
-                start_month = self._parse_month(date_match.group(1))
-                start_year = int(date_match.group(2))
-                end_str = date_match.group(4)
-
-            is_current = end_str.lower() == "present"
-            end_year: int | None = None
-            end_month: int | None = None
-            if not is_current:
-                if date_match.group(5):
-                    end_year = int(end_str)
-                else:
-                    end_month = self._parse_month(date_match.group(3))
-                    end_year = int(end_str)
 
             entries.append(
                 ParsedDate(
-                    label=label,
+                    label=self._find_label(lines, i),
                     section=current_section or "Unknown",
-                    start_year=start_year,
-                    start_month=start_month,
-                    end_year=end_year,
-                    end_month=end_month,
-                    is_current=is_current,
+                    start_year=date_range.start_year,
+                    start_month=date_range.start_month,
+                    end_year=date_range.end_year,
+                    end_month=date_range.end_month,
+                    is_current=date_range.is_current,
                 )
             )
 
@@ -411,12 +351,6 @@ class ResumeDateValidator:
             if cleaned:
                 return cleaned
         return "Unknown"
-
-    def _parse_month(self, month_str: str | None) -> int | None:
-        """Parse month name to number."""
-        if not month_str:
-            return None
-        return MONTH_MAP.get(month_str.lower().strip())
 
     def _date_sort_key(self, entry: ParsedDate, use_end: bool = False) -> int:
         """Generate a sortable integer for a date entry."""

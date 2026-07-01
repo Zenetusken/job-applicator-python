@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import re
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
 from job_applicator.documents.ocr import OCRService
 from job_applicator.exceptions import DocumentError, JobApplicatorError, ResumeNotFoundError
-from job_applicator.models import ResumeData
+from job_applicator.models import EducationEntry, ExperienceEntry, ResumeData
 from job_applicator.utils.logging import get_logger
 
 logger = get_logger("documents.resume")
@@ -109,6 +110,301 @@ def section_header(line: str) -> str | None:
     # exactly the mis-bucketing this matcher exists to prevent.
     head = re.split(r"\s*(?:&|/|,|\band\b)\s+", s.lower(), maxsplit=1)[0].strip()
     return _SECTION_HEAD.get(head)
+
+
+# --------------------------------------------------------------------------- date-range parsing
+#
+# ONE hardened date-range parser, shared by the structured extractors below AND
+# ``ResumeDateValidator`` (documents/resume_tailor.py) — a single source so the two can't drift.
+# Handles YYYY, Month YYYY (English + French), MM/YYYY; end tokens Present/Current/présent/actuel;
+# separators –/—/-/to/à/au. Almost every entry-segmentation strategy anchors on detecting a date
+# range, so this is the load-bearing primitive for multi-format support.
+
+MONTH_MAP: dict[str, int] = {
+    # English
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "jun": 6, "jul": 7, "aug": 8,
+    "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12,
+    # French
+    "janvier": 1, "février": 2, "fevrier": 2, "mars": 3, "avril": 4, "mai": 5,
+    "juin": 6, "juillet": 7, "août": 8, "aout": 8, "septembre": 9, "octobre": 10,
+    "novembre": 11, "décembre": 12, "decembre": 12,
+    "janv": 1, "févr": 2, "fevr": 2, "avr": 4, "juil": 7, "déc": 12,
+}  # fmt: skip
+
+_MIN_YEAR, _MAX_YEAR = 1950, 2100  # plausible résumé-date bound — rejects phone/ID numeric noise
+_PRESENT_RE = r"present|current|now|ongoing|pr[eé]sent|actuel(?:le)?"
+# dash separators may be spaceless; word separators (to/à/au) require surrounding spaces
+_SEP_RE = r"(?:\s*[-–—]\s*|\s+(?:to|à|au)\s+)"
+# Month token built from MONTH_MAP keys (longest-first) so only REAL month names match — a title
+# word before a year ("Manager 2022") can't be misread as a month-year, so parse_date_range stays
+# robust when scanning raw lines (the ResumeDateValidator use), not just gap-split headers.
+_MONTH_ALT = "|".join(sorted((re.escape(k) for k in MONTH_MAP), key=len, reverse=True))
+_MON_SIDE = rf"(?:{_MONTH_ALT})\.?\s+\d{{4}}"  # "January 2020" / "janv. 2020"
+_MMY_SIDE = r"\d{1,2}/\d{4}"
+_YR_SIDE = r"\d{4}"
+_SIDE = rf"(?:{_MON_SIDE}|{_MMY_SIDE}|{_YR_SIDE})"
+_RANGE_RE = re.compile(rf"({_SIDE}){_SEP_RE}({_SIDE}|{_PRESENT_RE})", re.IGNORECASE)
+_DATE_SUB = rf"(?:{_SIDE}){_SEP_RE}(?:{_SIDE}|{_PRESENT_RE})"
+# A line-tail is a date range iff it is EXACTLY one (anchored). Used to test the text AFTER a
+# right-alignment gap — cheap/linear on the short tail. (Do NOT put a lazy `.+?` prefix in front of
+# this: `.+?` + `\s{2,}` + `\s*` all competing over one whitespace run backtracks catastrophically
+# on the long space runs a `pdftotext -layout` PDF emits — a real parser hang. _entry_header splits
+# in Python instead so the label and the gap can never overlap.)
+_DATE_ONLY_RE = re.compile(rf"^{_DATE_SUB}$", re.IGNORECASE)
+_GAP_RE = re.compile(r"\s{2,}|\t")  # right-alignment gap between a label and a right-aligned date
+
+
+@dataclass(frozen=True)
+class DateRange:
+    """A parsed start→end date range. ``end_*`` are ``None`` when ``is_current``."""
+
+    start_year: int | None
+    start_month: int | None
+    end_year: int | None
+    end_month: int | None
+    is_current: bool
+
+
+def _parse_side(s: str) -> tuple[int, int | None] | None:
+    """Parse one side of a range ('2020' | 'January 2020' | '01/2020') → (year, month | None)."""
+    s = s.strip()
+    m = re.fullmatch(r"([A-Za-zÀ-ÿ]{3,})\.?\s+(\d{4})", s)
+    if m:
+        month = MONTH_MAP.get(m.group(1).lower().rstrip("."))
+        if month is None:
+            return None  # an unknown word before a year is NOT a confident month → reject
+        return int(m.group(2)), month
+    m = re.fullmatch(r"(\d{1,2})/(\d{4})", s)
+    if m:
+        mm = int(m.group(1))
+        if not 1 <= mm <= 12:
+            return None  # an impossible month → not a valid MM/YYYY token; reject, don't fabricate
+        return int(m.group(2)), mm
+    m = re.fullmatch(r"(\d{4})", s)
+    if m:
+        return int(m.group(1)), None
+    return None
+
+
+def parse_date_range(text: str) -> DateRange | None:
+    """Parse the first ``start – end`` date range in ``text``, or ``None`` if none is confident."""
+    m = _RANGE_RE.search(text)
+    if not m:
+        return None
+    start = _parse_side(m.group(1))
+    if start is None or not (_MIN_YEAR <= start[0] <= _MAX_YEAR):
+        return None
+    end_raw = m.group(2).strip()
+    if re.fullmatch(_PRESENT_RE, end_raw, re.IGNORECASE):
+        return DateRange(start[0], start[1], None, None, True)
+    end = _parse_side(end_raw)
+    if end is None or not (_MIN_YEAR <= end[0] <= _MAX_YEAR):
+        return None
+    return DateRange(start[0], start[1], end[0], end[1], False)
+
+
+# --------------------------------------------------------------- structured experience/education
+#
+# Conservative, section-scoped, date-range-anchored extraction. Emits an entry ONLY on a confident
+# match; on any format it can't confidently parse it emits NOTHING (→ the raw_text fallback in the
+# consumers), never a fabricated/garbage entry (no-failure-masking). The entry structure is the
+# common "title-first" form (a header line ending in a right-aligned date range, then a
+# company/institution line, then bullets); breadth comes from the multi-format date parser above,
+# not from lowering the confidence bar.
+
+
+def _entry_header(line: str) -> tuple[str, str, str, DateRange] | None:
+    """An entry header = ``<label>`` + a right-alignment gap (2+ spaces / tab) + a date range at
+    EOL. Returns (label, start_str, end_str, DateRange) or ``None`` — a date mid-sentence is NOT a
+    header. Splits on the gap in Python (rightmost gap whose whole tail is a date range) rather than
+    one lazy+greedy regex, so it stays LINEAR on long space runs (see `_DATE_ONLY_RE`)."""
+    line = line.rstrip()
+    for gap in reversed(list(_GAP_RE.finditer(line))):
+        tail = line[gap.end() :].strip()
+        if not _DATE_ONLY_RE.match(tail):
+            continue
+        label = line[: gap.start()].strip().strip("-–—,").strip()
+        if len(label) < 2:
+            return None
+        dr = parse_date_range(tail)
+        if dr is None:
+            return None
+        raw = _RANGE_RE.search(tail)  # raw start/end substrings for the string fields
+        start_str = raw.group(1).strip() if raw else ""
+        end_str = "Present" if dr.is_current else (raw.group(2).strip() if raw else "")
+        return label, start_str, end_str, dr
+    return None
+
+
+def _section_body(text: str, section: str) -> list[str]:
+    """Lines strictly inside ``section`` (until the NEXT section header of any kind)."""
+    out: list[str] = []
+    in_section = False
+    for line in text.split("\n"):
+        head = section_header(line)
+        if head == section:
+            in_section = True
+            continue
+        if in_section and head is not None:
+            break
+        if in_section:
+            out.append(line)
+    return out
+
+
+def _debullet(s: str) -> str:
+    return re.sub(r"^[\s•·▪‣◦*–—\-]+", "", s.strip()).strip()
+
+
+def _is_place_tail(tail: str) -> bool:
+    """A comma tail is a place iff it's short (≤3 words) and digit-free (a city/province, not part
+    of a company name)."""
+    return bool(tail) and len(tail.split()) <= 3 and not any(c.isdigit() for c in tail)
+
+
+def _company_location(line: str) -> tuple[str, str]:
+    """Split 'Company, City[, Province]' → (company, location); fold up to two short, digit-free
+    trailing comma tails into the location (so 'Acme, Montreal, QC' → 'Acme' / 'Montreal, QC')."""
+    company, sep, loc = line.strip().rpartition(",")
+    loc = loc.strip()
+    if not (sep and company.strip() and _is_place_tail(loc)):
+        return line.strip(), ""
+    company2, sep2, loc2 = company.rpartition(",")  # a second "…, City, Province" tail
+    loc2 = loc2.strip()
+    if sep2 and company2.strip() and _is_place_tail(loc2):
+        return company2.strip(), f"{loc2}, {loc}"
+    return company.strip(), loc
+
+
+_DESC_LABEL_RE = re.compile(
+    r"^[\w][\w &/'()-]{0,30}:"
+)  # "Relevant coursework:", "GPA:", "Completed:"
+
+
+def _looks_like_entity(line: str) -> bool:
+    """True if ``line`` plausibly NAMES an employer/school — a compact proper-noun phrase, NOT a
+    bullet, a prose sentence, or a 'Label: …' description. Guards the company/institution slot: on a
+    non-title-first résumé (bullets or a description right after the header) it returns False so the
+    slot stays '' (honest empty) instead of grabbing an arbitrary line as a fabricated field
+    (no-failure-masking). NOTE: it cannot disambiguate a company-first layout ('Company' on the
+    header, 'Title' next) — that residual mis-label is a known title-first assumption."""
+    s = line.strip()
+    if not s or _debullet(s) != s:  # bullet-led (•/·/-/–/… ) → a bullet, not an employer/school
+        return False
+    if len(s) > 60 or len(s.split()) > 8:  # a description/sentence, not a compact name
+        return False
+    if _DESC_LABEL_RE.match(s):  # "Relevant coursework: …" — a description label, not a name
+        return False
+    return True
+
+
+def _next_content_line(body: list[str], start: int) -> int:
+    """Index of the next non-empty line at or after ``start`` (len(body) if none)."""
+    j = start
+    while j < len(body) and not body[j].strip():
+        j += 1
+    return j
+
+
+def extract_experience(text: str) -> list[ExperienceEntry]:
+    """Extract structured experience entries from a résumé (conservative; [] on no match)."""
+    body = _section_body(text, "Experience")
+    entries: list[ExperienceEntry] = []
+    i = 0
+    while i < len(body):
+        header = _entry_header(body[i])
+        if header is None:
+            i += 1
+            continue
+        title, start_date, end_date, _dr = header
+        company = location = ""
+        cursor = i + 1
+        j = _next_content_line(body, i + 1)
+        # Only take the next line as the employer if it plausibly NAMES one — else leave company ''
+        # and let the line fall through to the bullet loop (a bullet-as-company is a fabrication).
+        if (
+            j < len(body)
+            and _entry_header(body[j]) is None
+            and section_header(body[j]) is None
+            and _looks_like_entity(body[j])
+        ):
+            company, location = _company_location(body[j])
+            cursor = j + 1
+        bullets: list[str] = []
+        while cursor < len(body):
+            if not body[cursor].strip():
+                cursor += 1
+                continue
+            if _entry_header(body[cursor]) is not None or section_header(body[cursor]) is not None:
+                break
+            bullets.append(_debullet(body[cursor]))
+            cursor += 1
+        entries.append(
+            ExperienceEntry(
+                title=title,
+                company=company,
+                location=location,
+                start_date=start_date,
+                end_date=end_date,
+                bullets=bullets,
+            )
+        )
+        i = cursor
+    return entries
+
+
+def _degree_institution(label: str) -> tuple[str, str]:
+    """Split a single-line 'Degree — Institution' label; else (label, '')."""
+    parts = re.split(r"\s+[–—-]\s+", label, maxsplit=1)
+    if len(parts) == 2:
+        return parts[0].strip(), parts[1].strip()
+    return label, ""
+
+
+def extract_education(text: str) -> list[EducationEntry]:
+    """Extract structured education entries from résumé text (conservative; [] on no match)."""
+    body = _section_body(text, "Education")
+    entries: list[EducationEntry] = []
+    i = 0
+    while i < len(body):
+        header = _entry_header(body[i])
+        if header is None:
+            i += 1
+            continue
+        label, start_date, end_date, _dr = header
+        cursor = i + 1
+        j = _next_content_line(body, i + 1)
+        if (
+            j < len(body)
+            and _entry_header(body[j]) is None
+            and section_header(body[j]) is None
+            and _looks_like_entity(body[j])  # a school NAME, not a description/coursework line
+        ):
+            degree, institution = label, body[j].strip()  # institution on its own line
+            cursor = j + 1
+        else:
+            degree, institution = _degree_institution(label)  # single-line "Degree — Institution"
+        # Skip any description lines until the next header/section (EducationEntry has no bullets).
+        while cursor < len(body):
+            if not body[cursor].strip():
+                cursor += 1
+                continue
+            if _entry_header(body[cursor]) is not None or section_header(body[cursor]) is not None:
+                break
+            cursor += 1
+        entries.append(
+            EducationEntry(
+                degree=degree,
+                institution=institution,
+                location="",
+                start_date=start_date,
+                end_date=end_date,
+            )
+        )
+        i = cursor
+    return entries
 
 
 class ResumeLoader:
@@ -547,9 +843,20 @@ class ResumeLoader:
         # Drop a leading setext/markdown underline that can follow a header.
         summary = re.sub(r"^[\-=~*]+\s*\n?", "", summary).strip()
 
+        # Structured experience/education — conservative, section-scoped, date-range-anchored.
+        # Emits entries only on a confident parse (else []), so a format it can't read degrades to
+        # the raw_text fallback in the consumers rather than fabricating (no-failure-masking).
+        experience = extract_experience(text)
+        education = extract_education(text)
+
         confidence = self._compute_confidence(text)
         logger.info(
-            "Parsed resume: name=%s, skills=%d, confidence=%.2f", name, len(skills), confidence
+            "Parsed resume: name=%s, skills=%d, exp=%d, edu=%d, confidence=%.2f",
+            name,
+            len(skills),
+            len(experience),
+            len(education),
+            confidence,
         )
         return ResumeData(
             raw_text=text,
@@ -558,6 +865,8 @@ class ResumeLoader:
             phone=phone,
             summary=summary,
             skills=skills,
+            experience=experience,
+            education=education,
             parse_confidence=confidence,
             parse_method=method,
         )
