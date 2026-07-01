@@ -201,13 +201,31 @@ experience/education (#14)** — resolved, see Shipped.)
 
 ## Known follow-ups (deferred)
 
-- **Matching tuning re-validation on the corrected CV.** The DOCX table fix (#124) recovered the
-  skills section, so the 60/40 semantic/skill blend and the 0.75 per-skill match threshold — both
-  tuned on the *old, skills-less* CV — now rest on changed input. The funnel was rescored (#125, then
-  re-rescored 2026-07-01 on the corrected SOC CV — see Shipped), but whether 0.75/60-40 are still
-  optimal needs its own empirics with a small gold-labelled (relevant/not) set — a separate arc, not
-  a quick tweak. Until then, treat absolute match scores as skill-overlap (the existing caption
-  already says so); relative ranking is sound.
+- **Matching tuning re-validation on the corrected CV (IN PROGRESS — autonomous work done, gated on
+  Drei's labels).** The 60/40 semantic/skill blend + the 0.75 per-skill match threshold were tuned on
+  the *old, skills-less* CV. The gold-set apparatus is now BUILT (2026-07-01): a fresh 92-job
+  geo-correct Montréal scrape + a labeling sheet + a Spearman/cutoff validator under
+  `~/.job-applicator/matching-eval/`. Autonomous findings: (a) the matcher **DISCRIMINATES** —
+  SOC-core scores > boundary (IT-support/help-desk/NOC/GRC) across 3 runs; ranking is sound (French
+  SOC roles at top); (b) **NO extraction gap** — the semantic-only rate is 13% (all metadata-only,
+  short JDs); the earlier "~50%" was a **stale-cache artifact**; (c) scores are compressed
+  (0.34–0.77, median ~0.47). The calibration VERDICT (is 0.75/60-40 right? should MATCHING consume
+  `experience`, `matching.py:110`?) needs Drei's own relevance labels — the one input an auto-proxy
+  can't supply (it would only test embedding-agrees-with-keyword-matcher, circular). Until then:
+  absolute scores = skill-overlap; relative ranking is sound.
+- **Skill-extraction hardening residuals (surfaced by the re-validation arc, 2026-07-01).** (a)
+  **Apostrophe/encoding span fix, done RIGHT** — the evidence-span verifier drops valid skills on
+  cosmetic mismatches (the French curly apostrophe `l'X`, U+2019 vs U+0027, above all). A first
+  attempt (PR #143) was ABANDONED after adversarial review: it patched the wrong verifier
+  (`_phrase_in_description`, not the `_span_grounded` the default `evidence_span` path uses → inert)
+  and its whitespace-collapse fused words across bare newlines (fabricated skills — a false-positive).
+  The correct fix is accent/quote normalization on the SHARED grounding path, preserving
+  `_span_grounded`'s deliberate `BLS/ACLS` punctuation-sentinel, with NO newline fusion — gated
+  behind a material need (no rich JD zeroes on the default path). (b) **Extraction determinism** —
+  skill extraction runs at `[llm]` temperature 0.7, so `match` scores wander run-to-run (the
+  persistent cache freezes them; a cleared cache resamples); temp 0 would make matching reproducible.
+  (c) **Duplicate-posting dedup** — the funnel dedups by URL, so LinkedIn's same-role-different-URL
+  repostings (measured: one Wepoint SOC role ×5) survive as near-duplicates.
 - **Employment-GAP detection — the real HR red flag (not built; now UNBLOCKED).** `ResumeDateValidator`
   claimed "gap detection" in its docstring but never implemented it (corrected in #129). Unexplained
   employment gaps are the genuine signal a date check should surface. Its two preconditions are now
