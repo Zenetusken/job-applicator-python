@@ -3295,6 +3295,26 @@ def _render_doctor(report: DoctorReport) -> None:
         console.print(
             f"                 {warn} [yellow]configured resume_path does not exist[/yellow]"
         )
+    if cfg.resume_path_exists and cfg.resume_filename:
+        # Surface the résumé's IDENTITY + age + parsed skills — the primary guard against a stale
+        # or wrong config.resume_path (a filename/age a human catches instantly, where a threshold
+        # can't). The soft ⚠ note (thin/old) is secondary.
+        if cfg.resume_age_days is None:
+            age = "age n/a"
+        elif cfg.resume_age_days >= 30:
+            age = f"{cfg.resume_age_days // 30}mo old"
+        else:
+            age = f"{cfg.resume_age_days}d old"
+        skills = (
+            f"{cfg.resume_parsed_skills} skills parsed"
+            if cfg.resume_parsed_skills is not None
+            else "parse n/a"
+        )
+        console.print(f"  Résumé         {good} {escape(cfg.resume_filename)} · {age} · {skills}")
+        if cfg.resume_sanity_note:
+            console.print(
+                f"                 {warn} [yellow]{escape(cfg.resume_sanity_note)}[/yellow]"
+            )
 
     pdf = report.pdf_rendering
     if pdf.ok:

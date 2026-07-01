@@ -608,3 +608,71 @@ async def test_run_diagnostics_includes_browser_system_config(
     assert isinstance(report.browser, BrowserCheck)
     assert isinstance(report.system, SystemBinariesCheck)
     assert isinstance(report.config, ConfigCheck)
+
+
+def test_config_check_surfaces_resume_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """doctor surfaces the résumé's filename + age + parsed-skill count — the primary guard
+    against a stale/wrong config.resume_path (a human catches what a threshold can't)."""
+    cfg = tmp_path / "cfg.toml"
+    resume = tmp_path / "Jane_SOC_CV_2026.txt"
+    resume.write_text(
+        "Jane Doe\njane@x.com\nSkills\nPython, SIEM, Incident Response\nExperience\nAnalyst"
+    )
+    cfg.write_text(f'resume_path = "{resume}"\n')
+    monkeypatch.setenv("JOB_APPLICATOR_CONFIG_FILE", str(cfg))
+    res = diagnostics.check_config(AppSettings())
+    assert res.resume_filename == "Jane_SOC_CV_2026.txt"
+    assert res.resume_parsed_skills is not None and res.resume_parsed_skills > 0
+    assert res.resume_age_days == 0  # just created
+    assert res.resume_sanity_note == ""  # fresh + has skills → no warning
+
+
+def test_config_check_flags_old_resume(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A résumé older than ~12 months gets a soft 'is it current?' note (the stale-CV class)."""
+    import os
+    import time
+
+    cfg = tmp_path / "cfg.toml"
+    resume = tmp_path / "Old_Resume.txt"
+    resume.write_text("Jane Doe\nSkills\nPython, SQL")
+    old = time.time() - 400 * 86400  # ~13 months
+    os.utime(resume, (old, old))
+    cfg.write_text(f'resume_path = "{resume}"\n')
+    monkeypatch.setenv("JOB_APPLICATOR_CONFIG_FILE", str(cfg))
+    res = diagnostics.check_config(AppSettings())
+    assert res.resume_age_days is not None and res.resume_age_days > 365
+    assert "months old" in res.resume_sanity_note
+
+
+def test_config_check_flags_thin_parse(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A résumé that parses 0 skills (image-only / wrong-format / mis-structured) is flagged."""
+    cfg = tmp_path / "cfg.toml"
+    resume = tmp_path / "empty.txt"
+    resume.write_text("just some prose with no skills section at all")
+    cfg.write_text(f'resume_path = "{resume}"\n')
+    monkeypatch.setenv("JOB_APPLICATOR_CONFIG_FILE", str(cfg))
+    res = diagnostics.check_config(AppSettings())
+    assert res.resume_parsed_skills == 0
+    assert "0 skills" in res.resume_sanity_note
+
+
+def test_config_check_parse_failure_note_wins_over_old(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A résumé that FAILS to parse gets the actionable parse message — and that note is NOT
+    overwritten by the thin/old secondary note (parse-failure takes priority; #128 review gap)."""
+    import os
+    import time
+
+    cfg = tmp_path / "cfg.toml"
+    bad = tmp_path / "corrupt.pdf"
+    bad.write_text("not a real pdf")  # .pdf suffix but unparseable → DocumentError
+    old = time.time() - 400 * 86400  # also make it >12mo, to prove parse-failure wins
+    os.utime(bad, (old, old))
+    cfg.write_text(f'resume_path = "{bad}"\n')
+    monkeypatch.setenv("JOB_APPLICATOR_CONFIG_FILE", str(cfg))
+    res = diagnostics.check_config(AppSettings())
+    assert res.resume_sanity_note.startswith("could not parse")  # actionable, not "months old"
+    assert "months old" not in res.resume_sanity_note

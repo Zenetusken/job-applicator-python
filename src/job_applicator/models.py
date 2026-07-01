@@ -732,6 +732,13 @@ class ConfigCheck(BaseModel):
     plaintext_credentials: bool = False
     resume_path_set: bool = False
     resume_path_exists: bool = False
+    # Résumé identity/age/parse — surfaced by `doctor` as plain INFO so a human catches a stale or
+    # wrong CV (a filename that reads "Resume" not the current one, a 2-yr-old file) that no
+    # threshold can. resume_sanity_note carries a soft secondary ⚠ (thin/old), never a fail.
+    resume_filename: str = ""
+    resume_age_days: int | None = None
+    resume_parsed_skills: int | None = None
+    resume_sanity_note: str = ""
     output_dir_writable: bool = False
     error: str | None = None
 
