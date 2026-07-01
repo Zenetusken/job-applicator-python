@@ -17,7 +17,10 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     every test:
 
       tests/unit/**        -> ``unit``         (fast, no infra; the green gate)
-      tests/integration/** -> ``integration``  (reserved; empty today)
+      tests/integration/** -> ``integration``  (cross-component seams on real stores/PDF; no
+                                                vLLM/GPU — e.g. apply-loop + batch-loop against a
+                                                real SQLite state store, PDF rendering, board
+                                                browser-policy wiring)
       tests/*.py (root)    -> ``live``         (need vLLM @ localhost:8000 + GPU)
 
     Markers are registered in pyproject.toml; ``--strict-markers`` requires that.
