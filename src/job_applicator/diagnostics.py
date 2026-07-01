@@ -21,6 +21,7 @@ import asyncio
 import os
 import shutil
 import tempfile
+import time
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -273,7 +274,38 @@ def check_config(settings: AppSettings) -> ConfigCheck:
     result.plaintext_credentials = _has_plaintext_credentials(config_file)
     result.resume_path_set = bool(settings.resume_path)
     if result.resume_path_set:
-        result.resume_path_exists = Path(settings.resume_path).is_file()
+        rp = Path(settings.resume_path)
+        result.resume_path_exists = rp.is_file()
+        if result.resume_path_exists:
+            # Surface the résumé's IDENTITY + age + parsed-skill count so `doctor` makes the CV in
+            # play VISIBLE (the real guard against a stale/wrong config.resume_path — a threshold
+            # can't tell "Resume.docx, 2yr old" from the current one; a human eyeballing it can).
+            result.resume_filename = rp.name
+            try:
+                result.resume_age_days = int((time.time() - rp.stat().st_mtime) / 86400)
+            except OSError:
+                pass
+            # Parse WITHOUT OCR — a diagnostic must stay fast; if the file needs OCR, a 0-skill
+            # parse is itself the signal. Best-effort: a parse failure becomes a soft note, never a
+            # crash (the core config check must still return).
+            try:
+                from job_applicator.documents.resume import ResumeLoader
+
+                result.resume_parsed_skills = len(
+                    ResumeLoader().load(str(rp), ocr_mode="off").skills
+                )
+            except Exception as exc:  # advisory: any parse failure → a soft note, never a crash
+                # Surface the actual message — load() raises DocumentError with an actionable one
+                # ("password-protected…", "enable OCR…"); the type name alone throws it away.
+                result.resume_sanity_note = f"could not parse résumé — {exc}"
+            # Soft SECONDARY warnings (the surfaced facts above are the primary signal).
+            notes: list[str] = []
+            if result.resume_parsed_skills == 0:
+                notes.append("parsed 0 skills (image-only / wrong format / mis-structured?)")
+            if result.resume_age_days is not None and result.resume_age_days > 365:
+                notes.append(f"~{result.resume_age_days // 30} months old — is it your current CV?")
+            if notes and not result.resume_sanity_note:
+                result.resume_sanity_note = "; ".join(notes)
     # A diagnostic must not create directories: probe the writability of the output
     # dir (or the nearest existing ancestor it would be created in) WITHOUT
     # ensure_output_dir()'s mkdir side-effect.
