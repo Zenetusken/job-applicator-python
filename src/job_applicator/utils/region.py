@@ -275,47 +275,70 @@ def navigator_languages(locale: str) -> tuple[str, ...]:
     return (locale, locale.split("-")[0])
 
 
-@functools.lru_cache(maxsize=1)
-def _detect_chrome_major() -> str | None:
-    candidates = (
-        "google-chrome",
-        "google-chrome-stable",
-        "chromium",
-        "chromium-browser",
-        "brave-browser",
-    )
-    for exe in candidates:
+_CHROME_CANDIDATES = (
+    "google-chrome",
+    "google-chrome-stable",
+    "chromium",
+    "chromium-browser",
+    "brave-browser",
+)
+
+
+def _chrome_major_from_binary(path: str) -> str | None:
+    """Parse the Chrome/Chromium MAJOR version from a browser binary's ``--version``."""
+    try:
+        result = subprocess.run(  # noqa: S603 # nosec B603
+            [path, "--version"], capture_output=True, text=True, timeout=5, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    # Anchor on the browser keyword so e.g. Brave's "Brave Browser 1.71.123
+    # Chromium: 130.0..." yields 130, not the leading "71" of its own version.
+    match = re.search(r"(?:Chrome|Chromium)[/ :]+(\d{2,})\.", result.stdout)
+    return match.group(1) if match else None
+
+
+def host_chrome_path() -> str | None:
+    """Path to the first installed host Chrome/Chromium, or ``None``. Used to decide whether a
+    ``channel='chrome'`` launch (the real host browser) is available before trying it."""
+    for exe in _CHROME_CANDIDATES:
         path = shutil.which(exe)
-        if not path:
-            continue
-        try:
-            result = subprocess.run(  # noqa: S603 # nosec B603
-                [path, "--version"], capture_output=True, text=True, timeout=5, check=False
-            )
-        except (OSError, subprocess.SubprocessError):
-            continue
-        # Anchor on the browser keyword so e.g. Brave's "Brave Browser 1.71.123
-        # Chromium: 130.0..." yields 130, not the leading "71" of its own version.
-        match = re.search(r"(?:Chrome|Chromium)[/ :]+(\d{2,})\.", result.stdout)
-        if match:
-            return match.group(1)
+        if path:
+            return path
     return None
 
 
 @functools.lru_cache(maxsize=1)
-def detect_chrome_user_agent() -> str:
-    """Build a UA matching the host's installed Chrome major version.
+def _detect_chrome_major() -> str | None:
+    path = host_chrome_path()
+    return _chrome_major_from_binary(path) if path else None
 
-    Matching the real browser's UA matters for sites that bind clearance cookies
-    to the User-Agent (e.g. Cloudflare-fronted Indeed). Falls back to a recent
-    default if no local Chrome/Chromium is found. Cached: the host's browser
-    version does not change within a process, and the lookup shells out to the
-    browser binary, which we don't want to repeat on every launch.
-    """
-    major = _detect_chrome_major()
-    if not major:
-        return _DEFAULT_USER_AGENT
+
+def chrome_ua_for_major(major: str) -> str:
+    """Build a Chrome UA string for a given major version + the host platform token."""
     return (
         f"Mozilla/5.0 ({_platform_ua_token()}) AppleWebKit/537.36 "
         f"(KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
     )
+
+
+@functools.lru_cache(maxsize=1)
+def detect_chrome_user_agent() -> str:
+    """Build a UA matching the HOST's installed Chrome major version.
+
+    The right UA when the real host Chrome is what launches (``channel='chrome'``): the UA then
+    matches the engine's own Sec-CH-UA client-hints. Falls back to a recent default if no local
+    Chrome/Chromium is found. Cached (the host version is stable within a process + the lookup
+    shells out).
+    """
+    major = _detect_chrome_major()
+    return chrome_ua_for_major(major) if major else _DEFAULT_USER_AGENT
+
+
+def chrome_user_agent_for_binary(path: str) -> str:
+    """Build a UA matching a SPECIFIC browser binary's version — used for the bundled-Chromium
+    fallback so the launch advertises the engine version it actually runs (not the host's), keeping
+    UA == Sec-CH-UA (the alternative, stamping the host major over a different bundled engine, is a
+    detectable version skew). Falls back to the default UA if the binary can't be read."""
+    major = _chrome_major_from_binary(path)
+    return chrome_ua_for_major(major) if major else _DEFAULT_USER_AGENT

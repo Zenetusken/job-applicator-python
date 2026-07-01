@@ -37,6 +37,11 @@ class BrowserConfig(BaseSettings):
     viewport_height: int = 1080
     timeout_ms: int = 30_000
     user_agent: str | None = None
+    # Browser engine channel. "chrome" launches the host's REAL Google Chrome (Playwright's own
+    # matching channel) instead of the bundled Chromium: no `HeadlessChrome` client-hint leak,
+    # real-GPU WebGL, and UA == Sec-CH-UA (all one version). Falls back to bundled Chromium (with a
+    # warning) if no host Chrome is installed. Set to None/"" to force the bundled engine.
+    channel: str | None = "chrome"
     # Empty = auto-detect from the host. The timezone in particular drives how
     # geo-aware sites (Indeed/LinkedIn) locate the browser; set to pin a region.
     locale: str = ""
