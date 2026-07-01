@@ -39,8 +39,11 @@ just test "does the embedding agree with a keyword matcher" — circular), scope
 (~0.5–0.85, the region that moves the 0.75 cutoff) + his revealed preference (tailored/cover-letter
 jobs). Ranking-quality is the FIRST measurement (test the "relative ranking is sound" claim);
 threshold/blend + the experience-consumption paired experiment only if ranking shows a fixable gap.
-Blocked on a fresh, clean, volume-disciplined scrape — his funnel was stale day-1 data (to be
-wiped+refilled), and the scraper hardening that makes that scrape safe just shipped (see Shipped).
+The one remaining input is a fresh, clean scrape — his funnel was stale day-1 data (to be
+wiped+refilled). The scraper is now READY for it: volume-disciplined (#138), **geo-correct** (#140
+geoId — measured 89% off-geo → 7/7 Montréal), **high-yield** (#140 two-pass card iteration), and
+bare `match` **reads the funnel** (#141) — all landed via the meta-test fix arc (see Shipped). So
+the next concrete step is the re-scrape → Drei's boundary-band labels → the ranking measurement.
 
 Also open: **selector health (#12)** — measured MOSTLY-DONE (the critical apply selectors already
 fail loud; a proactive registry is out-of-scope) — and the deferred **employment-gap detection**
@@ -48,6 +51,22 @@ fail loud; a proactive registry is out-of-scope) — and the deferred **employme
 experience/education (#14)** — resolved, see Shipped.)
 
 ## Shipped
+
+- **Meta-test fix arc — dogfooding the search flow found (+ fixed) 5 real bugs** (PRs #140–#141,
+  2026-07-01). Driving the actual CLI end-to-end on the REAL LinkedIn session (Drei's ask: "meta-test
+  the system, only use the UI") surfaced 5 defects the isolated qa-harness can't reach. **(#4)
+  geoId** — search sent a raw `location=` with no numeric geoId, so LinkedIn served a global/remote
+  feed (measured 89% France/EMEA/EU-remote for a Montréal search); now resolves the geoId via the
+  guest typeahead (region-aware, city-retry for "City, ST") → 7/7 and 8/8 Montréal/Canada. **(#3)
+  card iteration** — card ElementHandles were captured once then detached by each click's re-render
+  ("element not attached"); rebuilt as two passes (snapshot ALL metadata first, then re-resolve each
+  card fresh by EXACT job id) so a description miss degrades to metadata-only, never a dropped job.
+  **(#5) match funnel** — bare `match` errored "provide --jobs-file" instead of reading the funnel it
+  already writes to; now ranks the persisted funnel (search→match without re-typing). **(#1/#2b)
+  doctor** reported the bundled Chromium, not the host Chrome #137 made default. Both PRs
+  adversarially reviewed — the code-review workflow caught 2 MORE defects (a description-swap
+  data-corruption on a panel timeout, and a message change that would have reddened the qa-sanity B7
+  gate); gate green, full qa-sanity core+LIVE green. The dogfooding earned its keep.
 
 - **Scraper anti-detection hardening — the caution, verified + right-sized** (PRs #137–#138,
   2026-07-01). A static audit + an offline fingerprint probe (temp profile, loopback — zero LinkedIn

@@ -41,6 +41,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a real stale-config CV that had silently mis-scored the whole funnel.
 
 ### Fixed
+- **LinkedIn search is now geo-correct.** `search --location` sent a raw location string with no
+  numeric `geoId`, so LinkedIn ignored it and returned a global/remote feed (a `Montréal, QC` search
+  measured **89% France/EMEA/EU-remote**). It now resolves the location to LinkedIn's `geoId` via the
+  guest typeahead (region-aware, with a bare-city retry for `"City, ST"`) — Montréal searches return
+  Montréal/Canada jobs. Falls back to the raw location (logged) if resolution fails, never a wrong id.
+- **The LinkedIn scrape no longer drops job cards.** Card handles were captured once, then each card
+  click re-rendered LinkedIn's virtualized list and detached the rest ("element not attached to the
+  DOM"). The scrape now snapshots all card metadata first, then loads each description by re-resolving
+  the card fresh by exact job id — a description that won't load degrades to a metadata-only listing
+  instead of losing the whole job.
+- **Bare `match` ranks the saved funnel.** `match` with no `--jobs-file` errored "provide
+  --jobs-file" instead of ranking the jobs `search` already stored (and that it writes scores back
+  to). It now reads the funnel — `search` → `match` → `tailor` flows without re-exporting a JSON file.
+- **`doctor` reports the browser engine actually used.** With the new default real-Chrome channel,
+  `doctor`'s Browser check verified only the bundled Chromium; it now resolves and reports the host
+  Chrome (and warns if the channel is set but no host Chrome is found → a silent fallback).
 - **`--json` output no longer corrupted by the progress spinner under forced color.** `match` (and
   other data commands) routed their "Computing…" Rich status spinner to stdout; under a color-forcing
   environment (`FORCE_COLOR`, some CIs) that leaked ANSI/spinner frames into piped `--json`, breaking
