@@ -1341,6 +1341,13 @@ def generate_cover_letter(
             reporter.render(err_console, log_file)
 
 
+# Bare `match` (no --jobs-file) ranks the persisted funnel. Cap the candidate set so a large funnel
+# can't turn one `match` into hundreds of GPU embeds; a real personal funnel is well under this, and
+# --jobs-file is the escape hatch for a specific/larger set (the cap is logged when hit — never
+# silently truncated).
+_MATCH_FUNNEL_LIMIT = 200
+
+
 @app.command()
 def match(
     ctx: typer.Context,
@@ -1416,16 +1423,31 @@ def match(
                 suggestions=ats_result.suggestions,
             )
 
-        # Load jobs
+        # Load jobs: an explicit --jobs-file, else the persisted funnel (search→match→tailor without
+        # re-typing — consistent with bare `apply` reading the saved list). `match` already WRITES
+        # scores back via upsert_match, so reading the funnel here closes the loop the docs promise.
+        store: JobStore | None = None
         jobs: list[JobListing] = []
         if jobs_file:
             jobs = _load_jobs_file(jobs_file)
         else:
-            err_console.print(
-                "[red]No jobs to match. Provide --jobs-file <path> "
-                "(a JSON array of job listings).[/red]"
-            )
-            raise typer.Exit(1)
+            # Read the funnel via a store we KEEP (reused for the persist below — no second
+            # schema-init). Fetch one extra row so a REAL overflow is distinguishable from a funnel
+            # sitting exactly at the cap (else the note fires when nothing was actually truncated).
+            store = _get_jobs_store()
+            stored = store.list_jobs(limit=_MATCH_FUNNEL_LIMIT + 1)
+            jobs = [s.job for s in stored[:_MATCH_FUNNEL_LIMIT]]
+            if not jobs:
+                err_console.print(
+                    "[yellow]No jobs in the funnel yet. Provide --jobs-file <path>, or run "
+                    "`job-applicator search -q ...` first to fill it.[/yellow]"
+                )
+                raise typer.Exit(1)
+            if len(stored) > _MATCH_FUNNEL_LIMIT:
+                err_console.print(
+                    f"[dim]Ranking the {_MATCH_FUNNEL_LIMIT} most-recent funnel jobs; "
+                    "pass --jobs-file to rank a specific set.[/dim]"
+                )
 
         if not as_json:
             console.print(f"[green]Loaded {len(jobs)} jobs[/green]")
@@ -1449,7 +1471,7 @@ def match(
         # Persist scored jobs so they flow into tailor/apply and `status`.
         # Best-effort: a store hiccup must not sink the computed match results.
         try:
-            store = _get_jobs_store()
+            store = store or _get_jobs_store()  # reuse the funnel-read store when we have one
             for m in matches:
                 store.upsert_match(m)
         except JobApplicatorError as exc:

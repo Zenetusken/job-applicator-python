@@ -87,6 +87,7 @@ screenshots/
 .kimi-code/
 .superpowers/
 .worktrees/
+.claude/worktrees/
 
 # Generated output
 output/
