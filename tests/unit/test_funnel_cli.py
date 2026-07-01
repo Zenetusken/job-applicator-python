@@ -211,6 +211,51 @@ def test_match_persists_scored_jobs(
     assert len(json.loads(result.stdout)) == 2  # JSON stays pure on stdout
 
 
+def test_match_reads_funnel_when_no_jobs_file(
+    sample_resume: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#5: bare `match` (no --jobs-file) ranks the persisted funnel — the search→match flow the
+    docs promise — instead of erroring 'provide --jobs-file'. Consistent with bare `apply`, and
+    `match` already writes scores back, so reading the funnel closes the loop."""
+    s1, s2 = MagicMock(job=_job(1)), MagicMock(job=_job(2))
+    store = MagicMock()
+    store.list_jobs.return_value = [s1, s2]
+    matcher_cls = MagicMock()
+    matcher_cls.return_value.rank_jobs = AsyncMock(return_value=[_match(_job(1)), _match(_job(2))])
+    monkeypatch.setattr("job_applicator.embeddings.matching.JobMatcher", matcher_cls)
+    monkeypatch.setattr(cli, "_get_jobs_store", lambda: store)
+    loader = MagicMock()
+    loader.load.return_value = sample_resume
+    monkeypatch.setattr("job_applicator.documents.resume.ResumeLoader", lambda: loader)
+
+    result = CliRunner().invoke(cli.app, ["match", "--resume", "/tmp/r.txt", "--json"])
+    assert result.exit_code == 0, result.output
+    store.list_jobs.assert_called_once_with(limit=cli._MATCH_FUNNEL_LIMIT)  # funnel is the source
+    ranked = matcher_cls.return_value.rank_jobs.await_args.args[1]
+    assert [j.title for j in ranked] == ["Engineer 1", "Engineer 2"]  # the funnel jobs were ranked
+    assert len(json.loads(result.stdout)) == 2  # JSON stays pure on stdout
+
+
+def test_match_empty_funnel_guides_to_search(
+    sample_resume: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#5: bare match on an EMPTY funnel exits 1 with a guide to `search` (not the old cryptic
+    'provide --jobs-file'), and never constructs the matcher (no wasted GPU load)."""
+    store = MagicMock()
+    store.list_jobs.return_value = []
+    matcher_cls = MagicMock()
+    monkeypatch.setattr("job_applicator.embeddings.matching.JobMatcher", matcher_cls)
+    monkeypatch.setattr(cli, "_get_jobs_store", lambda: store)
+    loader = MagicMock()
+    loader.load.return_value = sample_resume
+    monkeypatch.setattr("job_applicator.documents.resume.ResumeLoader", lambda: loader)
+
+    result = CliRunner().invoke(cli.app, ["match", "--resume", "/tmp/r.txt"])
+    assert result.exit_code == 1, result.output
+    assert "search" in result.stderr.lower()
+    matcher_cls.assert_not_called()
+
+
 def _semantic_only_match(job: JobListing) -> MatchResult:
     """A match for a JD with NO requirements: skill_score is 0.0 by convention (not a real 0%)."""
     return MatchResult(

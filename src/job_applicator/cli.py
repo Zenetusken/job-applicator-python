@@ -1341,6 +1341,13 @@ def generate_cover_letter(
             reporter.render(err_console, log_file)
 
 
+# Bare `match` (no --jobs-file) ranks the persisted funnel. Cap the candidate set so a large funnel
+# can't turn one `match` into hundreds of GPU embeds; a real personal funnel is well under this, and
+# --jobs-file is the escape hatch for a specific/larger set (the cap is logged when hit — never
+# silently truncated).
+_MATCH_FUNNEL_LIMIT = 200
+
+
 @app.command()
 def match(
     ctx: typer.Context,
@@ -1416,16 +1423,25 @@ def match(
                 suggestions=ats_result.suggestions,
             )
 
-        # Load jobs
+        # Load jobs: an explicit --jobs-file, else the persisted funnel (search→match→tailor without
+        # re-typing — consistent with bare `apply` reading the saved list). `match` already WRITES
+        # scores back via upsert_match, so reading the funnel here closes the loop the docs promise.
         jobs: list[JobListing] = []
         if jobs_file:
             jobs = _load_jobs_file(jobs_file)
         else:
-            err_console.print(
-                "[red]No jobs to match. Provide --jobs-file <path> "
-                "(a JSON array of job listings).[/red]"
-            )
-            raise typer.Exit(1)
+            jobs = [s.job for s in _get_jobs_store().list_jobs(limit=_MATCH_FUNNEL_LIMIT)]
+            if not jobs:
+                err_console.print(
+                    "[yellow]No jobs in the funnel yet. Run `job-applicator search -q ...` first, "
+                    "or pass --jobs-file <path>.[/yellow]"
+                )
+                raise typer.Exit(1)
+            if len(jobs) >= _MATCH_FUNNEL_LIMIT:
+                err_console.print(
+                    f"[dim]Ranking the {_MATCH_FUNNEL_LIMIT} most-recent funnel jobs; "
+                    "pass --jobs-file to rank a specific set.[/dim]"
+                )
 
         if not as_json:
             console.print(f"[green]Loaded {len(jobs)} jobs[/green]")
