@@ -127,6 +127,11 @@ class TargetConfig(BaseSettings):
 
     max_applications_per_day: int = 20
     delay_between_applications_s: float = 2.0
+    # Proactive SEARCH-volume budget (anti-detection): keep an authenticated session unremarkable.
+    # A per-day cap on scrapes (the top risk from the anti-detection audit — searches were uncapped
+    # in code) + an optional inter-search cooldown (seconds; 0 = off) paced between scrapes.
+    max_searches_per_day: int = 30
+    search_cooldown_s: float = 0.0
     linkedin_email: str = ""
     linkedin_password: str = ""
     indeed_email: str = ""

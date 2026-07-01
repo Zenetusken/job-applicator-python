@@ -163,6 +163,24 @@ def test_search_persists_found_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
     assert store.upsert_job.call_args_list[0].kwargs.get("source_query") == "python"
 
 
+def test_search_refuses_past_daily_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The proactive search-volume budget (anti-detection H1) refuses once the daily cap is hit —
+    and short-circuits BEFORE launching the browser, so a capped run touches nothing."""
+    monkeypatch.setenv("JOB_APPLICATOR_TARGET_MAX_SEARCHES_PER_DAY", "1")
+    from job_applicator.search_state import SearchState
+
+    SearchState().record("linkedin", "earlier today")  # 1 search today; cap=1 → the next is refused
+
+    def _no_browser(*_a: object, **_k: object) -> object:
+        raise AssertionError("browser must NOT launch once the search cap is reached")
+
+    monkeypatch.setattr(cli, "_make_browser", _no_browser)
+
+    result = CliRunner().invoke(cli.app, ["search", "-q", "python"])
+    assert result.exit_code == 1, result.output
+    assert "cap reached" in result.stderr.lower()
+
+
 # ---------------------------------------------------------- match persistence
 def test_match_persists_scored_jobs(
     tmp_path: Path, sample_resume: object, monkeypatch: pytest.MonkeyPatch

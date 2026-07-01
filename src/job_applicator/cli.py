@@ -498,6 +498,40 @@ def search(
             board=board_map[site],
         )
 
+        # Proactive search-volume budget (anti-detection): keep the authenticated session
+        # UNREMARKABLE. Refuse past the daily cap, pace the optional inter-search cooldown, and
+        # record the search ATTEMPT (conservative — a blocked/errored scrape still consumed volume).
+        from job_applicator.search_state import SearchState, SearchStateError
+
+        search_state = SearchState()
+        try:
+            searched_today = search_state.count_today(site)
+        except SearchStateError as exc:
+            err_console.print(f"[red]Cannot read the search budget ({exc}); stopping.[/red]")
+            raise typer.Exit(1) from exc
+        cap = settings.target.max_searches_per_day
+        if searched_today >= cap:
+            err_console.print(
+                f"[yellow]Daily search cap reached ({searched_today}/{cap}) — keeping the account "
+                "unremarkable. Try again tomorrow, or raise max_searches_per_day in your "
+                "config.[/yellow]"
+            )
+            raise typer.Exit(1)
+        cooldown = settings.target.search_cooldown_s
+        if cooldown > 0:
+            since = search_state.seconds_since_last(site)
+            if since is not None and since < cooldown:
+                with err_console.status(
+                    f"Pacing {cooldown - since:.0f}s (inter-search cooldown)..."
+                ):
+                    await asyncio.sleep(cooldown - since)
+        try:
+            search_state.record(site, query)
+        except SearchStateError as exc:
+            err_console.print(
+                f"[dim]Note: could not record the search against the budget ({exc}).[/dim]"
+            )
+
         async with _make_browser(site, settings) as browser:
             scraper = _make_scraper(site, browser, settings)
 
