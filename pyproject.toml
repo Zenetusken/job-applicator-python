@@ -108,6 +108,7 @@ allowed-confusables = ["–"]
 # placeholders derived from internal enums; no user input reaches SQL.
 "src/job_applicator/state.py" = ["S608"]
 "src/job_applicator/batch_state.py" = ["S608"]
+"src/job_applicator/search_state.py" = ["S608"]
 
 [tool.ruff.lint.flake8-bugbear]
 # typer.Option / typer.Argument are immutable factories used as parameter defaults (the typer
