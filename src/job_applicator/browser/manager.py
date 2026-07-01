@@ -16,9 +16,11 @@ from job_applicator.config import BrowserConfig
 from job_applicator.exceptions import BrowserError
 from job_applicator.utils.logging import get_logger
 from job_applicator.utils.region import (
+    chrome_user_agent_for_binary,
     detect_chrome_user_agent,
     detect_locale,
     detect_timezone,
+    host_chrome_path,
     navigator_languages,
     navigator_platform_for_ua,
 )
@@ -45,6 +47,10 @@ def _aligned_stealth(user_agent: str, locale: str) -> Stealth:
     return Stealth(
         navigator_platform_override=navigator_platform_for_ua(user_agent),
         navigator_languages_override=navigator_languages(locale),
+        # Disable the WebGL vendor/renderer spoof: its default is a macOS "Intel Iris" string, an
+        # obvious cross-OS tell under a Linux UA. With channel="chrome" the REAL Chrome GPU renderer
+        # is already platform-consistent (and honest), so let it through rather than lie about it.
+        webgl_vendor=False,
     )
 
 
@@ -152,9 +158,26 @@ class BrowserManager:
             # configured) so geo-aware sites serve the correct region.
             resolved_locale = self._config.locale or detect_locale()
             resolved_tz = self._config.timezone or detect_timezone()
-            resolved_ua = self._config.user_agent or detect_chrome_user_agent()
+            # Prefer the host's REAL Chrome (channel="chrome") — no HeadlessChrome client-hint leak,
+            # real-GPU WebGL, UA == Sec-CH-UA. Fall back to bundled Chromium (with a warning) if no
+            # host Chrome is installed. The UA reflects whichever engine actually launches, so the
+            # advertised version matches the engine's own client-hints (no detectable version skew).
+            resolved_channel = self._config.channel or None
+            if resolved_channel == "chrome" and host_chrome_path() is None:
+                logger.warning(
+                    "channel='chrome' requested but no host Chrome found; using bundled Chromium"
+                )
+                resolved_channel = None
+            if self._config.user_agent:
+                resolved_ua = self._config.user_agent
+            elif resolved_channel == "chrome":
+                resolved_ua = detect_chrome_user_agent()  # the host Chrome we actually launch
+            else:
+                bundled = self._playwright.chromium.executable_path
+                resolved_ua = chrome_user_agent_for_binary(bundled)
             self._persistent_context = await self._playwright.chromium.launch_persistent_context(
                 str(profile_dir),
+                channel=resolved_channel,
                 headless=self._config.headless,
                 slow_mo=self._config.slow_mo,
                 args=[
