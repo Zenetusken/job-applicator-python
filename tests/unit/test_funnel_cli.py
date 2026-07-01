@@ -163,9 +163,12 @@ def test_search_persists_found_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
     assert store.upsert_job.call_args_list[0].kwargs.get("source_query") == "python"
 
 
-def test_search_refuses_past_daily_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_search_refuses_past_daily_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The proactive search-volume budget (anti-detection H1) refuses once the daily cap is hit —
     and short-circuits BEFORE launching the browser, so a capped run touches nothing."""
+    # Neutralize any repo config.toml: for a NESTED sub-config field its [target] value outranks
+    # the env var (pydantic quirk), which would defeat the env-set cap (see live-cli-qa-recipe).
+    monkeypatch.setenv("JOB_APPLICATOR_CONFIG_FILE", str(tmp_path / "no-config.toml"))
     monkeypatch.setenv("JOB_APPLICATOR_TARGET_MAX_SEARCHES_PER_DAY", "1")
     from job_applicator.search_state import SearchState
 

@@ -499,8 +499,11 @@ def search(
         )
 
         # Proactive search-volume budget (anti-detection): keep the authenticated session
-        # UNREMARKABLE. Refuse past the daily cap, pace the optional inter-search cooldown, and
-        # record the search ATTEMPT (conservative — a blocked/errored scrape still consumed volume).
+        # UNREMARKABLE. Refuse past the daily cap, pace the optional cooldown, then record the
+        # ATTEMPT before launching — over-counting a search that never reaches LinkedIn (a local
+        # browser-launch failure) is the SAFE direction for a volume cap. Read fails CLOSED (a
+        # budget we can't read → stop); record is best-effort (a write hiccup logs a note, never
+        # sinks results — the cap degrades to approximate, not a hard block on a store glitch).
         from job_applicator.search_state import SearchState, SearchStateError
 
         search_state = SearchState()

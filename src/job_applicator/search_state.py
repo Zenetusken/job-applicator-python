@@ -117,4 +117,11 @@ class SearchState:
             raise SearchStateError(f"Cannot read the last search time: {exc}") from exc
         if not row or not row[0]:
             return None
-        return (datetime.now(UTC) - datetime.fromisoformat(row[0])).total_seconds()
+        try:
+            last = datetime.fromisoformat(row[0])
+        except (
+            ValueError,
+            TypeError,
+        ) as exc:  # a corrupt/foreign timestamp → typed, not a raw crash
+            raise SearchStateError(f"Corrupt stored search timestamp {row[0]!r}: {exc}") from exc
+        return (datetime.now(UTC) - last).total_seconds()
