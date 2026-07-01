@@ -32,13 +32,26 @@ interactive `tailor` view (defense-in-depth) — shipped in **PR #126**. (ATS-on
 existed in the verbose/batch paths.) A textbook "fix the cause, not the symptom" outcome.
 
 **Next arc — open.** The 2026-06-24 audit medium-term backlog is the queue: **selector health /
-fail-loud on LinkedIn DOM drift** (#12, protects the one automated-apply path), **integration tests**
-for state/batch/apply (#11), **structured experience/education extraction** (#14 — the 2026-07-01
-résumé-pipeline audit found the fields UNIMPLEMENTED/dead; populate-or-remove, and populating is the
-precondition for employment-gap detection). Plus the deferred **matching-tuning re-validation** and
-**employment-gap detection** (see Known follow-ups).
+fail-loud on LinkedIn DOM drift** (#12, protects the one automated-apply path) and **structured
+experience/education extraction** (#14 — the 2026-07-01 résumé-pipeline audit found the fields
+UNIMPLEMENTED/dead; populate-or-remove, and populating is the precondition for employment-gap
+detection). Plus the deferred **matching-tuning re-validation** and **employment-gap detection**
+(see Known follow-ups). (**Integration tests (#11)** — resolved; the residual is closed, see Shipped.)
 
 ## Shipped
+
+- **Integration tests — apply/batch loops against real state stores** (PR #132, 2026-07-01). Audit
+  #11 ("integration tests for state/batch/apply") turned out **mostly already covered** once
+  measured: the batch resume contract (`test_batch_state.py`, real SQLite), the `status` cross-store
+  composition (`test_funnel_cli.py`, two real stores on one DB), and the store methods themselves.
+  The genuine residual was the orchestration **loop's use of a REAL store** — the existing loop tests
+  mock `ApplicationState`/`BatchState` with canned returns, so emergent persistence is never
+  exercised. Two focused files close it (no `src/` changes): `test_apply_state_integration.py` (7 —
+  real daily-cap progression 0→1→2, pre-loop cap, cross-run URL dedup, board-scoped isolation,
+  dry-run persists nothing, round-trip, fail-closed on a mid-loop `StateError`) and
+  `test_batch_resume_integration.py` (2 — job-level COMPLETED/FAILED actually persist, read back via
+  `get_job_status`). Independent adversarial review mutation-tested every claim (each fails when its
+  target path is broken). Integration suite 9 → 18; gate green throughout.
 
 - **Résumé-pipeline audit + fixes** (PRs #128–#130, 2026-07-01). The "dream" memory-vs-config
   cross-check caught that `config.toml` `resume_path` pointed at a **stale 2023 IT-support CV**, not
