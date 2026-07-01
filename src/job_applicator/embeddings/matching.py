@@ -106,10 +106,12 @@ class JobMatcher:
         if resume.skills and resume.skills[0] != "•":
             parts.append("Skills: " + ", ".join(resume.skills))
 
-        # Add experience
-        for exp in resume.experience[:5]:
-            if exp.title:
-                parts.append(f"{exp.title} at {exp.company}")
+        # NOTE: resume.experience is populated (parse-time structured extraction) but is
+        # DELIBERATELY NOT fed into the match embedding. It was empty for the field's whole life, so
+        # this was dead code; activating it now would change match scores unmeasured — and for a
+        # career-changer would dilute the target-domain signal with off-domain job titles. Whether
+        # matching should consume experience is the deferred matching-revalidation arc (needs a
+        # gold-labelled set), not this hygiene change. Behavior-preserving: dead → dead.
 
         # Fall back to raw text sections if structured data is sparse
         if len(parts) < 2:

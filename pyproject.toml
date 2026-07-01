@@ -96,6 +96,10 @@ select = [
     "S",     # bandit (security)
     "RUF",   # ruff-specific
 ]
+# Résumé date ranges legitimately use the EN DASH ("2020 – 2023") — in the shared date-range regex
+# AND in parser test fixtures. Allow it (RUF001/002/003) rather than forcing – escapes into
+# otherwise-readable data; it's domain content in a résumé parser, not an ASCII typo.
+allowed-confusables = ["–"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["S101", "S105", "S108", "S607", "ASYNC221"]

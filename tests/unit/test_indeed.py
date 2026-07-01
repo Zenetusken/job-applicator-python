@@ -393,7 +393,7 @@ async def test_extract_job_captures_salary(app_settings: AppSettings) -> None:
         side_effect=lambda name: "/viewjob?jk=1" if name == "href" else None
     )
     salary_el = AsyncMock()
-    salary_el.inner_text = AsyncMock(return_value="$86,000–$112,000 a year")  # noqa: RUF001
+    salary_el.inner_text = AsyncMock(return_value="$86,000–$112,000 a year")
 
     async def query(selector: str) -> object | None:
         if "jcs-JobTitle" in selector:
@@ -408,7 +408,7 @@ async def test_extract_job_captures_salary(app_settings: AppSettings) -> None:
 
     job = await scraper._extract_job(card, JobBoard.INDEED)
     assert job is not None
-    assert job.salary == "$86,000–$112,000 a year"  # noqa: RUF001
+    assert job.salary == "$86,000–$112,000 a year"
 
 
 @pytest.mark.asyncio
