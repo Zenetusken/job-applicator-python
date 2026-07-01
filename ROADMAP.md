@@ -33,11 +33,25 @@ existed in the verbose/batch paths.) A textbook "fix the cause, not the symptom"
 
 **Next arc — open.** The 2026-06-24 audit medium-term backlog is the queue: **selector health /
 fail-loud on LinkedIn DOM drift** (#12, protects the one automated-apply path), **integration tests**
-for state/batch/apply (#11), **structured experience/education extraction** (#14 — note: NOT
-justified by fidelity, which measured clean; only relevant to matching). Plus the deferred
-**matching-tuning re-validation** (see Known follow-ups).
+for state/batch/apply (#11), **structured experience/education extraction** (#14 — the 2026-07-01
+résumé-pipeline audit found the fields UNIMPLEMENTED/dead; populate-or-remove, and populating is the
+precondition for employment-gap detection). Plus the deferred **matching-tuning re-validation** and
+**employment-gap detection** (see Known follow-ups).
 
 ## Shipped
+
+- **Résumé-pipeline audit + fixes** (PRs #128–#130, 2026-07-01). The "dream" memory-vs-config
+  cross-check caught that `config.toml` `resume_path` pointed at a **stale 2023 IT-support CV**, not
+  the current SOC `_v1` — so `match`/`tailor`/`rescore` (incl. the #125 refresh) had silently scored
+  the *wrong* CV; repointed + re-rescored (Analyste SOC 32%→**78%**, now the #1 match). A 3-agent
+  audit of the résumé parse pipeline then measured + fixed, on the real CV: the `doctor`
+  **résumé-identity guard** (#128 — a stale/wrong CV is now visible); **case-sensitive section
+  headers** that made `summary` swallow 97.7% of the doc AND **aborted `tailor` on a valid CV** via a
+  false ordering issue (#129 — one shared robust matcher, an advisory-not-blocking gate, removal of
+  the education-staleness noise, and a docstring corrected for claiming unimplemented gap/overlap
+  detection); and two **skill-extraction** defects (#130 — a paren-comma mangle splitting
+  "Linux (Fedora, CLI, Bash)" into garbage, and a ≤2-char rule silently dropping C#/Go/R/AI/ML). The
+  reliable spine (raw_text / contact / skills) was confirmed sound. Gate green throughout.
 
 - **Foundation + matching + fidelity arc** (PRs #123–#126, 2026-06-30): an empirics-driven cascade.
   Reconciled the stale ROADMAP (#123); **fixed the DOCX parser to extract table cells** (#124, audit
@@ -113,10 +127,27 @@ justified by fidelity, which measured clean; only relevant to matching). Plus th
 
 - **Matching tuning re-validation on the corrected CV.** The DOCX table fix (#124) recovered the
   skills section, so the 60/40 semantic/skill blend and the 0.75 per-skill match threshold — both
-  tuned on the *old, skills-less* CV — now rest on changed input. The funnel was rescored (#125), but
-  whether 0.75/60-40 are still optimal needs its own empirics with a small gold-labelled
-  (relevant/not) set — a separate arc, not a quick tweak. Until then, treat absolute match scores as
-  skill-overlap (the existing caption already says so); relative ranking is sound.
+  tuned on the *old, skills-less* CV — now rest on changed input. The funnel was rescored (#125, then
+  re-rescored 2026-07-01 on the corrected SOC CV — see Shipped), but whether 0.75/60-40 are still
+  optimal needs its own empirics with a small gold-labelled (relevant/not) set — a separate arc, not
+  a quick tweak. Until then, treat absolute match scores as skill-overlap (the existing caption
+  already says so); relative ranking is sound.
+- **Employment-GAP detection — the real HR red flag (not built).** `ResumeDateValidator` claimed
+  "gap detection" in its docstring but never implemented it (corrected in #129). Unexplained
+  employment gaps are the genuine signal a date check should surface; it needs reliable per-role
+  date ranges, i.e. populated structured `experience` (see next) + a hardened date parser
+  (the current one drops MM/YYYY, "Current", and French formats). Its own deliberate arc — do NOT
+  bolt it onto the heuristic regex parser.
+- **Structured `experience`/`education` are UNIMPLEMENTED dead fields (audit 2026-07-01).**
+  `parse_text` never constructs an `ExperienceEntry`/`EducationEntry` (grep: zero call sites) — the
+  fields are always empty, and every consumer falls back to `raw_text`, so nothing breaks today, but
+  it's the "fabricated default" antipattern. **Populate-or-remove** (audit #14) — and populating is
+  the precondition for gap detection above. Not justified by fidelity (measured clean); relevant to
+  matching + gaps.
+- **Single-char skill asymmetry (LOW, #130 residual).** `matching.py:320` (résumé side) keeps a
+  `len>=2` filter while `:330` (requirement side) has none, so a job listing a bare `R`/`C` can
+  surface it as an unsatisfiable "missing skill" even when the CV lists it. 1-char only (2-char
+  Go/C#/AI/ML fully fixed in #130); no impact on the current CV. 1-line symmetric fix when touched.
 - **Cover-letter repeated-verb "voice tell"** (ROADMAP Arc-1 Item 2). `_voice_tells`
   (`documents/cover_letter.py`) scores phrase-presence + structural tells but has **no intra-letter
   repeated-token detector** (e.g. "engineered" ×4); the `_devoice` / `_voice_correction` re-prompt
