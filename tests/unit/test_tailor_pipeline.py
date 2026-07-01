@@ -119,13 +119,13 @@ class TestResumeDateValidatorAudit:
         general_staleness = [s for s in result.staleness_issues if "Most recent entry" in s]
         assert len(general_staleness) == 0
 
-    def test_education_staleness_greater_than_10yr(self):
+    def test_education_age_is_not_a_staleness_signal(self):
+        """Education AGE is no longer flagged (removed as noise — old education is normal for an
+        experienced career-changer; the real red flag is employment gaps, which this validator does
+        not detect). The newest-entry staleness check is unaffected."""
         resume = ResumeData(raw_text="EDUCATION\nBS Computer Science\nMIT\n1998 - 2002")
         result = ResumeDateValidator(reference_date=datetime(2030, 1, 1)).audit(resume)
-        assert result.is_stale
-        edu_staleness = [s for s in result.staleness_issues if "Education" in s]
-        assert len(edu_staleness) > 0
-        assert "2002" in edu_staleness[0]
+        assert [s for s in result.staleness_issues if "Education" in s] == []
 
     def test_year_only_format(self):
         resume = ResumeData(raw_text="EXPERIENCE\nJob\nCorp\n2018 - 2020")

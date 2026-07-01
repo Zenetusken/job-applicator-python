@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from job_applicator.config import LLMConfig
 from job_applicator.documents.grounding_verifier import GroundingVerifier
+from job_applicator.documents.resume import section_header
 from job_applicator.documents.style_analyzer import StyleAnalyzer
 from job_applicator.exceptions import GroundingUnavailableError, LLMError
 from job_applicator.models import (
@@ -187,12 +188,18 @@ class ParsedDate:
 
 
 class ResumeDateValidator:
-    """Parse and validate dates from resume text.
+    """Parse dates from résumé text and run two LIGHT coherence checks.
 
-    Checks for:
-    - Chronological ordering (most recent first within each section)
-    - Timeline coherence (no impossible overlaps, gap detection)
-    - Staleness (entries that suggest the CV is outdated)
+    Implemented:
+    - Chronological ordering (most recent first, within each section)
+    - Staleness of the newest entry (its end date > STALE_THRESHOLD_YEARS ago, unless it is
+      currently "Present") — a soft "have you updated this CV?" signal.
+
+    NOT implemented (deliberately — do not re-add to the docstring without the code): employment
+    GAP detection and overlap/"impossible range" detection. Gaps are the real HR red flag but need
+    reliable per-role date-range parsing (structured experience, currently unpopulated) — a separate
+    arc. The date parser is heuristic (regex over raw_text): it drops MM/YYYY, "Current", and French
+    formats, so treat these signals as advisory, never blocking.
     """
 
     STALE_THRESHOLD_YEARS = 2
@@ -248,22 +255,10 @@ class ResumeDateValidator:
                     f"CV may be outdated."
                 )
 
-        # Check for "Present" entries that might be stale
-        for e in entries:
-            if e.is_current:
-                # This is fine — still active
-                pass
-
-        # Check education dates for staleness
-        edu_entries = [e for e in entries if e.section == "Education"]
-        for e in edu_entries:
-            if e.end_year and not e.is_current:
-                years_since = self._now.year - e.end_year
-                if years_since > 10:
-                    staleness_issues.append(
-                        f"Education '{e.label}' ended {years_since} years ago "
-                        f"({e.end_year}). Consider if this is still relevant."
-                    )
+        # (Removed: education-age staleness. Flagging education that "ended >10 years ago" is noise
+        # for an experienced career-changer — old education is normal, not a red flag — and it
+        # mis-fired on in-progress coursework. The genuine red flag is employment GAPS, which this
+        # validator does NOT detect; tracked as a follow-up rather than kept as a wrong signal.)
 
         # Check for missing dates
         for e in entries:
@@ -344,20 +339,18 @@ class ResumeDateValidator:
             r")"
         )
 
-        # Section headers
-        section_pattern = re.compile(
-            r"^\*{0,2}\s*(EXPERIENCE|EDUCATION|EMPLOYMENT|VOLUNTEER"
-            r"|CERTIFICATIONS|INTERNSHIP)\s*\*{0,2}$",
-            re.IGNORECASE,
-        )
-
+        # Section headers — via the SHARED robust matcher (case-insensitive, qualifier/compound
+        # tolerant), so 'PROFESSIONAL EXPERIENCE' / 'EDUCATION & CERTIFICATIONS' bucket correctly.
+        # The old anchored ^EXPERIENCE$ regex rejected those → every entry fell to 'Unknown' → the
+        # within-section ordering check compared across the real section boundary → a FALSE ordering
+        # issue that aborts `tailor` on a valid CV.
         for i, line in enumerate(lines):
             stripped = line.strip()
 
             # Track current section
-            sec_match = section_pattern.match(stripped)
-            if sec_match:
-                current_section = sec_match.group(1).title()
+            sec = section_header(line)
+            if sec:
+                current_section = sec
                 continue
 
             # Look for dates
