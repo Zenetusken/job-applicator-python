@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -93,10 +94,44 @@ def _is_version_like(token: str) -> bool:
     return bool(_VERSION_LIKE_RE.match(token))
 
 
+# Typographic apostrophe/quote variants → ASCII. Common in French JDs ("l'identification" with the
+# U+2019 right-single-quote vs U+0027), which otherwise fail verbatim span verification.
+_SPAN_QUOTE_MAP = str.maketrans(
+    {
+        chr(0x2018): "'",  # LEFT SINGLE QUOTATION MARK
+        chr(0x2019): "'",  # RIGHT SINGLE QUOTATION MARK (the French l'X case)
+        chr(0x02BC): "'",  # MODIFIER LETTER APOSTROPHE
+        chr(0x00B4): "'",  # ACUTE ACCENT (sometimes typed as an apostrophe)
+        chr(0x0060): "'",  # GRAVE ACCENT
+        chr(0x201C): '"',  # LEFT DOUBLE QUOTATION MARK
+        chr(0x201D): '"',  # RIGHT DOUBLE QUOTATION MARK
+    }
+)
+
+
+def _normalize_span_text(text: str) -> str:
+    """Cosmetic normalization for evidence-span verification: NFC-canonicalize accents, unify
+    apostrophe/quote variants, and collapse whitespace runs (incl. newlines) to single spaces.
+
+    Applied to BOTH the span and the description, so it can only reconcile encoding/spacing
+    variants — it can NEVER make a span match evidence that is not present modulo those variants
+    (a paraphrased or reformatted span still fails). Keeps the honesty of the substring check while
+    fixing the genuine curly-apostrophe / line-wrap comparison bug.
+    """
+    text = unicodedata.normalize("NFC", text).translate(_SPAN_QUOTE_MAP)
+    return " ".join(text.split()).lower()
+
+
 def _phrase_in_description(phrase: str, description: str) -> bool:
-    """Return True when ``phrase`` appears as a whole-phrase token in ``description``."""
-    pattern = r"(?<!\w)" + re.escape(phrase.lower()) + r"(?!\w)"
-    return bool(re.search(pattern, description.lower()))
+    """Return True when ``phrase`` appears as a whole-phrase token in ``description``.
+
+    Both sides are cosmetically normalized (:func:`_normalize_span_text`) so a span that quotes the
+    JD verbatim still verifies across curly-apostrophe / accent-encoding / line-wrap differences,
+    without loosening the substring requirement.
+    """
+    norm_phrase = _normalize_span_text(phrase)
+    pattern = r"(?<!\w)" + re.escape(norm_phrase) + r"(?!\w)"
+    return bool(re.search(pattern, _normalize_span_text(description)))
 
 
 # Common English words that cannot form the second word of a multi-word skill

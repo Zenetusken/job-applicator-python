@@ -5,7 +5,11 @@ from __future__ import annotations
 import pytest
 
 from job_applicator.config import LLMConfig
-from job_applicator.embeddings.skill_extraction import LLMSkillExtractor, _ExtractionResult
+from job_applicator.embeddings.skill_extraction import (
+    LLMSkillExtractor,
+    _ExtractionResult,
+    _phrase_in_description,
+)
 
 
 @pytest.fixture
@@ -390,3 +394,29 @@ class TestEvidenceSpanGrounding:
         monkeypatch.setattr(ext, "_call_llm_evidence_span", boom)
         with pytest.raises(LLMError):
             await ext.extract("Backend role in Python.")
+
+
+# --- evidence-span verification: cosmetic normalization (French apostrophe / line-wrap / accents)
+def test_phrase_in_description_recovers_curly_apostrophe() -> None:
+    """A curly apostrophe (U+2019, ubiquitous in French JDs like ``l'identification``) verifies
+    against a straight-quote span — the comparison bug that dropped valid French skills."""
+    text = "responsable de l" + chr(0x2019) + "identification des menaces"
+    assert _phrase_in_description("l'identification", text)
+
+
+def test_phrase_in_description_recovers_linewrap_and_accents() -> None:
+    """Whitespace/newline runs collapse and accents NFC-canonicalize on both sides, so a verbatim
+    span still verifies across a scrape's line wrapping or an NFD-encoded accent."""
+    import unicodedata
+
+    assert _phrase_in_description("incident response", "lead the incident\n   response team")
+    assert _phrase_in_description("sécurité", "la " + unicodedata.normalize("NFD", "sécurité"))
+
+
+def test_phrase_in_description_still_rejects_reformatted_or_absent() -> None:
+    """INVARIANT (honesty): normalization is cosmetic-only — a paraphrased/reformatted span, an
+    absent span, or a match straddling a word boundary must STILL fail, so the verifier never
+    admits evidence that isn't in the text."""
+    assert not _phrase_in_description("Windows Server Administration", "we deploy Windows Server")
+    assert not _phrase_in_description("hallucinated skill", "nothing relevant in this text")
+    assert not _phrase_in_description("log analysis", "we do backlog triage")
