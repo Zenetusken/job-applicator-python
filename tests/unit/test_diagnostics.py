@@ -676,3 +676,33 @@ def test_config_check_parse_failure_note_wins_over_old(
     res = diagnostics.check_config(AppSettings())
     assert res.resume_sanity_note.startswith("could not parse")  # actionable, not "months old"
     assert "months old" not in res.resume_sanity_note
+
+
+async def test_check_browser_resolves_host_chrome_when_channel_chrome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """channel='chrome' resolves the host Chrome path (the engine actually launched), so `doctor`
+    reports the real engine — not just the bundled Chromium it no longer uses by default (#1)."""
+    monkeypatch.setattr(
+        "job_applicator.utils.region.host_chrome_path", lambda: "/usr/bin/google-chrome"
+    )
+    # Force the Playwright-absent branch to isolate channel/host_chrome from a real launch.
+    monkeypatch.setattr(diagnostics, "_get_async_playwright", lambda: None)
+    result = await diagnostics.check_browser(channel="chrome")
+    assert result.channel == "chrome"
+    assert result.host_chrome == "/usr/bin/google-chrome"
+
+
+async def test_check_browser_skips_host_chrome_when_channel_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """channel=None (bundled Chromium) → no host lookup; host_chrome stays None."""
+
+    def _boom() -> str:
+        raise AssertionError("must not resolve host Chrome when channel is unset")
+
+    monkeypatch.setattr("job_applicator.utils.region.host_chrome_path", _boom)
+    monkeypatch.setattr(diagnostics, "_get_async_playwright", lambda: None)
+    result = await diagnostics.check_browser(channel=None)
+    assert result.channel is None
+    assert result.host_chrome is None

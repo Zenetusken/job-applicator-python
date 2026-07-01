@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -37,6 +38,7 @@ logger = get_logger("scrapers.linkedin")
 
 LINKEDIN_BASE = "https://www.linkedin.com"
 LINKEDIN_JOBS = f"{LINKEDIN_BASE}/jobs/search"
+LINKEDIN_TYPEAHEAD = f"{LINKEDIN_BASE}/jobs-guest/api/typeaheadHits"
 
 
 def _is_authenticated_url(url: str) -> bool:
@@ -344,7 +346,8 @@ class LinkedInScraper(BaseScraper):
         jobs: list[JobListing] = []
         page = await self._new_stealth_page(context)
         try:
-            search_url = self._build_search_url(params)
+            geo_id = await self._resolve_geo_id(page, params.location) if params.location else None
+            search_url = self._build_search_url(params, geo_id)
             await navigate(page, search_url)
             await random_delay(2.0, 3.0)
 
@@ -374,81 +377,147 @@ class LinkedInScraper(BaseScraper):
                     "No LinkedIn job cards found on the results page — the container selectors "
                     "are stale, the session is unauthenticated, or the search was blocked."
                 )
-            failures = 0
+            # Two passes, because clicking a card re-renders LinkedIn's virtualized list and
+            # DETACHES the other captured handles ("element not attached to the DOM" — a measured,
+            # deterministic loss of a fixed card batch per scrape). Pass 1 snapshots EVERY card's
+            # metadata from the still-fresh handles with NO mutation; pass 2 loads each description
+            # by RE-RESOLVING the card fresh (by job id), so a description miss degrades to a
+            # metadata-only listing instead of dropping the whole job.
             selected = cards[: params.max_results]
             total = len(selected)
-            for i, card in enumerate(selected, start=1):
-                # Tick per CARD (not per extracted job) at the top of the loop, so the
-                # count never stalls on a card whose extraction fails and so it shows
-                # WHILE the slow click+description-wait for this card runs.
-                if on_progress is not None:
-                    on_progress(f"Scraping job {i}/{total} on LinkedIn…")
+            meta_failures = 0
+            snapshots: list[JobListing] = []
+            for card in selected:
                 try:
                     job = await self._extract_job(card, params.board)
-                    if job:
-                        # Click card to load description in detail panel.
-                        # LinkedIn auto-selects the first card on page load,
-                        # so we need to wait for content to update.
-                        prev_desc = await self._get_desc_text(page)
-                        await card.click(timeout=5_000)
-                        # Wait for description content to change
-                        for _ in range(10):
-                            await random_delay(0.3, 0.5)
-                            new_desc = await self._get_desc_text(page)
-                            if new_desc and new_desc != prev_desc and len(new_desc) > 100:
-                                break
-                        desc = await self._extract_description(page)
-                        if desc:
-                            job = job.model_copy(update={"description": desc})
-                        jobs.append(job)
-                        if on_job is not None:  # stream the listing as soon as it's complete
-                            on_job(job)
-                except Exception as exc:
-                    failures += 1
-                    logger.warning("Failed to extract job card: %s", exc)
+                except Exception as exc:  # one unreadable card must not sink the whole scrape —
+                    # the 0-snapshots guard below still fails loud if ALL cards fail.
+                    meta_failures += 1
+                    logger.warning("Failed to read a job card's metadata: %s", exc)
+                    continue
+                if job:
+                    snapshots.append(job)
 
-            if failures:
+            if not snapshots and total:
+                # Cards were present (total > 0) but NOT ONE yielded metadata. Key on `total`, NOT
+                # failures: a stale TITLE/href selector makes _extract_job RETURN None (it does not
+                # raise), so a failures-keyed guard would silently return [] — the exact masking
+                # this prevents (R1). FAIL LOUDLY, consistent with the 0-cards guard above;
+                # max_results=0 leaves total=0 and is a legitimate empty, excluded here.
+                raise ScraperError(
+                    f"Found {total} LinkedIn job card(s) but extracted 0 titles "
+                    f"({meta_failures} threw, {total - meta_failures} returned no title/href). "
+                    "The title/field selectors are likely stale against the live LinkedIn DOM — "
+                    "or this search genuinely has no matches and rendered only non-card elements. "
+                    "Re-run a broader, known-populated search to disambiguate."
+                )
+
+            desc_misses = 0
+            n = len(snapshots)
+            for i, job in enumerate(snapshots, start=1):
+                # Tick per listing at the top so the count shows WHILE the slow click+description
+                # wait runs and never stalls on a description miss.
+                if on_progress is not None:
+                    on_progress(f"Scraping job {i}/{n} on LinkedIn…")
+                desc = await self._load_job_description(page, str(job.url))
+                if desc:
+                    job = job.model_copy(update={"description": desc})
+                else:
+                    desc_misses += 1
+                jobs.append(job)  # keep the listing even without a description — metadata matches
+                if on_job is not None:  # stream the listing as soon as it's complete
+                    on_job(job)
+
+            if meta_failures or desc_misses:
                 logger.warning(
-                    "Scraped %d/%d LinkedIn job cards (%d failed)",
+                    "Scraped %d/%d LinkedIn cards (%d metadata failures, %d without a description)",
                     len(jobs),
                     total,
-                    failures,
+                    meta_failures,
+                    desc_misses,
                 )
-            if not jobs and total:
-                # Cards were present (total > 0) but NOT ONE yielded a job. Key on `total`, NOT
-                # `failures`: a stale TITLE/href selector makes _extract_job RETURN None (it does
-                # not raise), so `failures` stays 0 — a failures-keyed guard would silently return
-                # [], the exact masking this prevents (R1). FAIL LOUDLY, consistent with the 0-cards
-                # guard above which already treats a LinkedIn empty as suspicious (not a silent []);
-                # max_results=0 leaves total=0 and is a legitimate empty, excluded here.
-                # TRADE-OFF (DOM-dependent, UNVERIFIED against live LinkedIn): a genuinely-empty
-                # search that still renders a title-less card-matching element would raise here too.
-                # A loud, disambiguable error is the chosen failure mode over a silent [] that masks
-                # a broken scrape — so the message names BOTH causes rather than asserting "stale".
-                raise ScraperError(
-                    f"Found {total} LinkedIn job card(s) but extracted 0 jobs "
-                    f"({failures} threw, {total - failures} returned no title/href). "
-                    "The title/field selectors are likely stale against the live LinkedIn "
-                    "DOM — or this search genuinely has no matches and rendered only "
-                    "non-card elements. Re-run a broader, known-populated search to "
-                    "disambiguate."
-                )
-            logger.info("Scraped %d jobs from LinkedIn", len(jobs))
+            logger.info("Scraped %d job(s) from %d LinkedIn card(s)", len(jobs), total)
             return jobs
         finally:
             await page.close()
 
-    def _build_search_url(self, params: SearchParams) -> str:
-        """Build LinkedIn job search URL."""
+    def _build_search_url(self, params: SearchParams, geo_id: str | None = None) -> str:
+        """Build LinkedIn job search URL.
+
+        LinkedIn geo-filters on the numeric ``geoId``, NOT the human ``location=`` string (a bare
+        location string is loosely matched and commonly ignored, returning a global/remote feed).
+        ``geo_id`` is resolved up front by :meth:`_resolve_geo_id`; ``location`` is kept alongside
+        it for display / as a soft fallback when resolution failed.
+        """
         query_params: dict[str, str | int] = {
             "keywords": params.query,
             "f_TPR": "r604800",  # Past week
         }
         if params.location:
             query_params["location"] = params.location
+        if geo_id:
+            query_params["geoId"] = geo_id
         if params.remote_only:
             query_params["f_WT"] = "2"  # Remote
         return f"{LINKEDIN_JOBS}?{urlencode(query_params)}"
+
+    async def _resolve_geo_id(self, page: Page, location: str) -> str | None:
+        """Resolve a location string to LinkedIn's numeric ``geoId`` via the guest typeahead API.
+
+        Why: LinkedIn's job search geo-filters on ``geoId``; a bare ``location=`` string alone is
+        loosely matched and often dropped (measured 2026-07-01: a ``location=Montréal, QC`` search
+        returned 89% France/EMEA/EU-remote). Resolving the id fixes the filter.
+
+        Robust to the common ``"City, ST"`` input: the typeahead rejects a 2-letter province/state
+        abbreviation (``Montreal, QC`` → ``[]``) but accepts the bare city, so on an empty result we
+        retry with the part before the first comma. To keep the dropped region as a disambiguator
+        for same-name cities, ``_pick_geo_hit`` prefers a hit whose displayName reflects the typed
+        region hint (falling back to the region-biased first hit, whose displayName IS logged for
+        visibility). Returns ``None`` on ANY failure or no match — the caller falls back to the raw
+        ``location=`` string (degraded geo, logged), never a fabricated id.
+        """
+        region_hint = location.split(",", 1)[1].strip().lower() if "," in location else ""
+        candidates = [location]
+        city = location.split(",")[0].strip()
+        if city and city != location:
+            candidates.append(city)
+        for candidate in candidates:
+            url = f"{LINKEDIN_TYPEAHEAD}?" + urlencode(
+                {
+                    "typeaheadType": "GEO",
+                    "geoTypes": "POPULATED_PLACE,ADMIN_DIVISION_2",
+                    "query": candidate,
+                }
+            )
+            try:
+                resp = await page.request.get(url, timeout=10_000)
+            except PlaywrightError as exc:
+                logger.warning("geoId typeahead request failed for %r (%s)", candidate, exc)
+                continue
+            if not resp.ok:
+                logger.warning("geoId typeahead HTTP %d for %r", resp.status, candidate)
+                continue
+            try:
+                hits = await resp.json()
+            except (ValueError, PlaywrightError) as exc:
+                logger.warning("geoId typeahead returned non-JSON for %r (%s)", candidate, exc)
+                continue
+            chosen = _pick_geo_hit(hits, region_hint)
+            if chosen is not None:
+                geo_id = str(chosen.get("id", ""))
+                logger.info(
+                    "Resolved location %r → geoId %s (%s)",
+                    location,
+                    geo_id,
+                    chosen.get("displayName", "?"),
+                )
+                return geo_id
+        logger.warning(
+            "Could not resolve a geoId for %r — falling back to the raw location filter "
+            "(results may not be geo-constrained).",
+            location,
+        )
+        return None
 
     async def _extract_job(self, card: ElementHandle, board: JobBoard) -> JobListing | None:
         """Extract job data from a card element."""
@@ -488,6 +557,51 @@ class LinkedInScraper(BaseScraper):
             salary=salary or None,
             board=board,
         )
+
+    async def _load_job_description(self, page: Page, url: str) -> str:
+        """Load a job's description by re-resolving its card fresh (by EXACT job id) and clicking.
+
+        Re-resolves via a live selector rather than reusing a captured ElementHandle: LinkedIn's
+        virtualized list detaches handles when an earlier click re-renders it (the measured
+        stale-handle loss). Returns ``""`` — the caller keeps the metadata-only listing rather than
+        attaching a wrong/empty description — when the id can't be parsed, the card can't be
+        re-resolved (scrolled out of the virtualized window), or the panel never confirms THIS job.
+        """
+        job_id = _job_id_from_url(url)
+        if not job_id:
+            return ""
+        # Match the card by EXACT job id, not an ``href*="/jobs/view/123"`` substring — that would
+        # also bind a longer-id card (``/jobs/view/1234``) and attach the wrong description.
+        link = None
+        for candidate in await page.query_selector_all('a[href*="/jobs/view/"]'):
+            href = await candidate.get_attribute("href") or ""
+            if _job_id_from_url(href) == job_id:
+                link = candidate
+                break
+        if link is None:
+            return ""
+        prev_desc = await self._get_desc_text(page)
+        try:
+            await link.scroll_into_view_if_needed(timeout=5_000)
+            await link.click(timeout=5_000)
+        except PlaywrightError as exc:
+            logger.warning("Could not open LinkedIn job %s: %s", job_id, exc)
+            return ""
+        # Trust the panel's text ONLY once it demonstrably shows THIS job: either the description
+        # CHANGED (a new job loaded) or the URL's currentJobId matches (covers the auto-selected
+        # first card, whose text doesn't change on click). On a genuine timeout return "" — NEVER
+        # the previously-selected job's still-displayed description (that would silently attach the
+        # WRONG description and be miscounted as a successful load).
+        for _ in range(10):
+            await random_delay(0.3, 0.5)
+            new_desc = await self._get_desc_text(page)
+            if (
+                new_desc
+                and len(new_desc) > 100
+                and (new_desc != prev_desc or _job_id_from_url(page.url) == job_id)
+            ):
+                return await self._extract_description(page)
+        return ""
 
     async def _get_desc_text(self, page: Page) -> str:
         """Get current description text (for change detection)."""
@@ -530,6 +644,37 @@ class LinkedInScraper(BaseScraper):
                 if len(text) > 50:
                     return _clean_description(text[:5000])
         return ""
+
+
+def _pick_geo_hit(hits: Any, region_hint: str) -> dict[str, Any] | None:
+    """Choose the best GEO typeahead hit for a possibly-ambiguous same-name city.
+
+    Prefers a hit whose displayName reflects the region hint typed after the city (a province/state
+    name like "Quebec"/"Illinois", or a code that appears within the full name), so a same-name city
+    is not silently resolved to the region-biased first hit. Falls back to the first numeric hit
+    (LinkedIn ranks by the request's own locale/IP) when nothing matches the hint. Returns ``None``
+    when ``hits`` is not a non-empty list of dicts carrying a numeric id.
+    """
+    if not isinstance(hits, list):
+        return None
+    numeric = [h for h in hits if isinstance(h, dict) and str(h.get("id", "")).isdigit()]
+    if not numeric:
+        return None
+    if region_hint:
+        for hit in numeric:
+            if region_hint in str(hit.get("displayName", "")).lower():
+                return hit
+    return numeric[0]
+
+
+def _job_id_from_url(url: str) -> str:
+    """Extract the numeric LinkedIn job id from a job URL.
+
+    Handles both ``/jobs/view/<id>`` (the card title-link href) and ``?currentJobId=<id>``
+    (the selected-card query form). Returns ``""`` when neither is present.
+    """
+    match = re.search(r"/jobs/view/(\d+)", url) or re.search(r"[?&]currentJobId=(\d+)", url)
+    return match.group(1) if match else ""
 
 
 def _clean_title(raw: str) -> str:

@@ -707,6 +707,8 @@ class BrowserCheck(BaseModel):
 
     playwright_installed: bool
     chromium_executable: str | None = None
+    channel: str | None = None  # configured [browser] channel (e.g. "chrome"); None = bundled
+    host_chrome: str | None = None  # resolved host Chrome path when channel="chrome" (else None)
     error: str | None = None
 
     model_config = {"extra": "forbid"}

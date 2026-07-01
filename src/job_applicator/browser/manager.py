@@ -198,7 +198,8 @@ class BrowserManager:
             stealth = _aligned_stealth(resolved_ua, resolved_locale)
             await stealth.apply_stealth_async(self._persistent_context)
             logger.info(
-                "Browser launched (headless=%s, locale=%s, tz=%s)",
+                "Browser launched (engine=%s, headless=%s, locale=%s, tz=%s)",
+                resolved_channel or "chromium (bundled)",
                 self._config.headless,
                 resolved_locale,
                 resolved_tz,
