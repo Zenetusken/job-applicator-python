@@ -3286,8 +3286,22 @@ def _render_doctor(report: DoctorReport) -> None:
 
     browser = report.browser
     if browser.playwright_installed and browser.chromium_executable:
-        console.print(f"  Browser        {good} Playwright + Chromium")
-        console.print(f"                 [dim]{escape(str(browser.chromium_executable))}[/dim]")
+        if browser.channel == "chrome" and browser.host_chrome:
+            # channel="chrome" launches the host's real Chrome (the anti-detection default); the
+            # bundled Chromium is only the fallback. Report the engine actually used.
+            console.print(f"  Browser        {good} host Chrome (channel) + Chromium fallback")
+            console.print(f"                 [dim]{escape(browser.host_chrome)}[/dim]")
+        elif browser.channel == "chrome":
+            # Requested real Chrome but none on the host → silent fallback to bundled Chromium
+            # (which leaks a HeadlessChrome fingerprint). Surface it, don't hide it.
+            console.print(
+                f"  Browser        {warn} channel=chrome set but no host Chrome — "
+                "falling back to bundled Chromium"
+            )
+            console.print(f"                 [dim]{escape(str(browser.chromium_executable))}[/dim]")
+        else:
+            console.print(f"  Browser        {good} Playwright + Chromium")
+            console.print(f"                 [dim]{escape(str(browser.chromium_executable))}[/dim]")
     elif browser.playwright_installed:
         console.print(f"  Browser        {warn} Playwright installed, Chromium not found")
         if browser.error:

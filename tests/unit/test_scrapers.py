@@ -321,12 +321,13 @@ async def test_check_session_unhealthy_directs_to_login(app_settings: AppSetting
 
 
 @pytest.mark.asyncio
-async def test_scrape_emits_per_card_progress(
+async def test_scrape_emits_per_job_progress(
     app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """scrape() ticks on_progress once per CARD (1-based, /total) at the TOP of the loop,
-    so a card whose extraction returns None or raises still advances the count to N/N —
-    the count tracks cards processed, not jobs extracted (else it stalls on a bad card)."""
+    """scrape() ticks on_progress once per EXTRACTED job (1-based, /N) during the description
+    pass — a card that yields no metadata (returns None or raises) is dropped in the metadata
+    snapshot pass and never reaches the counter, so N is the count of jobs found, not raw cards
+    seen. (The two-pass split exists so an early card's click can't detach later card handles.)"""
     from job_applicator.models import JobBoard, JobListing
 
     monkeypatch.setattr("job_applicator.scrapers.linkedin.navigate", AsyncMock())
@@ -353,19 +354,18 @@ async def test_scrape_emits_per_card_progress(
             board=JobBoard.LINKEDIN,
         )
 
-    # card 2 → None (no job), card 3 → raises; both must still tick the counter.
+    # card 2 → None, card 3 → raises: both drop out in the metadata pass and are NOT counted;
+    # only the 2 cards that yield metadata (E1, E4) reach the per-job description counter.
     scraper._extract_job = AsyncMock(side_effect=[_stub(1), None, ValueError("bad card"), _stub(4)])
 
     msgs: list[str] = []
     jobs = await scraper.scrape(SearchParams(query="python", board=JobBoard.LINKEDIN), msgs.append)
 
     assert msgs == [
-        "Scraping job 1/4 on LinkedIn…",
-        "Scraping job 2/4 on LinkedIn…",
-        "Scraping job 3/4 on LinkedIn…",
-        "Scraping job 4/4 on LinkedIn…",
+        "Scraping job 1/2 on LinkedIn…",
+        "Scraping job 2/2 on LinkedIn…",
     ]
-    assert [j.title for j in jobs] == ["E1", "E4"]  # only 2 extracted; count still reached 4/4
+    assert [j.title for j in jobs] == ["E1", "E4"]  # 2 of 4 cards yielded metadata → progress /2
 
 
 @pytest.mark.asyncio
@@ -599,3 +599,134 @@ async def test_scrape_listings_no_cards_raises_scraper_error(
     params = SearchParams(query="python", max_results=5, board=JobBoard.LINKEDIN)
     with pytest.raises(ScraperError):
         await scraper._scrape_listings(params, MagicMock())
+
+
+# --------------------------------------------------- geoId resolution (#4 fix)
+def _page_typeahead(*payloads: object) -> MagicMock:
+    """Mock Page whose context ``.request.get`` returns each payload in turn.
+
+    Each payload is a ``list`` (typeahead hits, HTTP 200) or ``None`` (an HTTP error response).
+    """
+    page = MagicMock()
+    resps = []
+    for payload in payloads:
+        r = MagicMock()
+        r.ok = payload is not None
+        r.status = 200 if payload is not None else 500
+        r.json = AsyncMock(return_value=payload)
+        resps.append(r)
+    page.request.get = AsyncMock(side_effect=resps)
+    return page
+
+
+def test_build_search_url_threads_geoid(app_settings: AppSettings) -> None:
+    """A resolved geoId is threaded into the search URL — LinkedIn geo-filters on it, not on the
+    human location string."""
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    url = scraper._build_search_url(
+        SearchParams(query="SOC analyst", location="Montréal, QC"), geo_id="101330853"
+    )
+    assert "geoId=101330853" in url
+    assert "keywords=SOC+analyst" in url
+
+
+def test_build_search_url_omits_geoid_when_unresolved(app_settings: AppSettings) -> None:
+    """No geoId (resolution failed) → the URL omits it and keeps the raw location (a degraded but
+    honest filter, not a fabricated id)."""
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    url = scraper._build_search_url(SearchParams(query="x", location="Nowhere"), geo_id=None)
+    assert "geoId" not in url
+    assert "location=Nowhere" in url
+
+
+@pytest.mark.asyncio
+async def test_resolve_geo_id_returns_first_hit(app_settings: AppSettings) -> None:
+    """The first typeahead hit's numeric id is returned; region bias ranks the right city first."""
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    page = _page_typeahead([{"id": "101330853", "displayName": "Montreal, Quebec, Canada"}])
+    assert await scraper._resolve_geo_id(page, "Montréal, QC") == "101330853"
+    page.request.get.assert_awaited_once()  # raw query hit; no city retry needed
+
+
+@pytest.mark.asyncio
+async def test_resolve_geo_id_retries_city_on_empty_abbreviation(
+    app_settings: AppSettings,
+) -> None:
+    """LinkedIn's typeahead rejects the 'City, ST' abbreviation (→ []); the resolver retries with
+    the bare city (before the first comma) before giving up. Regression for the measured
+    ``Montreal, QC`` → ``[]`` gap that left searches geo-unconstrained (89% off-geo)."""
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    page = _page_typeahead([], [{"id": "101330853", "displayName": "Montreal, Quebec, Canada"}])
+    assert await scraper._resolve_geo_id(page, "Montreal, QC") == "101330853"
+    assert page.request.get.await_count == 2  # raw [] → city retry
+
+
+@pytest.mark.asyncio
+async def test_resolve_geo_id_none_when_unresolvable(app_settings: AppSettings) -> None:
+    """All candidates empty → None → caller falls back to the raw location (never a fake id)."""
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    page = _page_typeahead([], [])
+    assert await scraper._resolve_geo_id(page, "Atlantis, XX") is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_geo_id_none_on_request_error(app_settings: AppSettings) -> None:
+    """A typeahead transport error is a failure, not a fabricated id — return None (degraded)."""
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    page = MagicMock()
+    page.request.get = AsyncMock(side_effect=PlaywrightError("network down"))
+    assert await scraper._resolve_geo_id(page, "Montreal") is None
+
+
+# ------------------------------------------- card-iteration robustness (#3 fix)
+def test_job_id_from_url_parses_view_and_current_job_id() -> None:
+    """The job id is parsed from both the ``/jobs/view/<id>`` href and the ``currentJobId=<id>``
+    query form; an id-less URL yields ``""`` (→ the caller keeps the metadata-only listing)."""
+    from job_applicator.scrapers.linkedin import _job_id_from_url
+
+    assert _job_id_from_url("https://www.linkedin.com/jobs/view/4123456789/?trk=x") == "4123456789"
+    assert (
+        _job_id_from_url("https://www.linkedin.com/jobs/search?currentJobId=987654321&x=1")
+        == "987654321"
+    )
+    assert _job_id_from_url("https://www.linkedin.com/jobs/collections/recommended") == ""
+
+
+@pytest.mark.asyncio
+async def test_scrape_keeps_metadata_when_description_unavailable(
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#3: a card whose description can't be re-resolved (its handle was detached by an earlier
+    card's click re-rendering the virtualized list) is kept as a metadata-only listing, NOT
+    dropped. The whole point of the two-pass split — a description miss costs the description,
+    never the whole job (the measured 'lost a fixed ~11-card batch' regression)."""
+    from job_applicator.models import JobBoard, JobListing
+
+    monkeypatch.setattr("job_applicator.scrapers.linkedin.navigate", AsyncMock())
+    monkeypatch.setattr("job_applicator.scrapers.linkedin.random_delay", AsyncMock())
+    monkeypatch.setattr(
+        "job_applicator.scrapers.linkedin.wait_for_selector", AsyncMock(return_value=True)
+    )
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    scraper._logged_in = True
+    scraper._get_context = AsyncMock(return_value=MagicMock())
+    page = AsyncMock()
+    page.query_selector_all = AsyncMock(return_value=[MagicMock() for _ in range(3)])
+    scraper._new_stealth_page = AsyncMock(return_value=page)
+
+    def _stub(n: int) -> JobListing:
+        return JobListing(
+            title=f"E{n}",
+            company="Co",
+            url=f"https://linkedin.com/jobs/view/{n}",
+            board=JobBoard.LINKEDIN,
+        )
+
+    scraper._extract_job = AsyncMock(side_effect=[_stub(1), _stub(2), _stub(3)])
+    # Every description load fails (re-resolution finds nothing) — the jobs must survive anyway.
+    scraper._load_job_description = AsyncMock(return_value="")
+
+    jobs = await scraper.scrape(SearchParams(query="python", board=JobBoard.LINKEDIN))
+
+    assert [j.title for j in jobs] == ["E1", "E2", "E3"]  # all 3 kept despite 0 descriptions
+    assert all(j.description == "" for j in jobs)

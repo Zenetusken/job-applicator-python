@@ -192,12 +192,22 @@ def _hf_get_token_via_lib() -> str | None:
     return token if isinstance(token, str) and token else None
 
 
-async def check_browser() -> BrowserCheck:
-    """Check that Playwright is installed and can locate a Chromium executable."""
+async def check_browser(channel: str | None = None) -> BrowserCheck:
+    """Check that Playwright is installed and can locate a Chromium executable.
+
+    When ``channel="chrome"`` (the default) the scrape launches the host's REAL Chrome via
+    Playwright's channel, not the bundled Chromium — so resolve that binary too, and the doctor
+    reports the engine actually used (warning if it's requested but absent → silent fallback).
+    """
+    from job_applicator.utils.region import host_chrome_path
+
+    host_chrome = host_chrome_path() if channel == "chrome" else None
     async_playwright = _get_async_playwright()
     if async_playwright is None:
         return BrowserCheck(
             playwright_installed=False,
+            channel=channel,
+            host_chrome=host_chrome,
             error="Playwright not installed; run: playwright install chromium",
         )
 
@@ -207,10 +217,14 @@ async def check_browser() -> BrowserCheck:
             return BrowserCheck(
                 playwright_installed=True,
                 chromium_executable=str(executable) if executable else None,
+                channel=channel,
+                host_chrome=host_chrome,
             )
     except Exception as exc:  # broad by design for install-state probing
         logger.debug("Browser check failed: %s", exc)
-        return BrowserCheck(playwright_installed=True, error=str(exc))
+        return BrowserCheck(
+            playwright_installed=True, channel=channel, host_chrome=host_chrome, error=str(exc)
+        )
 
 
 def check_system_binaries() -> SystemBinariesCheck:
@@ -489,7 +503,9 @@ async def run_diagnostics(settings: AppSettings) -> DoctorReport:
     The two independent async probes (LLM endpoint + browser launch) run
     concurrently; the remaining checks are sync filesystem/shutil lookups.
     """
-    llm, browser = await asyncio.gather(check_llm_endpoint(settings.llm), check_browser())
+    llm, browser = await asyncio.gather(
+        check_llm_endpoint(settings.llm), check_browser(settings.browser.channel)
+    )
     return DoctorReport(
         llm=llm,
         embeddings=check_embeddings(settings.embedding),
