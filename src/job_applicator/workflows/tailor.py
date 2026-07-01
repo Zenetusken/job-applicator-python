@@ -9,6 +9,7 @@ avoid a cli <-> workflow import cycle.
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import datetime
 from functools import partial
 from pathlib import Path
@@ -25,7 +26,10 @@ from job_applicator.documents.artifacts import (
 from job_applicator.documents.job_category import detect_job_category
 from job_applicator.models import Format
 from job_applicator.utils.diff import render_diff
+from job_applicator.utils.logging import get_logger
 from job_applicator.workflows.cover_letter import _cover_letter_workflow
+
+logger = get_logger("workflows.tailor")
 
 if TYPE_CHECKING:
     from rich.console import Console
@@ -69,6 +73,51 @@ def _print_grounding_report(console: Console, report: GroundingReport | None) ->
             border_style="yellow",
         )
     )
+
+
+def _print_post_tailor_integrity(console: Console, original_text: str, tailored_text: str) -> None:
+    """Surface two cheap post-tailor integrity signals per version: the tailored output's ATS score
+    (before → after) and a contact-preservation green-check. Both are SURFACED for review, never
+    gates — consistent with the grounding report. Contact loss is empirically rare (the table-aware
+    parser keeps contact in the text + the grounding verifier blocks loss), so the contact check is
+    defense-in-depth against a future parser regression, not a frequent flag.
+    """
+    try:
+        from job_applicator.documents.ats_checker import ATSChecker
+        from job_applicator.documents.resume import ResumeLoader
+
+        loader = ResumeLoader()
+        base = loader.parse_text(original_text)
+        tailored = loader.parse_text(tailored_text)
+        before = ATSChecker().check(base).score
+        after = ATSChecker().check(tailored).score
+        mark = "green" if after >= before else "yellow"
+        console.print(f"\n[bold]Tailored ATS:[/bold] [{mark}]{before:.0%} → {after:.0%}[/{mark}]")
+
+        # Contact green-check: only verify fields the base actually exposes. Match leniently so a
+        # faithful REFORMAT isn't flagged as a drop — compare the email without a parser-captured
+        # trailing dot, and the phone by its national (last-10-digit) number so a +1 country-code
+        # difference doesn't cry wolf. Errs toward NOT flagging (advisory; a false alarm erodes it).
+        low = tailored_text.lower()
+        tail_digits = re.sub(r"\D", "", tailored_text)
+        missing: list[str] = []
+        base_email = base.email.strip().rstrip(".").lower()
+        if base_email and base_email not in low:
+            missing.append("email")
+        base_phone = re.sub(r"\D", "", base.phone)[-10:]  # national number, country-code-agnostic
+        if len(base_phone) == 10 and base_phone not in tail_digits:
+            missing.append("phone")
+        if missing:
+            console.print(
+                f"[yellow]⚠ Contact: your {', '.join(missing)} from the base résumé is missing "
+                "from the tailored output — verify before sending.[/yellow]"
+            )
+        elif base_email or len(base_phone) == 10:
+            console.print("[green]✓ Contact preserved in the tailored output.[/green]")
+    except Exception as exc:
+        # Advisory surface only — a parse/ATS hiccup (or an unparseable draft) must never abort the
+        # tailor flow; skip the line with a debug note rather than crashing the review loop.
+        logger.debug("Post-tailor integrity surface skipped: %s", exc)
 
 
 async def _tailor_workflow(
@@ -148,6 +197,7 @@ async def _tailor_workflow(
         # interactively refined one from refine_verified — so a refined draft gets the SAME honesty
         # pass as the primary (surfaced, never auto-stripped). Fail-safe leaves it "not run".
         _print_grounding_report(console, result.grounding_report)
+        _print_post_tailor_integrity(console, session.original_text, result.tailored_text)
 
         console.print("\n[bold]What would you like to do?[/bold]")
         action_table = Table(show_header=False, box=None)
