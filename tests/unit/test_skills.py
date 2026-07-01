@@ -50,3 +50,15 @@ def test_is_hard_negative_false_for_technical_skills() -> None:
 
 def test_hard_negative_list_is_frozen() -> None:
     assert "team player" in HARD_NEGATIVE_SKILLS
+
+
+def test_is_hard_negative_keeps_short_real_skills_drops_noise() -> None:
+    """Short REAL skills (C#, Go, R, AI, ML) are NOT hard-negatives — the old `len <= 2` rule
+    dropped them on both the résumé and requirement sides, silently losing them from coverage. Pure
+    punctuation/empty (noise) and generic traits still ARE hard-negatives."""
+    from job_applicator.skills import is_hard_negative
+
+    for s in ("C#", "Go", "R", "AI", "ML", "C", "F#", "SQL", "AWS"):
+        assert not is_hard_negative(s), s
+    for s in ("•", "-", "|", "", "   ", "Teamwork", "Communication"):
+        assert is_hard_negative(s), repr(s)

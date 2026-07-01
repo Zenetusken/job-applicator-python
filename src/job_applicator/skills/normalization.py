@@ -165,8 +165,12 @@ def _canonical_key(skill: str) -> str:
 
 
 def is_hard_negative(skill: str) -> bool:
-    """Return True if ``skill`` is a generic trait that should not be treated as a skill."""
-    if not skill or len(skill.strip()) <= 2:
+    """True if ``skill`` is a generic trait or noise that should not be treated as a skill."""
+    s = skill.strip()
+    # Drop empty or PURE-punctuation noise (a bullet "•", a stray "-"/"|") — but KEEP short REAL
+    # skills (C#, Go, R, AI, ML). The old `len <= 2` rule silently dropped those on BOTH the résumé
+    # and requirement sides, nullifying the extractor's deliberate short-skill relaxation and making
+    # matching.py's "so short skills … aren't dropped" comment false.
+    if not s or not any(c.isalnum() for c in s):
         return True
-    key = skill.strip().lower()
-    return key in HARD_NEGATIVE_SKILLS
+    return s.lower() in HARD_NEGATIVE_SKILLS

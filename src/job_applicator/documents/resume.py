@@ -491,8 +491,13 @@ class ResumeLoader:
             # which then matched nothing during skill-coverage scoring.)
             for clean_line in clean_lines:
                 if "," in clean_line:
+                    # Split on commas OUTSIDE parentheses so "Linux (Fedora, CLI, Bash)" stays ONE
+                    # skill (like "cloud security (IaaS/SaaS)") instead of "Linux (Fedora" + "Bash)"
+                    # — stray-paren tokens that embed as garbage vectors (audit AI-H4).
                     skills.extend(
-                        tok.strip() for tok in clean_line.split(",") if len(tok.strip()) >= 2
+                        tok.strip()
+                        for tok in re.split(r",\s*(?![^(]*\))", clean_line)
+                        if len(tok.strip()) >= 2
                     )
                 else:
                     skills.append(clean_line)

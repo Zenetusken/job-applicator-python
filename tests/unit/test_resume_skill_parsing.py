@@ -66,3 +66,13 @@ def test_two_column_tabgrid_skills_strip_row_label() -> None:
     assert "SIEM" in skills and "TCP/IP" in skills, skills
     assert not any("\t" in s for s in skills), f"tab/label leaked into a skill: {skills}"
     assert not any(s.startswith(("Security ops", "Networking")) for s in skills), skills
+
+
+def test_comma_inside_parentheses_is_not_split() -> None:
+    """A parenthetical with commas ("Linux (Fedora, CLI, Bash)") stays ONE skill — the paren-blind
+    comma split produced stray-paren garbage tokens ("Linux (Fedora", "Bash)") that embed as junk
+    vectors (audit AI-H4). Commas OUTSIDE parens still split normally."""
+    skills = _parse_skills("Skills\nLinux (Fedora, CLI, Bash), SIEM, EDR")
+    assert "Linux (Fedora, CLI, Bash)" in skills
+    assert "SIEM" in skills and "EDR" in skills
+    assert not any(s.count("(") != s.count(")") for s in skills)  # no unbalanced-paren tokens
