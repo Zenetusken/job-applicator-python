@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Résumé parser now extracts structured experience & education.** `parse_text` populates per-role
+  `experience`/`education` entries (title / company / dates / bullets · degree / institution / dates)
+  via a conservative, **multi-format** extractor (YYYY / Month YYYY en+fr / MM/YYYY / Present·présent),
+  **degrading to empty** on formats it can't confidently parse rather than fabricating a field. This
+  sharpens the cover-letter "returning candidate" company-match; job MATCHING is deliberately
+  unchanged (guarded off — pending a gold-set re-validation). Previously these fields were declared
+  but never populated (always empty).
 - **`rescore` command — account-safe in-place re-scoring of the funnel.** Recomputes the match
   scores of *stored* jobs against the current résumé and writes them back in place (funnel stage
   preserved), **without re-scraping** — the only prior way to refresh scores was re-`search`, which
