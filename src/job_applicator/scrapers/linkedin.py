@@ -470,10 +470,13 @@ class LinkedInScraper(BaseScraper):
 
         Robust to the common ``"City, ST"`` input: the typeahead rejects a 2-letter province/state
         abbreviation (``Montreal, QC`` → ``[]``) but accepts the bare city, so on an empty result we
-        retry with the part before the first comma. Region bias (the request's own locale/IP) ranks
-        the correct same-name city first. Returns ``None`` on ANY failure or no match — the caller
-        falls back to the raw ``location=`` string (degraded geo, logged), never a fabricated id.
+        retry with the part before the first comma. To keep the dropped region as a disambiguator
+        for same-name cities, ``_pick_geo_hit`` prefers a hit whose displayName reflects the typed
+        region hint (falling back to the region-biased first hit, whose displayName IS logged for
+        visibility). Returns ``None`` on ANY failure or no match — the caller falls back to the raw
+        ``location=`` string (degraded geo, logged), never a fabricated id.
         """
+        region_hint = location.split(",", 1)[1].strip().lower() if "," in location else ""
         candidates = [location]
         city = location.split(",")[0].strip()
         if city and city != location:
@@ -499,16 +502,16 @@ class LinkedInScraper(BaseScraper):
             except (ValueError, PlaywrightError) as exc:
                 logger.warning("geoId typeahead returned non-JSON for %r (%s)", candidate, exc)
                 continue
-            if isinstance(hits, list) and hits and isinstance(hits[0], dict):
-                geo_id = str(hits[0].get("id", ""))
-                if geo_id.isdigit():
-                    logger.info(
-                        "Resolved location %r → geoId %s (%s)",
-                        location,
-                        geo_id,
-                        hits[0].get("displayName", "?"),
-                    )
-                    return geo_id
+            chosen = _pick_geo_hit(hits, region_hint)
+            if chosen is not None:
+                geo_id = str(chosen.get("id", ""))
+                logger.info(
+                    "Resolved location %r → geoId %s (%s)",
+                    location,
+                    geo_id,
+                    chosen.get("displayName", "?"),
+                )
+                return geo_id
         logger.warning(
             "Could not resolve a geoId for %r — falling back to the raw location filter "
             "(results may not be geo-constrained).",
@@ -556,18 +559,25 @@ class LinkedInScraper(BaseScraper):
         )
 
     async def _load_job_description(self, page: Page, url: str) -> str:
-        """Load a job's description by re-resolving its card FRESH (by job id) and clicking it.
+        """Load a job's description by re-resolving its card fresh (by EXACT job id) and clicking.
 
         Re-resolves via a live selector rather than reusing a captured ElementHandle: LinkedIn's
         virtualized list detaches handles when an earlier click re-renders it (the measured
-        stale-handle loss). Returns ``""`` if the id can't be parsed, the card can't be re-resolved
-        (scrolled out of the virtualized window), or the panel never populates — the caller keeps
-        the metadata-only listing rather than dropping the whole job.
+        stale-handle loss). Returns ``""`` — the caller keeps the metadata-only listing rather than
+        attaching a wrong/empty description — when the id can't be parsed, the card can't be
+        re-resolved (scrolled out of the virtualized window), or the panel never confirms THIS job.
         """
         job_id = _job_id_from_url(url)
         if not job_id:
             return ""
-        link = await page.query_selector(f'a[href*="/jobs/view/{job_id}"]')
+        # Match the card by EXACT job id, not an ``href*="/jobs/view/123"`` substring — that would
+        # also bind a longer-id card (``/jobs/view/1234``) and attach the wrong description.
+        link = None
+        for candidate in await page.query_selector_all('a[href*="/jobs/view/"]'):
+            href = await candidate.get_attribute("href") or ""
+            if _job_id_from_url(href) == job_id:
+                link = candidate
+                break
         if link is None:
             return ""
         prev_desc = await self._get_desc_text(page)
@@ -577,14 +587,21 @@ class LinkedInScraper(BaseScraper):
         except PlaywrightError as exc:
             logger.warning("Could not open LinkedIn job %s: %s", job_id, exc)
             return ""
-        # Wait for the detail panel's description to change (LinkedIn auto-selects the first card
-        # on load, so the panel may already hold a prior job's text).
+        # Trust the panel's text ONLY once it demonstrably shows THIS job: either the description
+        # CHANGED (a new job loaded) or the URL's currentJobId matches (covers the auto-selected
+        # first card, whose text doesn't change on click). On a genuine timeout return "" — NEVER
+        # the previously-selected job's still-displayed description (that would silently attach the
+        # WRONG description and be miscounted as a successful load).
         for _ in range(10):
             await random_delay(0.3, 0.5)
             new_desc = await self._get_desc_text(page)
-            if new_desc and new_desc != prev_desc and len(new_desc) > 100:
-                break
-        return await self._extract_description(page)
+            if (
+                new_desc
+                and len(new_desc) > 100
+                and (new_desc != prev_desc or _job_id_from_url(page.url) == job_id)
+            ):
+                return await self._extract_description(page)
+        return ""
 
     async def _get_desc_text(self, page: Page) -> str:
         """Get current description text (for change detection)."""
@@ -627,6 +644,27 @@ class LinkedInScraper(BaseScraper):
                 if len(text) > 50:
                     return _clean_description(text[:5000])
         return ""
+
+
+def _pick_geo_hit(hits: Any, region_hint: str) -> dict[str, Any] | None:
+    """Choose the best GEO typeahead hit for a possibly-ambiguous same-name city.
+
+    Prefers a hit whose displayName reflects the region hint typed after the city (a province/state
+    name like "Quebec"/"Illinois", or a code that appears within the full name), so a same-name city
+    is not silently resolved to the region-biased first hit. Falls back to the first numeric hit
+    (LinkedIn ranks by the request's own locale/IP) when nothing matches the hint. Returns ``None``
+    when ``hits`` is not a non-empty list of dicts carrying a numeric id.
+    """
+    if not isinstance(hits, list):
+        return None
+    numeric = [h for h in hits if isinstance(h, dict) and str(h.get("id", "")).isdigit()]
+    if not numeric:
+        return None
+    if region_hint:
+        for hit in numeric:
+            if region_hint in str(hit.get("displayName", "")).lower():
+                return hit
+    return numeric[0]
 
 
 def _job_id_from_url(url: str) -> str:

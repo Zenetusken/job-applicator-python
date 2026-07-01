@@ -730,3 +730,102 @@ async def test_scrape_keeps_metadata_when_description_unavailable(
 
     assert [j.title for j in jobs] == ["E1", "E2", "E3"]  # all 3 kept despite 0 descriptions
     assert all(j.description == "" for j in jobs)
+
+
+# ------------------------------------------ review fixes (#140 code-review)
+def _desc_link(href: str) -> MagicMock:
+    link = MagicMock()
+    link.get_attribute = AsyncMock(return_value=href)
+    link.scroll_into_view_if_needed = AsyncMock()
+    link.click = AsyncMock()
+    return link
+
+
+@pytest.mark.asyncio
+async def test_load_job_description_returns_empty_on_timeout(
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CONFIRMED review defect: when the detail panel never confirms THIS job (its text never
+    changes AND the URL's currentJobId doesn't match), return '' — NEVER the previously-selected
+    job's still-displayed text (which would silently attach the WRONG description)."""
+    monkeypatch.setattr("job_applicator.scrapers.linkedin.random_delay", AsyncMock())
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    page = MagicMock()
+    page.query_selector_all = AsyncMock(return_value=[_desc_link("/jobs/view/999/")])
+    page.url = "https://www.linkedin.com/jobs/search?currentJobId=111"  # a DIFFERENT job selected
+    stale = "PREVIOUS job's description text that never changes. " * 5
+    scraper._get_desc_text = AsyncMock(return_value=stale)  # panel stuck on the prior job
+    scraper._extract_description = AsyncMock(return_value=stale)
+
+    result = await scraper._load_job_description(page, "https://www.linkedin.com/jobs/view/999/")
+    assert result == ""  # a miss, not the stale prior text
+    scraper._extract_description.assert_not_called()  # the panel was never trusted
+
+
+@pytest.mark.asyncio
+async def test_load_job_description_accepts_autoselected_via_url(
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The auto-selected first card — whose panel text doesn't CHANGE on click — is still accepted
+    when the URL's currentJobId matches this job, so it isn't lost as a false timeout."""
+    monkeypatch.setattr("job_applicator.scrapers.linkedin.random_delay", AsyncMock())
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    page = MagicMock()
+    page.query_selector_all = AsyncMock(return_value=[_desc_link("/jobs/view/777/")])
+    page.url = "https://www.linkedin.com/jobs/search?currentJobId=777"  # panel shows THIS job
+    desc = "This job's full description text, well over one hundred characters long. " * 3
+    scraper._get_desc_text = AsyncMock(return_value=desc)  # unchanged (auto-selected)
+    scraper._extract_description = AsyncMock(return_value=desc)
+
+    result = await scraper._load_job_description(page, "/jobs/view/777/")
+    assert result == desc  # accepted via the URL match despite no text change
+
+
+@pytest.mark.asyncio
+async def test_load_job_description_matches_exact_id_not_substring(
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review defect: id 123 must NOT bind to a longer-id card (/jobs/view/1234). The card is
+    re-resolved by EXACT job id, even when the colliding card appears first in the DOM."""
+    monkeypatch.setattr("job_applicator.scrapers.linkedin.random_delay", AsyncMock())
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    wrong = _desc_link("/jobs/view/1234/")  # substring-collides with 123, appears FIRST
+    right = _desc_link("/jobs/view/123/")
+    page = MagicMock()
+    page.query_selector_all = AsyncMock(return_value=[wrong, right])
+    page.url = "https://www.linkedin.com/jobs/search?currentJobId=123"
+    desc = "job 123's description text, comfortably longer than one hundred chars. " * 3
+    scraper._get_desc_text = AsyncMock(return_value=desc)
+    scraper._extract_description = AsyncMock(return_value=desc)
+
+    await scraper._load_job_description(page, "/jobs/view/123/")
+    right.click.assert_awaited_once()  # the exact-id card
+    wrong.click.assert_not_called()  # NOT the substring-colliding 1234 card
+
+
+def test_pick_geo_hit_prefers_region_match() -> None:
+    """Review defect: with a region hint, prefer the hit whose displayName carries it — so an
+    ambiguous same-name city isn't silently resolved to the region-biased first hit."""
+    from job_applicator.scrapers.linkedin import _pick_geo_hit
+
+    hits = [
+        {"id": "1", "displayName": "Springfield, Missouri, United States"},
+        {"id": "2", "displayName": "Springfield, Illinois, United States"},
+    ]
+    chosen = _pick_geo_hit(hits, "illinois")
+    assert chosen is not None and chosen["id"] == "2"  # region hint wins over document order
+
+
+def test_pick_geo_hit_falls_back_to_first_numeric() -> None:
+    """No hint (or no match) → the region-biased first NUMERIC hit; non-numeric ids and non-lists
+    are rejected (None), never a fabricated pick."""
+    from job_applicator.scrapers.linkedin import _pick_geo_hit
+
+    hits = [
+        {"id": "not-numeric", "displayName": "x"},  # skipped
+        {"id": "42", "displayName": "Montreal, Quebec, Canada"},
+    ]
+    first = _pick_geo_hit(hits, "")
+    assert first is not None and first["id"] == "42"
+    assert _pick_geo_hit([], "qc") is None
+    assert _pick_geo_hit("not a list", "qc") is None
