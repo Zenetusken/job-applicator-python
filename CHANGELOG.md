@@ -19,8 +19,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   survived), alongside the grounding report. Surfaced for review, never a gate; best-effort (an
   advisory line never aborts the review loop). ATS-on-tailored previously ran only in the verbose
   reporter + `batch`.
+- **`doctor` surfaces the configured résumé's identity + age + parsed-skill count.** So a
+  `resume_path` silently pointing at a stale/wrong CV (e.g. a 2-yr-old file, or one whose parse
+  yields ~no skills) is *visible* — a filename/age a human catches instantly, where a threshold
+  can't. A soft warning also fires on a thin parse (0 skills) or a >12-month-old file. Motivated by
+  a real stale-config CV that had silently mis-scored the whole funnel.
 
 ### Fixed
+- **`tailor` no longer aborts on a valid CV; robust section-header matching.** Section headers were
+  matched case-sensitively / exact-match, so all-caps qualified headers (`PROFESSIONAL EXPERIENCE`,
+  `EDUCATION & CERTIFICATIONS`) silently fell through — making `summary` swallow ~97% of the document
+  and, via a false "ordering issue" from mis-attributed date sections, **aborting `tailor`** with a
+  "Proceed anyway?" prompt on a perfectly valid CV. A shared case-insensitive/qualifier-tolerant
+  header matcher now drives both the summary boundary and the date-section attribution, and the
+  tailor date-check is **advisory, never blocking** (the date parser is heuristic — it also drops
+  MM/YYYY, "Current", and French formats). Also removed the education-age staleness heuristic (noise
+  for an experienced candidate) and corrected the `ResumeDateValidator` docstring, which claimed
+  gap/overlap detection it never implemented.
+- **Skill extraction: keep short skills + stop paren-comma mangling.** A parenthetical skill with
+  commas (`Linux (Fedora, CLI, Bash)`) was split into stray-paren garbage tokens; it now stays one
+  skill (commas inside parentheses aren't split). And the hard-negative filter dropped any skill of
+  length ≤ 2, silently losing `C#`/`Go`/`R`/`AI`/`ML` from coverage; it now drops only
+  empty/pure-punctuation noise while keeping short real skills.
 - **DOCX résumé parser now extracts table cells (contact header + skills).** `_load_docx` read only
   `doc.paragraphs`, silently dropping content in tables — real résumés put the contact header
   (name/email/phone) and the skills section in tables, so they never reached `raw_text`, and

@@ -27,14 +27,14 @@ ruff format src/ tests/
 # Release (see RELEASING.md)
 bash scripts/release.sh <version>   # bump version, update CHANGELOG.md, tag, build dist
 
-# Tests — ~1175 fast unit tests (the green gate); ~1219 total = ~1175 unit + 9 integration + 35 live
+# Tests — ~1271 fast unit tests (the green gate); ~1315 total = ~1271 unit + 9 integration + 35 live
 pytest -m unit -v               # or: pytest tests/unit/ -v   (auto-marked by location)
 pytest -m unit -v -k test_name  # single test
 
 # CLI
 job-applicator                              # bare tty invocation opens the TUI
 job-applicator --help
-job-applicator doctor                       # Health check: LLM, embeddings, browser, system bins, config, self-host
+job-applicator doctor                       # Health check: LLM, embeddings, browser, system bins, config, résumé (identity/age/skills), self-host
 job-applicator config-init                  # Generate config.toml
 job-applicator login                        # Headed sign-in once; reuse session headlessly
 job-applicator import-cookies --from-browser chrome
