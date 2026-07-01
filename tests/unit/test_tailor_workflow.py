@@ -266,20 +266,20 @@ def test_tailor_invalid_choice_then_quit(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert not list(tmp_path.glob("tailored_*.txt"))
 
 
-def test_tailor_stale_but_ordered_cv_triggers_confirm_gate(
+def test_tailor_stale_cv_advisory_not_blocking(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A stale-but-correctly-ordered CV (staleness, NO ordering issues) must still trigger the
-    'Proceed anyway?' confirm gate. Regression guard — the gate was nested under
-    `if audit.ordering_issues:`, so a stale-but-ordered CV silently skipped it and tailored anyway.
-    """
-    # Answer the confirm prompt "n" → abort BEFORE tailoring.
+    """A flagged CV (staleness/ordering) is now ADVISORY, never blocking. The date parser is
+    heuristic — it once FALSE-flagged a valid CV and aborted `tailor` — so it warns and PROCEEDS,
+    the human owning the "is my CV current?" call. Regression guard against re-adding the abort."""
     result, engine, _cl = _drive(
-        monkeypatch, tmp_path, ["n"], staleness=["Most recent role ended 2019 (5+ years ago)"]
+        monkeypatch, tmp_path, ["A", "N"], staleness=["Most recent role ended 2019 (5+ years ago)"]
     )
-    assert result.exit_code == 0, result.output  # typer.Exit(0) user-abort
-    assert "Aborted. Please update your CV." in result.output
-    engine.tailor_verified.assert_not_awaited()  # gate fired + aborted before any tailoring
+    assert result.exit_code == 0, result.output
+    assert "advisory" in result.output.lower()  # the heads-up fired
+    assert "Aborted" not in result.output  # ...but did NOT abort
+    engine.tailor_verified.assert_awaited_once()  # proceeded to tailor
+    assert len(list(tmp_path.glob("tailored_*.txt"))) == 1
 
 
 def test_tailor_clean_dates_show_coherent_message(
@@ -295,19 +295,18 @@ def test_tailor_clean_dates_show_coherent_message(
     assert len(list(tmp_path.glob("tailored_*.txt"))) == 1  # tailoring proceeded normally
 
 
-def test_tailor_yes_auto_proceeds_through_stale_date_gate(
+def test_tailor_stale_cv_advisory_proceeds_noninteractive(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """`--yes` on a stale CV fires the date gate and auto-proceeds (no prompt), then tailors —
-    covers the gate's `yes` branch (the other date tests exercise the else / interactive paths).
-    """
+    """`--yes` (non-interactive) on a flagged CV surfaces the advisory (no prompt) and tailors."""
     result, engine, _cl = _drive(
         monkeypatch, tmp_path, [], yes=True, staleness=["Most recent role ended 2019"]
     )
     assert result.exit_code == 0, result.output
-    assert "--yes flag set, proceeding automatically." in result.output
+    assert "advisory" in result.output.lower()
+    assert "Aborted" not in result.output
     engine.tailor_verified.assert_awaited_once()
-    assert len(list(tmp_path.glob("tailored_*.txt"))) == 1  # proceeded past the gate + tailored
+    assert len(list(tmp_path.glob("tailored_*.txt"))) == 1  # proceeded past the advisory + tailored
 
 
 def test_tailor_ordering_only_cv_fires_gate(
@@ -316,12 +315,12 @@ def test_tailor_ordering_only_cv_fires_gate(
     """An ordering-issue-only CV (no staleness) fires the gate (closes the 4-state matrix:
     clean / stale-only / ordering-only / both — the last two share the same boolean branch)."""
     result, _engine, _cl = _drive(
-        monkeypatch, tmp_path, ["y", "A", "N"], ordering=["Roles listed out of chronological order"]
+        monkeypatch, tmp_path, ["A", "N"], ordering=["Roles listed out of chronological order"]
     )
     assert result.exit_code == 0, result.output
     assert "Ordering Issues" in result.output
-    assert "Dates look coherent" not in result.output  # gate fired, not the else
-    assert len(list(tmp_path.glob("tailored_*.txt"))) == 1  # 'y' → proceeded + tailored
+    assert "Dates look coherent" not in result.output  # advisory fired, not the coherent-else
+    assert len(list(tmp_path.glob("tailored_*.txt"))) == 1  # proceeded + tailored (not aborted)
 
 
 def test_tailor_json_emits_tailored_resume(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

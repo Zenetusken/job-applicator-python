@@ -764,16 +764,19 @@ class TestResumeDateValidator:
         assert result.earliest_date != ""
         assert "2010" in result.earliest_date
 
-    def test_audit_education_staleness(self):
+    def test_audit_stale_newest_entry_when_not_current(self):
+        """A CV whose newest dated entry is old AND not 'Present' fires the NEWEST-ENTRY staleness.
+        (The education-AGE heuristic was removed as noise — this is the general check, and it must
+        NOT be an education-specific message.)"""
         from datetime import datetime
 
         from job_applicator.documents.resume_tailor import ResumeDateValidator
 
         resume = ResumeData(raw_text="EDUCATION\nBS Computer Science\nMIT\n1998 - 2002")
-        validator = ResumeDateValidator(reference_date=datetime(2030, 1, 1))
-        result = validator.audit(resume)
-        assert len(result.staleness_issues) > 0
+        result = ResumeDateValidator(reference_date=datetime(2030, 1, 1)).audit(resume)
         assert result.is_stale
+        assert any("Most recent entry" in s for s in result.staleness_issues)
+        assert not any("Education" in s for s in result.staleness_issues)
 
     def test_audit_education_old_but_current_work_not_stale(self):
         from datetime import datetime
@@ -788,12 +791,10 @@ class TestResumeDateValidator:
         )
         validator = ResumeDateValidator(reference_date=datetime(2030, 1, 1))
         result = validator.audit(resume)
-        # General staleness check passes (Present entry is current),
-        # but education-specific staleness is still flagged
-        general_staleness = [s for s in result.staleness_issues if "Most recent entry" in s]
-        edu_staleness = [s for s in result.staleness_issues if "Education" in s]
-        assert len(general_staleness) == 0
-        assert len(edu_staleness) > 0
+        # A current (Present) role suppresses the newest-entry staleness check, and education-age is
+        # no longer flagged (removed as noise) → NOT stale at all.
+        assert result.staleness_issues == []
+        assert not result.is_stale
 
     def test_audit_entries_from_different_sections(self):
         from job_applicator.documents.resume_tailor import ResumeDateValidator

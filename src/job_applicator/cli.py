@@ -2665,26 +2665,16 @@ def tailor(
             for o in audit.ordering_issues:
                 console.print(f"  [red]• {o}[/red]")
 
-        # Confirm gate at TOP LEVEL — fires on staleness OR ordering issues (not nested under
-        # `if ordering_issues`), so a stale-but-correctly-ordered CV is gated too; the else
-        # (coherent) now runs for a genuinely clean CV instead of being dead code.
+        # ADVISORY, never blocking. The date check is heuristic (regex over raw_text — it drops
+        # MM/YYYY, "Current", and French formats — attributes sections best-effort, and detects no
+        # employment gaps), so a flag INFORMS but must not gate: a false ordering/staleness positive
+        # once ABORTED `tailor` on a perfectly valid CV. Surface it (specifics printed above) and
+        # always proceed — the human owns the "is my CV current?" call.
         if audit.is_stale or audit.ordering_issues:
             console.print(
-                "\n[bold yellow]This CV may be outdated or have ordering "
-                "issues. Please verify your CV is up to date before "
-                "proceeding.[/bold yellow]"
+                "\n[yellow]⚠ Date check flagged the above (advisory — the date parser is heuristic "
+                "and can misread dates/sections). Verify if you like; proceeding.[/yellow]"
             )
-            if yes:
-                console.print("[dim]--yes flag set, proceeding automatically.[/dim]")
-            else:
-                confirm = (
-                    console.input("\n[bold cyan]Proceed anyway? (y/n): [/bold cyan]")
-                    .strip()
-                    .lower()
-                )
-                if confirm != "y":
-                    console.print("[yellow]Aborted. Please update your CV.[/yellow]")
-                    raise typer.Exit(0)
         else:
             console.print("[green]✓ Dates look coherent and current.[/green]")
 

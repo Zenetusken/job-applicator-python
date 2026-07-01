@@ -38,6 +38,79 @@ _SECTION_HEADER_RE = re.compile(
 )
 
 
+# Résumé section-header recognition — case-insensitive, tolerant of a leading qualifier
+# ("PROFESSIONAL Experience", "Technical Skills"), a trailing compound ("Education &
+# Certifications"), markdown/ATX/colon wrapping, and inline content ("Skills: Python, …").
+# SHARED so the parser (summary boundary) and ResumeDateValidator (date-section attribution)
+# can't drift — the case-sensitive/exact-match versions did, and an all-caps qualified header
+# like "PROFESSIONAL EXPERIENCE" slipped BOTH: it made `summary` swallow ~the whole document
+# and forced a false "ordering issue" that aborts `tailor` on a valid CV.
+_SECTION_QUALIFIER_RE = re.compile(
+    r"^(?:professional|technical|core|key|relevant|soft|additional|other|primary|work)\s+",
+    re.IGNORECASE,
+)
+_SECTION_HEAD: dict[str, str] = {
+    "summary": "Summary",
+    "profile": "Summary",
+    "objective": "Summary",
+    "about": "Summary",
+    "about me": "Summary",
+    "career summary": "Summary",
+    "skills": "Skills",
+    "competencies": "Skills",
+    "proficiencies": "Skills",
+    "expertise": "Skills",
+    "experience": "Experience",
+    "history": "Experience",
+    "employment": "Experience",
+    "employment history": "Experience",
+    "work history": "Experience",
+    # Distinct sections — the per-section ordering check must NOT compare a volunteer/internship
+    # entry against a paid role across their real boundary (that invents a false inversion).
+    "internship": "Internship",
+    "internships": "Internship",
+    "volunteer": "Volunteer",
+    "volunteering": "Volunteer",
+    "volunteer experience": "Volunteer",
+    "education": "Education",
+    "academic": "Education",
+    "certifications": "Certifications",
+    "certification": "Certifications",
+    "certificates": "Certifications",
+    "licenses": "Certifications",
+    "licences": "Certifications",
+    "languages": "Languages",
+    "language": "Languages",
+    "projects": "Projects",
+    "project": "Projects",
+    "references": "References",
+    "interests": "Interests",
+    "awards": "Awards",
+}
+
+
+def section_header(line: str) -> str | None:
+    """The canonical résumé section a header LINE denotes, or ``None`` if the line isn't a header.
+
+    Case-insensitive; strips a leading qualifier + markdown/ATX/colon wrapping, takes the head word
+    before any ``&``/``and``/``/``/``,`` compound, and matches a short header word — so
+    ``PROFESSIONAL EXPERIENCE``, ``EDUCATION & CERTIFICATIONS``, ``**Summary**``, and
+    ``Skills: Python, …`` all resolve, while a paragraph/bullet never does.
+    """
+    s = line.strip().strip("#").strip().strip("*").strip()
+    if not s:
+        return None
+    # header word before any inline content ("Skills: Python" → "Skills"), qualifier stripped
+    s = _SECTION_QUALIFIER_RE.sub("", s.split(":", 1)[0].strip()).strip()
+    if len(s) > 35:  # a header word/phrase is short; a paragraph is not
+        return None
+    # Head word before any '&'/'and'/'/'/',' compound. Split on the LOWERED string so a capitalized
+    # 'AND' ("EDUCATION AND CERTIFICATIONS") is split too — else the all-caps compound falls thru,
+    # exactly the mis-bucketing this matcher exists to prevent.
+    head = re.split(r"\s*(?:&|/|,|\band\b)\s+", s.lower(), maxsplit=1)[0].strip()
+    return _SECTION_HEAD.get(head)
+
+
 class ResumeLoader:
     """Load and parse resume files."""
 
@@ -424,53 +497,47 @@ class ResumeLoader:
                 else:
                     skills.append(clean_line)
 
-        # Extract summary/objective
-        if "Summary" in text:
-            # Prefer **Professional Summary** or **Summary** header
-            summary_match = re.search(
-                r"\*?\*?(?:Professional\s+)?Summary\*?\*?\s*[:\n](.*?)(?:\n\n|\n\*\*)",
-                text,
-                re.IGNORECASE | re.DOTALL,
-            )
-            if summary_match:
-                summary = summary_match.group(1).strip()
-            else:
-                summary = text.split("Summary", 1)[-1].split("\n\n")[0].strip()
-                summary = re.sub(r"^[:\s]+", "", summary)
-        elif "Objective" in text:
-            summary = text.split("Objective", 1)[-1].split("\n\n")[0].strip()
-            summary = re.sub(r"^[:\s]+", "", summary)
-        elif "objective" in text.lower():
-            idx = text.lower().index("objective")
-            summary = text[idx:].split("\n\n")[0].strip()
-            summary = re.sub(r"^objective[:\s]*", "", summary, flags=re.IGNORECASE)
-        else:
-            # Fallback: detect first paragraph after contact info
-            # Skip name line and contact line (email/phone)
-            lines = text.strip().split("\n")
+        # Extract summary/objective — find the Summary/Objective/Profile section via the shared
+        # robust header matcher, bounded by the NEXT section header; else the first paragraph after
+        # the contact block. (The old case-sensitive "Summary" test + exact-case header break let an
+        # all-caps 'PROFESSIONAL EXPERIENCE' slip → the fallback ran to EOF and summary swallowed
+        # ~the whole document; the shared matcher stops at any real header regardless of case/form.)
+        summary_lines = text.strip().split("\n")
+        start: int | None = None
+        inline_summary = ""
+        found_header = False
+        for i, ln in enumerate(summary_lines):
+            if section_header(ln) == "Summary":
+                start = i + 1
+                found_header = True
+                # Capture inline prose on the header line itself ("Summary: <one-line summary>").
+                inline_summary = ln.split(":", 1)[1].strip() if ":" in ln else ""
+                break
+        if start is None:
+            # No explicit Summary header: begin after the name + contact (email/phone) lines.
             contact_end = 0
-            for i, line in enumerate(lines[:5]):
-                has_email = re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", line)
-                has_phone = re.search(r"[\+]?[\d\s\-\(\)]{10,}", line)
-                if has_email or has_phone:
+            for i, ln in enumerate(summary_lines[:5]):
+                if re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", ln) or re.search(
+                    r"[\+]?[\d\s\-\(\)]{10,}", ln
+                ):
                     contact_end = i + 1
-            # Find first non-empty paragraph after contact
-            paragraph_lines: list[str] = []
-            for line in lines[contact_end:]:
-                stripped = line.strip()
-                if not stripped:
-                    if paragraph_lines:
-                        break
-                    continue
-                # Stop at section headers
-                if stripped in ("Skills", "Experience", "Education", "Certifications", "Languages"):
+            start = contact_end
+        paragraph_lines: list[str] = [inline_summary] if inline_summary else []
+        for ln in summary_lines[start:]:
+            stripped = ln.strip()
+            if not stripped:
+                if paragraph_lines:
                     break
-                paragraph_lines.append(stripped)
-            if paragraph_lines:
-                summary = " ".join(paragraph_lines)
-                # Only keep it if it looks like a summary, not a stray header.
-                if len(summary) <= 50 or summary.isupper():
-                    summary = ""
+                continue
+            if section_header(ln):  # reached the next section → stop accumulating
+                break
+            paragraph_lines.append(stripped)
+        if paragraph_lines:
+            summary = " ".join(paragraph_lines)
+            # In the FALLBACK case (no explicit header) reject a too-short / all-caps stray header;
+            # with an explicit Summary header the content IS the summary, so keep it as-is.
+            if not found_header and (len(summary) <= 50 or summary.isupper()):
+                summary = ""
 
         # Drop a leading setext/markdown underline that can follow a header.
         summary = re.sub(r"^[\-=~*]+\s*\n?", "", summary).strip()
