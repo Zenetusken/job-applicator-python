@@ -44,8 +44,9 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
   (`pytest tests/unit/` is equivalent.)
 - `pytest -m live` — the live tests at `tests/` root that need vLLM (`localhost:8000`) + GPU;
   kept out of the gate (full suite is green when vLLM is up).
-- `pytest -m integration` — the integration tests (`tests/integration/`): board
-  `browser_policy()` → `_make_browser` wiring (construction-only, no real launch).
+- `pytest -m integration` — the integration tests (`tests/integration/`): cross-component seams
+  with no vLLM/GPU — board `browser_policy()` → `_make_browser` wiring (construction-only, no real
+  launch), PDF rendering, and the apply/batch loops against a real SQLite state store.
 - `pytest` — everything.
 
 ## Target Boards
