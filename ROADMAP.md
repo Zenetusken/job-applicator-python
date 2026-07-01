@@ -31,13 +31,44 @@ not built; the genuine residual — surfacing the **tailored ATS + a contact gre
 interactive `tailor` view (defense-in-depth) — shipped in **PR #126**. (ATS-on-tailored already
 existed in the verbose/batch paths.) A textbook "fix the cause, not the symptom" outcome.
 
-**Next arc — open.** The 2026-06-24 audit medium-term backlog is the queue: **selector health /
-fail-loud on LinkedIn DOM drift** (#12, protects the one automated-apply path). Plus the deferred
-**matching-tuning re-validation** and **employment-gap detection** — now UNBLOCKED, its two
-preconditions shipped in #134 (see Known follow-ups). (**Integration tests (#11)** and **structured
+**Next arc — matching re-validation (ACTIVE, empirics + USER-gated).** Are the hardcoded 0.75
+skill-match threshold + 60/40 semantic/skill blend (tuned on the OLD skills-less CV) still
+calibrated on the corrected SOC CV — and should MATCHING consume the now-populated `experience`
+(guarded off in #134)? The gold set must be **Drei's own relevance labels** (an auto-proxy would
+just test "does the embedding agree with a keyword matcher" — circular), scoped to the boundary band
+(~0.5–0.85, the region that moves the 0.75 cutoff) + his revealed preference (tailored/cover-letter
+jobs). Ranking-quality is the FIRST measurement (test the "relative ranking is sound" claim);
+threshold/blend + the experience-consumption paired experiment only if ranking shows a fixable gap.
+Blocked on a fresh, clean, volume-disciplined scrape — his funnel was stale day-1 data (to be
+wiped+refilled), and the scraper hardening that makes that scrape safe just shipped (see Shipped).
+
+Also open: **selector health (#12)** — measured MOSTLY-DONE (the critical apply selectors already
+fail loud; a proactive registry is out-of-scope) — and the deferred **employment-gap detection**
+(unblocked by #134; ~0 value on a gap-free CV). (**Integration tests (#11)** and **structured
 experience/education (#14)** — resolved, see Shipped.)
 
 ## Shipped
+
+- **Scraper anti-detection hardening — the caution, verified + right-sized** (PRs #137–#138,
+  2026-07-01). A static audit + an offline fingerprint probe (temp profile, loopback — zero LinkedIn
+  traffic) answered Drei's challenge to the standing "never automate LinkedIn search" caution: it's
+  **evidence-based, but the basis is VOLUME/velocity on an authenticated session, not stealth** (the
+  reused `li_at` session means the board already knows the account — the goal is *unremarkable*, not
+  undetected). Fixed the genuine own-goals: **`channel="chrome"`** launches the real host Chrome
+  (kills the `HeadlessChrome` client-hint leak R2 + UA/hints version skew R3 + macOS-WebGL tell R4),
+  engine-aware UA, an honest Linux WebGL, + an offline fingerprint probe as a committed regression
+  gate (#137); and a **proactive search-volume budget** (`SearchState` daily cap + cooldown,
+  mirroring the apply cap) closing the top risk R1 — search was uncapped in code (#138). Deliberately
+  NOT done (Track-B): C1 scroll-to-load (fetches MORE results → worsens R1) + JA3 spoofing (theater
+  on a bundled-Chromium ClientHello ≈ real Chrome). Adversarially reviewed; gate green throughout.
+
+- **stdout/stderr contract — progress spinners off stdout** (PR #136, 2026-07-01). qa-sanity caught
+  `match --json` contaminated by the Rich "Computing embeddings" spinner under a dev shell's
+  `FORCE_COLOR=3` (which forces Rich's animation onto a piped stdout; real users, without it, are
+  unaffected — the skill-matching was always correct, only the `--json` framing was corrupt). Routed
+  all progress `console.status` → `err_console` (stderr), scrubbed the color-forcers in the test/qa
+  env (faithful to a real pipe + de-flaked 6 order-fragile tests), and added an adversarial guard
+  (`match --json` stays pure JSON with `FORCE_COLOR` forced).
 
 - **Structured experience/education — populate-or-remove → POPULATE** (PR #134, 2026-07-01). Audit
   #14: `ResumeData.experience`/`.education` were declared but NEVER constructed — dead fields read as

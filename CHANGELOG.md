@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Scraper anti-detection hardening.** The browser now launches your **real host Chrome**
+  (`[browser] channel = "chrome"`, the new default) instead of the bundled headless Chromium — no
+  `HeadlessChrome` fingerprint leak, self-consistent version + WebGL (falls back to bundled Chromium
+  with a warning if no host Chrome). And `search` honors a **proactive daily volume budget**
+  (`[target] max_searches_per_day`, default 30; optional `search_cooldown_s`), refusing past the cap
+  *before* launching the browser — so an authenticated LinkedIn session stays low-footprint. Basis:
+  an audit found search was uncapped in code and the headless browser leaked fingerprint tells; a
+  reused authenticated session means the goal is *unremarkable*, not undetected.
 - **Résumé parser now extracts structured experience & education.** `parse_text` populates per-role
   `experience`/`education` entries (title / company / dates / bullets · degree / institution / dates)
   via a conservative, **multi-format** extractor (YYYY / Month YYYY en+fr / MM/YYYY / Present·présent),
@@ -33,6 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a real stale-config CV that had silently mis-scored the whole funnel.
 
 ### Fixed
+- **`--json` output no longer corrupted by the progress spinner under forced color.** `match` (and
+  other data commands) routed their "Computing…" Rich status spinner to stdout; under a color-forcing
+  environment (`FORCE_COLOR`, some CIs) that leaked ANSI/spinner frames into piped `--json`, breaking
+  parsers. All progress now goes to stderr, keeping stdout pure regardless of the caller's color env.
+  (The matching itself was always correct — only the JSON framing was affected.)
 - **`tailor` no longer aborts on a valid CV; robust section-header matching.** Section headers were
   matched case-sensitively / exact-match, so all-caps qualified headers (`PROFESSIONAL EXPERIENCE`,
   `EDUCATION & CERTIFICATIONS`) silently fell through — making `summary` swallow ~97% of the document
