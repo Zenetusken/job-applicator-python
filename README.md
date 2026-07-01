@@ -140,6 +140,10 @@ job-applicator match --resume resume.pdf --jobs-file jobs.json --top-k 10
 job-applicator match --resume scanned.pdf --force-ocr
 job-applicator match --resume resume.png --ocr-mode on
 
+# Re-score STORED funnel jobs against the current résumé — in place, WITHOUT re-scraping
+# (use after your résumé changes; account-safe, never touches LinkedIn/Indeed)
+job-applicator rescore
+
 # Batch tailor resumes for multiple jobs (non-interactive)
 job-applicator batch --resume resume.pdf --jobs-file jobs.json --top-k 10 --min-score 0.5
 job-applicator batch --resume resume.pdf --query "python developer" --top-k 5 --no-cover-letter

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`rescore` command — account-safe in-place re-scoring of the funnel.** Recomputes the match
+  scores of *stored* jobs against the current résumé and writes them back in place (funnel stage
+  preserved), **without re-scraping** — the only prior way to refresh scores was re-`search`, which
+  re-scrapes (account-touching for LinkedIn). Fails closed (nothing written if matching raises) and
+  reports before→after deltas (`--json` supported). Use it after the résumé changes so the saved
+  scores reflect the current CV.
+- **Tailored ATS + contact green-check in the interactive `tailor` view.** Each version now surfaces
+  the tailored output's ATS score (before → after) and a contact-preservation check (email/phone
+  survived), alongside the grounding report. Surfaced for review, never a gate; best-effort (an
+  advisory line never aborts the review loop). ATS-on-tailored previously ran only in the verbose
+  reporter + `batch`.
+
+### Fixed
+- **DOCX résumé parser now extracts table cells (contact header + skills).** `_load_docx` read only
+  `doc.paragraphs`, silently dropping content in tables — real résumés put the contact header
+  (name/email/phone) and the skills section in tables, so they never reached `raw_text`, and
+  matching / grounding / tailoring all ran on a CV missing its contact and skills. It now walks the
+  document body in order, extracting paragraphs **and** table cells (merged-cell-deduped, best-effort
+  per table so a malformed grid can't fail the whole résumé). Recovers the contact block on tailored
+  outputs and corrects match scores.
+- **Markdown bold no longer leaks into the secondary `tailor` views.** The `[D]` full diff, `[V]`
+  history preview, and `[S]` section preview rendered raw `**header**` markers; they now strip them
+  like the main preview does.
+
 ### Changed
 - **Grounding verifier now grounds faithful paraphrases and cross-language translations by meaning.**
   The honesty-verifier prompt was tuned so a faithful restatement of a résumé fact — a reworded or

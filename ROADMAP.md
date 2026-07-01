@@ -5,7 +5,7 @@ Living tracker of planned work. Detailed specs/plans/reports live under `docs/co
 implement → gate (`ruff` · `ruff format --check` · `mypy src/` · `pytest -m unit` ·
 `pytest -m live`) → code-review → commit → PR.
 
-## Planned — next arc: post-tailor structural-fidelity validation
+## Planned — next arc open (audit medium-term backlog)
 
 The two previously-"committed next" arcs are **resolved** (re-measured 2026-06-30; details under
 Shipped):
@@ -22,20 +22,30 @@ Shipped):
   end**; **Phase 3** (ESCO/O*NET taxonomy) is an optional separate project. Full record:
   `docs/compose/specs/2026-06-26-semantic-skill-grounding.md`.
 
-**Next arc — post-tailor structural-fidelity validation** (2026-06-24 audit #15 → findings
-AI-H2/AI-H3 + "ATS check not run on tailored output"). The grounding verifier guards *honesty* (no
-fabricated claims); this adds *structural fidelity*: after tailoring, re-parse the tailored text
-(`ResumeLoader.parse_text`) and verify it PRESERVED the base résumé's contact info (email/phone/name
-— AI-H2) and employment dates + job titles (AI-H3), then surface the ATS score (`ATSChecker` on the
-tailored output). Surfaced on `TailoredResume` like `grounding_report` — **never auto-stripped** (the
-résumé is the document of record). Gated: empirics (false-positive/negative of the fidelity diff on
-faithful rewording — needs vLLM up) → spec → implement → gate → review. Spec forthcoming.
+**Post-tailor structural-fidelity validation (#15) — DISSOLVED by founding empirics (2026-06-30).**
+The intended validator (contact/date/title preservation after tailoring) was measured against the
+real CV × 5 SOC JDs BEFORE building: **contact preserved 5/5, dates 0-drop** — because the DOCX table
+fix (below) + the grounding verifier cure the loss at the SOURCE — and a title/company check **only
+false-positived** on legitimate de-emphasis (a volunteer role, a university). So the validator was
+not built; the genuine residual — surfacing the **tailored ATS + a contact green-check** in the
+interactive `tailor` view (defense-in-depth) — shipped in **PR #126**. (ATS-on-tailored already
+existed in the verbose/batch paths.) A textbook "fix the cause, not the symptom" outcome.
 
-Remaining 2026-06-24 audit medium-term backlog stays queued behind this: selector health / fail-loud
-on LinkedIn DOM drift (#12), integration tests for state/batch/apply (#11), structured
-experience/education extraction (#14).
+**Next arc — open.** The 2026-06-24 audit medium-term backlog is the queue: **selector health /
+fail-loud on LinkedIn DOM drift** (#12, protects the one automated-apply path), **integration tests**
+for state/batch/apply (#11), **structured experience/education extraction** (#14 — note: NOT
+justified by fidelity, which measured clean; only relevant to matching). Plus the deferred
+**matching-tuning re-validation** (see Known follow-ups).
 
 ## Shipped
+
+- **Foundation + matching + fidelity arc** (PRs #123–#126, 2026-06-30): an empirics-driven cascade.
+  Reconciled the stale ROADMAP (#123); **fixed the DOCX parser to extract table cells** (#124, audit
+  AI-H5) — the contact header + skills lived in tables and were silently dropped from `raw_text`,
+  corrupting tailored CVs *and* 154 match-scores; added the account-safe **`rescore`** command (#125)
+  and refreshed the funnel in place (mean Δ −0.185, top-10 reshuffled — the corrected CV's honest
+  skill-overlap); and shipped the **tailored-ATS + contact green-check** surface (#126) as the sole
+  residual of audit #15 after founding empirics dissolved the rest. Gate green throughout.
 
 - **Apply/batch + scraper hardening epoch** (PRs #115–#122, 2026-06-30): scraper stealth
   fingerprint alignment + LinkedIn checkpoint/rate-limit detection (Track B), CLI volume-option
@@ -101,6 +111,12 @@ experience/education extraction (#14).
 
 ## Known follow-ups (deferred)
 
+- **Matching tuning re-validation on the corrected CV.** The DOCX table fix (#124) recovered the
+  skills section, so the 60/40 semantic/skill blend and the 0.75 per-skill match threshold — both
+  tuned on the *old, skills-less* CV — now rest on changed input. The funnel was rescored (#125), but
+  whether 0.75/60-40 are still optimal needs its own empirics with a small gold-labelled
+  (relevant/not) set — a separate arc, not a quick tweak. Until then, treat absolute match scores as
+  skill-overlap (the existing caption already says so); relative ranking is sound.
 - **Cover-letter repeated-verb "voice tell"** (ROADMAP Arc-1 Item 2). `_voice_tells`
   (`documents/cover_letter.py`) scores phrase-presence + structural tells but has **no intra-letter
   repeated-token detector** (e.g. "engineered" ×4); the `_devoice` / `_voice_correction` re-prompt

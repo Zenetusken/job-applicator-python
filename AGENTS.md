@@ -42,6 +42,7 @@ job-applicator check-session                # Verify board session is ready
 job-applicator search --site linkedin --query "python developer"
 job-applicator status                       # Show saved job funnel
 job-applicator match --resume resume.pdf --jobs-file jobs.json
+job-applicator rescore                      # Re-score STORED funnel jobs vs the current résumé (no re-scraping)
 job-applicator tailor --resume resume.pdf --from <id-or-url> [--style-guide example.txt] [--format txt|pdf|both] [--template modern|classic|minimal] [--category <category>]
 job-applicator generate-cover-letter --resume resume.pdf --job-title "..." --company "..." [--style-guide example.txt] [--format txt|pdf|both] [--template modern|classic|minimal] [--category <category>]
 job-applicator ats-check --resume resume.pdf [--json] [--strict]
