@@ -169,3 +169,60 @@ def test_education_multiline_and_singleline() -> None:
 
 def test_education_degrades_to_empty() -> None:
     assert extract_education("EDUCATION\nStudied hard, learned things\n") == []
+
+
+# --------------------------------------------------------------- review regressions (no-fabricate)
+
+
+def test_long_space_run_is_linear_not_redos() -> None:
+    """A `pdftotext -layout` line with a huge space run and no trailing date must NOT hang
+    (catastrophic backtracking) and must extract nothing wrong. Was ~3.2s at 400 spaces; the
+    split-on-gap _entry_header is linear. Executing this at all guards the hang."""
+    text = "EXPERIENCE\nSecurity Operations Analyst" + " " * 4000 + "Toronto, Ontario\nEducation\n"
+    assert extract_experience(text) == []  # right-aligned tail is a place, not a date → no entry
+
+
+def test_bullet_after_header_is_not_a_fabricated_company() -> None:
+    """A title-only header followed by bullets must yield company='' (honest empty) and keep the
+    bullet — never company='• Monitored …' (a fabricated field + a dropped first bullet)."""
+    exp = extract_experience(
+        "EXPERIENCE\n"
+        "Security Analyst                         2020 – 2023\n"
+        "• Monitored SIEM alerts and triaged incidents\n"
+        "• Ran incident response\n"
+        "Education\n"
+    )
+    assert len(exp) == 1
+    assert exp[0].company == ""
+    assert exp[0].bullets == [
+        "Monitored SIEM alerts and triaged incidents",
+        "Ran incident response",
+    ]
+
+
+def test_education_description_is_not_a_fabricated_institution() -> None:
+    """A degree header followed by a 'Relevant coursework: …' description (not an institution line)
+    must yield institution='' — not the coursework text."""
+    edu = extract_education(
+        "EDUCATION\n"
+        "B.Sc. Computer Science                    2015 – 2019\n"
+        "Relevant coursework: algorithms, operating systems, networks\n"
+        "EXPERIENCE\n"
+    )
+    assert len(edu) == 1
+    assert edu[0].institution == ""
+
+
+def test_impossible_month_is_rejected_not_coerced() -> None:
+    """An impossible MM in MM/YYYY rejects the token (not a fabricated bare year)."""
+    assert parse_date_range("13/2020 – 09/2021") is None
+    assert parse_date_range("01/2020 – 09/2021") is not None
+
+
+def test_company_location_folds_city_province() -> None:
+    """'Company, City, Province' → company / 'City, Province' (both short tails fold in)."""
+    exp = extract_experience(
+        "EXPERIENCE\nAnalyst                              2020 – 2023\nAcme Corp, Montreal, QC\n"
+    )
+    assert exp[0].company == "Acme Corp"
+    assert exp[0].location == "Montreal, QC"

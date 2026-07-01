@@ -147,12 +147,13 @@ _YR_SIDE = r"\d{4}"
 _SIDE = rf"(?:{_MON_SIDE}|{_MMY_SIDE}|{_YR_SIDE})"
 _RANGE_RE = re.compile(rf"({_SIDE}){_SEP_RE}({_SIDE}|{_PRESENT_RE})", re.IGNORECASE)
 _DATE_SUB = rf"(?:{_SIDE}){_SEP_RE}(?:{_SIDE}|{_PRESENT_RE})"
-# An entry HEADER = a label, a right-alignment gap (2+ spaces or a tab), then a date range at EOL.
-# The gap requirement encodes the right-aligned-date tell AND cleanly separates the label from the
-# date, so a title ending in a word + gap + a bare year isn't misread as "Month YYYY".
-_HEADER_RE = re.compile(
-    rf"^(?P<label>.+?)(?:\s{{2,}}|\t)\s*(?P<date>{_DATE_SUB})\s*$", re.IGNORECASE
-)
+# A line-tail is a date range iff it is EXACTLY one (anchored). Used to test the text AFTER a
+# right-alignment gap — cheap/linear on the short tail. (Do NOT put a lazy `.+?` prefix in front of
+# this: `.+?` + `\s{2,}` + `\s*` all competing over one whitespace run backtracks catastrophically
+# on the long space runs a `pdftotext -layout` PDF emits — a real parser hang. _entry_header splits
+# in Python instead so the label and the gap can never overlap.)
+_DATE_ONLY_RE = re.compile(rf"^{_DATE_SUB}$", re.IGNORECASE)
+_GAP_RE = re.compile(r"\s{2,}|\t")  # right-alignment gap between a label and a right-aligned date
 
 
 @dataclass(frozen=True)
@@ -178,7 +179,9 @@ def _parse_side(s: str) -> tuple[int, int | None] | None:
     m = re.fullmatch(r"(\d{1,2})/(\d{4})", s)
     if m:
         mm = int(m.group(1))
-        return int(m.group(2)), (mm if 1 <= mm <= 12 else None)
+        if not 1 <= mm <= 12:
+            return None  # an impossible month → not a valid MM/YYYY token; reject, don't fabricate
+        return int(m.group(2)), mm
     m = re.fullmatch(r"(\d{4})", s)
     if m:
         return int(m.group(1)), None
@@ -213,21 +216,26 @@ def parse_date_range(text: str) -> DateRange | None:
 
 
 def _entry_header(line: str) -> tuple[str, str, str, DateRange] | None:
-    """An entry header = ``<label>`` + a right-alignment gap + a date range at EOL. Returns
-    (label, start_str, end_str, DateRange) or ``None`` — a date mid-sentence is NOT a header."""
-    m = _HEADER_RE.match(line.rstrip())
-    if not m:
-        return None
-    label = m.group("label").strip().strip("-–—,").strip()
-    if len(label) < 2:
-        return None
-    dr = parse_date_range(m.group("date"))
-    if dr is None:
-        return None
-    raw = _RANGE_RE.search(m.group("date"))  # raw start/end substrings for the string fields
-    start_str = raw.group(1).strip() if raw else ""
-    end_str = "Present" if dr.is_current else (raw.group(2).strip() if raw else "")
-    return label, start_str, end_str, dr
+    """An entry header = ``<label>`` + a right-alignment gap (2+ spaces / tab) + a date range at
+    EOL. Returns (label, start_str, end_str, DateRange) or ``None`` — a date mid-sentence is NOT a
+    header. Splits on the gap in Python (rightmost gap whose whole tail is a date range) rather than
+    one lazy+greedy regex, so it stays LINEAR on long space runs (see `_DATE_ONLY_RE`)."""
+    line = line.rstrip()
+    for gap in reversed(list(_GAP_RE.finditer(line))):
+        tail = line[gap.end() :].strip()
+        if not _DATE_ONLY_RE.match(tail):
+            continue
+        label = line[: gap.start()].strip().strip("-–—,").strip()
+        if len(label) < 2:
+            return None
+        dr = parse_date_range(tail)
+        if dr is None:
+            return None
+        raw = _RANGE_RE.search(tail)  # raw start/end substrings for the string fields
+        start_str = raw.group(1).strip() if raw else ""
+        end_str = "Present" if dr.is_current else (raw.group(2).strip() if raw else "")
+        return label, start_str, end_str, dr
+    return None
 
 
 def _section_body(text: str, section: str) -> list[str]:
@@ -250,14 +258,46 @@ def _debullet(s: str) -> str:
     return re.sub(r"^[\s•·▪‣◦*–—\-]+", "", s.strip()).strip()
 
 
+def _is_place_tail(tail: str) -> bool:
+    """A comma tail is a place iff it's short (≤3 words) and digit-free (a city/province, not part
+    of a company name)."""
+    return bool(tail) and len(tail.split()) <= 3 and not any(c.isdigit() for c in tail)
+
+
 def _company_location(line: str) -> tuple[str, str]:
-    """Split 'Company, City' → (company, location); a short, digit-free tail becomes the city."""
-    s = line.strip()
-    company, sep, loc = s.rpartition(",")
+    """Split 'Company, City[, Province]' → (company, location); fold up to two short, digit-free
+    trailing comma tails into the location (so 'Acme, Montreal, QC' → 'Acme' / 'Montreal, QC')."""
+    company, sep, loc = line.strip().rpartition(",")
     loc = loc.strip()
-    if sep and company.strip() and len(loc.split()) <= 3 and not any(c.isdigit() for c in loc):
-        return company.strip(), loc
-    return s, ""
+    if not (sep and company.strip() and _is_place_tail(loc)):
+        return line.strip(), ""
+    company2, sep2, loc2 = company.rpartition(",")  # a second "…, City, Province" tail
+    loc2 = loc2.strip()
+    if sep2 and company2.strip() and _is_place_tail(loc2):
+        return company2.strip(), f"{loc2}, {loc}"
+    return company.strip(), loc
+
+
+_DESC_LABEL_RE = re.compile(
+    r"^[\w][\w &/'()-]{0,30}:"
+)  # "Relevant coursework:", "GPA:", "Completed:"
+
+
+def _looks_like_entity(line: str) -> bool:
+    """True if ``line`` plausibly NAMES an employer/school — a compact proper-noun phrase, NOT a
+    bullet, a prose sentence, or a 'Label: …' description. Guards the company/institution slot: on a
+    non-title-first résumé (bullets or a description right after the header) it returns False so the
+    slot stays '' (honest empty) instead of grabbing an arbitrary line as a fabricated field
+    (no-failure-masking). NOTE: it cannot disambiguate a company-first layout ('Company' on the
+    header, 'Title' next) — that residual mis-label is a known title-first assumption."""
+    s = line.strip()
+    if not s or _debullet(s) != s:  # bullet-led (•/·/-/–/… ) → a bullet, not an employer/school
+        return False
+    if len(s) > 60 or len(s.split()) > 8:  # a description/sentence, not a compact name
+        return False
+    if _DESC_LABEL_RE.match(s):  # "Relevant coursework: …" — a description label, not a name
+        return False
+    return True
 
 
 def _next_content_line(body: list[str], start: int) -> int:
@@ -282,7 +322,14 @@ def extract_experience(text: str) -> list[ExperienceEntry]:
         company = location = ""
         cursor = i + 1
         j = _next_content_line(body, i + 1)
-        if j < len(body) and _entry_header(body[j]) is None and section_header(body[j]) is None:
+        # Only take the next line as the employer if it plausibly NAMES one — else leave company ''
+        # and let the line fall through to the bullet loop (a bullet-as-company is a fabrication).
+        if (
+            j < len(body)
+            and _entry_header(body[j]) is None
+            and section_header(body[j]) is None
+            and _looks_like_entity(body[j])
+        ):
             company, location = _company_location(body[j])
             cursor = j + 1
         bullets: list[str] = []
@@ -329,7 +376,12 @@ def extract_education(text: str) -> list[EducationEntry]:
         label, start_date, end_date, _dr = header
         cursor = i + 1
         j = _next_content_line(body, i + 1)
-        if j < len(body) and _entry_header(body[j]) is None and section_header(body[j]) is None:
+        if (
+            j < len(body)
+            and _entry_header(body[j]) is None
+            and section_header(body[j]) is None
+            and _looks_like_entity(body[j])  # a school NAME, not a description/coursework line
+        ):
             degree, institution = label, body[j].strip()  # institution on its own line
             cursor = j + 1
         else:
