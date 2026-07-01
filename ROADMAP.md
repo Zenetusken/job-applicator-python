@@ -32,13 +32,26 @@ interactive `tailor` view (defense-in-depth) — shipped in **PR #126**. (ATS-on
 existed in the verbose/batch paths.) A textbook "fix the cause, not the symptom" outcome.
 
 **Next arc — open.** The 2026-06-24 audit medium-term backlog is the queue: **selector health /
-fail-loud on LinkedIn DOM drift** (#12, protects the one automated-apply path) and **structured
-experience/education extraction** (#14 — the 2026-07-01 résumé-pipeline audit found the fields
-UNIMPLEMENTED/dead; populate-or-remove, and populating is the precondition for employment-gap
-detection). Plus the deferred **matching-tuning re-validation** and **employment-gap detection**
-(see Known follow-ups). (**Integration tests (#11)** — resolved; the residual is closed, see Shipped.)
+fail-loud on LinkedIn DOM drift** (#12, protects the one automated-apply path). Plus the deferred
+**matching-tuning re-validation** and **employment-gap detection** — now UNBLOCKED, its two
+preconditions shipped in #134 (see Known follow-ups). (**Integration tests (#11)** and **structured
+experience/education (#14)** — resolved, see Shipped.)
 
 ## Shipped
+
+- **Structured experience/education — populate-or-remove → POPULATE** (PR #134, 2026-07-01). Audit
+  #14: `ResumeData.experience`/`.education` were declared but NEVER constructed — dead fields read as
+  `[]` by `matching.py`/`cover_letter.py`/templates (the fabricated-default antipattern). Reliability
+  gate → **populate**: a conservative, section-scoped, **multi-format** sync extractor (title-first,
+  precision-over-recall, `[]` on no confident match) hits **experience 5/5 + education 4/4** on the
+  real CV. One **hardened shared date parser** (`parse_date_range`: YYYY / Month YYYY en+fr / MM/YYYY
+  / Present·Current·présent·actuel) is reused by `ResumeDateValidator` (no fork). Consumer audit: the
+  `matching.py` experience→embedding loop is **guarded off** (behavior-preserving dead→dead; a
+  career-changer's off-domain titles would dilute the match — deferred to matching-revalidation);
+  `cover_letter.py`'s company-match now gets real data; CV templates unchanged (LLM-built
+  `FormattedResume`). Adversarial review caught + fixed **two ship-blockers** (a `_HEADER_RE` ReDoS
+  reachable from `pdftotext -layout` PDFs; a fabricated company/institution from a bullet/description
+  line) — both locked with regression tests. Unit 1271 → 1303; gate green throughout.
 
 - **Integration tests — apply/batch loops against real state stores** (PR #132, 2026-07-01). Audit
   #11 ("integration tests for state/batch/apply") turned out **mostly already covered** once
@@ -145,18 +158,19 @@ detection). Plus the deferred **matching-tuning re-validation** and **employment
   optimal needs its own empirics with a small gold-labelled (relevant/not) set — a separate arc, not
   a quick tweak. Until then, treat absolute match scores as skill-overlap (the existing caption
   already says so); relative ranking is sound.
-- **Employment-GAP detection — the real HR red flag (not built).** `ResumeDateValidator` claimed
-  "gap detection" in its docstring but never implemented it (corrected in #129). Unexplained
-  employment gaps are the genuine signal a date check should surface; it needs reliable per-role
-  date ranges, i.e. populated structured `experience` (see next) + a hardened date parser
-  (the current one drops MM/YYYY, "Current", and French formats). Its own deliberate arc — do NOT
-  bolt it onto the heuristic regex parser.
-- **Structured `experience`/`education` are UNIMPLEMENTED dead fields (audit 2026-07-01).**
-  `parse_text` never constructs an `ExperienceEntry`/`EducationEntry` (grep: zero call sites) — the
-  fields are always empty, and every consumer falls back to `raw_text`, so nothing breaks today, but
-  it's the "fabricated default" antipattern. **Populate-or-remove** (audit #14) — and populating is
-  the precondition for gap detection above. Not justified by fidelity (measured clean); relevant to
-  matching + gaps.
+- **Employment-GAP detection — the real HR red flag (not built; now UNBLOCKED).** `ResumeDateValidator`
+  claimed "gap detection" in its docstring but never implemented it (corrected in #129). Unexplained
+  employment gaps are the genuine signal a date check should surface. Its two preconditions are now
+  MET (#134): populated structured `experience` + one hardened date parser (`parse_date_range` —
+  YYYY / Month YYYY en+fr / MM/YYYY / Present·Current·présent·actuel). Still its own deliberate arc
+  (compute per-role coverage → flag unexplained gaps), but no longer blocked. Near-zero value on
+  Drei's own gap-free CV — general-tool correctness, not personal dogfood value.
+- **Structured `experience`/`education` residuals (shipped #134, see Shipped).** The fields populate
+  conservatively (title-first, safe-degrade-to-empty). Residuals: (a) whether MATCHING should consume
+  experience is deferred to the matching-revalidation arc (needs a gold set; a career-changer's
+  off-domain titles would dilute the signal, so `matching.py:110` is guarded off); (b) a company-first
+  layout mis-labels title/company, and a >8-word institution degrades to empty — documented
+  title-first heuristic limits (honest degradation, not fabrication).
 - **Single-char skill asymmetry (LOW, #130 residual).** `matching.py:320` (résumé side) keeps a
   `len>=2` filter while `:330` (requirement side) has none, so a job listing a bare `R`/`C` can
   surface it as an unsatisfiable "missing skill" even when the CV lists it. 1-char only (2-char
