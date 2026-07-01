@@ -2,14 +2,29 @@
 
 from __future__ import annotations
 
-import socket
-from pathlib import Path
-from urllib.parse import urlparse
+# Scrub color-FORCING env BEFORE any job_applicator import — the module-level Rich consoles cache
+# `_force_terminal` from FORCE_COLOR at instantiation, so a later scrub is a no-op. A user piping
+# `--json` does NOT force color onto the pipe; a dev shell's FORCE_COLOR=3 otherwise injects ANSI
+# into captured CLI output, making order-fragile assertions flap (and hid a real match check).
+import os as _os
 
-import pytest
+for _v in ("FORCE_COLOR", "CLICOLOR_FORCE", "PY_COLORS"):
+    _os.environ.pop(_v, None)
+_os.environ.setdefault("NO_COLOR", "1")
 
-from job_applicator.config import AppSettings, BrowserConfig, LLMConfig, TargetConfig
-from job_applicator.models import JobBoard, JobListing, ResumeData, UserProfile
+import socket  # noqa: E402
+from pathlib import Path  # noqa: E402
+from urllib.parse import urlparse  # noqa: E402
+
+import pytest  # noqa: E402
+
+from job_applicator.config import (  # noqa: E402
+    AppSettings,
+    BrowserConfig,
+    LLMConfig,
+    TargetConfig,
+)
+from job_applicator.models import JobBoard, JobListing, ResumeData, UserProfile  # noqa: E402
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:

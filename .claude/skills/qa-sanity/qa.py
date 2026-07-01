@@ -74,6 +74,12 @@ ENV = {
     "NO_COLOR": "1",
     "COLUMNS": "200",
 }
+# NO_COLOR alone is NOT enough under a dev shell's FORCE_COLOR: FORCE_COLOR forces Rich's
+# is_terminal=True, so the progress SPINNER still ANIMATES onto a piped stdout (NO_COLOR only strips
+# color codes, not the animation). A user piping `--json` has neither var set, so scrub the
+# color-FORCERS to make the harness faithful to a real pipe (else --json checks see spurious ANSI).
+for _cvar in ("FORCE_COLOR", "CLICOLOR_FORCE", "PY_COLORS"):
+    ENV.pop(_cvar, None)
 
 # GUARD: refuse to run if isolation isn't real — a broken edit must not touch real state.
 if Path(ENV["HOME"]).resolve() == REAL_HOME.resolve() or str(WORK) not in ENV["HOME"]:
@@ -109,12 +115,21 @@ def skip(name: str, tier: str, detail: str) -> None:
     results.append({"name": name, "tier": tier, "status": "SKIP", "detail": detail})
 
 
-def run(*args: str, timeout: int = 120, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
-    """Run the CLI isolated, from the temp workdir. Never raises on non-zero exit."""
+def run(
+    *args: str,
+    timeout: int = 120,
+    stdin: str | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run the CLI isolated, from the temp workdir. Never raises on non-zero exit.
+
+    ``extra_env`` overlays ENV for one call — used to deliberately FORCE color (the opposite of the
+    harness default) to prove ``--json`` stays pure regardless of the caller's color env.
+    """
     try:
         return subprocess.run(
             [str(JA), *args],
-            env=ENV,
+            env={**ENV, **(extra_env or {})},
             cwd=str(WORK),
             capture_output=True,
             text=True,
@@ -439,6 +454,19 @@ def live_checks(fx: dict[str, Path]) -> None:
         pass
     ok_mj = isinstance(arr, list) and bool(arr) and "title" in arr[0] and "score" in arr[0]
     record("match: --json is valid JSON", t, cp.returncode == 0 and ok_mj, f"exit={cp.returncode}")
+
+    # Adversarial stdout-contract guard: --json must stay PURE JSON even when the caller FORCES
+    # color (CI, a TTY, FORCE_COLOR). Proves the progress spinner is on stderr, not stdout — FAILS
+    # on the pre-fix code (console.status spinner → stdout) and passes once it's on err_console.
+    cp_fc = run("match", "--resume", str(fx["resume"]), "--jobs-file", str(fx["jobs"]), "--json",
+                timeout=180, extra_env={"FORCE_COLOR": "3"})
+    fc_ok = False
+    try:
+        fc_ok = isinstance(json.loads(cp_fc.stdout), list)
+    except Exception:
+        pass
+    record("match: --json stays pure JSON under FORCE_COLOR (spinner on stderr)", t, fc_ok,
+           "stdout not pure JSON — a progress spinner is leaking to stdout" if not fc_ok else "ok")
 
     # Regression guard (#45): at the 0.75 skill-match threshold a Python-only résumé reports
     # React/TypeScript as MISSING for a React job (the old 0.55 wrongly "covered" them).

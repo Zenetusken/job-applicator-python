@@ -21,6 +21,7 @@ from job_applicator.documents.artifacts import write_cover_letter, write_cover_l
 from job_applicator.documents.job_category import detect_job_category
 from job_applicator.factories import _make_runtime
 from job_applicator.models import Format
+from job_applicator.utils.console import err_console  # status/progress → stderr (stdout stays data)
 from job_applicator.utils.diff import render_diff
 from job_applicator.utils.profile import _detect_tone, _load_user_profile
 
@@ -62,7 +63,7 @@ async def _generate_cover_letter(
 
     generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=runtime)
     try:
-        with console.status("Generating + verifying cover letter..."):
+        with err_console.status("Generating + verifying cover letter..."):
             letter = await generator.generate_verified(
                 job,
                 _load_user_profile(settings, resume_name=resume_data.name),
@@ -165,7 +166,7 @@ async def _refine_cover_letter(
     try:
         generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=runtime)
         user = _load_user_profile(settings, resume_name=resume_data.name if resume_data else "")
-        with console.status("Refining + verifying cover letter..."):
+        with err_console.status("Refining + verifying cover letter..."):
             refined, report = await generator.refine_verified(
                 job=job,
                 user=user,
