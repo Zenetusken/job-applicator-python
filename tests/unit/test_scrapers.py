@@ -829,3 +829,25 @@ def test_pick_geo_hit_falls_back_to_first_numeric() -> None:
     assert first is not None and first["id"] == "42"
     assert _pick_geo_hit([], "qc") is None
     assert _pick_geo_hit("not a list", "qc") is None
+
+
+def test_canonical_job_url_strips_tracking_dedups_reposts() -> None:
+    """The SAME LinkedIn job served under different tracking params canonicalizes to ONE
+    /jobs/view/<id> URL, so URL-dedup collapses tracking-param reposts (measured: 53% of a funnel);
+    a genuinely-different job id stays distinct."""
+    from job_applicator.scrapers.linkedin import _canonical_job_url
+
+    a = _canonical_job_url(
+        "https://www.linkedin.com/jobs/view/4430471726/?eBP=CwEAAAA&trackingId=x"
+    )
+    b = _canonical_job_url("https://www.linkedin.com/jobs/view/4430471726/?eBP=DIFFERENT&refId=y")
+    assert a == b == "https://www.linkedin.com/jobs/view/4430471726/"  # same job → same URL
+    assert _canonical_job_url("https://www.linkedin.com/jobs/view/9999999999/?eBP=z") != a
+    assert (
+        _canonical_job_url("https://www.linkedin.com/jobs/search?currentJobId=123&x=1")
+        == "https://www.linkedin.com/jobs/view/123/"
+    )
+    assert (
+        _canonical_job_url("https://www.linkedin.com/jobs/collections/?trk=z")
+        == "https://www.linkedin.com/jobs/collections/"
+    )

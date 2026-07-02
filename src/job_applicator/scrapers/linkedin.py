@@ -547,7 +547,7 @@ class LinkedInScraper(BaseScraper):
         )
         salary = (await salary_el.inner_text()).strip() if salary_el else None
 
-        url = href if href.startswith("http") else f"{LINKEDIN_BASE}{href}"
+        url = _canonical_job_url(href if href.startswith("http") else f"{LINKEDIN_BASE}{href}")
 
         return JobListing(
             title=title,
@@ -675,6 +675,21 @@ def _job_id_from_url(url: str) -> str:
     """
     match = re.search(r"/jobs/view/(\d+)", url) or re.search(r"[?&]currentJobId=(\d+)", url)
     return match.group(1) if match else ""
+
+
+def _canonical_job_url(url: str) -> str:
+    """Reduce a LinkedIn job URL to its stable ``/jobs/view/<id>`` identity.
+
+    LinkedIn serves the SAME job under many tracking-decorated URLs (``?eBP=…&trackingId=…``) that
+    differ per search — so storing the full URL makes one job dedup as several rows (measured
+    2026-07-01: 53% of a 92-job funnel was tracking phantoms). Canonicalizing to the numeric job id
+    collapses those while keeping genuinely-distinct jobs (different ids) apart. Falls back to the
+    query-stripped path for a URL with no parseable id.
+    """
+    job_id = _job_id_from_url(url)
+    if job_id:
+        return f"{LINKEDIN_BASE}/jobs/view/{job_id}/"
+    return url.split("?", 1)[0]
 
 
 def _clean_title(raw: str) -> str:
