@@ -41,6 +41,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a real stale-config CV that had silently mis-scored the whole funnel.
 
 ### Fixed
+- **`match` is now reproducible.** Skill extraction is a factual task, but the extractor inherited
+  the `[llm]` temperature (0.7, tuned for cover-letter prose), so the same JD grounded different
+  skills across runs and match scores wandered. It now runs extraction at temperature 0 (greedy) —
+  measured reproducible with no recall loss; the evidence-span verification still guards
+  hallucinations.
+- **LinkedIn reposts no longer inflate the funnel.** The funnel dedups by job URL, but LinkedIn
+  serves the same job under many tracking-decorated URLs (`?eBP=…&trackingId=…`) that differ per
+  search, so one job stored as several rows (measured: **53% of a 92-job funnel was phantoms**). The
+  scraper now canonicalizes each job URL to its stable `/jobs/view/<id>` identity, collapsing reposts
+  while keeping genuinely-distinct jobs separate.
 - **LinkedIn search is now geo-correct.** `search --location` sent a raw location string with no
   numeric `geoId`, so LinkedIn ignored it and returned a global/remote feed (a `Montréal, QC` search
   measured **89% France/EMEA/EU-remote**). It now resolves the location to LinkedIn's `geoId` via the
