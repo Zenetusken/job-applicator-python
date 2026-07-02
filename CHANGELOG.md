@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`status` now shows which search surfaced each job.** The stored `source_query` (previously
+  captured but never displayed) is surfaced as a **Found via** column in the `status` table, a
+  `source_query` field in `status --json`, and a `· via 'X'` note on the TUI job card — so you can
+  see a job's provenance. First-seen-wins, so post-dedup it reads "first found via X".
 - **Scraper anti-detection hardening.** The browser now launches your **real host Chrome**
   (`[browser] channel = "chrome"`, the new default) instead of the bundled headless Chromium — no
   `HeadlessChrome` fingerprint leak, self-consistent version + WebGL (falls back to bundled Chromium
