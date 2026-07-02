@@ -390,3 +390,11 @@ class TestEvidenceSpanGrounding:
         monkeypatch.setattr(ext, "_call_llm_evidence_span", boom)
         with pytest.raises(LLMError):
             await ext.extract("Backend role in Python.")
+
+
+def test_extractor_pins_temperature_to_zero_for_determinism() -> None:
+    """Skill extraction is factual → the extractor forces temperature 0 (greedy, reproducible),
+    ignoring the [llm] prose default (0.7) it would otherwise inherit — so the same JD always
+    grounds the same skills and `match` scores don't wander run-to-run."""
+    ext = LLMSkillExtractor(LLMConfig(temperature=0.7), grounding_mode="evidence_span")
+    assert ext._config.temperature == 0.0
