@@ -147,6 +147,25 @@ def test_status_empty_is_clean(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     }
 
 
+def test_status_surfaces_source_query(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`status` surfaces provenance — the search that first surfaced a job — in --json and the
+    table (the 'Found via' column), so the stored source_query is no longer write-only."""
+    js = JobStore(db_path=tmp_path / "applications.db")
+    js.upsert_job(_job(1), source_query="SOC analyst")
+    monkeypatch.setattr(cli, "_get_jobs_store", lambda: js)
+    monkeypatch.setattr(
+        "job_applicator.state.ApplicationState",
+        lambda *a, **k: MagicMock(list_recent=lambda limit=0: []),
+    )
+    j = CliRunner().invoke(cli.app, ["status", "--json"])
+    assert j.exit_code == 0, j.output
+    assert json.loads(j.stdout)["recent"][0]["source_query"] == "SOC analyst"
+
+    t = CliRunner().invoke(cli.app, ["status"])
+    assert t.exit_code == 0, t.output
+    assert "Found via" in t.stdout and "SOC analyst" in t.stdout
+
+
 # --------------------------------------------------------- search persistence
 def test_search_persists_found_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
     jobs = [_job(1), _job(2)]

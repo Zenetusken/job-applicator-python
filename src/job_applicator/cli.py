@@ -1781,6 +1781,7 @@ def status(
             "score": s.match_score,
             "url": url,
             "when": s.updated_at,
+            "source_query": s.source_query,  # the search that first surfaced this job (provenance)
         }
     for appres in recent_apps:
         if appres.status != ApplicationStatus.SUBMITTED:
@@ -1794,6 +1795,7 @@ def status(
                 "board": appres.job.board.value,
                 "score": None,
                 "url": url,
+                "source_query": "",  # applied-only rows come from ApplicationState, no scrape query
             },
         )
         row["stage"] = FunnelStatus.APPLIED.value
@@ -1827,6 +1829,7 @@ def status(
                     "score": r["score"],
                     "url": r["url"],
                     "when": r["when"].isoformat(),
+                    "source_query": r.get("source_query", ""),
                 }
                 for r in rows[:limit]
             ],
@@ -1853,9 +1856,17 @@ def status(
     table.add_column("Title", style="green")
     table.add_column("Company")
     table.add_column("Board", style="dim")
+    table.add_column("Found via", style="dim")
     for r in rows[:limit]:
         score = f"{r['score']:.0%}" if r["score"] is not None else "—"
-        table.add_row(r["stage"].replace("_", " "), score, r["title"], r["company"], r["board"])
+        table.add_row(
+            r["stage"].replace("_", " "),
+            score,
+            r["title"],
+            r["company"],
+            r["board"],
+            r.get("source_query") or "—",
+        )
     console.print(table)
 
 
