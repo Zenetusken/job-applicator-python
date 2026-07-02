@@ -443,7 +443,7 @@ class JobApplicatorApp(App[None]):
         lines, incl. wraps), giving a clear hierarchy:
           line 1 — the FULL title (bold)
           line 2 — the company (green, its own line so it isn't lost in the metadata)
-          line 3 — match score (sentiment colour) · board (brand badge) · location (dim)
+          line 3 — match score (sentiment colour) · board (brand badge) · location · found-via query
         """
         spine = _STAGE_STYLE.get(self._effective_stage(s), "white")
         title = Text(s.job.title, style="bold")
@@ -460,6 +460,9 @@ class JobApplicatorApp(App[None]):
         if s.job.location:
             meta.append("  ·  ", style="dim")
             meta.append(s.job.location, style="dim")
+        if s.source_query:  # provenance — the search that first surfaced this job
+            meta.append("  ·  via ", style="dim")
+            meta.append(f"'{s.source_query}'", style="dim italic")
         # Match the row divider to the pane border ($panel) so the table grid reads as one piece.
         divider = self.theme_variables.get("panel", "#242f38")
         return _JobCard([title, company, meta], spine, divider)
