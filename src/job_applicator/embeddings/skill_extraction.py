@@ -324,7 +324,11 @@ class LLMSkillExtractor:
     """
 
     def __init__(self, config: LLMConfig, *, grounding_mode: str = "evidence_span") -> None:
-        self._config = config
+        # Skill extraction is FACTUAL — pin temperature to 0 (greedy) so a JD always yields the same
+        # skills. The [llm] default (0.7) is cover-letter-PROSE tuning; inheriting it made `match`
+        # scores wander run-to-run (measured). Temp 0 is reproducible with no recall loss, and the
+        # evidence-span verification still guards hallucinations.
+        self._config = config.model_copy(update={"temperature": 0.0})
         self._grounding_mode = grounding_mode
         self._cache_dir = Path.home() / ".job-applicator" / "skill-extraction"
         self._cache_dir.mkdir(parents=True, exist_ok=True)
