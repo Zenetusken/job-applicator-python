@@ -214,19 +214,48 @@ experience/education (#14)** — resolved, see Shipped.)
   can't supply (it would only test embedding-agrees-with-keyword-matcher, circular). Until then:
   absolute scores = skill-overlap; relative ranking is sound.
 - **Skill-extraction hardening residuals (surfaced by the re-validation arc, 2026-07-01).** (a)
-  **Apostrophe/encoding span fix, done RIGHT** — the evidence-span verifier drops valid skills on
-  cosmetic mismatches (the French curly apostrophe `l'X`, U+2019 vs U+0027, above all). A first
-  attempt (PR #143) was ABANDONED after adversarial review: it patched the wrong verifier
+  **Apostrophe/encoding span fix — MEASURED 2026-07-02: material need ABSENT → DEFERRAL CONFIRMED
+  (do not build).** The concern: the evidence-span verifier drops valid skills on cosmetic mismatches
+  (French curly apostrophe `l'X`, U+2019 vs U+0027; accented `expérience` vs `experience`). A first
+  attempt (PR #143) was ABANDONED after adversarial review — it patched the wrong verifier
   (`_phrase_in_description`, not the `_span_grounded` the default `evidence_span` path uses → inert)
   and its whitespace-collapse fused words across bare newlines (fabricated skills — a false-positive).
-  The correct fix is accent/quote normalization on the SHARED grounding path, preserving
-  `_span_grounded`'s deliberate `BLS/ACLS` punctuation-sentinel, with NO newline fusion — gated
-  behind a material need (no rich JD zeroes on the default path). (b) **Extraction determinism —
+  The material-need probe (`_verify_spans` instrumented over the **39-JD real funnel**, Qwen3-8B-AWQ
+  @ temp 0; 31/39 curly-apostrophe, 24/39 accented — the worst case) measured **0 accent-recoverable
+  + 0 compat-recoverable drops, 0 skills recovered, 0 JDs zeroed** (205 kept, 20 dropped). WHY: the
+  apostrophe case is already neutralized (both quote chars → the same `\x00` punctuation-sentinel),
+  and the 8B copies accented spans **verbatim** at temp 0, so the accent risk never fires. The 20
+  drops (verified via `ev in d` + boundary analysis) are **10 paraphrase** (model reworded, not
+  verbatim → correct) + **8 truncation** (model cut its own span mid-word, e.g. `Cyber Sécu`[rité] →
+  word-boundary guard, correct) + **2 upstream scrape-mash** (see next residual — NOT the accent/quote
+  issue), none of which accent/quote normalization would or should recover. So the fix (accent/quote
+  normalization on the SHARED `_span_grounded`, preserving the `BLS/ACLS` sentinel, NO newline fusion)
+  stays UNBUILT. **Model-dependent — re-run the probe on a base-model swap** (a model that emits
+  accent-stripped spans could revive the need). (b) **Extraction determinism —
   SHIPPED #145:** the extractor now pins temperature 0 (a factual task shouldn't inherit the 0.7
   cover-letter-prose default), so `match` is reproducible (measured: temp 0.7 grounded different
   skills across runs). (c) **Duplicate-posting dedup — SHIPPED #146:** the scraper canonicalizes each
   LinkedIn job URL to its `/jobs/view/<id>` identity, stripping the tracking params that made one job
   store as many rows (measured on a re-scrape: 92 phantom-heavy rows → **44 unique**, ~53% collapsed).
+- **Upstream JD text corruption — missing-space "mash" (NARROW, surfaced by the (a) probe
+  2026-07-02).** A few postings arrive with words glued together — `Microsoft Senti\nnelKQL`,
+  `détail)Nous`, `Langua\nge)Création` — text pasted into LinkedIn from a mangled source and rendered
+  without separators. Our scraper's `inner_text()` on the description container (`linkedin.py:609`) is
+  the CORRECT extraction (better than `text_content()`); it faithfully preserves whatever the DOM
+  renders, so this is **upstream data quality, not a scraper bug**. Measured impact: **2 verified
+  match-relevant skill losses** (`KQL`, `Microsoft Security (E5)` — both dropped because the span
+  abuts a glued word, both absent from that JD's final skill set) concentrated in **one pathological
+  posting** (Consultant – Sécurité & Détection E5/Sentinel, 27 corruption signatures). Reliable-
+  signature spread (excluding legit camelCase like `Ingénierie`): only **2/39 JDs clearly corrupted,
+  4/39 with ≥1** — NOT systemic (a lower bound: the reliable filter excludes space-less `lowerUpper`
+  glues to dodge `JavaScript` false positives, so a no-newline `SentinelKQL` mash goes uncounted).
+  NB the blast landed on a HIGH-value target — the corrupted posting is a Microsoft-Sentinel SOC
+  role, and with 27 signatures its *embedding* (the 60% semantic term) is also computed on garbled
+  text, so that JD's whole match score — not just skill coverage — is unreliable. Deferred: a guarded
+  de-mash normalization (repair `word)Word` +
+  mid-word newline splits) is LOW priority — narrow blast radius, and aggressive splitting risks
+  fabricating skills (`JavaScript` → `Java Script`), which the honesty layer forbids. Re-measure if a
+  future scrape shows the corruption widening.
 - **Employment-GAP detection — the real HR red flag (not built; now UNBLOCKED).** `ResumeDateValidator`
   claimed "gap detection" in its docstring but never implemented it (corrected in #129). Unexplained
   employment gaps are the genuine signal a date check should surface. Its two preconditions are now
