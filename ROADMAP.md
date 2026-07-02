@@ -221,11 +221,12 @@ experience/education (#14)** — resolved, see Shipped.)
   and its whitespace-collapse fused words across bare newlines (fabricated skills — a false-positive).
   The correct fix is accent/quote normalization on the SHARED grounding path, preserving
   `_span_grounded`'s deliberate `BLS/ACLS` punctuation-sentinel, with NO newline fusion — gated
-  behind a material need (no rich JD zeroes on the default path). (b) **Extraction determinism** —
-  skill extraction runs at `[llm]` temperature 0.7, so `match` scores wander run-to-run (the
-  persistent cache freezes them; a cleared cache resamples); temp 0 would make matching reproducible.
-  (c) **Duplicate-posting dedup** — the funnel dedups by URL, so LinkedIn's same-role-different-URL
-  repostings (measured: one Wepoint SOC role ×5) survive as near-duplicates.
+  behind a material need (no rich JD zeroes on the default path). (b) **Extraction determinism —
+  SHIPPED #145:** the extractor now pins temperature 0 (a factual task shouldn't inherit the 0.7
+  cover-letter-prose default), so `match` is reproducible (measured: temp 0.7 grounded different
+  skills across runs). (c) **Duplicate-posting dedup — SHIPPED #146:** the scraper canonicalizes each
+  LinkedIn job URL to its `/jobs/view/<id>` identity, stripping the tracking params that made one job
+  store as many rows (measured on a re-scrape: 92 phantom-heavy rows → **44 unique**, ~53% collapsed).
 - **Employment-GAP detection — the real HR red flag (not built; now UNBLOCKED).** `ResumeDateValidator`
   claimed "gap detection" in its docstring but never implemented it (corrected in #129). Unexplained
   employment gaps are the genuine signal a date check should surface. Its two preconditions are now
