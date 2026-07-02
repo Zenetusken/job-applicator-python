@@ -847,7 +847,9 @@ def test_canonical_job_url_strips_tracking_dedups_reposts() -> None:
         _canonical_job_url("https://www.linkedin.com/jobs/search?currentJobId=123&x=1")
         == "https://www.linkedin.com/jobs/view/123/"
     )
+    # id-less URL → returned UNCHANGED (never a lossy query-strip that could collapse two
+    # genuinely-distinct id-less URLs into one funnel key).
     assert (
         _canonical_job_url("https://www.linkedin.com/jobs/collections/?trk=z")
-        == "https://www.linkedin.com/jobs/collections/"
+        == "https://www.linkedin.com/jobs/collections/?trk=z"
     )

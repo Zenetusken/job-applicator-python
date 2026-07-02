@@ -683,13 +683,15 @@ def _canonical_job_url(url: str) -> str:
     LinkedIn serves the SAME job under many tracking-decorated URLs (``?eBP=…&trackingId=…``) that
     differ per search — so storing the full URL makes one job dedup as several rows (measured
     2026-07-01: 53% of a 92-job funnel was tracking phantoms). Canonicalizing to the numeric job id
-    collapses those while keeping genuinely-distinct jobs (different ids) apart. Falls back to the
-    query-stripped path for a URL with no parseable id.
+    collapses those while keeping genuinely-distinct jobs (different ids) apart. A URL with NO
+    parseable id is returned UNCHANGED — we can't know its identity, so stripping its query could
+    collapse two genuinely-distinct id-less URLs into one funnel key (a lossy masking default).
+    Latent today — live card hrefs are always ``/jobs/view/<id>``.
     """
     job_id = _job_id_from_url(url)
     if job_id:
         return f"{LINKEDIN_BASE}/jobs/view/{job_id}/"
-    return url.split("?", 1)[0]
+    return url
 
 
 def _clean_title(raw: str) -> str:
