@@ -89,14 +89,23 @@ def _run() -> int:
         return 0
     resume = ResumeLoader().load(settings.resume_path)
 
-    stored = JobStore().list_jobs(limit=len(labels_by_url) + 50)
+    # Fetch the WHOLE funnel (a high cap, not len+N — a restrictive limit can drop labeled jobs
+    # that live outside the most-recent window, silently grading a non-representative subset).
+    stored = JobStore().list_jobs(limit=1_000_000)
     jobs = [s.job for s in stored if str(s.job.url) in labels_by_url]
     missing = len(labels_by_url) - len(jobs)
-    if missing:
-        print(f"warning: {missing} labeled jobs not in the funnel DB (re-scraped/wiped?)")
     if not jobs:
         print("no labeled jobs found in the funnel DB — nothing to evaluate (not a failure)")
         return 0
+    if missing:
+        # Partial coverage must NOT exit 0 as "validated": a regression on an absent labeled job
+        # would pass unseen. Refuse to certify (distinct exit 2) rather than grade the subset.
+        print(
+            f"INCOMPLETE COVERAGE: {missing}/{len(labels_by_url)} labeled jobs are not in the "
+            f"funnel DB (re-scrape/wipe drift). Cannot certify the matcher on a partial gold set "
+            f"— re-scrape to restore them, then re-run."
+        )
+        return 2
 
     matcher = JobMatcher(
         settings.embedding,

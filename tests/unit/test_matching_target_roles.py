@@ -7,14 +7,14 @@ regression test — including the decoy titles they must NOT fire on (zero false
 the measured property that made the mechanism shippable).
 """
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import pydantic
 import pytest
 
 from job_applicator.config import EmbeddingConfig, MatchingConfig, TargetRoleRule
 from job_applicator.embeddings.matching import JobMatcher, MatchResult
-from job_applicator.models import JobBoard, JobListing
+from job_applicator.models import JobBoard, JobListing, ResumeData
 
 
 def _matcher(rules: list[TargetRoleRule]) -> JobMatcher:
@@ -104,6 +104,62 @@ class TestBoostApplication:
             summary="",
         )
         assert r.target_role is None
+
+
+class TestBoostSeamSeparation:
+    """Regression guard for review findings [2]/[4]/[7]: the target-role boost applies ONLY in
+    rank_jobs (ranking), NEVER in match_resume_to_job (fit). This fails if someone re-introduces
+    the boost into the fit path — the exact leak that inflated batch's tailored-resume fit metric
+    and the `tailor --min-score` gate. Stubs the embedding/skill seams to stay a pure unit test."""
+
+    RULE: ClassVar[TargetRoleRule] = TargetRoleRule(
+        name="red-team", title_pattern=r"\bred[ -]?team\b", boost=0.15
+    )
+
+    @staticmethod
+    def _stubbed_matcher() -> JobMatcher:
+        m = JobMatcher(
+            EmbeddingConfig(device="cpu", memory_limit_gb=0.5),
+            matching=MatchingConfig(target_roles=[TestBoostSeamSeparation.RULE]),
+        )
+        # Stub every GPU/LLM seam so semantic score is a fixed 0.5 and skills are unknown
+        # (→ semantic-only combined score 0.5), making the boost arithmetic exact.
+        m.compute_resume_embedding = lambda resume: [0.1] * 8  # type: ignore[method-assign]
+        m.compute_job_embedding = lambda job: [0.2] * 8  # type: ignore[method-assign]
+        m._service.similarity = lambda a, b: 0.5  # type: ignore[method-assign,assignment]
+        m._service.embed_batch = lambda texts, use_cache=True: [  # type: ignore[method-assign]
+            [0.2] * 8 for _ in texts
+        ]
+
+        async def _no_skills(*a: Any, **k: Any) -> tuple[list[str], list[str]]:
+            return [], []
+
+        m._match_skills = _no_skills  # type: ignore[method-assign]
+        return m
+
+    @staticmethod
+    def _resume() -> ResumeData:
+        return ResumeData(raw_text="SOC analyst. Skills: SIEM, incident response.")
+
+    async def test_fit_path_never_boosted(self) -> None:
+        m = self._stubbed_matcher()
+        res = await m.match_resume_to_job(self._resume(), _job("AI Safety Expert - Red Team"))
+        assert res.target_role is None  # fit path never tags
+        assert res.score == pytest.approx(0.5)  # pure combined fit, NO +0.15 boost
+
+    async def test_ranking_path_boosted_and_tagged(self) -> None:
+        m = self._stubbed_matcher()
+        ranked = await m.rank_jobs(self._resume(), [_job("AI Safety Expert - Red Team")], top_k=1)
+        assert ranked[0].target_role == "red-team"
+        assert ranked[0].score == pytest.approx(0.65)  # 0.5 fit + 0.15 boost
+        assert ranked[0].semantic_score == pytest.approx(0.5)  # fit component stays pure
+
+    async def test_ranking_summary_describes_pure_fit_not_boosted(self) -> None:
+        # Finding [7]: the "(X% similarity)" summary must reflect pure fit, not the boosted score.
+        m = self._stubbed_matcher()
+        ranked = await m.rank_jobs(self._resume(), [_job("AI Safety Expert - Red Team")], top_k=1)
+        assert "50%" in ranked[0].summary  # pure 0.5, not boosted 0.65
+        assert "65%" not in ranked[0].summary
 
 
 class TestCalibrationPatterns:

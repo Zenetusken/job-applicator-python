@@ -1470,6 +1470,10 @@ def match(
             matches = [m for m in matches if m.score >= min_score]
 
         # Persist scored jobs so they flow into tailor/apply and `status`.
+        # These are rank_jobs results, so a target-role-matched job's `score` is the
+        # preference-ADJUSTED ranking number (by design — the funnel's stored order is the
+        # preference order); `status` therefore shows the boosted score. The pure fit
+        # components (semantic/skill) are stored alongside for anyone who needs unboosted fit.
         # Best-effort: a store hiccup must not sink the computed match results.
         try:
             store = store or _get_jobs_store()  # reuse the funnel-read store when we have one
@@ -1540,8 +1544,10 @@ def match(
                 "\n* no requirements listed — score is semantic-only (coverage not measured)."
             )
         if any(m.target_role for m in matches):
+            # escape() so Rich doesn't parse "[matching]" as a markup tag and swallow it.
             caption += (
-                "\n🎯 title matches a [matching] target_roles rule — score includes its boost."
+                f"\n🎯 title matches a {escape('[matching] target_roles')} rule — "
+                "score includes its boost."
             )
         table = Table(
             title=f"Top {len(matches)} Job Matches",

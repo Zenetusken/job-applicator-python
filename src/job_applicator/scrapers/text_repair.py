@@ -16,12 +16,15 @@ fused list items across bare newlines into skills that were never claimed). Mid-
 newline splits (``Senti\\nnel``) are deliberately left broken: joining them is
 indistinguishable from fusing two legitimate single-word list items.
 
-Both repairs are **gated on a per-document corruption-signature count**: clean documents
-(including legit camelCase like ``JavaScript``/``PowerShell`` and French elision
-``l'expérience``) are returned byte-identical. Measured on the 39-JD funnel: the gate
-fires on 2/39 (the corrupted posting at 27 signatures and one mildly-glued one at 5);
-re-extraction on the repaired text recovered the full SOC skill set (KQL, Sentinel,
-Defender, Purview, Entra ID, SIEM/SOAR, Threat Intelligence) with zero fabrications.
+Both repairs are **gated on a per-document count of one narrow signature** — a letter-led
+``word)Word`` punct-glue (see ``_PUNCT_GLUE``), the only typographically-unambiguous
+missing-space marker. Clean documents (legit camelCase like ``JavaScript``/``PowerShell``,
+French elision ``l'expérience``, lowercase-wrapped bullet lists, ``1.Overview`` numbered
+lists) score 0 and are returned byte-identical. Measured on the 39-JD funnel: the gate
+fires on 2/39 (the corrupted posting at 7 letter-led punct-glues, a mildly-glued one at 5,
+every clean JD ≤1); re-extraction on the repaired text recovered the full SOC skill set
+(KQL, Sentinel, Defender, Purview, Entra ID, SIEM/SOAR, Threat Intelligence) with zero
+fabrications.
 """
 
 from __future__ import annotations
@@ -33,30 +36,35 @@ from job_applicator.utils.logging import get_logger
 logger = get_logger("scrapers.text_repair")
 
 # A lowercase letter/digit + closing punctuation glued straight onto a capital:
-# "ge)Création", "détail.Nous", "client.Participation". Typographically deterministic —
-# no language writes these without a space — so safe to split wherever seen (still gated).
-_PUNCT_GLUE = re.compile(r"([a-zà-öø-ÿ0-9][)\].,;:!?])([A-ZÀ-ÖØ-Þ])")
+# "ge)Création", "détail.Nous", "client.Participation". The lead char is a LETTER, not a
+# digit: `1.Overview` / `2.Details` numbered lists are legit formatting, not corruption, and a
+# digit-led class would trip the gate on them (then split any camelCase in the JD). The real
+# mash is letter-led — measured, the corrupted posting still scores 7 such glues after dropping
+# the digit, well past the gate. This is the ONLY corruption signature: typographically a
+# letter+closing-punct glued onto a capital with no space is unambiguous (no language writes it).
+_PUNCT_GLUE = re.compile(r"([a-zà-öø-ÿ][)\].,;:!?])([A-ZÀ-ÖØ-Þ])")
 
 # A lowercase letter glued straight onto a capital: "SentinelKQL" → "Sentinel KQL",
 # "détectionExpérience". AMBIGUOUS in general (JavaScript, PowerShell, OneDrive are legit
-# camelCase), which is exactly why this only ever runs on documents already proven
-# corrupted by the signature gate — on those, recovering mashed content outweighs
-# perturbing the odd product name.
+# camelCase), which is exactly why this is NOT a gate signal and only ever RUNS on documents
+# already proven corrupted by the punct-glue gate — on those, recovering mashed content
+# outweighs perturbing the odd product name. (An earlier build also counted mid-word newline
+# splits `[a-z]\n[a-z]` as a signature; that matched ordinary lowercase line-wraps, tripped the
+# gate on clean JDs, and camel-split their `JavaScript`/`PowerShell` — the exact skill-loss this
+# feature prevents. Removed: the punct-glue is the one clean, unambiguous signal.)
 _CAMEL_GLUE = re.compile(r"([a-zà-öø-ÿ])([A-ZÀ-ÖØ-Þ])")
 
-# A newline splitting a word in half ("Senti\nnel", "Langua\nge") — counted as a
-# corruption signature (a block boundary never lands mid-word in sane markup) but NEVER
-# repaired: fusing across a newline is the #143 fabrication risk.
-_MIDWORD_NL = re.compile(r"[a-zà-öø-ÿ]\n[a-zà-öø-ÿ]")
-
-#: Signature count at/above which a document is treated as corrupted. Funnel-measured:
-#: the corrupted posting scored 27, a mildly-glued one 5, every clean JD ≤1.
+#: Signature count at/above which a document is treated as corrupted. Funnel-measured: the two
+#: corrupted postings score 7 and 5 letter-led punct-glues, every clean JD ≤1.
 CORRUPTION_GATE = 3
 
 
 def corruption_signatures(text: str) -> int:
-    """Count glued-word signatures in ``text`` (punct-glue + mid-word newline splits)."""
-    return len(_PUNCT_GLUE.findall(text)) + len(_MIDWORD_NL.findall(text))
+    """Count corruption signatures — letter-led punct-glue (`word)Word`) runs, the one
+    unambiguous missing-space marker. Mid-word newline splits (`Senti\\nnel`) are NOT counted:
+    they're indistinguishable from ordinary lowercase line-wraps, which would false-trip the
+    gate and mangle clean camelCase."""
+    return len(_PUNCT_GLUE.findall(text))
 
 
 def repair_glued_text(text: str, *, gate: int = CORRUPTION_GATE) -> str:
