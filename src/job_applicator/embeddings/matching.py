@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass
 
-from job_applicator.config import EmbeddingConfig, LLMConfig
+from job_applicator.config import EmbeddingConfig, LLMConfig, MatchingConfig
 from job_applicator.embeddings.service import EmbeddingService, EmbeddingVector
 from job_applicator.embeddings.skill_extraction import LLMSkillExtractor
 from job_applicator.models import JobListing, ResumeData, coverage_measured
@@ -18,7 +19,12 @@ logger = get_logger("embeddings.matching")
 
 @dataclass
 class MatchResult:
-    """Result of matching a resume to a job."""
+    """Result of matching a resume to a job.
+
+    ``target_role``: the name of the ``[matching] target_roles`` rule whose title pattern
+    matched this job (None when no rule matched / none configured). When set, ``score``
+    includes that rule's ranking boost — a declared PREFERENCE signal, distinct from the
+    fit-based ``semantic_score``/``skill_score`` which are never adjusted."""
 
     job: JobListing
     score: float
@@ -27,6 +33,7 @@ class MatchResult:
     matched_skills: list[str]
     missing_skills: list[str]
     summary: str
+    target_role: str | None = None
 
 
 @dataclass
@@ -54,6 +61,7 @@ class JobMatcher:
         reporter: VerboseReporter | None = None,
         *,
         grounding_mode: str = "evidence_span",
+        matching: MatchingConfig | None = None,
     ) -> None:
         self._config = embedding_config
         self._service = EmbeddingService(embedding_config)
@@ -62,6 +70,24 @@ class JobMatcher:
         )
         self._runtime = runtime
         self._reporter = reporter
+        # Compile the declared target-role rules once (ordered — FIRST match wins). The
+        # config validator already rejected bad regexes at load; IGNORECASE matches titles
+        # like "AI Safety Expert - Red Team" / "Analyste en gestion des identités".
+        self._target_rules: list[tuple[str, re.Pattern[str], float]] = [
+            (rule.name, re.compile(rule.title_pattern, re.IGNORECASE), rule.boost)
+            for rule in (matching.target_roles if matching else [])
+        ]
+
+    def _apply_target_boost(self, title: str, score: float) -> tuple[float, str | None]:
+        """Apply the first matching ``[matching] target_roles`` rule to a combined score.
+
+        Returns ``(boosted score clamped to 1.0, rule name)`` on a title match, or the
+        score unchanged with ``None``. Ranking-only: callers must never feed the boosted
+        score back into fit measures (semantic/skill stay pure)."""
+        for name, pattern, boost in self._target_rules:
+            if pattern.search(title):
+                return min(1.0, score + boost), name
+        return score, None
 
     def embed_text(self, text: str, prefix: str = "") -> EmbeddingVector:
         """Generate embedding for text with optional query prefix.
@@ -208,6 +234,7 @@ class JobMatcher:
 
         # Combined score: 60% semantic + 40% skill coverage (semantic-only when skill is unknown)
         score, skill_score = self._combined_score(semantic_score, matched_skills, missing_skills)
+        score, target_role = self._apply_target_boost(job.title, score)
 
         # Generate summary
         summary = self._generate_match_summary(score, matched_skills, missing_skills)
@@ -220,6 +247,7 @@ class JobMatcher:
             matched_skills=matched_skills,
             missing_skills=missing_skills,
             summary=summary,
+            target_role=target_role,
         )
 
     async def rank_jobs(
@@ -267,6 +295,7 @@ class JobMatcher:
             )
             # Combined score: 60% semantic + 40% skill coverage (semantic-only when unknown)
             score, skill_score = self._combined_score(semantic_score, matched, missing)
+            score, target_role = self._apply_target_boost(job.title, score)
             summary = self._generate_match_summary(score, matched, missing)
 
             matches.append(
@@ -278,6 +307,7 @@ class JobMatcher:
                     matched_skills=matched,
                     missing_skills=missing,
                     summary=summary,
+                    target_role=target_role,
                 )
             )
 

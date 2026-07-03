@@ -119,10 +119,10 @@ Vocabulary Level: {style.vocabulary_level}
 Paragraph Style: {style.paragraph_style}
 
 Key Phrases (characteristic of this style):
-  • {chr(10) + '  • '.join(style.key_phrases) if style.key_phrases else '(none)'}
+  • {chr(10) + "  • ".join(style.key_phrases) if style.key_phrases else "(none)"}
 
 Phrases to AVOID (not used in this style):
-  • {chr(10) + '  • '.join(style.avoid_phrases) if style.avoid_phrases else '(none)'}
+  • {chr(10) + "  • ".join(style.avoid_phrases) if style.avoid_phrases else "(none)"}
 
 Formatting Notes: {style.formatting_notes}
 

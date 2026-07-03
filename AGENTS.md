@@ -27,7 +27,7 @@ ruff format src/ tests/
 # Release (see RELEASING.md)
 bash scripts/release.sh <version>   # bump version, update CHANGELOG.md, tag, build dist
 
-# Tests — ~1329 fast unit tests (the green gate); ~1387 total = ~1329 unit + 23 integration + 35 live
+# Tests — ~1360 fast unit tests (the green gate); ~1418 total = ~1360 unit + 23 integration + 35 live
 pytest -m unit -v               # or: pytest tests/unit/ -v   (auto-marked by location)
 pytest -m unit -v -k test_name  # single test
 
@@ -286,7 +286,7 @@ that generate cover letters. The default dry-run `apply` does not run the ATS pr
 ## Testing
 
 - Tests are auto-marked by location (`tests/conftest.py`): `pytest -m unit` / `-m live` /
-  `-m integration` all work. Unit suite (`pytest -m unit`, ~1329) is fast — no browser/GPU; the green
+  `-m integration` all work. Unit suite (`pytest -m unit`, ~1360) is fast — no browser/GPU; the green
   gate.
 - 23 integration tests live in `tests/integration/` and exercise cross-component seams with no
   vLLM/GPU: board browser-policy wiring, PDF rendering, the apply-loop + batch-loop against a real

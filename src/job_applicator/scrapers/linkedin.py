@@ -27,6 +27,7 @@ from job_applicator.exceptions import (
 )
 from job_applicator.models import JobBoard, JobListing, SessionHealth
 from job_applicator.scrapers.base import BaseScraper, SearchParams
+from job_applicator.scrapers.text_repair import repair_glued_text
 from job_applicator.utils.cookies import load_cookies, save_cookies
 from job_applicator.utils.logging import get_logger
 from job_applicator.utils.retry import async_retry
@@ -708,7 +709,9 @@ def _clean_title(raw: str) -> str:
 
 def _clean_description(raw: str) -> str:
     """Clean LinkedIn job description — remove prefixes and noise."""
-    text = raw
+    # Corruption-gated glued-word repair FIRST (upstream rich-text mash — see text_repair);
+    # clean descriptions pass through byte-identical.
+    text = repair_glued_text(raw)
     # Strip "About the job" prefix
     for prefix in ("About the job\n\n", "About the job\n"):
         if text.startswith(prefix):

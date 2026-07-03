@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Target-role preference boosts** (`[[matching.target_roles]]`). Declared role families — a
+  title regex + a boost — lift preference-important jobs the CV is lexically far from (measured:
+  an AI-red-team and an IAM posting ranked below the review floor on an SOC CV; embedding
+  interest-terms could NOT discriminate them from decoys, deterministic title patterns fired with
+  zero false tags). Ranking-only: the boost never enters generated documents; fit scores
+  (semantic/skill) stay pure. First match wins, clamp at 1.0; tagged 🎯 in the `match` table and
+  as `target_role` in `match --json`. The boosted score is what `match` persists — the stored
+  ranking is the preference-adjusted one. Gold-set validation: Spearman +0.736 → **+0.852**,
+  0 missed-cyber / 0 false-positives at the fixed review floor.
+- **Matching regression harness** (`scripts/eval_matching.py`). Scores the labeled gold set
+  (`~/.job-applicator/matching-eval/`, personal data, not in the repo) through the LIVE pipeline —
+  embeddings + extraction + boosts — and fails (exit 1) when Spearman drops below the STRONG bar
+  or a non-security job crosses the fixed review floor. Run it whenever matching logic changes.
+
 - **`status` now shows which search surfaced each job.** The stored `source_query` (previously
   captured but never displayed) is surfaced as a **Found via** column in the `status` table, a
   `source_query` field in `status --json`, and a `· via 'X'` note on the TUI job card — so you can
@@ -45,6 +59,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a real stale-config CV that had silently mis-scored the whole funnel.
 
 ### Fixed
+- **Glued-word repair for corrupted postings** (`scrapers/text_repair.py`). Some postings arrive
+  with words mashed together (`Senti\nnelKQL`, `ge)Création`) — the board's own rich-text markup
+  is misaligned mid-word (verified live in two render paths; not an extraction bug). The
+  evidence-span verifier rightly refused those glued spans, silently costing real skills (KQL,
+  Microsoft Security (E5)) on the best-fit posting. Both scrapers now apply a corruption-GATED
+  space-insertion repair (split-only — it can never fuse two tokens into a fabricated skill;
+  mid-word line breaks stay broken on purpose). Clean descriptions pass byte-identical; measured:
+  gate fires on 2/39 real JDs, recovery = the full SOC skill set on the corrupted posting.
 - **`match` is now reproducible.** Skill extraction is a factual task, but the extractor inherited
   the `[llm]` temperature (0.7, tuned for cover-letter prose), so the same JD grounded different
   skills across runs and match scores wandered. It now runs extraction at temperature 0 (greedy) —

@@ -31,19 +31,22 @@ not built; the genuine residual — surfacing the **tailored ATS + a contact gre
 interactive `tailor` view (defense-in-depth) — shipped in **PR #126**. (ATS-on-tailored already
 existed in the verbose/batch paths.) A textbook "fix the cause, not the symptom" outcome.
 
-**Next arc — matching re-validation (ACTIVE, empirics + USER-gated).** Are the hardcoded 0.75
-skill-match threshold + 60/40 semantic/skill blend (tuned on the OLD skills-less CV) still
-calibrated on the corrected SOC CV — and should MATCHING consume the now-populated `experience`
-(guarded off in #134)? The gold set must be **Drei's own relevance labels** (an auto-proxy would
-just test "does the embedding agree with a keyword matcher" — circular), scoped to the boundary band
-(~0.5–0.85, the region that moves the 0.75 cutoff) + his revealed preference (tailored/cover-letter
-jobs). Ranking-quality is the FIRST measurement (test the "relative ranking is sound" claim);
-threshold/blend + the experience-consumption paired experiment only if ranking shows a fixable gap.
-The one remaining input is a fresh, clean scrape — his funnel was stale day-1 data (to be
-wiped+refilled). The scraper is now READY for it: volume-disciplined (#138), **geo-correct** (#140
-geoId — measured 89% off-geo → 7/7 Montréal), **high-yield** (#140 two-pass card iteration), and
-bare `match` **reads the funnel** (#141) — all landed via the meta-test fix arc (see Shipped). So
-the next concrete step is the re-scrape → Drei's boundary-band labels → the ranking measurement.
+**Matching re-validation arc — COMPLETE (verdict 2026-07-03, see Shipped).** The question was
+whether the hardcoded 0.75 skill threshold + 60/40 blend (tuned on the OLD skills-less CV) still
+rank correctly on the corrected SOC CV. Measured on a 44-job labeled gold set (Drei's 0–4 graded
+rubric: 4 cyber · 3 admin+sec · 2 admin · 1 other-IT): **ranking is SOUND** — Spearman +0.736,
+monotone tier means, zero false-positives above the ~0.47 review floor — so per the pre-committed
+plan **no threshold/blend retune** (0.75 vindicated: `LDAP~Nmap` cosine 0.703 shows the
+same-domain noise floor right under it) and the experience-consumption experiment stays parked
+(guarded off at `matching.py:110`). The three findings it DID surface each shipped: a
+corruption-gated **glued-text repair** (the one mash-corrupted posting was the best-fit role,
+deflated onto the cutoff), **`[[matching.target_roles]]` preference boosts** (AI-red-team + IAM
+are preference-important but lexically far from an SOC CV — fit was honest, preference needed its
+own declared, ranking-only signal; embedding interest-terms measured UNDISCRIMINATING, title
+patterns fired with zero false tags), and a small sysadmin boost separating admin from support
+(tier gap +0.010 → +0.052). Post-ship, end-to-end through the live pipeline: **Spearman +0.852,
+0 missed-cyber / 0 false-positives at the fixed floor**; `scripts/eval_matching.py` is the
+standing regression harness for any future matcher change.
 
 Also open: **selector health (#12)** — measured MOSTLY-DONE (the critical apply selectors already
 fail loud; a proactive registry is out-of-scope) — and the deferred **employment-gap detection**
@@ -51,6 +54,25 @@ fail loud; a proactive registry is out-of-scope) — and the deferred **employme
 experience/education (#14)** — resolved, see Shipped.)
 
 ## Shipped
+
+- **Matching re-validation arc — verdict + the preference layer** (gold set 2026-07-02, ships
+  2026-07-03). Drei's 0–4 graded labels over the 44-job funnel answered the calibration question:
+  **ranking SOUND (Spearman +0.736), 0.75/60-40 stays, experience-consumption stays parked.** The
+  three findings it surfaced each became a fix: **(1) glued-text repair** (`scrapers/text_repair.py`,
+  corruption-gated space-insertion, both boards; the one mash-corrupted posting was the best-fit
+  Sentinel SOC role sitting exactly on the review cutoff — repaired + funnel backfilled, full SOC
+  skill set recovered); **(2) `[[matching.target_roles]]`** — declared, ranking-only title-pattern
+  boosts rescuing preference-important families the CV is lexically far from (AI-red-team 0.355→
+  0.505, IAM 0.377→0.526; embedding interest-terms measured UNDISCRIMINATING — a true red-team job
+  0.635 vs support-at-a-security-vendor 0.636 — while title patterns fired 2/44 with zero false
+  tags; fit scores stay pure, boost never enters documents); **(3) sysadmin ordering boost** (+0.04
+  → tier-2/1 gap +0.010→+0.052; the collapse itself was HONEST fit — an SOC CV covers ~0 admin
+  stack). End-to-end after ship: **Spearman +0.852, 0 missed-cyber / 0 FP at the fixed 0.469
+  floor**; `scripts/eval_matching.py` (STRONG-bar + fixed-floor teeth, exit 1 on regression) is the
+  standing gate for matcher changes. Method note: the labels are Claude-applied under Drei's rubric
+  (title+JD evidence only, never scores; per-row rationale + veto path in
+  `~/.job-applicator/matching-eval/labels-rationale.md`), robustness-checked (Spearman 0.72–0.76
+  under all judgment-call flips).
 
 - **Meta-test fix arc — dogfooding the search flow found (+ fixed) 5 real bugs** (PRs #140–#141,
   2026-07-01). Driving the actual CLI end-to-end on the REAL LinkedIn session (Drei's ask: "meta-test
@@ -237,25 +259,21 @@ experience/education (#14)** — resolved, see Shipped.)
   skills across runs). (c) **Duplicate-posting dedup — SHIPPED #146:** the scraper canonicalizes each
   LinkedIn job URL to its `/jobs/view/<id>` identity, stripping the tracking params that made one job
   store as many rows (measured on a re-scrape: 92 phantom-heavy rows → **44 unique**, ~53% collapsed).
-- **Upstream JD text corruption — missing-space "mash" (NARROW, surfaced by the (a) probe
-  2026-07-02).** A few postings arrive with words glued together — `Microsoft Senti\nnelKQL`,
-  `détail)Nous`, `Langua\nge)Création` — text pasted into LinkedIn from a mangled source and rendered
-  without separators. Our scraper's `inner_text()` on the description container (`linkedin.py:609`) is
-  the CORRECT extraction (better than `text_content()`); it faithfully preserves whatever the DOM
-  renders, so this is **upstream data quality, not a scraper bug**. Measured impact: **2 verified
-  match-relevant skill losses** (`KQL`, `Microsoft Security (E5)` — both dropped because the span
-  abuts a glued word, both absent from that JD's final skill set) concentrated in **one pathological
-  posting** (Consultant – Sécurité & Détection E5/Sentinel, 27 corruption signatures). Reliable-
-  signature spread (excluding legit camelCase like `Ingénierie`): only **2/39 JDs clearly corrupted,
-  4/39 with ≥1** — NOT systemic (a lower bound: the reliable filter excludes space-less `lowerUpper`
-  glues to dodge `JavaScript` false positives, so a no-newline `SentinelKQL` mash goes uncounted).
-  NB the blast landed on a HIGH-value target — the corrupted posting is a Microsoft-Sentinel SOC
-  role, and with 27 signatures its *embedding* (the 60% semantic term) is also computed on garbled
-  text, so that JD's whole match score — not just skill coverage — is unreliable. Deferred: a guarded
-  de-mash normalization (repair `word)Word` +
-  mid-word newline splits) is LOW priority — narrow blast radius, and aggressive splitting risks
-  fabricating skills (`JavaScript` → `Java Script`), which the honesty layer forbids. Re-measure if a
-  future scrape shows the corruption widening.
+- **Upstream JD text corruption — missing-space "mash" (surfaced 2026-07-02 → FIXED 2026-07-03,
+  see Shipped).** A few postings arrive with words glued together — `Microsoft Senti\nnelKQL`,
+  `Langua\nge)Création` — the board's OWN rich-text markup misaligned mid-word (verified live: the
+  DOM carries a text node reading `nelKQL (Kusto Query Langua` identically in the search panel and
+  the full job view; `inner_text()` is the faithful reading, not a scraper bug). Impact was 2
+  verified skill losses (`KQL`, `Microsoft Security (E5)`) on ONE pathological posting — which was
+  the best-fit Microsoft-Sentinel SOC role, its whole score deflated onto the review cutoff. The
+  initial deferral ("narrow blast radius, fabrication risk") was reversed when Drei prioritized it;
+  the shipped fix threads the needle: `scrapers/text_repair.py` applies **space-INSERTION-only**
+  repair (splits can't fabricate compound skills — the #143 failure) **gated on a per-document
+  corruption-signature count** (clean JDs pass byte-identical; legit `JavaScript` camelCase and
+  `l'expérience` elision untouched), and mid-word newline splits stay broken on purpose (fusing is
+  indistinguishable from fusing two list items). Measured: gate fires 2/39; re-extraction on the
+  repaired posting recovered the full SOC stack (KQL, Sentinel, Defender, Purview, Entra ID,
+  SIEM/SOAR, Threat Intelligence) with zero fabrications. Funnel rows backfilled in place.
 - **Employment-GAP detection — the real HR red flag (not built; now UNBLOCKED).** `ResumeDateValidator`
   claimed "gap detection" in its docstring but never implemented it (corrected in #129). Unexplained
   employment gaps are the genuine signal a date check should surface. Its two preconditions are now
