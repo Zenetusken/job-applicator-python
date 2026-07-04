@@ -103,7 +103,7 @@ Applicant Profile:
 Name: {SAMPLE_USER.first_name} {SAMPLE_USER.last_name}
 Email: {SAMPLE_USER.email}
 Summary: {SAMPLE_RESUME.summary}
-Skills: {', '.join(SAMPLE_RESUME.skills)}
+Skills: {", ".join(SAMPLE_RESUME.skills)}
 
 Generate a compelling cover letter (3-4 paragraphs) that:
 1. Opens with enthusiasm for the role
@@ -119,7 +119,10 @@ Keep it professional but personable."""
         api_base=config.api_base,
         api_key=config.api_key,
         messages=[
-            {"role": "system", "content": "You are a professional cover letter writer. Write concise, compelling cover letters. Do not include thinking process or reasoning steps in your output."},
+            {
+                "role": "system",
+                "content": "You are a professional cover letter writer. Write concise, compelling cover letters. Do not include thinking process or reasoning steps in your output.",
+            },
             {"role": "user", "content": prompt},
         ],
         max_tokens=1024,
@@ -130,6 +133,7 @@ Keep it professional but personable."""
 
     # Strip thinking process if present
     from job_applicator.documents.cover_letter import strip_thinking_process
+
     cover_letter = strip_thinking_process(cover_letter)
 
     return cover_letter
@@ -161,7 +165,10 @@ async def main():
             ("Company name", REAL_JOB.company in cover_letter),
             ("Job title", "Python" in cover_letter),
             ("Applicant name", SAMPLE_USER.first_name in cover_letter),
-            ("Skills mentioned", any(skill in cover_letter for skill in ["FastAPI", "Python", "backend"])),
+            (
+                "Skills mentioned",
+                any(skill in cover_letter for skill in ["FastAPI", "Python", "backend"]),
+            ),
         ]
 
         print("\nVerification:")

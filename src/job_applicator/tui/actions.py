@@ -274,7 +274,11 @@ async def _score_jobs(settings: AppSettings, jobs: list[JobListing]) -> list[Mat
     resume = await asyncio.to_thread(ResumeLoader().load, settings.resume_path)
     runtime = _make_runtime(settings, name="tui-score")
     matcher = JobMatcher(
-        settings.embedding, settings.llm, runtime, grounding_mode=settings.skills.grounding_mode
+        settings.embedding,
+        settings.llm,
+        runtime,
+        grounding_mode=settings.skills.grounding_mode,
+        matching=settings.matching,
     )
     return await matcher.rank_jobs(resume, jobs, len(jobs))
 

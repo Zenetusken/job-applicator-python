@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 class SimpleResponse(BaseModel):
     """Simple structured output for testing."""
+
     answer: str = Field(description="The answer to the question")
     confidence: float = Field(description="Confidence level 0-1")
 
@@ -25,9 +26,7 @@ async def test_litellm_direct():
         model=f"openai/{config.model}",
         api_base=config.api_base,
         api_key=config.api_key,
-        messages=[
-            {"role": "user", "content": "Reply with just 'OK'"}
-        ],
+        messages=[{"role": "user", "content": "Reply with just 'OK'"}],
         max_tokens=5,
     )
     print(f"Response: {response.choices[0].message.content}")

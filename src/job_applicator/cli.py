@@ -1461,6 +1461,7 @@ def match(
                 runtime,
                 reporter=reporter,
                 grounding_mode=settings.skills.grounding_mode,
+                matching=settings.matching,
             )
             matches = await matcher.rank_jobs(resume_data, jobs, top_k=top_k)
 
@@ -1469,6 +1470,10 @@ def match(
             matches = [m for m in matches if m.score >= min_score]
 
         # Persist scored jobs so they flow into tailor/apply and `status`.
+        # These are rank_jobs results, so a target-role-matched job's `score` is the
+        # preference-ADJUSTED ranking number (by design — the funnel's stored order is the
+        # preference order); `status` therefore shows the boosted score. The pure fit
+        # components (semantic/skill) are stored alongside for anyone who needs unboosted fit.
         # Best-effort: a store hiccup must not sink the computed match results.
         try:
             store = store or _get_jobs_store()  # reuse the funnel-read store when we have one
@@ -1510,6 +1515,7 @@ def match(
                     "semantic_score": round(m.semantic_score, 4),
                     "skill_score": round(m.skill_score, 4),
                     "coverage_measured": coverage_measured(m.matched_skills, m.missing_skills),
+                    "target_role": m.target_role,
                     "title": m.job.title,
                     "company": m.job.company,
                     "url": str(m.job.url),
@@ -1537,6 +1543,12 @@ def match(
             caption += (
                 "\n* no requirements listed — score is semantic-only (coverage not measured)."
             )
+        if any(m.target_role for m in matches):
+            # escape() so Rich doesn't parse "[matching]" as a markup tag and swallow it.
+            caption += (
+                f"\n🎯 title matches a {escape('[matching] target_roles')} rule — "
+                "score includes its boost."
+            )
         table = Table(
             title=f"Top {len(matches)} Job Matches",
             caption=caption,
@@ -1559,10 +1571,13 @@ def match(
             score_cell = f"[{score_style}]{match.score:.0%}[/{score_style}]"
             if not coverage_measured(match.matched_skills, match.missing_skills):
                 score_cell += "[dim]*[/dim]"
+            title_cell = match.job.title
+            if match.target_role:
+                title_cell = f"🎯 {title_cell} [dim]({match.target_role})[/dim]"
             table.add_row(
                 str(i),
                 score_cell,
-                match.job.title,
+                title_cell,
                 match.job.company,
                 ", ".join(match.matched_skills[:3]) or "-",
                 ", ".join(match.missing_skills[:3]) or "-",
@@ -1657,6 +1672,7 @@ def rescore(
                 runtime,
                 reporter=reporter,
                 grounding_mode=settings.skills.grounding_mode,
+                matching=settings.matching,
             )
             matches = await matcher.rank_jobs(resume_data, jobs, top_k=len(jobs))
 
@@ -2084,6 +2100,7 @@ def batch(
             runtime,
             reporter=reporter,
             grounding_mode=settings.skills.grounding_mode,
+            matching=settings.matching,
         )
         with err_console.status("Computing match scores..."):
             matches = await matcher.rank_jobs(resume_data, jobs, top_k=top_k)
@@ -2759,6 +2776,7 @@ def tailor(
                 runtime,
                 reporter=reporter,
                 grounding_mode=settings.skills.grounding_mode,
+                matching=settings.matching,
             )
             with err_console.status("Computing match score..."):
                 pre_match = await matcher.match_resume_to_job(resume_data, job)
@@ -3095,6 +3113,16 @@ temperature = __LLM_TEMPERATURE__
 # model = "gpt-4o"
 # api_base = "https://api.openai.com/v1"
 # api_key = "sk-..."
+
+# Optional: declared target-role families — a RANKING-ONLY preference boost (never enters
+# generated documents). A job whose TITLE matches title_pattern (regex, case-insensitive,
+# ordered — first match wins) gets `boost` added to its match score (clamped to 1.0) and is
+# tagged in `match` output. Use a big boost to rescue role families your CV is lexically far
+# from, a small one to order same-fit families.
+# [[matching.target_roles]]
+# name = "red-team"
+# title_pattern = "\\\\bred[ -]?team\\\\b|\\\\bai safety\\\\b"
+# boost = 0.15
 
 # Targets
 [target]

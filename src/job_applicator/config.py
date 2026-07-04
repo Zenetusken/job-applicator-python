@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -120,6 +120,57 @@ class SkillConfig(BaseSettings):
     grounding_mode: Literal["keyword", "evidence_span"] = "evidence_span"
 
 
+class TargetRoleRule(BaseModel):
+    """One declared target-role family: a job-title pattern and its ranking boost.
+
+    A RANKING-ONLY preference signal — it never enters generated documents (no honesty
+    surface). Deterministic title regex, not embeddings: measured on the 44-job gold set
+    (2026-07-02), embedding interest against role phrases was UNDISCRIMINATING within-domain
+    (a true AI-red-team job scored 0.635 vs 0.636 for support-at-a-security-vendor), while
+    title patterns fired on exactly the intended rows with zero false tags.
+    """
+
+    name: str
+    title_pattern: str
+    boost: float = Field(default=0.10, ge=0.0, le=0.5)
+
+    @field_validator("title_pattern")
+    @classmethod
+    def _pattern_compiles(cls, v: str) -> str:
+        """Fail at config load (typed ConfigError via _get_settings), not at first match."""
+        import re
+
+        try:
+            re.compile(v, re.IGNORECASE)
+        except re.error as exc:
+            raise ValueError(f"invalid title_pattern regex {v!r}: {exc}") from exc
+        return v
+
+    @field_validator("name")
+    @classmethod
+    def _name_nonempty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("target role name must be non-empty")
+        return v.strip()
+
+
+class MatchingConfig(BaseSettings):
+    """Ranking-preference knobs layered over the fit score.
+
+    ``target_roles``: ordered rules (FIRST match wins); a job whose TITLE matches gets
+    ``boost`` added to its combined score (clamped to 1.0) and carries the rule's name as
+    ``MatchResult.target_role``. Use it to rescue preference-important role families the
+    CV is lexically far from (measured: AI-red-team / IAM ranked below the review floor on
+    an SOC CV — fit is honest, preference needs its own signal), or to order same-fit
+    families (a small sysadmin boost separates admin from help-desk). The boosted score is
+    what ``match`` persists to the funnel — the stored ranking IS the preference-adjusted
+    one."""
+
+    model_config = SettingsConfigDict(env_prefix="JOB_APPLICATOR_MATCHING_")
+
+    target_roles: list[TargetRoleRule] = Field(default_factory=list)
+
+
 class TargetConfig(BaseSettings):
     """Job board target settings."""
 
@@ -190,6 +241,7 @@ class AppSettings(BaseSettings):
     llm_resilience: LLMResilienceConfig = Field(default_factory=LLMResilienceConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     skills: SkillConfig = Field(default_factory=SkillConfig)
+    matching: MatchingConfig = Field(default_factory=MatchingConfig)
     target: TargetConfig = Field(default_factory=TargetConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
     cover_letter: CoverLetterConfig = Field(default_factory=CoverLetterConfig)

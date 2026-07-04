@@ -32,6 +32,7 @@ from job_applicator.config import AppSettings
 from job_applicator.exceptions import NavigationError, ScraperError
 from job_applicator.models import JobBoard, JobListing, SessionHealth
 from job_applicator.scrapers.base import BaseScraper, BrowserPolicy, SearchParams
+from job_applicator.scrapers.text_repair import repair_glued_text
 from job_applicator.utils.cookies import load_cookies
 from job_applicator.utils.logging import get_logger
 from job_applicator.utils.path import set_owner_only
@@ -58,6 +59,9 @@ def _is_indeed_host(host: str) -> bool:
 def _clean_description(raw: str) -> str:
     """Tidy an Indeed description/snippet: collapse runs of blank lines and trim. Kept light
     on purpose — the matcher/ATS want the text, not heavy reformatting."""
+    # Corruption-gated glued-word repair FIRST (upstream rich-text mash — see text_repair);
+    # clean descriptions pass through byte-identical.
+    raw = repair_glued_text(raw)
     lines = [line.rstrip() for line in raw.replace("\r\n", "\n").split("\n")]
     out: list[str] = []
     blanks = 0
