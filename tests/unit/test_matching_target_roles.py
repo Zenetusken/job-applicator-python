@@ -188,6 +188,17 @@ class TestCalibrationPatterns:
             ),
             boost=0.04,
         ),
+        TargetRoleRule(
+            # Added 2026-07-03 on the extended 73-job set: GRC/risk roles are label-4 but
+            # lexically far from a SOC-ops CV (measured buried below the review floor). Rescues
+            # them (Spearman +0.827→+0.859, 0 false tags on the set). Deliberately BROAD — a bare
+            # "risk" title matches, because in this cyber-focused funnel "risk" ⇒ cyber-risk; a
+            # future non-security "risk"/"compliance" title would be a visible, vetoable ranking
+            # nudge, never a correctness issue (boost is ranking-only).
+            name="risk-grc",
+            title_pattern=r"\brisk\b|\brisques?\b|\bGRC\b",
+            boost=0.15,
+        ),
     ]
 
     @pytest.mark.parametrize(
@@ -198,12 +209,16 @@ class TestCalibrationPatterns:
             ("Windows System Administrator", "sysadmin"),
             ("Administrateur Middleware", "sysadmin"),
             ("Network Administrator", "sysadmin"),
+            ("Cybersecurity Risk Management Analyst", "risk-grc"),
+            ("Analyste en gestion des risques technologiques", "risk-grc"),
+            ("GRC Analyst", "risk-grc"),
             # decoys — semantically adjacent titles that must NOT fire:
             ("Architecte de solution IA", None),
             ("Technical Support Specialist (Bilingual-French)", None),
             ("Ingénieur de données", None),
-            ("Security Operations Center Analyst", None),  # already ranks on fit
+            ("Security Operations Center Analyst", None),  # ranks on fit; not a risk title
             ("Gestionnaire des incidents", None),  # ITSM masquerade
+            ("Security Compliance Lead", None),  # risk-grc is risk/GRC-scoped, not "compliance"
         ],
     )
     def test_calibration_firing(self, title: str, expected: str | None) -> None:
