@@ -56,12 +56,20 @@ class DocumentError(JobApplicatorError):
     """Document loading or parsing error."""
 
 
+class TailorIntegrityError(DocumentError):
+    """A non-interactive tailoring run produced a draft that failed integrity checks."""
+
+
 class ResumeNotFoundError(DocumentError):
     """Resume file not found."""
 
 
 class CoverLetterError(DocumentError):
     """Cover letter generation error."""
+
+
+class CoverLetterGroundingError(CoverLetterError):
+    """Cover letter grounding verification failed or found unsupported claims."""
 
 
 class PDFRenderError(DocumentError):

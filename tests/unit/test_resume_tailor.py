@@ -14,6 +14,7 @@ from job_applicator.documents.resume_tailor import (
     ResumeTailor,
     parse_sections,
 )
+from job_applicator.embeddings.matching import MatchResult
 from job_applicator.exceptions import GroundingUnavailableError
 from job_applicator.models import (
     ClaimCheck,
@@ -36,6 +37,22 @@ def _tr(text: str) -> TailoredResume:
         skill_score=0.5,
         changes_summary="",
     )
+
+
+def _mock_matcher(job: JobListing) -> MagicMock:
+    matcher = MagicMock()
+    matcher.match_resume_to_job = AsyncMock(
+        return_value=MatchResult(
+            job=job,
+            score=0.72,
+            semantic_score=0.5,
+            skill_score=0.3,
+            matched_skills=["Windows"],
+            missing_skills=["ServiceNow"],
+            summary="Good match",
+        )
+    )
+    return matcher
 
 
 async def test_verify_tailored_attaches_report_for_review() -> None:
@@ -195,7 +212,9 @@ class TestResumeTailor:
             new_callable=AsyncMock,
             return_value=mock_response,
         ):
-            result = await tailor.tailor(sample_resume, sample_job)
+            result = await tailor.tailor(
+                sample_resume, sample_job, matcher=_mock_matcher(sample_job)
+            )
 
         assert isinstance(result, TailoredResume)
         assert result.job_title == "Technical Support Specialist"
@@ -230,7 +249,13 @@ class TestResumeTailor:
             new_callable=AsyncMock,
             return_value=mock_response,
         ):
-            result = await tailor.refine(sample_resume, initial, "Add more detail", sample_job)
+            result = await tailor.refine(
+                sample_resume,
+                initial,
+                "Add more detail",
+                sample_job,
+                matcher=_mock_matcher(sample_job),
+            )
 
         assert result.attempt == 2
         assert result.user_modifications == "Add more detail"
@@ -437,7 +462,7 @@ class TestTailorWithTone:
         with patch(
             "litellm.acompletion", new_callable=AsyncMock, return_value=mock_response
         ) as mock_call:
-            await tailor.tailor(sample_resume, sample_job)
+            await tailor.tailor(sample_resume, sample_job, matcher=_mock_matcher(sample_job))
 
         first_call = mock_call.call_args_list[0]
         assert "TONE:" in str(first_call)
@@ -907,6 +932,7 @@ async def test_refine_passes_style_guide_to_prompt(sample_resume, sample_job):
                 current,
                 "Make it more concise",
                 sample_job,
+                matcher=_mock_matcher(sample_job),
                 style_guide=style,
             )
 

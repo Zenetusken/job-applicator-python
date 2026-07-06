@@ -8,7 +8,6 @@ runtime. The shared ``_detect_tone`` / ``_load_user_profile`` helpers come from
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -38,6 +37,10 @@ if TYPE_CHECKING:
         StyleGuide,
     )
     from job_applicator.utils.llm import LLMRuntime
+
+
+def _write_text_file(path: str | Path, content: str) -> None:
+    Path(path).write_text(content, encoding="utf-8")
 
 
 async def _generate_cover_letter(
@@ -102,14 +105,12 @@ async def _save_cover_letter(
     The primary path is the text path for ``txt``/``both`` and the PDF path for
     ``pdf``. The returned path is what callers record as the cover-letter artifact.
     """
-    output_dir = await asyncio.to_thread(settings.ensure_output_dir)
+    output_dir = settings.ensure_output_dir()
     when = datetime.now()
     effective_category = category or detect_job_category(job)
 
     if output_format == Format.TXT:
-        cl_path, _meta_path = await asyncio.to_thread(
-            write_cover_letter, output_dir, result, when=when
-        )
+        cl_path, _meta_path = write_cover_letter(output_dir, result, when=when)
         result.output_path = cl_path
         console.print(f"\n[green]Cover letter saved: {cl_path}[/green]")
         return Path(cl_path)
@@ -123,7 +124,7 @@ async def _save_cover_letter(
         return pdf_path
 
     # BOTH: generate text + PDF but only one meta sidecar (beside the text file).
-    cl_path, _meta_path = await asyncio.to_thread(write_cover_letter, output_dir, result, when=when)
+    cl_path, _meta_path = write_cover_letter(output_dir, result, when=when)
     result.output_path = cl_path
     pdf_path = await write_cover_letter_pdf(
         output_dir,
@@ -136,9 +137,7 @@ async def _save_cover_letter(
     )
     result.pdf_path = str(pdf_path)
     meta_path = Path(cl_path).with_suffix(".meta.json")
-    await asyncio.to_thread(
-        meta_path.write_text, result.model_dump_json(indent=2), encoding="utf-8"
-    )
+    _write_text_file(meta_path, result.model_dump_json(indent=2))
     console.print(f"\n[green]Cover letter saved: {cl_path}[/green]")
     console.print(f"[green]Cover letter PDF saved: {pdf_path}[/green]")
     return Path(cl_path)

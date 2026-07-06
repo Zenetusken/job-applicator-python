@@ -14,7 +14,7 @@ from job_applicator.documents.grounding_verifier import GroundingVerifier
 from job_applicator.documents.resume import ResumeLoader
 from job_applicator.documents.sign_off import extract_sign_off, validate_sign_off
 from job_applicator.documents.style_analyzer import StyleAnalyzer
-from job_applicator.exceptions import GroundingUnavailableError, LLMError
+from job_applicator.exceptions import CoverLetterGroundingError, GroundingUnavailableError, LLMError
 from job_applicator.models import GroundingReport, JobListing, ResumeData, StyleGuide, UserProfile
 from job_applicator.utils.language import resolve_output_language
 from job_applicator.utils.llm import (
@@ -871,9 +871,9 @@ class CoverLetterGenerator:
         résumé does not support — regenerate ONCE with those claims as a correction, keeping the
         draft with STRICTLY fewer problems. A verifier false positive (its measured precision
         residual) therefore can never strip a grounded claim: a persistent flag keeps the original.
-        Fail-safe (#4): a verifier failure never blocks generation — the deterministic floor inside
-        ``generate`` already ran, so we log and return the floor-validated letter, never reporting
-        it as grounding-verified.
+        Fail-safe (#4): a verifier failure raises a typed cover-letter error rather than returning
+        an unverified draft. Callers can catch it as a requested-but-failed cover letter; real
+        submission paths must not silently send it.
         """
         letter = await self.generate(
             job, user, resume, style_guide, tone_section, tailored_resume_text
@@ -882,7 +882,9 @@ class CoverLetterGenerator:
             report = await self._verifier.verify(letter, resume)
         except GroundingUnavailableError as exc:
             logger.info("Grounding verification skipped (verifier unavailable): %s", exc)
-            return letter
+            raise CoverLetterGroundingError(
+                f"Cover letter grounding verification unavailable: {exc}"
+            ) from exc
         if report.clean:
             return letter
 
@@ -909,7 +911,9 @@ class CoverLetterGenerator:
         try:
             retry_report = await self._verifier.verify(retry, resume)
         except GroundingUnavailableError:
-            return letter
+            raise CoverLetterGroundingError(
+                "Cover letter grounding verification unavailable after retry"
+            ) from None
         kept, kept_report = (
             (retry, retry_report) if score(retry_report) < score(report) else (letter, report)
         )
@@ -923,6 +927,11 @@ class CoverLetterGenerator:
                 "(kept the cleaner draft); review before sending",
                 len(kept_report.unsupported),
                 len(kept_report.coverage_gaps),
+            )
+            raise CoverLetterGroundingError(
+                "Cover letter grounding verification found "
+                f"{len(kept_report.unsupported)} unsupported claim(s) and "
+                f"{len(kept_report.coverage_gaps)} unchecked claim(s) after retry"
             )
         return kept
 
@@ -1025,7 +1034,9 @@ class CoverLetterGenerator:
         async def _regen(correction: str) -> str:
             return await self._complete(user_message + correction)
 
-        return await self._devoice(letter, _regen, user, job=job, resume=resume)
+        refined = await self._devoice(letter, _regen, user, job=job, resume=resume)
+        language = resolve_output_language(self._config.language, job.description)
+        return self._ensure_sign_off(refined, user, language)
 
     def _build_prompt(
         self,

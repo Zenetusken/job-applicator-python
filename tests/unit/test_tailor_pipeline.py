@@ -12,6 +12,7 @@ from job_applicator.config import LLMConfig
 from job_applicator.documents.cover_letter import CoverLetterGenerator, strip_thinking_process
 from job_applicator.documents.resume_tailor import ResumeDateValidator, ResumeTailor
 from job_applicator.documents.tone_detector import ToneDetector, ToneProfile
+from job_applicator.embeddings.matching import MatchResult
 from job_applicator.models import (
     JobBoard,
     JobListing,
@@ -41,6 +42,22 @@ def sample_job() -> JobListing:
         requirements=["Python", "FastAPI", "Docker", "AWS"],
         board=JobBoard.LINKEDIN,
     )
+
+
+def _mock_matcher(job: JobListing) -> MagicMock:
+    matcher = MagicMock()
+    matcher.match_resume_to_job = AsyncMock(
+        return_value=MatchResult(
+            job=job,
+            score=0.75,
+            semantic_score=0.7,
+            skill_score=0.6,
+            matched_skills=["Python"],
+            missing_skills=["AWS"],
+            summary="Good match",
+        )
+    )
+    return matcher
 
 
 @pytest.fixture
@@ -479,7 +496,11 @@ class TestResumeRefine:
             ),
         ):
             result = await tailor.refine(
-                sample_resume, current_tailored, "Add more detail", sample_job
+                sample_resume,
+                current_tailored,
+                "Add more detail",
+                sample_job,
+                matcher=_mock_matcher(sample_job),
             )
 
         assert result.attempt == 2
@@ -505,7 +526,11 @@ class TestResumeRefine:
             ),
         ):
             result = await tailor.refine(
-                sample_resume, current_tailored, "Emphasize API work", sample_job
+                sample_resume,
+                current_tailored,
+                "Emphasize API work",
+                sample_job,
+                matcher=_mock_matcher(sample_job),
             )
 
         assert result.user_modifications == "Emphasize API work"
@@ -530,7 +555,13 @@ class TestResumeRefine:
                 return_value="changes",
             ),
         ):
-            await tailor.refine(sample_resume, current_tailored, "feedback", sample_job)
+            await tailor.refine(
+                sample_resume,
+                current_tailored,
+                "feedback",
+                sample_job,
+                matcher=_mock_matcher(sample_job),
+            )
 
         prompt = mock_llm.call_args[0][0]
         assert "ONLY use these" in prompt or "actual skills" in prompt.lower()
@@ -556,7 +587,13 @@ class TestResumeRefine:
                 return_value="changes",
             ),
         ):
-            result = await tailor.refine(sample_resume, current_tailored, "feedback", sample_job)
+            result = await tailor.refine(
+                sample_resume,
+                current_tailored,
+                "feedback",
+                sample_job,
+                matcher=_mock_matcher(sample_job),
+            )
 
         assert isinstance(result.tailored_text, str)
         assert len(result.tailored_text) > 0

@@ -127,6 +127,38 @@ class TestSectionHeaderChecks:
         assert exp_check["passed"] is False
         assert any("experience" in w.lower() for w in result.warnings)
 
+    def test_french_section_headers_are_recognized(self, checker: ATSChecker) -> None:
+        """French tailored résumés should not fail ATS solely for localized section headers."""
+        resume = ResumeData(
+            raw_text=(
+                "Jean Dupont\n"
+                "jean@example.com\n"
+                "514-555-0199\n"
+                "Résumé\n"
+                "Analyste en cybersécurité avec expérience en opérations SOC et triage.\n"
+                "Compétences\n"
+                "SIEM, EDR, réponse aux incidents, analyse de journaux, réseau TCP/IP\n"
+                "Expérience professionnelle\n"
+                "Analyste SOC, Acme, 2022 - Présent\n"
+                "- Surveillance des alertes et escalade des incidents de sécurité.\n"
+                "Formation\n"
+                "Certificat en cybersécurité opérationnelle, 2024 - Présent\n"
+                "Langues\n"
+                "Français, anglais\n"
+            ),
+            name="Jean Dupont",
+            email="jean@example.com",
+            phone="514-555-0199",
+        )
+
+        result = checker.check(resume)
+
+        assert result.is_compatible
+        assert next(c for c in result.checks if c["name"] == "skills_section")["passed"] is True
+        assert next(c for c in result.checks if c["name"] == "experience_section")["passed"] is True
+        assert next(c for c in result.checks if c["name"] == "education_section")["passed"] is True
+        assert next(c for c in result.checks if c["name"] == "languages_section")["passed"] is True
+
 
 class TestSectionWordBoundary:
     def test_substring_does_not_satisfy_section(self, checker: ATSChecker) -> None:

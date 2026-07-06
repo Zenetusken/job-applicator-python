@@ -460,10 +460,7 @@ class PDFRenderer:
             source_path.unlink(missing_ok=True)
             raise PDFRenderError(f"Failed to create output directory: {exc}") from exc
         try:
-            executor = self._get_executor()
-            await asyncio.get_running_loop().run_in_executor(
-                executor, _compile_typst, source_path, output_path
-            )
+            await self._compile_pdf(source_path, output_path)
         except Exception as exc:
             raise PDFRenderError(
                 f"PDF compilation failed: {exc}", {"source": str(source_path)}
@@ -471,6 +468,12 @@ class PDFRenderer:
         else:
             source_path.unlink(missing_ok=True)
         return output_path
+
+    async def _compile_pdf(self, source_path: Path, output_path: Path) -> None:
+        executor = self._get_executor()
+        await asyncio.get_running_loop().run_in_executor(
+            executor, _compile_typst, source_path, output_path
+        )
 
     def _resume_output_path(self, tailored: TailoredResume, template: str) -> Path:
         now = datetime.now()

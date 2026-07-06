@@ -226,9 +226,7 @@ async def _write_tailored_artifacts(
     the generated PDF.
     """
     if output_format == Format.TXT:
-        resume_path, _meta_path = await asyncio.to_thread(
-            write_tailored, output_dir, tailored, when=when
-        )
+        resume_path, _meta_path = write_tailored(output_dir, tailored, when=when)
         return resume_path, None
 
     if output_format == Format.PDF:
@@ -239,9 +237,7 @@ async def _write_tailored_artifacts(
 
     # BOTH: write text first, then PDF (no PDF-only meta), then update the text
     # sidecar with pdf_path so only one .meta.json is produced.
-    resume_path, meta_path = await asyncio.to_thread(
-        write_tailored, output_dir, tailored, when=when
-    )
+    resume_path, meta_path = write_tailored(output_dir, tailored, when=when)
     pdf_path = await write_tailored_pdf(
         output_dir,
         tailored,
@@ -252,8 +248,13 @@ async def _write_tailored_artifacts(
         write_meta=False,
     )
     tailored.pdf_path = str(pdf_path)
-    await asyncio.to_thread(Path(meta_path).write_text, tailored.model_dump_json(indent=2))
+    _write_text_file(meta_path, tailored.model_dump_json(indent=2))
     return resume_path, str(pdf_path)
+
+
+def _write_text_file(path: str, content: str) -> None:
+    """Write a small local text artifact from synchronous CLI code paths."""
+    Path(path).write_text(content)
 
 
 async def _write_cover_letter_artifacts(
@@ -272,9 +273,7 @@ async def _write_cover_letter_artifacts(
     :func:`_write_tailored_artifacts`.
     """
     if output_format == Format.TXT:
-        cl_path, _meta_path = await asyncio.to_thread(
-            write_cover_letter, output_dir, result, when=when
-        )
+        cl_path, _meta_path = write_cover_letter(output_dir, result, when=when)
         return cl_path, None
 
     if output_format == Format.PDF:
@@ -285,7 +284,7 @@ async def _write_cover_letter_artifacts(
 
     # BOTH: write text first, then PDF (no PDF-only meta), then update the text
     # sidecar with pdf_path so only one .meta.json is produced.
-    cl_path, meta_path = await asyncio.to_thread(write_cover_letter, output_dir, result, when=when)
+    cl_path, meta_path = write_cover_letter(output_dir, result, when=when)
     pdf_path = await write_cover_letter_pdf(
         output_dir,
         result,
@@ -296,7 +295,7 @@ async def _write_cover_letter_artifacts(
         write_meta=False,
     )
     result.pdf_path = str(pdf_path)
-    await asyncio.to_thread(Path(meta_path).write_text, result.model_dump_json(indent=2))
+    _write_text_file(meta_path, result.model_dump_json(indent=2))
     return cl_path, str(pdf_path)
 
 
@@ -1050,7 +1049,11 @@ def apply(
                         )
                     err_console.print(f"[green]Style loaded: {style.tone}[/green]")
                 sem = asyncio.Semaphore(3)
-                output_dir = await asyncio.to_thread(settings.ensure_output_dir)
+                output_dir = (
+                    settings.ensure_output_dir()
+                    if effective_output_format in (Format.PDF, Format.BOTH)
+                    else None
+                )
 
                 async def _gen_one(
                     job: JobListing,
@@ -1062,6 +1065,10 @@ def apply(
                             )
                             pdf_path: str | None = None
                             if effective_output_format in (Format.PDF, Format.BOTH):
+                                if output_dir is None:
+                                    raise DocumentError(
+                                        "Output directory was not initialized for PDF rendering."
+                                    )
                                 when = datetime.now()
                                 cl_result = CoverLetterResult(
                                     job_title=job.title,
@@ -1288,7 +1295,7 @@ def generate_cover_letter(
             job_url=str(job.url),
             cover_letter_text=letter,
         )
-        output_dir = await asyncio.to_thread(settings.ensure_output_dir)
+        output_dir = settings.ensure_output_dir()
         effective_category = category or detect_job_category(job)
         when = datetime.now()
         _text_path, pdf_path = await _write_cover_letter_artifacts(
@@ -2225,8 +2232,7 @@ def batch(
         user_profile = _load_user_profile(settings, resume_name=resume_data.name)
         sem = asyncio.Semaphore(3)
         timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = settings.output_dir
-        await asyncio.to_thread(settings.ensure_output_dir)
+        output_dir = str(settings.ensure_output_dir())
         tailoring_scores: list[tuple[float, float]] = []
         batch_reports: list[TailoringReport] = []
 
@@ -2246,9 +2252,7 @@ def batch(
                 # Mid-job resume: reuse a persisted TAILORED résumé instead of
                 # re-tailoring (a TAILORED job is re-processed on resume so its cover
                 # letter gets generated). Missing/corrupt artifact → re-tailor below.
-                reused = await asyncio.to_thread(
-                    _resume_tailored_resume, batch_state, effective_run_id, str(job.url)
-                )
+                reused = _resume_tailored_resume(batch_state, effective_run_id, str(job.url))
                 if reused is not None:
                     tailored, resume_path_out, meta_path = reused
                     result["match_score"] = round(tailored.match_score, 4)
@@ -2402,9 +2406,7 @@ def batch(
                         result["cover_letter_pdf_path"] = cl_pdf_path
                         result["cover_letter"] = True
                         # Re-write meta.json with cover_letter_path (and pdf_path if set).
-                        await asyncio.to_thread(
-                            Path(meta_path).write_text, tailored.model_dump_json(indent=2)
-                        )
+                        _write_text_file(meta_path, tailored.model_dump_json(indent=2))
                         batch_state.record_job(
                             effective_run_id,
                             job,
@@ -2460,7 +2462,7 @@ def batch(
             "results": list(batch_results),
         }
         summary_path = str(Path(output_dir) / f"batch_summary_{timestamp}.json")
-        await asyncio.to_thread(Path(summary_path).write_text, json.dumps(summary, indent=2))
+        _write_text_file(summary_path, json.dumps(summary, indent=2))
         written_paths.append(summary_path)
 
         if reporter:

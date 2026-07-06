@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 import job_applicator.cli as cli
 from job_applicator.cli import app
 from job_applicator.embeddings.matching import MatchResult
-from job_applicator.models import JobBoard, JobListing
+from job_applicator.models import JobBoard, JobListing, TailoredResume
 
 
 @pytest.fixture
@@ -81,15 +81,21 @@ def style_guide_batch_env(
     matcher.match_resume_to_job = AsyncMock(return_value=match)
 
     tailor = MagicMock()
-    tailored = MagicMock()
-    tailored.tailored_text = "Tailored resume text"
-    tailored.match_score = 0.9
-    tailored.semantic_score = 0.8
-    tailored.skill_score = 0.7
-    tailored.matched_skills = ["Python"]
-    tailored.missing_skills = []
-    tailored.changes_summary = "summary"
+    tailored = TailoredResume(
+        original_path=str(sample_resume_file),
+        tailored_text="Tailored resume text",
+        job_title="Python Developer",
+        job_company="TechCorp",
+        job_url="https://example.com/1",
+        match_score=0.9,
+        semantic_score=0.8,
+        skill_score=0.7,
+        matched_skills=["Python"],
+        missing_skills=[],
+        changes_summary="summary",
+    )
     tailor.tailor = AsyncMock(return_value=tailored)
+    tailor.tailor_verified = AsyncMock(return_value=tailored)
 
     style = MagicMock()
     style.tone = "professional"

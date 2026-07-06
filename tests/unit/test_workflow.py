@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from rich.console import Console
 
+from job_applicator.embeddings.matching import MatchResult
 from job_applicator.models import (
     CoverLetterResult,
     CoverLetterSession,
@@ -863,7 +864,21 @@ class TestRefineStaleScores:
             mock_llm.return_value = "Refined Python developer resume"
             with patch.object(tailor, "_summarize_changes", new_callable=AsyncMock) as mock_changes:
                 mock_changes.return_value = "Refined based on feedback"
-                result = await tailor.refine(original, current, "Add more detail", job)
+                matcher = MagicMock()
+                matcher.match_resume_to_job = AsyncMock(
+                    return_value=MatchResult(
+                        job=job,
+                        score=0.8,
+                        semantic_score=0.75,
+                        skill_score=0.7,
+                        matched_skills=["Python"],
+                        missing_skills=["Django"],
+                        summary="Good match",
+                    )
+                )
+                result = await tailor.refine(
+                    original, current, "Add more detail", job, matcher=matcher
+                )
 
         assert result.attempt == 2
         assert isinstance(result.match_score, float)

@@ -118,6 +118,14 @@ def _failing_compile(source_path: Path, output_path: Path) -> None:
     raise RuntimeError("compile failed")
 
 
+async def _fake_compile_pdf(source_path: Path, output_path: Path) -> None:
+    _fake_compile(source_path, output_path)
+
+
+async def _failing_compile_pdf(source_path: Path, output_path: Path) -> None:
+    _failing_compile(source_path, output_path)
+
+
 @pytest.mark.unit
 async def test_render_resume_calls_compile(app_settings, tmp_path):
     """render_resume formats the résumé and compiles a PDF."""
@@ -132,7 +140,7 @@ async def test_render_resume_calls_compile(app_settings, tmp_path):
         skill_score=0.8,
         changes_summary="emphasized Python",
     )
-    with patch("job_applicator.documents.pdf_renderer._compile_typst", _fake_compile):
+    with patch.object(renderer, "_compile_pdf", _fake_compile_pdf):
         with patch.object(
             renderer, "_format_resume_with_instructor", new_callable=AsyncMock
         ) as mock_fmt:
@@ -163,7 +171,7 @@ async def test_render_cover_letter_calls_compile(app_settings, tmp_path):
         job_company="Acme",
         cover_letter_text="Dear Hiring Manager,\n\nI am excited.\n\nSincerely,\nAlex",
     )
-    with patch("job_applicator.documents.pdf_renderer._compile_typst", _fake_compile):
+    with patch.object(renderer, "_compile_pdf", _fake_compile_pdf):
         with patch.object(
             renderer, "_format_cover_letter_with_instructor", new_callable=AsyncMock
         ) as mock_fmt:
@@ -220,7 +228,7 @@ async def test_render_resume_propagates_compile_error(app_settings, tmp_path):
         changes_summary="emphasized Python",
     )
 
-    with patch("job_applicator.documents.pdf_renderer._compile_typst", _failing_compile):
+    with patch.object(renderer, "_compile_pdf", _failing_compile_pdf):
         with patch.object(
             renderer, "_format_resume_with_instructor", new_callable=AsyncMock
         ) as mock_fmt:
@@ -262,7 +270,7 @@ async def test_render_cover_letter_propagates_compile_error(app_settings, tmp_pa
         cover_letter_text="Dear Hiring Manager,\n\nI am excited.\n\nSincerely,\nAlex",
     )
 
-    with patch("job_applicator.documents.pdf_renderer._compile_typst", _failing_compile):
+    with patch.object(renderer, "_compile_pdf", _failing_compile_pdf):
         with patch.object(
             renderer, "_format_cover_letter_with_instructor", new_callable=AsyncMock
         ) as mock_fmt:
@@ -338,7 +346,7 @@ async def test_render_cover_letter_accepts_cover_letter_output(app_settings, tmp
     output = CoverLetterOutput(
         cover_letter="Dear Hiring Manager,\n\nI am excited.\n\nSincerely,\nAlex Rivera"
     )
-    with patch("job_applicator.documents.pdf_renderer._compile_typst", _fake_compile):
+    with patch.object(renderer, "_compile_pdf", _fake_compile_pdf):
         with patch.object(
             renderer, "_format_cover_letter_with_instructor", new_callable=AsyncMock
         ) as mock_fmt:
@@ -376,7 +384,7 @@ async def test_render_resume_uses_explicit_output_path(app_settings, tmp_path) -
         changes_summary="emphasized Python",
     )
     explicit = tmp_path / "custom" / "resume.pdf"
-    with patch("job_applicator.documents.pdf_renderer._compile_typst", _fake_compile):
+    with patch.object(renderer, "_compile_pdf", _fake_compile_pdf):
         with patch.object(
             renderer, "_format_resume_with_instructor", new_callable=AsyncMock
         ) as mock_fmt:
@@ -403,7 +411,7 @@ async def test_render_cover_letter_uses_explicit_output_path(app_settings, tmp_p
         cover_letter_text="Dear Hiring Manager,\n\nI am excited.\n\nSincerely,\nAlex",
     )
     explicit = tmp_path / "custom" / "cl.pdf"
-    with patch("job_applicator.documents.pdf_renderer._compile_typst", _fake_compile):
+    with patch.object(renderer, "_compile_pdf", _fake_compile_pdf):
         with patch.object(
             renderer, "_format_cover_letter_with_instructor", new_callable=AsyncMock
         ) as mock_fmt:
@@ -436,7 +444,7 @@ async def test_render_and_compile_preserves_temp_source_on_failure(app_settings,
         },
     }
 
-    with patch("job_applicator.documents.pdf_renderer._compile_typst", _failing_compile):
+    with patch.object(renderer, "_compile_pdf", _failing_compile_pdf):
         with pytest.raises(PDFRenderError, match="compile failed") as exc_info:
             await renderer._render_and_compile("cv/modern.typ", context, tmp_path / "out.pdf")
     tmp_files = [p for p in tmp_path.iterdir() if p.name.startswith("_tmp_")]
@@ -460,7 +468,7 @@ async def test_render_and_compile_cleans_temp_source_on_success(app_settings, tm
             "signature": "A",
         },
     }
-    with patch("job_applicator.documents.pdf_renderer._compile_typst", _fake_compile):
+    with patch.object(renderer, "_compile_pdf", _fake_compile_pdf):
         await renderer._render_and_compile("cv/modern.typ", context, tmp_path / "out.pdf")
     tmp_files = [p for p in tmp_path.iterdir() if p.name.startswith("_tmp_")]
     assert not tmp_files

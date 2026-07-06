@@ -88,7 +88,28 @@ def audit_claim(check: ClaimCheck, source: str) -> str | None:
 
 def _sentences(text: str) -> list[str]:
     """Substantive sentences/bullets (>=3 content tokens) of a generated document."""
-    return [s.strip() for s in _SENT_SPLIT_RE.split(text) if len(_tokens(s)) >= 3]
+    return [
+        s.strip()
+        for s in _SENT_SPLIT_RE.split(text)
+        if len(_tokens(s)) >= 3 and not _looks_like_contact_fragment(s)
+    ]
+
+
+def _looks_like_contact_fragment(text: str) -> bool:
+    """Contact header fragments are identity data, not factual claims to enumerate.
+
+    Sentence splitting can chop ``name | phone | email | linkedin`` lines at ``.`` and create
+    pseudo-sentences like ``com/in/name``. The verifier may reasonably skip those, so the
+    deterministic coverage backstop should not report them as claim coverage gaps.
+    """
+    low = text.lower()
+    digits = sum(ch.isdigit() for ch in text)
+    return (
+        "@" in text
+        or "linkedin" in low
+        or "/in/" in low
+        or (digits >= 7 and ("|" in text or "+" in text or "(" in text))
+    )
 
 
 def coverage_gaps(generated: str, claims: list[ClaimCheck]) -> list[str]:
@@ -206,7 +227,7 @@ class GroundingVerifier:
                     messages=messages,
                     response_model=VerificationReport,
                     max_retries=1,
-                    max_tokens=2000,
+                    max_tokens=self._config.max_tokens,
                     temperature=0.1,
                     extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                 ),

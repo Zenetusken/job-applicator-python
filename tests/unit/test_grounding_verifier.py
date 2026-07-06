@@ -111,6 +111,18 @@ def test_coverage_flags_unenumerated_sentence() -> None:
     assert any("architected" in g for g in gaps)
 
 
+def test_coverage_ignores_contact_header_fragments() -> None:
+    generated = (
+        "Jane Doe\n"
+        "Montreal, QC | (514) 555-0199 | jane@example.com | linkedin.com/in/jane-doe\n"
+        "Single-handedly architected the entire enterprise cloud security program."
+    )
+    gaps = coverage_gaps(generated, [])
+
+    assert not any("514" in g or "linkedin" in g for g in gaps)
+    assert any("architected" in g for g in gaps)
+
+
 def test_coverage_clean_when_every_sentence_enumerated() -> None:
     generated = "Maintained 95% first-contact resolution. Skilled in SIEM and Wireshark."
     claims = [
@@ -206,6 +218,17 @@ async def test_verify_returns_clean_on_grounded_and_covered_doc() -> None:
         result = await verifier.verify(generated, _RESUME)
     assert result.clean and result.complete
     assert result.unsupported == [] and result.coverage_gaps == []
+
+
+async def test_verify_honors_configured_max_tokens() -> None:
+    verifier = GroundingVerifier(LLMConfig(model="m", max_tokens=4096))
+    client = MagicMock()
+    client.create = AsyncMock(return_value=VerificationReport(claims=[]))
+
+    with patch.object(verifier, "_get_client", return_value=client):
+        await verifier.verify("Generated text.", _RESUME)
+
+    assert client.create.call_args.kwargs["max_tokens"] == 4096
 
 
 async def test_verify_failsafe_raises_never_returns_clean() -> None:

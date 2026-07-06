@@ -9,7 +9,6 @@ navigating, and filtering touch only local state.
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Awaitable
 from functools import partial
 from pathlib import Path
@@ -136,6 +135,10 @@ def _elide_mid(text: str, limit: int) -> str:
     keep = max(2, limit - 1)
     head = (keep + 1) // 2
     return text[:head] + "…" + text[-(keep - head) :]
+
+
+def _read_text_file(path: str | Path) -> str:
+    return Path(path).read_text(encoding="utf-8")
 
 
 class _JobCard:
@@ -1239,9 +1242,7 @@ class JobApplicatorApp(App[None]):
         cover_letter: str | None = None
         if cover_letter_path:
             try:
-                cover_letter = await asyncio.to_thread(
-                    Path(cover_letter_path).read_text, encoding="utf-8"
-                )
+                cover_letter = _read_text_file(cover_letter_path)
             except OSError:
                 cover_letter = None
         try:

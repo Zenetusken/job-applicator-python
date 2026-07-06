@@ -11,8 +11,15 @@ from job_applicator.utils.text import contains_word
 logger = get_logger("documents.ats_checker")
 
 _MIN_TEXT_LENGTH = 200
-_STANDARD_SECTIONS = {"experience", "education", "skills"}
-_OPTIONAL_SECTIONS = {"certifications", "languages"}
+_STANDARD_SECTIONS = {
+    "experience": ("experience", "expérience"),
+    "education": ("education", "éducation", "formation"),
+    "skills": ("skills", "compétences", "competences"),
+}
+_OPTIONAL_SECTIONS = {
+    "certifications": ("certifications",),
+    "languages": ("languages", "langues"),
+}
 _TABLE_PATTERN = re.compile(r"\+[-]+\+")
 _EMAIL_PATTERN = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 _PHONE_PATTERN = re.compile(r"[\+]?[\d\s\-\(\)]{10,}")
@@ -86,8 +93,8 @@ class ATSChecker:
         warnings: list[str],
     ) -> None:
         text_lower = resume.raw_text.lower()
-        for section in _STANDARD_SECTIONS:
-            found = contains_word(text_lower, section)
+        for section, aliases in _STANDARD_SECTIONS.items():
+            found = any(contains_word(text_lower, alias) for alias in aliases)
             checks.append(
                 {
                     "name": f"{section}_section",
@@ -105,8 +112,8 @@ class ATSChecker:
         checks: list[dict[str, object]],
     ) -> None:
         text_lower = resume.raw_text.lower()
-        for section in _OPTIONAL_SECTIONS:
-            found = contains_word(text_lower, section)
+        for section, aliases in _OPTIONAL_SECTIONS.items():
+            found = any(contains_word(text_lower, alias) for alias in aliases)
             checks.append(
                 {
                     "name": f"{section}_section",
