@@ -13,7 +13,12 @@ from job_applicator.config import EmbeddingConfig, LLMConfig
 from job_applicator.embeddings.matching import JobMatcher
 from job_applicator.embeddings.service import EmbeddingService
 from job_applicator.embeddings.skill_extraction import LLMSkillExtractor, _ExtractionResult
+from job_applicator.exceptions import ConfigError
 from job_applicator.models import ResumeData
+
+
+async def _inline_to_thread(fn, *args, **kwargs):  # type: ignore[no-untyped-def]
+    return fn(*args, **kwargs)
 
 
 class TestEmbeddingConfig:
@@ -75,6 +80,75 @@ class TestEmbeddingService:
         )
         cuda_svc = EmbeddingService(EmbeddingConfig(device="cuda", memory_limit_gb=0.5))
         assert cuda_svc._resolve_device() == "cuda"
+
+    def test_load_model_uses_local_only_when_snapshot_is_cached(
+        self, monkeypatch: pytest.MonkeyPatch, config: EmbeddingConfig
+    ) -> None:
+        calls: list[dict[str, object]] = []
+
+        class FakeSentenceTransformer:
+            max_seq_length = 0
+
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                calls.append({"args": args, **kwargs})
+
+        monkeypatch.setattr(
+            "job_applicator.embeddings.service.probe_hf_model_cache",
+            lambda _model_name: (True, "/cache/model"),
+        )
+        monkeypatch.setattr(
+            "sentence_transformers.SentenceTransformer",
+            FakeSentenceTransformer,
+        )
+
+        model = EmbeddingService(config)._load_model()
+
+        assert isinstance(model, FakeSentenceTransformer)
+        assert calls[0]["local_files_only"] is True
+        assert model.max_seq_length == config.max_seq_length
+
+    def test_load_model_allows_download_when_snapshot_is_uncached(
+        self, monkeypatch: pytest.MonkeyPatch, config: EmbeddingConfig
+    ) -> None:
+        calls: list[dict[str, object]] = []
+
+        class FakeSentenceTransformer:
+            max_seq_length = 0
+
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                calls.append({"args": args, **kwargs})
+
+        monkeypatch.setattr(
+            "job_applicator.embeddings.service.probe_hf_model_cache",
+            lambda _model_name: (False, None),
+        )
+        monkeypatch.setattr(
+            "sentence_transformers.SentenceTransformer",
+            FakeSentenceTransformer,
+        )
+
+        EmbeddingService(config)._load_model()
+
+        assert calls[0]["local_files_only"] is False
+
+    def test_load_model_wraps_runtime_failures(
+        self, monkeypatch: pytest.MonkeyPatch, config: EmbeddingConfig
+    ) -> None:
+        class BrokenSentenceTransformer:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                raise OSError("network unavailable")
+
+        monkeypatch.setattr(
+            "job_applicator.embeddings.service.probe_hf_model_cache",
+            lambda _model_name: (False, None),
+        )
+        monkeypatch.setattr(
+            "sentence_transformers.SentenceTransformer",
+            BrokenSentenceTransformer,
+        )
+
+        with pytest.raises(ConfigError, match="Embedding model could not be loaded"):
+            EmbeddingService(config)._load_model()
 
     def test_cache_key_generation(self, service: EmbeddingService) -> None:
         """Test cache key consistency."""
@@ -221,6 +295,13 @@ class TestJobMatcher:
         # Stub the model out — control the cosine directly (no model load).
         monkeypatch.setattr(svc, "embed_batch", lambda texts, **kw: [[1.0]] * len(texts))
 
+        async def _inline_to_thread(fn, *args, **kwargs):  # type: ignore[no-untyped-def]
+            return fn(*args, **kwargs)
+
+        monkeypatch.setattr(
+            "job_applicator.embeddings.matching.asyncio.to_thread", _inline_to_thread
+        )
+
         monkeypatch.setattr(svc, "similarity", lambda a, b: 0.62)  # false-positive band
         matched, missing = await matcher._match_skills(["Python"], ["React"])
         assert matched == [] and missing == ["React"]  # NOT covered at 0.75 (was at 0.55)
@@ -306,7 +387,9 @@ class TestJobMatcher:
         assert "jane.smith@example.com" not in call_text
         assert "Python" in call_text  # real skills survive
 
-    async def test_match_skills_shares_best_available_skill(self) -> None:
+    async def test_match_skills_shares_best_available_skill(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Two requirements that both prefer one skill must not falsely mark one missing."""
         from job_applicator.embeddings.matching import JobMatcher
 
@@ -315,6 +398,13 @@ class TestJobMatcher:
 
         # Pass strings straight through as their own "embeddings".
         matcher._service.embed_batch = lambda texts: list(texts)  # type: ignore[method-assign]
+
+        async def _inline_to_thread(fn, *args, **kwargs):  # type: ignore[no-untyped-def]
+            return fn(*args, **kwargs)
+
+        monkeypatch.setattr(
+            "job_applicator.embeddings.matching.asyncio.to_thread", _inline_to_thread
+        )
 
         # Synthetic scores (not real cosines) — all "matched" values are above the 0.75
         # threshold so this test exercises the used-skills CLAIMING logic, not the threshold.
@@ -931,9 +1021,12 @@ class TestJobMatcherAsyncExtraction:
     """Tests for JobMatcher using LLMSkillExtractor for descriptions."""
 
     @pytest.fixture
-    def matcher(self) -> JobMatcher:
+    def matcher(self, monkeypatch: pytest.MonkeyPatch) -> JobMatcher:
         from job_applicator.embeddings.matching import JobMatcher
 
+        monkeypatch.setattr(
+            "job_applicator.embeddings.matching.asyncio.to_thread", _inline_to_thread
+        )
         return JobMatcher(
             EmbeddingConfig(device="cpu", memory_limit_gb=0.5),
             LLMConfig(model="test-model"),
@@ -1052,7 +1145,10 @@ class TestJobMatcherRanking:
     """Tests for JobMatcher async ranking behavior."""
 
     @pytest.fixture
-    def matcher(self) -> JobMatcher:
+    def matcher(self, monkeypatch: pytest.MonkeyPatch) -> JobMatcher:
+        monkeypatch.setattr(
+            "job_applicator.embeddings.matching.asyncio.to_thread", _inline_to_thread
+        )
         return JobMatcher(
             EmbeddingConfig(device="cpu", memory_limit_gb=0.5),
             LLMConfig(model="test-model"),
@@ -1143,11 +1239,10 @@ async def test_match_offloads_blocking_encode_off_event_loop(monkeypatch) -> Non
     )
 
     calls: list[str] = []
-    real_to_thread = asyncio.to_thread
 
     async def _spy(fn, *a, **k):  # type: ignore[no-untyped-def]
         calls.append(getattr(fn, "__name__", str(fn)))
-        return await real_to_thread(fn, *a, **k)
+        return fn(*a, **k)
 
     monkeypatch.setattr(asyncio, "to_thread", _spy)
 

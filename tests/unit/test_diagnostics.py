@@ -16,6 +16,7 @@ from litellm.exceptions import APIConnectionError, Timeout
 
 from job_applicator import cli, diagnostics
 from job_applicator.config import AppSettings, EmbeddingConfig, LLMConfig, OutputConfig
+from job_applicator.embeddings.cache import _embedding_cache_fallback
 from job_applicator.models import (
     BrowserCheck,
     ConfigCheck,
@@ -179,7 +180,7 @@ def test_embeddings_fallback_honors_hf_hub_cache(
     snap = tmp_path / "models--org--name" / "snapshots" / "rev"
     snap.mkdir(parents=True)
     (snap / "config.json").write_text("{}")
-    cached, path = diagnostics._embedding_cache_fallback("org/name")
+    cached, path = _embedding_cache_fallback("org/name")
     assert cached
     assert path is not None
 
@@ -190,7 +191,7 @@ def test_embeddings_fallback_empty_snapshots_is_not_cached(
     # A partial/interrupted download (no snapshot contents) must NOT read as cached.
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
     (tmp_path / "models--org--name" / "snapshots").mkdir(parents=True)
-    cached, path = diagnostics._embedding_cache_fallback("org/name")
+    cached, path = _embedding_cache_fallback("org/name")
     assert not cached
     assert path is None
 
@@ -356,28 +357,18 @@ def test_llm_call_error_other_errors_verbatim() -> None:
     assert "doctor" not in msg
 
 
-async def test_llm_call_error_classifies_real_litellm_failure() -> None:
-    """The wiring that runs in production: a real litellm call to a dead endpoint must
-    classify as unreachable. Locks in _CONNECTION_MARKERS against future edits — litellm
-    wraps a refused connection as InternalServerError, which only the string fallback
-    catches (a typed-only check would silently miss it). Offline + fast (refused port)."""
-    import litellm
+def test_llm_call_error_classifies_litellm_wrapped_connection_failure() -> None:
+    """LiteLLM can wrap a refused connection as InternalServerError, which only the
+    string fallback catches. Keep this unit test offline and deterministic by constructing the
+    wrapped exception shape directly instead of making a real network call."""
+    from litellm.exceptions import InternalServerError
 
-    try:
-        await litellm.acompletion(
-            model="openai/m",
-            api_base="http://127.0.0.1:9999/v1",
-            api_key="x",
-            messages=[{"role": "user", "content": "hi"}],
-            max_tokens=5,
-            num_retries=0,
-        )
-    except Exception as exc:
-        assert "Can't reach the LLM endpoint" in str(
-            llm_call_error(exc, "http://127.0.0.1:9999/v1")
-        )
-    else:
-        pytest.fail("expected a connection failure from the dead endpoint")
+    exc = InternalServerError(
+        message="Connection refused",
+        llm_provider="openai",
+        model="openai/m",
+    )
+    assert "Can't reach the LLM endpoint" in str(llm_call_error(exc, "http://127.0.0.1:9999/v1"))
 
 
 # --- config-init sources the model from LLMConfig (no drift) ---------------

@@ -43,6 +43,7 @@ from job_applicator.documents.formatted_models import (
     FormattedSkillGroup,
 )
 from job_applicator.documents.pdf_renderer import _typst_escape
+from job_applicator.embeddings.cache import probe_hf_model_cache
 from job_applicator.models import (
     BrowserCheck,
     ConfigCheck,
@@ -127,35 +128,8 @@ def check_embeddings(emb: EmbeddingConfig) -> EmbeddingsCheck:
     probe that honors the same env vars and requires a non-empty ``snapshots/`` so a
     partial/interrupted download isn't reported as cached.
     """
-    cached, path = _probe_embedding_cache(emb.model_name)
+    cached, path = probe_hf_model_cache(emb.model_name)
     return EmbeddingsCheck(model_name=emb.model_name, cached=cached, cache_path=path)
-
-
-def _probe_embedding_cache(model_name: str) -> tuple[bool, str | None]:
-    try:
-        from huggingface_hub import try_to_load_from_cache
-    except ImportError:
-        return _embedding_cache_fallback(model_name)
-    # A cached repo always has config.json; a real path back means it is present.
-    hit = try_to_load_from_cache(model_name, "config.json")
-    if isinstance(hit, str):
-        # .../models--org--name/snapshots/<rev>/config.json → repo dir is three up.
-        return True, str(Path(hit).parent.parent.parent)
-    return False, None
-
-
-def _embedding_cache_fallback(model_name: str) -> tuple[bool, str | None]:
-    hub = os.environ.get("HF_HUB_CACHE") or os.environ.get("HUGGINGFACE_HUB_CACHE")
-    if hub:
-        root = Path(hub)
-    else:
-        hf_home = os.environ.get("HF_HOME")
-        root = (Path(hf_home) if hf_home else Path.home() / ".cache" / "huggingface") / "hub"
-    repo = root / ("models--" + model_name.replace("/", "--"))
-    snapshots = repo / "snapshots"
-    if snapshots.is_dir() and any(snapshots.iterdir()):
-        return True, str(repo)
-    return False, None
 
 
 def check_self_host() -> SelfHostCheck:

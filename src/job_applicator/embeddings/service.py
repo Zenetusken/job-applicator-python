@@ -14,6 +14,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from job_applicator.config import EmbeddingConfig
+from job_applicator.embeddings.cache import probe_hf_model_cache
 from job_applicator.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -74,10 +75,20 @@ class EmbeddingService:
                     self._config.memory_limit_gb,
                 )
 
-                # Load model with memory limit
+                cached, cache_path = probe_hf_model_cache(self._config.model_name)
+                if cached:
+                    logger.info(
+                        "Embedding model cache found at %s; loading without network probes",
+                        cache_path,
+                    )
+
+                # Load model with memory limit. When the snapshot is already cached, force
+                # local-only mode so Hugging Face does not block on metadata probes in offline
+                # or sandboxed environments.
                 self._model = SentenceTransformer(
                     self._config.model_name,
                     device=self._resolve_device(),
+                    local_files_only=cached,
                     model_kwargs={
                         "torch_dtype": "float16",  # Use FP16 to save VRAM
                     },
@@ -93,6 +104,15 @@ class EmbeddingService:
 
                 raise ConfigError(
                     "sentence-transformers not installed. Run: pip install sentence-transformers"
+                ) from exc
+            except Exception as exc:
+                from job_applicator.exceptions import ConfigError
+
+                raise ConfigError(
+                    "Embedding model could not be loaded. If this machine is offline or running "
+                    f"in a restricted sandbox, pre-download {self._config.model_name!r} into the "
+                    "Hugging Face cache, or run once with network access so sentence-transformers "
+                    "can fetch it."
                 ) from exc
         return self._model
 
