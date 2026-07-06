@@ -10,13 +10,13 @@ AI-powered job application tool using Playwright browser automation with modern 
 - **Auto-Apply**: Automatically fill and submit job applications (dry-run by default; `--submit` to send)
 - **AI Cover Letters**: Generate personalized cover letters using LLM (litellm - supports 100+ providers) as three connected paragraphs with deterministic honesty guards and an enforced sign-off. Dry runs generate the letter as a preview before you opt in with `--submit`
 - **Output-Language Policy**: The generated CV and cover letter always resolve the *same* language — `[llm] language = "auto"` mirrors the job posting's language, or force `"en"` / `"fr"` (a French posting yields a French packet with an in-language sign-off and localized PDF date)
-- **Grounding Verification (honesty layer)**: A language-agnostic LLM pass enumerates every claim in a generated document and cites the résumé line that grounds it; a deterministic audit then overrides any ungrounded claim. For cover letters this drives a regenerate-once-and-keep-the-cleaner-draft loop; for tailored résumés the unsupported claims are *surfaced for review* (printed as a "claims to review" panel and carried in `--json`), never silently stripped. Fail-safe: a verifier outage never passes off an unverified document as clean
+- **Grounding Verification (honesty layer)**: A language-agnostic LLM pass enumerates every claim in a generated document and cites the résumé line that grounds it; a deterministic audit then overrides any ungrounded claim. Cover letters regenerate once, then **fail closed** if the best draft is still unclean or the verifier is unavailable. Tailored résumés surface unsupported claims for human review (printed as a "claims to review" panel and carried in `--json`), never silently stripped; non-interactive saves refuse dirty or unverified drafts.
 - **Resume Parsing**: Load and parse PDF/text/image resumes with intelligent skill extraction; OCR fallback for scanned PDFs
 - **Semantic Job Matching**: Match resumes to jobs using mxbai-embed-large-v1 embeddings
 - **Resume Tailoring**: LLM-powered resume rewriting for specific jobs with hallucination guards and a surfaced grounding report
 - **Date Audit**: Pre-ingestion CV validation — checks ordering, staleness, timeline coherence
 - **Style Analysis**: Mimic writing style from one or more example resumes/cover letters (comma-separated paths); example guides in `docs/style-guide-examples/`
-- **Cover-Letter Sign-Off Enforcement**: Every generated cover letter is validated for a recognized closing word and a signature matching the applicant's name
+- **Cover-Letter Sign-Off Enforcement**: Every generated or refined cover letter is validated/repaired to end with a recognized closing word and a signature matching the applicant's name
 - **ATS Compatibility Check**: Validate resumes against ATS heuristics (contact info, standard sections, length, no ASCII tables) with a score and actionable suggestions
 - **PDF Résumé & Cover Letters**: Render tailored documents to PDF with Typst (optional `[pdf]` extra). Built-in `modern`, `classic`, and `minimal` templates
 - **Structured Outputs**: Instructor for type-safe LLM responses
@@ -92,7 +92,9 @@ throughput.
 
 The first launch **auto-downloads the model** from Hugging Face Hub (~6 GB for the
 default; cached to `~/.cache/huggingface`) — no separate step. Needs network on first
-run. (Embeddings likewise fetch `mxbai-embed-large-v1`, ~640 MB, on first use.)
+run. Embeddings likewise fetch `mxbai-embed-large-v1` (~640 MB) on first use; after
+that, cached snapshots are loaded in local-only mode so offline/sandboxed `match` or
+`batch` runs do not block on Hugging Face metadata probes.
 
 The default model is **public**. A *gated* model additionally needs a Hugging Face
 token — run **`huggingface-cli login`** once (it validates the token and persists it;
@@ -222,6 +224,7 @@ The `tailor` command runs an interactive session that lets you iteratively refin
 - **Version History**: Press `[V]` to browse all previous attempts and select one to revert to or compare against.
 - **Section Editing**: Press `[S]` to target a specific resume section (e.g. Experience, Skills, Summary) for focused rewriting instead of regenerating the entire resume.
 - **Auto Tone Detection**: The tailor automatically detects the job posting's tone (corporate, startup, technical, or creative) and adjusts vocabulary and phrasing accordingly.
+- **Non-Interactive Integrity Gate**: `tailor --yes`, `tailor --json`, and TUI one-shot tailoring save only when grounding completed cleanly and the tailored output does not drop contact info or regress an ATS-compatible base résumé into an incompatible one.
 - **Error Handling**: Up to 10 retry attempts on LLM failures, with a warning at attempt 8. The session gracefully recovers from transient LLM errors.
 - **Post-Tailor Cover Letter**: After accepting a tailored resume, the CLI offers to generate a matching cover letter. The same tone, style guide, and job data are shared between both documents. The cover letter follows the same accept/retry/input/diff/history workflow as the resume, and is saved alongside it with linked metadata.
 
@@ -242,7 +245,7 @@ job-applicator batch --resume resume.pdf --jobs-file jobs.json --no-cover-letter
 
 - **Smart matching**: Jobs are ranked by semantic similarity + skill coverage, filtered by `--min-score`, then only the top `--top-k` are processed.
 - **Parallel execution**: Tailoring and cover letter generation run concurrently (up to 3 simultaneous LLM calls).
-- **Per-job output**: Each job produces `tailored_*.txt` + `.meta.json` and optionally `cover_letter_*.txt` + `.meta.json`.
+- **Per-job output**: Each job produces `tailored_*.txt` + `.meta.json` and optionally `cover_letter_*.txt` + `.meta.json`. With `--format both`, the text sidecar is the authoritative metadata file and includes the generated `pdf_path`.
 - **Batch summary**: A `batch_summary_{timestamp}.json` file contains all results with scores, paths, and errors.
 
 ## Configuration

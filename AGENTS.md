@@ -30,6 +30,7 @@ bash scripts/release.sh <version>   # bump version, update CHANGELOG.md, tag, bu
 # Tests — ~1370 fast unit tests (the green gate); ~1428 total = ~1370 unit + 23 integration + 35 live
 pytest -m unit -v               # or: pytest tests/unit/ -v   (auto-marked by location)
 pytest -m unit -v -k test_name  # single test
+python scripts/eval_matching.py # REQUIRED after matcher/skill/target-role scoring changes when the private gold set exists
 
 # CLI
 job-applicator                              # bare tty invocation opens the TUI
@@ -145,11 +146,14 @@ src/job_applicator/
   an LLM enumerates each claim in a generated doc + cites the SOURCE line; a deterministic audit
   (`audit_report` — token-overlap + numeric backstop + coverage check) overrides ungrounded
   verdicts. SOURCE is ALWAYS the BASE résumé (`resume.raw_text`) — never the JD or the tailored
-  intermediate. `CoverLetterGenerator.generate_verified()` regenerates ONCE and keeps the
-  strictly-cleaner draft; `ResumeTailor.tailor_verified()` SURFACES the result on
-  `TailoredResume.grounding_report` (never auto-strips — the résumé is the document of record).
-  Fail-safe: a verifier failure raises `GroundingUnavailableError`, never a clean report. The pure
-  audit core is unit-tested (runs on the fast gate); the LLM pass is `-m live`.
+  intermediate. `CoverLetterGenerator.generate_verified()` regenerates ONCE, then raises
+  `CoverLetterGroundingError` if the best draft is still unclean or verification is unavailable.
+  `ResumeTailor.tailor_verified()` SURFACES the result on `TailoredResume.grounding_report` (never
+  auto-strips — the résumé is the document of record). Non-interactive CV saves (`tailor --yes`,
+  `tailor --json`, TUI one-shot tailoring) fail closed unless grounding completed cleanly and the
+  tailored output preserves contact/ATS integrity. Fail-safe: a verifier failure raises
+  `GroundingUnavailableError`, never a clean report. The pure audit core is unit-tested (runs on the
+  fast gate); the LLM pass is `-m live`.
 - **Output language is a packet-level policy.** `[llm] language` = `auto` (mirror the JD) | `en` |
   `fr`, resolved by `utils/language.py` (small FR/EN heuristic, logged per job). It lives on `[llm]`
   so `cover_letter_llm` inherits it — the CV and cover letter ALWAYS resolve the SAME language.
@@ -166,7 +170,11 @@ src/job_applicator/
 - **Default embedding model is `mixedbread-ai/mxbai-embed-large-v1`.** Embeddings default to CUDA
   FP16 with ~1.5 GB VRAM; set `embedding.device="cpu"` for CPU-only boxes.
 - **Embedding cache at `~/.job-applicator/embeddings/`.** Style cache at
-  `~/.job-applicator/styles/`. Clear with `EmbeddingService.clear_cache()`.
+  `~/.job-applicator/styles/`. Clear with `EmbeddingService.clear_cache()`. The first embedding
+  model load also depends on the Hugging Face cache (`~/.cache/huggingface` by default); offline or
+  sandboxed `match`/`batch` runs load cached model snapshots with `local_files_only=True` to avoid
+  Hugging Face metadata probes. If no snapshot is cached, first use still needs network access to
+  download `mixedbread-ai/mxbai-embed-large-v1`.
 - **`sentence-transformers` needs CUDA torch.** The default PyPI `torch==2.11.0` wheel is already
   the CUDA 13.0 build, so a plain install matches CUDA-13 drivers. Only if your driver needs an
   *older* CUDA (you get `libcudart.so` errors) reinstall from the index matching your driver, e.g.
@@ -242,7 +250,8 @@ src/job_applicator/
 - **PDF artifact basenames include microseconds and the template suffix.** Plain text keeps
   `tailored_<company>_<title>_<YYYYMMDD_HHMMSS>.txt`; the PDF is
   `tailored_<company>_<title>_<YYYYMMDD_HHMMSS>_<microseconds>_<template>.pdf`. With
-  `--format both` the `.txt` + `.pdf` + one `.meta.json` sidecar (beside the `.txt`) is produced.
+  `--format both` the `.txt` + `.pdf` + one `.meta.json` sidecar (beside the `.txt`) is produced;
+  that text sidecar is updated after PDF render so it includes `pdf_path`.
 
 ## LLM Setup
 
@@ -294,6 +303,12 @@ that generate cover letters. The default dry-run `apply` does not run the ATS pr
   reach), and the offline browser-fingerprint self-consistency gate (real Chrome, loopback only).
 - The 35 live tests at `tests/` root carry `-m live`; they need vLLM (`localhost:8000`) + GPU; run
   them manually.
+- Matcher changes have a private-data companion gate: run `python scripts/eval_matching.py` after
+  edits to `embeddings/matching.py`, skill extraction/normalization/grounding, score weights,
+  thresholds, or `[matching] target_roles` behavior. The script reads
+  `~/.job-applicator/matching-eval/gold-set.csv` (override with `GOLD_SET_CSV`) and the live funnel
+  DB. Missing private data is a documented skip; incomplete gold-set coverage exits non-zero so a
+  partial funnel cannot certify a matcher change.
 - Tests use fixtures from `tests/conftest.py`.
 - Embedding tests mock the model (CPU fallback).
 

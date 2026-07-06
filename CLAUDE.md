@@ -75,7 +75,8 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
   grounds it; a deterministic audit (`documents/grounding_verifier.py`) then overrides any ungrounded
   claim (token-overlap + a numeric backstop) and flags coverage gaps. The SOURCE is always the
   BASE résumé (never the JD or the tailored intermediate). Cover letters route through
-  `CoverLetterGenerator.generate_verified()` (regenerate ONCE, keep the strictly-cleaner draft);
+  `CoverLetterGenerator.generate_verified()` (regenerate ONCE, then fail closed if the best draft is
+  still unclean or verification is unavailable);
   tailored résumés through `ResumeTailor.tailor_verified()`, which SURFACES the report on
   `TailoredResume.grounding_report` for human review (a "claims to review" panel + `--json`) and
   NEVER auto-strips — the résumé is the document of record. Fail-safe: any verifier failure raises
@@ -113,6 +114,10 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
   offline/account-safe; the account-touching actions (search/apply) run only behind an
   explicit in-app confirm, and a real apply needs a danger checkbox (dry-run default) — the
   low-friction TUI must never turn an account action into a one-keypress accident.
+- **Automated CV saves fail closed.** `tailor --yes`, `tailor --json`, and the TUI one-shot
+  `tailor_job` path refuse to save if grounding did not complete cleanly, if contact info disappears,
+  or if an ATS-compatible base résumé becomes incompatible. Interactive review can still accept a
+  surfaced warning because the user is the document-of-record authority.
 
 ## GPU Memory Layout
 
@@ -134,5 +139,9 @@ one base model at a time; a per-step bigger model (the `[cover_letter]` override
 
 - Model: `mixedbread-ai/mxbai-embed-large-v1` (1024 dimensions)
 - Cache: `~/.job-applicator/embeddings/` (numpy arrays)
+- First model load also needs the Hugging Face model cache (`~/.cache/huggingface` by default).
+  If a snapshot is cached, `EmbeddingService` loads it with `local_files_only=True` so
+  offline/sandboxed matching does not block on Hugging Face metadata probes. If no snapshot is
+  cached, first use still needs network access to download the model.
 - Matching: Cosine similarity with combined scoring
 - Skill threshold: 0.75 for semantic match (empirically tuned; 0.55 matched unrelated same-domain skills)

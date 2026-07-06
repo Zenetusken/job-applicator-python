@@ -55,6 +55,17 @@ experience/education (#14)** — resolved, see Shipped.)
 
 ## Shipped
 
+- **CV/cover-letter trust audit — automated document gates tightened** (2026-07-06). End-to-end audit
+  of the CV + cover-letter generation surfaces found and fixed two document-path defects: interactive
+  cover-letter refinement now gets the same deterministic sign-off repair as first generation, and the
+  TUI one-shot tailoring path now shares the CLI's non-interactive fail-closed guard (clean grounding
+  required, contact preserved, no ATS-compatible → incompatible regression). Also aligned `--format
+  both` metadata so the text `.meta.json` sidecar is the authoritative record and includes `pdf_path`
+  after PDF render. Follow-up fixed the embedding/match QA failure: cached Hugging Face snapshots now
+  load with `local_files_only=True`, avoiding metadata probes in offline/sandboxed runs while
+  preserving first-use downloads when no cache exists. Validation: focused document/TUI workflow suite
+  green, green gate green (`1390 passed`), isolated QA sanity green (`PASS=64`).
+
 - **Matching re-validation arc — verdict + the preference layer** (gold set 2026-07-02, ships
   2026-07-03). Drei's 0–4 graded labels over the 44-job funnel answered the calibration question:
   **ranking SOUND (Spearman +0.736), 0.75/60-40 stays, experience-consumption stays parked.** The
