@@ -11,6 +11,7 @@ import os as _os
 for _v in ("FORCE_COLOR", "CLICOLOR_FORCE", "PY_COLORS"):
     _os.environ.pop(_v, None)
 _os.environ.setdefault("NO_COLOR", "1")
+_os.environ.setdefault("JOB_APPLICATOR_CONFIG_FILE", "nonexistent-config-for-hermetic-tests.toml")
 
 import socket  # noqa: E402
 from pathlib import Path  # noqa: E402

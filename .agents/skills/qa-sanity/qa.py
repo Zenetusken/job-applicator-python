@@ -580,9 +580,8 @@ def live_checks(fx: dict[str, Path]) -> None:
              "--resume", str(fx["resume"]), "--yes", timeout=200)
     out_dir = WORK / "output"
     wrote = out_dir.exists() and any(out_dir.glob("tailored_*.txt"))
-    record("tailor: --yes writes artifact or fails closed on grounding", t,
-           (cp.returncode == 0 and wrote) or grounding_fail_closed(cp),
-           f"exit={cp.returncode} (124=hang)")
+    record("tailor: --yes is non-interactive (exits, writes artifact)", t,
+           cp.returncode == 0 and wrote, f"exit={cp.returncode} (124=hang)")
     cp = run("tailor", "-t", "Senior Python Engineer", "-c", "Initech",
              "-d", "Async pipelines; asyncio, Pydantic.", "--resume", str(fx["resume"]),
              "--json", timeout=200)
@@ -591,8 +590,7 @@ def live_checks(fx: dict[str, Path]) -> None:
         ok_tj = bool(json.loads(cp.stdout).get("tailored_text"))
     except Exception:
         pass
-    record("tailor: --json emits JSON or fails closed on grounding", t,
-           ok_tj or grounding_fail_closed(cp),
+    record("tailor: --json emits valid JSON (clean stdout, implies --yes)", t, ok_tj,
            f"exit={cp.returncode}")
 
     cp = run("tailor", "-t", "Chef", "-c", "Restaurant", "-d", "Cook food in a kitchen.",
@@ -621,12 +619,10 @@ def live_checks(fx: dict[str, Path]) -> None:
         tc = sqlite3.connect(str(ISO_HOME / ".job-applicator" / "applications.db"))
         row = tc.execute("select funnel_status from jobs where job_url=?", (tfrom_url,)).fetchone()
         tc.close()
-        tfrom_ok = (
-            cp.returncode == 0 and row is not None and row[0] in ("tailored", "cover_letter")
-        ) or grounding_fail_closed(cp)
+        tfrom_ok = cp.returncode == 0 and row is not None and row[0] in ("tailored", "cover_letter")
     except Exception as exc:
         tfrom_exit = f"err:{exc}"
-    record("tailor: --from tailors or fails closed on grounding", t, tfrom_ok,
+    record("tailor: --from a stored job tailors it (marks it tailored)", t, tfrom_ok,
            f"exit={tfrom_exit}")
 
     # batch: clean multi-job run + artifacts
