@@ -40,7 +40,9 @@ AI-powered job application tool using Playwright browser automation with modern 
 
 Tests are auto-marked by location in `tests/conftest.py`, so marker selection works:
 
-- `pytest -m unit` — fast, isolated unit suite (no browser/GPU/vLLM). The green gate.
+- `bash scripts/green_gate.sh` — canonical fast gate: ruff check, ruff format --check, mypy
+  strict on `src/`, then `pytest -m unit`.
+- `pytest -m unit` — fast, isolated unit suite (no browser/GPU/vLLM).
   (`pytest tests/unit/` is equivalent.)
 - `pytest -m live` — the live tests at `tests/` root that need vLLM (`localhost:8000`) + GPU;
   kept out of the gate (full suite is green when vLLM is up).
@@ -48,6 +50,11 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
   with no vLLM/GPU — board `browser_policy()` → `_make_browser` wiring (construction-only, no real
   launch), PDF rendering, and the apply/batch loops against a real SQLite state store.
 - `pytest` — everything.
+- Matcher-sensitive changes use the private companion gate:
+  `.venv/bin/python scripts/check_matcher_gate_required.py --base <base>`, then
+  `.venv/bin/python scripts/eval_matching.py --required` when required.
+- Generated document artifacts can be smoke-checked with
+  `.venv/bin/python scripts/eval_document_quality.py --resume <txt> --cover-letter <txt>`.
 
 ## Target Boards
 
@@ -116,8 +123,13 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
   low-friction TUI must never turn an account action into a one-keypress accident.
 - **Automated CV saves fail closed.** `tailor --yes`, `tailor --json`, and the TUI one-shot
   `tailor_job` path refuse to save if grounding did not complete cleanly, if contact info disappears,
-  or if an ATS-compatible base résumé becomes incompatible. Interactive review can still accept a
-  surfaced warning because the user is the document-of-record authority.
+  or if an ATS-compatible base résumé becomes incompatible. CLI non-interactive runs prepend strict
+  source-only instructions and retry dirty grounding drafts before refusing. Interactive review can
+  still accept a surfaced warning because the user is the document-of-record authority.
+- **Doctor reports capability readiness.** `doctor` keeps its narrow blocking `ok` verdict tied to
+  LLM `/models` HTTP 200, but also renders capability readiness for AI generation, matching,
+  browser workflows, and PDF output so first-use dependency gaps are visible without changing the
+  historical exit semantics.
 
 ## GPU Memory Layout
 

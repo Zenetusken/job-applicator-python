@@ -1088,6 +1088,11 @@ def apply(
                                         when=when,
                                     )
                                 except Exception as exc:
+                                    if submit:
+                                        raise DocumentError(
+                                            "Requested PDF cover letter could not be generated "
+                                            f"for real submission: {exc}"
+                                        ) from exc
                                     err_console.print(
                                         f"[yellow]PDF cover letter failed for {job.title}: "
                                         f"{exc}[/yellow]"
@@ -2796,9 +2801,24 @@ def tailor(
                 raise typer.Exit(1 if as_json else 0)
 
         try:
+            effective_user_instructions = user_instructions
+            if yes:
+                strict_noninteractive = (
+                    "For non-interactive output, prioritize accuracy over embellishment. Use only "
+                    "facts, metrics, tools, duties, dates, employers, and outcomes explicitly "
+                    "present in the original résumé. Do not add new responsibilities, optional "
+                    "sections, aspirations, deployment claims, performance claims, collaboration "
+                    "claims, or outcomes. It is acceptable to make fewer changes if that is what "
+                    "keeps every claim source-backed."
+                )
+                effective_user_instructions = (
+                    f"{strict_noninteractive}\n\n{user_instructions}"
+                    if user_instructions
+                    else strict_noninteractive
+                )
             with err_console.status("Tailoring + verifying resume..."):
                 result = await tailor_engine.tailor_verified(
-                    resume_data, job, user_instructions, style, tone_profile
+                    resume_data, job, effective_user_instructions, style, tone_profile
                 )
             session.add_attempt(result)
 
@@ -2832,7 +2852,7 @@ def tailor(
                 reporter.record_error(str(exc))
             raise typer.Exit(1) from exc
 
-        await _tailor_workflow(
+        accepted_result = await _tailor_workflow(
             console,
             settings,
             job,
@@ -2849,6 +2869,8 @@ def tailor(
             cover_letter_template=cover_letter_template,
             category=category,
         )
+        if accepted_result is not None:
+            result = accepted_result
 
         # Reflect an accepted tailor in the funnel store so `status` shows it — only for
         # a job with a real identity (a stored --from job, or one given --url); a manual
@@ -3326,7 +3348,10 @@ def _render_doctor(report: DoctorReport) -> None:
                 "                 → restart with: [cyan]RESTART=1 scripts/serve-vllm.sh[/cyan]"
             )
     elif "localhost" in api_base or "127.0.0.1" in api_base:
-        console.print(f"  vLLM process   {warn} no local vLLM process found on port 8000")
+        console.print(
+            f"  vLLM process   {warn} no local vLLM process found on port "
+            f"{_api_base_port(llm.api_base)}"
+        )
         console.print("                 → start one: [cyan]scripts/serve-vllm.sh[/cyan]")
 
     emb = report.embeddings
@@ -3426,6 +3451,16 @@ def _render_doctor(report: DoctorReport) -> None:
     else:
         console.print(f"  PDF rendering  {warn} {escape(pdf.message)}")
 
+    console.print("\n[bold]Capability readiness[/bold]")
+    for label, readiness in (
+        ("AI generation", report.readiness.ai_generation),
+        ("Matching", report.readiness.matching),
+        ("Browser flows", report.readiness.browser_workflows),
+        ("PDF output", report.readiness.pdf_output),
+    ):
+        marker = good if readiness.ready else warn
+        console.print(f"  {label:<14} {marker} {escape(readiness.details)}")
+
     console.print()
     if report.ok and llm.model_available:
         console.print("[green]All systems go — AI features ready.[/green]\n")
@@ -3437,6 +3472,15 @@ def _render_doctor(report: DoctorReport) -> None:
         console.print(
             "[red]LLM endpoint unreachable — AI features will fail until it is up.[/red]\n"
         )
+
+
+def _api_base_port(api_base: str) -> int:
+    try:
+        from urllib.parse import urlparse
+
+        return urlparse(api_base).port or 8000
+    except Exception:
+        return 8000
 
 
 def _get_settings(headed: bool = False) -> AppSettings:

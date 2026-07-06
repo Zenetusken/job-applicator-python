@@ -47,6 +47,15 @@ def _tokens(text: str) -> set[str]:
     return set(_WORD_RE.findall(text.lower()))
 
 
+def _normalized_text(text: str) -> str:
+    """Normalize lightweight formatting so source-verbatim headings compare reliably."""
+    normalized = text.lower()
+    normalized = normalized.replace("–", "-").replace("—", "-")
+    normalized = re.sub(r"[*_`]", "", normalized)
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized.strip()
+
+
 def _pcts(text: str) -> set[str]:
     """Percentages only (e.g. '95%')."""
     return set(_PCT_RE.findall(text))
@@ -112,7 +121,7 @@ def _looks_like_contact_fragment(text: str) -> bool:
     )
 
 
-def coverage_gaps(generated: str, claims: list[ClaimCheck]) -> list[str]:
+def coverage_gaps(generated: str, claims: list[ClaimCheck], source: str = "") -> list[str]:
     """Sentences of *generated* that no enumerated claim covers (token-overlap).
 
     The structural miss-direction: a fabrication the verifier never enumerated is neither grounded
@@ -122,8 +131,12 @@ def coverage_gaps(generated: str, claims: list[ClaimCheck]) -> list[str]:
     claim_tokens: set[str] = set()
     for check in claims:
         claim_tokens |= _tokens(check.claim)
+    normalized_source = _normalized_text(source)
     return [
-        s for s in _sentences(generated) if _overlap(_tokens(s), claim_tokens) < _COVERAGE_OVERLAP
+        s
+        for s in _sentences(generated)
+        if _overlap(_tokens(s), claim_tokens) < _COVERAGE_OVERLAP
+        and _normalized_text(s) not in normalized_source
     ]
 
 
@@ -141,7 +154,7 @@ def audit_report(report: VerificationReport, generated: str, source: str) -> Gro
             unsupported.append(check.model_copy(update={"grounded": False, "note": reason}))
     return GroundingReport(
         unsupported=unsupported,
-        coverage_gaps=coverage_gaps(generated, report.claims),
+        coverage_gaps=coverage_gaps(generated, report.claims, source),
     )
 
 

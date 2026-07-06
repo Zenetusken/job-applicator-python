@@ -3,15 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import atexit
-import multiprocessing as mp
 import re
-import threading
 import uuid
-from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import Any, cast
 
 from jinja2 import Environment, FileSystemLoader, PackageLoader, TemplateNotFound
 
@@ -203,9 +199,6 @@ def _build_cover_letter_format_prompt(
 class PDFRenderer:
     """Render tailored résumés and cover letters to PDF via Typst."""
 
-    _executor: ClassVar[ProcessPoolExecutor | None] = None
-    _executor_lock: ClassVar[threading.Lock] = threading.Lock()
-
     def __init__(
         self,
         settings: AppSettings,
@@ -221,21 +214,9 @@ class PDFRenderer:
         self._llm_runtime = LLMRuntime.from_config(settings.llm_resilience, name="pdf_renderer")
 
     @classmethod
-    def _get_executor(cls) -> ProcessPoolExecutor:
-        with cls._executor_lock:
-            if cls._executor is None or getattr(cls._executor, "_processes", None) is None:
-                cls._executor = ProcessPoolExecutor(
-                    max_workers=2, mp_context=mp.get_context("spawn")
-                )
-            return cls._executor
-
-    @classmethod
     def shutdown(cls) -> None:
-        """Shut down the shared process pool, if any."""
-        with cls._executor_lock:
-            if cls._executor is not None:
-                cls._executor.shutdown(wait=True)
-                cls._executor = None
+        """Compatibility no-op for older callers that explicitly shut down the renderer."""
+        return None
 
     async def _get_client(self) -> Any:
         if self._client is not None:
@@ -470,10 +451,7 @@ class PDFRenderer:
         return output_path
 
     async def _compile_pdf(self, source_path: Path, output_path: Path) -> None:
-        executor = self._get_executor()
-        await asyncio.get_running_loop().run_in_executor(
-            executor, _compile_typst, source_path, output_path
-        )
+        _compile_typst(source_path, output_path)
 
     def _resume_output_path(self, tailored: TailoredResume, template: str) -> Path:
         now = datetime.now()
@@ -494,9 +472,6 @@ class PDFRenderer:
             f"_{now.microsecond:06d}_{template}"
         )
         return self.output_dir / f"{base}.pdf"
-
-
-atexit.register(PDFRenderer.shutdown)
 
 
 def _compile_typst(source_path: Path, output_path: Path) -> None:

@@ -46,7 +46,9 @@ from job_applicator.documents.pdf_renderer import _typst_escape
 from job_applicator.embeddings.cache import probe_hf_model_cache
 from job_applicator.models import (
     BrowserCheck,
+    CapabilityReadiness,
     ConfigCheck,
+    DoctorReadiness,
     DoctorReport,
     EmbeddingsCheck,
     LLMEndpointCheck,
@@ -369,8 +371,22 @@ def check_vllm_process(settings: AppSettings) -> VLLMProcessCheck:
     if "localhost" not in api_base and "127.0.0.1" not in api_base:
         return VLLMProcessCheck(running=False)
 
-    pid: int | None = None
-    # Try ss first, then netstat, then lsof as a last resort.
+    pid = _listening_pid(port)
+    if not pid or not Path(f"/proc/{pid}").exists():
+        return VLLMProcessCheck(running=False)
+
+    cmdline = _proc_cmdline(pid)
+    binary_path = cmdline.split()[0] if cmdline else None
+    if "vllm serve" not in cmdline:
+        return VLLMProcessCheck(
+            running=True, pid=pid, command=cmdline, binary_path=binary_path, compatible=False
+        )
+
+    return _assess_vllm_command(pid=pid, cmdline=cmdline, settings=settings, port=port)
+
+
+def _listening_pid(port: int) -> int | None:
+    """Return the PID listening on a local TCP port, if visible."""
     for cmd in (
         f"ss -tlnp 2>/dev/null | grep ':{port} '",
         f"netstat -tlnp 2>/dev/null | grep ':{port} '",
@@ -382,35 +398,39 @@ def check_vllm_process(settings: AppSettings) -> VLLMProcessCheck:
             result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)  # noqa: S602
             if result.returncode == 0 and result.stdout.strip():
                 line = result.stdout.strip().splitlines()[0]
-                # ss/netstat: pid=1234; lsof: last column is "1234/python*"
-                for token in line.replace(",", " ").split():
-                    if token.startswith("pid="):
-                        try:
-                            pid = int(token.split("=")[1])
-                        except ValueError:
-                            pass
-                    elif token.isdigit():
-                        pid = int(token)
+                pid = _parse_listening_pid(line)
                 if pid:
-                    break
+                    return pid
         except Exception as exc:
             logger.debug("vLLM process probe command failed: %s", exc)
             continue
+    return None
 
-    if not pid or not Path(f"/proc/{pid}").exists():
-        return VLLMProcessCheck(running=False)
 
+def _parse_listening_pid(line: str) -> int | None:
+    """Parse PID output from ss/netstat/lsof lines."""
+    for token in line.replace(",", " ").replace("/", " ").split():
+        if token.startswith("pid="):
+            try:
+                return int(token.split("=")[1])
+            except ValueError:
+                continue
+        if token.isdigit():
+            return int(token)
+    return None
+
+
+def _proc_cmdline(pid: int) -> str:
     try:
-        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode().strip()
+        return Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode().strip()
     except Exception:
-        cmdline = ""
+        return ""
 
+
+def _assess_vllm_command(
+    *, pid: int, cmdline: str, settings: AppSettings, port: int
+) -> VLLMProcessCheck:
     binary_path = cmdline.split()[0] if cmdline else None
-    if "vllm serve" not in cmdline:
-        return VLLMProcessCheck(
-            running=True, pid=pid, command=cmdline, binary_path=binary_path, compatible=False
-        )
-
     model = settings.llm.model.removeprefix("openai/")
     desired_parser = _auto_tool_parser(model)
     reasons: list[str] = []
@@ -471,6 +491,52 @@ def check_pdf_rendering() -> PDFRenderingCheck:
             return PDFRenderingCheck(ok=False, message=f"typst compile failed: {exc}")
 
 
+def build_readiness(
+    *,
+    llm: LLMEndpointCheck,
+    embeddings: EmbeddingsCheck,
+    browser: BrowserCheck,
+    config: ConfigCheck,
+    pdf_rendering: PDFRenderingCheck,
+) -> DoctorReadiness:
+    """Build capability-level readiness without changing DoctorReport.ok semantics."""
+    llm_ready = llm.reachable and llm.http_status == 200
+    ai_details = "LLM endpoint reachable" if llm_ready else "LLM endpoint is not ready"
+
+    matching_ready = embeddings.cached
+    matching_details = (
+        "embedding model cached locally"
+        if matching_ready
+        else "embedding model will need first-use network download"
+    )
+
+    browser_ready = browser.playwright_installed and (
+        bool(browser.chromium_executable) or bool(browser.host_chrome)
+    )
+    browser_details = (
+        "browser engine available"
+        if browser_ready
+        else "Playwright/Chromium browser engine is not ready"
+    )
+
+    pdf_ready = pdf_rendering.ok
+    pdf_details = pdf_rendering.message
+
+    if not config.resume_path_set:
+        matching_ready = False
+        matching_details += "; resume_path is not configured"
+    elif not config.resume_path_exists:
+        matching_ready = False
+        matching_details += "; configured resume_path does not exist"
+
+    return DoctorReadiness(
+        ai_generation=CapabilityReadiness(ready=llm_ready, details=ai_details),
+        matching=CapabilityReadiness(ready=matching_ready, details=matching_details),
+        browser_workflows=CapabilityReadiness(ready=browser_ready, details=browser_details),
+        pdf_output=CapabilityReadiness(ready=pdf_ready, details=pdf_details),
+    )
+
+
 async def run_diagnostics(settings: AppSettings) -> DoctorReport:
     """Run every check and assemble the report (only an HTTP-200 /models is blocking).
 
@@ -480,13 +546,26 @@ async def run_diagnostics(settings: AppSettings) -> DoctorReport:
     llm, browser = await asyncio.gather(
         check_llm_endpoint(settings.llm), check_browser(settings.browser.channel)
     )
+    embeddings = check_embeddings(settings.embedding)
+    self_host = check_self_host()
+    system = check_system_binaries()
+    config = check_config(settings)
+    vllm_process = check_vllm_process(settings)
+    pdf_rendering = check_pdf_rendering()
     return DoctorReport(
         llm=llm,
-        embeddings=check_embeddings(settings.embedding),
-        self_host=check_self_host(),
+        embeddings=embeddings,
+        self_host=self_host,
         browser=browser,
-        system=check_system_binaries(),
-        config=check_config(settings),
-        vllm_process=check_vllm_process(settings),
-        pdf_rendering=check_pdf_rendering(),
+        system=system,
+        config=config,
+        vllm_process=vllm_process,
+        pdf_rendering=pdf_rendering,
+        readiness=build_readiness(
+            llm=llm,
+            embeddings=embeddings,
+            browser=browser,
+            config=config,
+            pdf_rendering=pdf_rendering,
+        ),
     )

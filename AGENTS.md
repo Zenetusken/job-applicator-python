@@ -15,10 +15,8 @@ pip install -e ".[dev]"
 # First-run setup
 job-applicator config-init                  # Create a starter config.toml
 
-# Lint + format + typecheck (run in this order)
-ruff check src/ tests/
-ruff format --check src/ tests/
-mypy src/   # strict on src/; tests are checked by ruff only
+# Fast quality gate (canonical: lint + format + typecheck + unit tests)
+bash scripts/green_gate.sh
 
 # Auto-fix lint/format
 ruff check --fix src/ tests/
@@ -30,12 +28,14 @@ bash scripts/release.sh <version>   # bump version, update CHANGELOG.md, tag, bu
 # Tests — ~1370 fast unit tests (the green gate); ~1428 total = ~1370 unit + 23 integration + 35 live
 pytest -m unit -v               # or: pytest tests/unit/ -v   (auto-marked by location)
 pytest -m unit -v -k test_name  # single test
-python scripts/eval_matching.py # REQUIRED after matcher/skill/target-role scoring changes when the private gold set exists
+python scripts/check_matcher_gate_required.py --base HEAD
+python scripts/eval_matching.py --required # REQUIRED after matcher/skill/target-role scoring changes
+python scripts/eval_document_quality.py --resume tailored.txt --cover-letter cover.txt --keyword Python
 
 # CLI
 job-applicator                              # bare tty invocation opens the TUI
 job-applicator --help
-job-applicator doctor                       # Health check: LLM, embeddings, browser, system bins, config, résumé (identity/age/skills), self-host
+job-applicator doctor                       # Health + capability readiness: AI, matching, browser, PDF
 job-applicator config-init                  # Generate config.toml
 job-applicator login                        # Headed sign-in once; reuse session headlessly
 job-applicator import-cookies --from-browser chrome
@@ -139,8 +139,10 @@ src/job_applicator/
 - **litellm banners are suppressed.** `utils.llm.quiet_litellm()` runs before litellm calls to keep
   feedback/help banners and INFO logs off stdout/stderr.
 - **Résumé tailoring has hallucination guards.** `_validate_skills()`, `_strip_hallucinated_tools()`,
-  and `_strip_hallucinated_education()` in `documents/resume_tailor.py` keep the output aligned
-  with the original résumé. Skill/tool matching uses fuzzy, non-greedy logic in
+  `_strip_hallucinated_education()`, metric/optional-section cleanup, and low-evidence bullet
+  filtering in `documents/resume_tailor.py` keep the output aligned with the original résumé.
+  Non-interactive tailoring (`--yes`/`--json`) prepends strict source-only instructions and retries
+  dirty grounding drafts before failing closed. Skill/tool matching uses fuzzy, non-greedy logic in
   `embeddings/matching.py`.
 - **Grounding verifier is the language-agnostic honesty layer.** `documents/grounding_verifier.py`:
   an LLM enumerates each claim in a generated doc + cites the SOURCE line; a deterministic audit
@@ -160,7 +162,7 @@ src/job_applicator/
   French gets an in-language sign-off ("Cordialement,"), a localized PDF date, and recognized French
   closings in `documents/sign_off.py`.
 - **Tailoring includes a date audit.** `ResumeDateValidator` checks chronological ordering,
-  staleness, and education-date age before generating output.
+  staleness, and advisory employment gap/overlap findings before generating output.
 - **Skills are normalized and hard-negative filtered before matching/validation.**
   `skills/normalization.py` canonicalizes aliases (`Python 3` → `Python`, `reactjs` → `React`) and
   drops generic traits (`team player`, `communication skills`) from skill coverage scoring and
@@ -230,8 +232,10 @@ src/job_applicator/
   The application is still not submitted. Use `--no-cover-letter` to skip generation.
 - **Apply dry-run validation returns an `ApplicationResult` with a `DryRunValidation` field.** The
   nested object shows whether the Easy Apply button, form fields, résumé upload, cover-letter
-  field, and final Submit step were reached. `job-applicator apply --validate` exits non-zero if
-  any dry run fails to reach Submit.
+  field, and final Submit step were reached. It also records matched advance/submit selectors,
+  advance step count, modal title, empty required fields, disabled-submit evidence, and debug
+  artifact paths when available. `job-applicator apply --validate` exits non-zero if any dry run
+  fails to reach Submit.
 - **`search` persists discovered jobs.** Discovered listings flow into `jobs_store.py` and are
   visible via `status` and the TUI.
 - **Default `llm.max_tokens` is `4096`**, matching `config.example.toml`. 4096 fits full résumé
@@ -242,7 +246,8 @@ src/job_applicator/
   `JOB_APPLICATOR_CONFIG_FILE`; a missing file is a no-op.
 - **PDF rendering requires the optional `[pdf]` extra.** Install with
   `pip install -e ".[pdf]"` (pulls in `typst`). Without it, `--format pdf` produces a clear
-  error message and `doctor` reports PDF rendering as unavailable.
+  error message and `doctor` reports PDF rendering as unavailable. `PDFRenderer` compiles Typst
+  directly in-process; spawned executor compile paths previously hung in local integration runs.
 - **PDF templates live in `src/job_applicator/templates/`** (Typst `.typ` files) and are packaged
   into the wheel via `[tool.hatch.build.targets.wheel] include`. Built-ins: `modern`, `classic`,
   `minimal`. Set `output.template_dir` to a directory containing `cv/<name>.typ` and/or
@@ -305,10 +310,18 @@ that generate cover letters. The default dry-run `apply` does not run the ATS pr
   them manually.
 - Matcher changes have a private-data companion gate: run `python scripts/eval_matching.py` after
   edits to `embeddings/matching.py`, skill extraction/normalization/grounding, score weights,
-  thresholds, or `[matching] target_roles` behavior. The script reads
+  thresholds, or `[matching] target_roles` behavior. Use
+  `python scripts/check_matcher_gate_required.py --base <base>` to detect whether the gate is
+  required. The eval script reads
   `~/.job-applicator/matching-eval/gold-set.csv` (override with `GOLD_SET_CSV`) and the live funnel
-  DB. Missing private data is a documented skip; incomplete gold-set coverage exits non-zero so a
-  partial funnel cannot certify a matcher change.
+  DB. Use `--required` for matcher-sensitive changes: missing private data, missing résumé, empty
+  labels, no labeled jobs, or incomplete coverage exit non-zero so absence of evidence cannot
+  certify a matcher change.
+- Generated document packet quality has a lightweight artifact gate:
+  `python scripts/eval_document_quality.py --resume <txt> --cover-letter <txt> --keyword <job-term>`.
+  It checks obvious quality regressions (missing contact/sections/sign-off, placeholders, markdowny
+  cover letters, repetition warnings, and basic job-keyword coverage). It complements, not replaces,
+  grounding and human review.
 - Tests use fixtures from `tests/conftest.py`.
 - Embedding tests mock the model (CPU fallback).
 

@@ -55,6 +55,26 @@ experience/education (#14)** — resolved, see Shipped.)
 
 ## Shipped
 
+- **Trustworthy automation hardening bundle — readiness, evidence, and gates** (2026-07-06).
+  Completed the next out-of-scope hardening queue in low-risk layers: `doctor` now emits
+  capability readiness for AI generation, matching, browser workflows, and PDF output without
+  changing its historical blocking `ok` semantics; vLLM process parsing is unit-tested and the
+  rendered local-port hint uses the configured port. The green gate is canonicalized at
+  `scripts/green_gate.sh`, with agent/release/CI wrappers delegating to it. Matcher discipline now
+  has `scripts/check_matcher_gate_required.py` plus `scripts/eval_matching.py --required`, which
+  refuses to certify missing/incomplete private gold-set evidence. Easy Apply dry-run validation now
+  records selector provenance, advance steps, modal title, empty required fields, disabled-submit
+  evidence, and debug artifact paths; failed LinkedIn apply validation writes text, HTML, and
+  screenshot diagnostics. Document hardening added `scripts/eval_document_quality.py`, real-submit
+  fail-closed behavior when explicitly requested PDF cover letters cannot render, advisory
+  employment gap/overlap findings in `ResumeDateValidator`, and ATS round-trip coverage for rendered
+  résumé PDFs. Final validation tightened non-interactive tailoring with strict source-only prompts,
+  dirty-grounding retries, source-verbatim grounding coverage cleanup, and deterministic filtering
+  of unsupported metrics, optional sections, and low-evidence bullets; PDF rendering now compiles
+  Typst directly after spawned executor compilation was found to hang in integration validation.
+  Validation: green gate green (`1418 passed`), full isolated QA sanity green (`PASS=64`), PDF
+  rendering integration green, required matcher eval green (Spearman `+0.859`).
+
 - **CV/cover-letter trust audit — automated document gates tightened** (2026-07-06). End-to-end audit
   of the CV + cover-letter generation surfaces found and fixed two document-path defects: interactive
   cover-letter refinement now gets the same deterministic sign-off repair as first generation, and the

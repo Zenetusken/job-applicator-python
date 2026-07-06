@@ -22,12 +22,13 @@ nothing broke. It mirrors the gate the project documents in `AGENTS.md` / `CLAUD
 ## Run it
 
 ```bash
-bash .claude/skills/green-gate/scripts/gate.sh
+bash scripts/green_gate.sh
 ```
 
-The script finds the repo root itself (works from any working directory) and uses the project
-`.venv`. **Exit 0 = GREEN** (all stages passed). Non-zero = a stage failed; the output names the
-stage and, for the auto-fixable ones, the exact fix command.
+The agent wrapper at `.claude/skills/green-gate/scripts/gate.sh` delegates to this canonical
+project script. The script finds the repo root itself (works from any working directory) and uses
+the project `.venv`. **Exit 0 = GREEN** (all stages passed). Non-zero = a stage failed; the output
+names the stage and, for the auto-fixable ones, the exact fix command.
 
 ## Interpreting the result + what to do on failure
 

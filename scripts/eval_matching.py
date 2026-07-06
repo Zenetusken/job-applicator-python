@@ -24,6 +24,7 @@ when no labeled gold set exists.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import csv
 import os
@@ -62,7 +63,12 @@ def _spearman(a: list[float], b: list[float]) -> float:
     return cov / (va * vb) if va and vb else 0.0
 
 
-def _run() -> int:
+def _not_certified(message: str, *, required: bool) -> int:
+    print(message)
+    return 2 if required else 0
+
+
+def _run(*, required: bool = False) -> int:
     gold_csv = Path(
         os.environ.get(
             "GOLD_SET_CSV",
@@ -70,12 +76,14 @@ def _run() -> int:
         )
     )
     if not gold_csv.exists():
-        print(f"no gold set at {gold_csv} — nothing to evaluate (not a failure)")
-        return 0
+        return _not_certified(
+            f"no gold set at {gold_csv} — matcher is not certified", required=required
+        )
     rows = [r for r in csv.DictReader(open(gold_csv, encoding="utf-8")) if r["relevant"].strip()]
     if not rows:
-        print("gold set has no labels yet — nothing to evaluate (not a failure)")
-        return 0
+        return _not_certified(
+            "gold set has no labels yet — matcher is not certified", required=required
+        )
     labels_by_url = {r["url"]: int(r["relevant"]) for r in rows}
 
     from job_applicator.config import AppSettings
@@ -85,8 +93,9 @@ def _run() -> int:
 
     settings = AppSettings()
     if not settings.resume_path:
-        print("no resume_path configured — cannot score (not a failure)")
-        return 0
+        return _not_certified(
+            "no resume_path configured — matcher is not certified", required=required
+        )
     resume = ResumeLoader().load(settings.resume_path)
 
     # Fetch the WHOLE funnel (a high cap, not len+N — a restrictive limit can drop labeled jobs
@@ -95,8 +104,9 @@ def _run() -> int:
     jobs = [s.job for s in stored if str(s.job.url) in labels_by_url]
     missing = len(labels_by_url) - len(jobs)
     if not jobs:
-        print("no labeled jobs found in the funnel DB — nothing to evaluate (not a failure)")
-        return 0
+        return _not_certified(
+            "no labeled jobs found in the funnel DB — matcher is not certified", required=required
+        )
     if missing:
         # Partial coverage must NOT exit 0 as "validated": a regression on an absent labeled job
         # would pass unseen. Refuse to certify (distinct exit 2) rather than grade the subset.
@@ -162,4 +172,11 @@ def _run() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(_run())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--required",
+        action="store_true",
+        help="Exit non-zero when private gold-set inputs are unavailable or incomplete.",
+    )
+    args = parser.parse_args()
+    sys.exit(_run(required=args.required))

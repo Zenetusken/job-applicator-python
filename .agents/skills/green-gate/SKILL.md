@@ -17,17 +17,18 @@ The single command that decides whether a change is shippable in **job-applicato
 
 **ruff (lint) → ruff format --check → mypy (strict, `src/`) → pytest -m unit**, in that order,
 **fail-fast**. Run it before every commit / push / PR, and after any code change to confirm
-nothing broke. It mirrors the gate the project documents in `AGENTS.md` / `AGENTS.md`.
+nothing broke. It mirrors the gate the project documents in `AGENTS.md` / `CLAUDE.md`.
 
 ## Run it
 
 ```bash
-bash .Codex/skills/green-gate/scripts/gate.sh
+bash scripts/green_gate.sh
 ```
 
-The script finds the repo root itself (works from any working directory) and uses the project
-`.venv`. **Exit 0 = GREEN** (all stages passed). Non-zero = a stage failed; the output names the
-stage and, for the auto-fixable ones, the exact fix command.
+The agent wrapper at `.agents/skills/green-gate/scripts/gate.sh` delegates to this canonical
+project script. The script finds the repo root itself (works from any working directory) and uses
+the project `.venv`. **Exit 0 = GREEN** (all stages passed). Non-zero = a stage failed; the output
+names the stage and, for the auto-fixable ones, the exact fix command.
 
 ## Interpreting the result + what to do on failure
 
@@ -62,10 +63,13 @@ The bundled script pins the scope so every run means the same thing.
   harness — those are heavier and situational (use the `qa-sanity` skill at an arc's end or when
   asked to sanity-check the whole CLI). Green gate = every change; qa-sanity = deep check.
 - Matcher/scoring changes have a **private-data companion gate**: run
-  `.venv/bin/python scripts/eval_matching.py` after edits to `embeddings/matching.py`, skill
+  `.venv/bin/python scripts/check_matcher_gate_required.py --base <base>` to detect whether the
+  companion gate is required, then run `.venv/bin/python scripts/eval_matching.py --required`
+  after edits to `embeddings/matching.py`, skill
   extraction/normalization/grounding, score weights, thresholds, or `[matching] target_roles`
   behavior. This is not part of the universal green gate because it depends on the user's private
-  `~/.job-applicator/matching-eval/gold-set.csv` and live funnel DB; if that data exists, a
-  non-zero result means the matcher change is not certified.
+  `~/.job-applicator/matching-eval/gold-set.csv` and live funnel DB; `--required` exits non-zero
+  when those inputs are missing or incomplete, so a matcher-sensitive change cannot be certified by
+  absence of evidence.
 - If the `.venv` is missing the script exits **2** with a pointer — set it up via the
   `run-job-applicator` skill first, then re-run.

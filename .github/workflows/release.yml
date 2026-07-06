@@ -26,11 +26,7 @@ jobs:
           pip install -e ".[dev,embeddings]"
 
       - name: Run quality gate
-        run: |
-          ruff check src/ tests/
-          ruff format --check src/ tests/
-          mypy src/
-          pytest -m unit -q
+        run: RUFF=ruff MYPY=mypy PY=python bash scripts/green_gate.sh
 
       - name: Build distribution
         run: python -m build

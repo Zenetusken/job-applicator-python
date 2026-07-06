@@ -63,6 +63,7 @@ async def _apply_to_jobs(
     app_results: list[ApplicationResult] = []
     failed_letters = cover_letter_failures or set()
     did_apply = False
+    skipped_for_failed_letters = 0
     for job in jobs[:limit]:
         job_url = str(job.url)
         if submit and state.has_applied(
@@ -99,6 +100,7 @@ async def _apply_to_jobs(
                     ),
                 )
             )
+            skipped_for_failed_letters += 1
             continue
 
         if submit:
@@ -228,6 +230,9 @@ async def _apply_to_jobs(
         counts = Counter(r.status.value for r in app_results)
         summary = ", ".join(f"{n} {status}" for status, n in sorted(counts.items()))
         console.print(f"\n{summary}")
+
+    if submit and app_results and skipped_for_failed_letters == len(app_results):
+        raise typer.Exit(1)
 
     if validate and validation_failed:
         console.print(

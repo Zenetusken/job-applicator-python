@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from playwright.async_api import Page
 
@@ -33,19 +34,19 @@ _DEBUG_DIR = Path.home() / ".job-applicator" / "debug"
 
 # LinkedIn's resume upload accepts these document types.
 _RESUME_UPLOAD_TYPES = (".pdf", ".doc", ".docx")
-_ADVANCE_BUTTON_SELECTOR = (
-    'button:has-text("Next"), '
-    'button:has-text("Continue"), '
-    'button[aria-label*="Next" i], '
-    'button[aria-label*="Continue" i], '
-    'button:has-text("Review"), '
-    'button[aria-label*="Review" i]'
+_ADVANCE_BUTTON_SELECTORS = (
+    'button:has-text("Next")',
+    'button:has-text("Continue")',
+    'button[aria-label*="Next" i]',
+    'button[aria-label*="Continue" i]',
+    'button:has-text("Review")',
+    'button[aria-label*="Review" i]',
 )
-_SUBMIT_BUTTON_SELECTOR = (
-    'button:has-text("Submit application"), '
-    'button:has-text("Submit"), '
-    'button[aria-label*="Submit application" i], '
-    'button[aria-label*="Submit" i]'
+_SUBMIT_BUTTON_SELECTORS = (
+    'button:has-text("Submit application")',
+    'button:has-text("Submit")',
+    'button[aria-label*="Submit application" i]',
+    'button[aria-label*="Submit" i]',
 )
 
 
@@ -76,6 +77,15 @@ def _resume_contact(config: AppSettings) -> tuple[str, str]:
         logger.debug("Could not parse resume contact for Easy Apply autofill: %s", exc)
         return "", ""
     return resume.email, resume.phone
+
+
+async def _first_selector(page: Page, selectors: tuple[str, ...]) -> tuple[Any | None, str]:
+    """Return the first matching element and the selector that found it."""
+    for selector in selectors:
+        element = await page.query_selector(selector)
+        if element:
+            return element, selector
+    return None, ""
 
 
 class LinkedInApplicator(BaseApplicator):
@@ -194,9 +204,11 @@ class LinkedInApplicator(BaseApplicator):
 
         # Advance through multi-step forms (Next / Review) — never Submit here.
         for _ in range(6):
-            advance = await page.query_selector(_ADVANCE_BUTTON_SELECTOR)
+            advance, selector = await _first_selector(page, _ADVANCE_BUTTON_SELECTORS)
             if not advance:
                 break
+            validation.advance_steps += 1
+            validation.advance_selectors.append(selector)
             await advance.click()
             await random_delay(0.5, 1.0)
             more_filled, more_errors = await self._fill_form_fields(page)
@@ -212,7 +224,9 @@ class LinkedInApplicator(BaseApplicator):
         # Match the final submit by either label ("Submit application" is the
         # usual text; fall back to a bare "Submit") so a label change/locale
         # doesn't make a real application silently fail to send.
-        submit_btn = await page.query_selector(_SUBMIT_BUTTON_SELECTOR)
+        validation.modal_title = await self._modal_title(page)
+        validation.required_empty_fields = await self._required_empty_fields(page)
+        submit_btn, selector = await _first_selector(page, _SUBMIT_BUTTON_SELECTORS)
         if not submit_btn:
             dump = await self._dump_apply_debug(page, job, validation)
             return ApplicationResult(
@@ -226,6 +240,8 @@ class LinkedInApplicator(BaseApplicator):
             )
 
         validation.reached_submit = True
+        validation.submit_selector = selector
+        validation.disabled_submit_reason = await self._disabled_button_reason(submit_btn)
 
         if not submit:
             logger.info(
@@ -287,6 +303,66 @@ class LinkedInApplicator(BaseApplicator):
         await chooser.set_files(str(resume_path))
         return True
 
+    async def _modal_title(self, page: Page) -> str:
+        title, _selector = await _first_selector(
+            page,
+            (
+                "h2",
+                "[role='dialog'] h2",
+                "[role='dialog'] h3",
+                ".artdeco-modal__header h2",
+            ),
+        )
+        if not title:
+            return ""
+        try:
+            text = await title.inner_text()
+        except Exception:
+            return ""
+        if not isinstance(text, str):
+            return ""
+        return text.strip().replace("\n", " ")
+
+    async def _required_empty_fields(self, page: Page) -> list[str]:
+        fields = await page.query_selector_all(
+            "input[required], textarea[required], select[required], "
+            "input[aria-required='true'], textarea[aria-required='true'], "
+            "select[aria-required='true']"
+        )
+        missing: list[str] = []
+        for field in fields[:40]:
+            try:
+                value = await field.input_value()
+            except Exception:
+                value = ""
+            if isinstance(value, str) and value.strip():
+                continue
+            label = await self._field_label(field)
+            missing.append(label or "required field")
+        return missing
+
+    async def _field_label(self, field: Any) -> str:
+        for attr in ("aria-label", "placeholder", "name", "id"):
+            try:
+                value = await field.get_attribute(attr)
+            except Exception:
+                value = None
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
+    async def _disabled_button_reason(self, button: Any) -> str:
+        try:
+            disabled = await button.get_attribute("disabled")
+            aria_disabled = await button.get_attribute("aria-disabled")
+        except Exception:
+            return ""
+        if isinstance(disabled, str):
+            return "submit button has disabled attribute"
+        if isinstance(aria_disabled, str) and aria_disabled.lower() == "true":
+            return "submit button is aria-disabled"
+        return ""
+
     async def _dump_apply_debug(
         self, page: Page, job: JobListing, validation: DryRunValidation
     ) -> Path | None:
@@ -298,6 +374,8 @@ class LinkedInApplicator(BaseApplicator):
                 f"linkedin-apply-{safe_filename_slug(job.company)}-{safe_filename_slug(job.title)}"
             )
             path = _DEBUG_DIR / f"{slug}.txt"
+            html_path = _DEBUG_DIR / f"{slug}.html"
+            screenshot_path = _DEBUG_DIR / f"{slug}.png"
             buttons = await page.query_selector_all("button")
             inputs = await page.query_selector_all("input, textarea, select")
             lines = [
@@ -305,6 +383,12 @@ class LinkedInApplicator(BaseApplicator):
                 f"job: {job.title} at {job.company}",
                 f"reached_submit: {validation.reached_submit}",
                 f"resume_uploaded: {validation.resume_uploaded}",
+                f"advance_steps: {validation.advance_steps}",
+                f"advance_selectors: {', '.join(validation.advance_selectors) or 'none'}",
+                f"submit_selector: {validation.submit_selector or 'none'}",
+                f"modal_title: {validation.modal_title or 'none'}",
+                f"required_empty_fields: {', '.join(validation.required_empty_fields) or 'none'}",
+                f"disabled_submit_reason: {validation.disabled_submit_reason or 'none'}",
                 f"fields_filled: {', '.join(validation.fields_filled) or 'none'}",
                 f"fill_errors: {', '.join(validation.fill_errors) or 'none'}",
                 "",
@@ -336,6 +420,19 @@ class LinkedInApplicator(BaseApplicator):
                     tag = "field"
                 lines.append(f"{i}. {tag} {' '.join(attrs) or '<no attrs>'}")
             path.write_text("\n".join(lines), encoding="utf-8")
+            validation.debug_artifacts.append(str(path))
+            try:
+                html = await page.content()
+                if isinstance(html, str):
+                    html_path.write_text(html, encoding="utf-8")
+                    validation.debug_artifacts.append(str(html_path))
+            except Exception as exc:
+                logger.debug("Could not write LinkedIn Easy Apply HTML dump: %s", exc)
+            try:
+                await screenshot(page, screenshot_path)
+                validation.debug_artifacts.append(str(screenshot_path))
+            except Exception as exc:
+                logger.debug("Could not write LinkedIn Easy Apply screenshot: %s", exc)
             logger.warning("LinkedIn Easy Apply debug dump written to %s", path)
             return path
         except Exception as exc:

@@ -51,6 +51,7 @@ def _drive(
     initial_text: str = "INITIAL",
     refined_text: str = "REFINED",
     initial_grounding_report: GroundingReport | None | object = ...,
+    refined_grounding_report: GroundingReport | None | object = ...,
 ):
     """Drive the `tailor` command through its interactive loop.
 
@@ -63,7 +64,10 @@ def _drive(
     if initial_grounding_report is not ...:
         initial_kwargs["grounding_report"] = initial_grounding_report
     engine.tailor_verified = AsyncMock(return_value=_tailored(initial_text, **initial_kwargs))
-    engine.refine_verified = AsyncMock(return_value=_tailored(refined_text))
+    refined_kwargs = {}
+    if refined_grounding_report is not ...:
+        refined_kwargs["grounding_report"] = refined_grounding_report
+    engine.refine_verified = AsyncMock(return_value=_tailored(refined_text, **refined_kwargs))
 
     audit = MagicMock(
         entries=[],
@@ -281,7 +285,7 @@ def test_tailor_yes_refuses_auto_accept_without_grounding(
 def test_tailor_yes_refuses_auto_accept_with_unsupported_claims(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A non-clean verifier report blocks non-interactive save."""
+    """A non-clean verifier report still blocks non-interactive save after retry."""
     unsupported = ClaimCheck(claim="Invented CISSP", grounded=False, note="source is silent")
     result, _engine, _cl = _drive(
         monkeypatch,
@@ -289,11 +293,38 @@ def test_tailor_yes_refuses_auto_accept_with_unsupported_claims(
         [],
         yes=True,
         initial_grounding_report=GroundingReport(unsupported=[unsupported]),
+        refined_grounding_report=GroundingReport(unsupported=[unsupported]),
     )
 
     assert result.exit_code == 1
     assert "unsupported or unchecked claim" in result.output
     assert not list(tmp_path.glob("tailored_*.txt"))
+
+
+def test_tailor_yes_retries_dirty_grounding_once_then_saves(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Non-interactive tailoring retries dirty first drafts before failing closed."""
+    import job_applicator.cli as cli
+
+    unsupported = ClaimCheck(claim="Invented CISSP", grounded=False, note="source is silent")
+    result, engine, _cl = _drive(
+        monkeypatch,
+        tmp_path,
+        [],
+        yes=True,
+        initial_text="DIRTY",
+        refined_text="CLEAN",
+        initial_grounding_report=GroundingReport(unsupported=[unsupported]),
+    )
+
+    assert result.exit_code == 0, result.output
+    txts = list(tmp_path.glob("tailored_*.txt"))
+    assert len(txts) == 1 and txts[0].read_text(encoding="utf-8") == "CLEAN"
+    engine.refine_verified.assert_awaited_once()
+    assert "Remove every unsupported" in engine.refine_verified.await_args.args[2]
+    assert "explicitly present in the original résumé" in engine.refine_verified.await_args.args[2]
+    cli.console.input.assert_not_called()  # type: ignore[attr-defined]
 
 
 def test_tailor_interactive_can_accept_after_integrity_warning(

@@ -121,6 +121,7 @@ async def test_easy_apply_dry_run_reports_validation_details(
 
     assert result.dry_run is not None
     assert result.dry_run.reached_submit is True
+    assert result.dry_run.submit_selector == 'button:has-text("Submit application")'
     assert result.dry_run.easy_apply_button_found is True
 
 
@@ -172,6 +173,9 @@ async def test_easy_apply_advances_continue_variant_to_submit(
     advance.click.assert_awaited_once()
     assert result.dry_run is not None
     assert result.dry_run.reached_submit is True
+    assert result.dry_run.advance_steps == 1
+    assert result.dry_run.advance_selectors == ['button:has-text("Continue")']
+    assert result.dry_run.submit_selector == 'button:has-text("Submit application")'
 
 
 @pytest.mark.asyncio
@@ -217,11 +221,18 @@ async def test_easy_apply_missing_submit_writes_debug_dump(
     monkeypatch.setattr(li, "_DEBUG_DIR", tmp_path)
     monkeypatch.setattr(li, "click", AsyncMock())
     monkeypatch.setattr(li, "random_delay", AsyncMock())
+    monkeypatch.setattr(
+        li,
+        "screenshot",
+        AsyncMock(side_effect=lambda _page, path: Path(path).write_bytes(b"png")),
+    )
     button = AsyncMock()
     button.inner_text = AsyncMock(return_value="Continue to next step")
     button.get_attribute = AsyncMock(return_value="Continue to next step")
+    button.input_value = AsyncMock(return_value="")
     page = AsyncMock()
     page.url = "https://www.linkedin.com/jobs/view/1"
+    page.content = AsyncMock(return_value="<html>apply modal</html>")
     page.query_selector = AsyncMock(return_value=None)
     page.query_selector_all = AsyncMock(return_value=[button])
     applicator = LinkedInApplicator(MagicMock(), app_settings)
@@ -231,6 +242,12 @@ async def test_easy_apply_missing_submit_writes_debug_dump(
     assert result.status == ApplicationStatus.FAILED
     assert "debug saved" in (result.error_message or "")
     assert "Continue to next step" in _read_first_apply_dump(tmp_path)
+    assert (tmp_path / "linkedin-apply-Y-X.html").read_text(
+        encoding="utf-8"
+    ) == "<html>apply modal</html>"
+    assert (tmp_path / "linkedin-apply-Y-X.png").read_bytes() == b"png"
+    assert result.dry_run is not None
+    assert len(result.dry_run.debug_artifacts) == 3
 
 
 @pytest.mark.asyncio

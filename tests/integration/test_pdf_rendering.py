@@ -12,13 +12,16 @@ pytest.importorskip("fitz")
 
 import fitz
 
+from job_applicator.documents.ats_checker import ATSChecker
 from job_applicator.documents.formatted_models import (
     FormattedCoverLetter,
+    FormattedEducationEntry,
     FormattedExperienceEntry,
     FormattedResume,
     FormattedSkillGroup,
 )
 from job_applicator.documents.pdf_renderer import PDFRenderer
+from job_applicator.documents.resume import ResumeLoader
 from job_applicator.models import CoverLetterResult, TailoredResume
 
 
@@ -77,6 +80,7 @@ def formatted_resume() -> FormattedResume:
         name="Alex Rivera",
         title="Senior Python Engineer",
         email="alex.rivera@example.com",
+        phone="416-555-0199",
         location="Toronto, ON",
         summary="Senior Python engineer with a focus on async systems and data pipelines.",
         experience=[
@@ -90,6 +94,15 @@ def formatted_resume() -> FormattedResume:
                     "Built async microservices handling 10k req/s",
                     "Improved API latency by 40%",
                 ],
+            ),
+        ],
+        education=[
+            FormattedEducationEntry(
+                degree="Bachelor of Computer Science",
+                institution="University of Toronto",
+                location="Toronto, ON",
+                start_date="2014",
+                end_date="2018",
             ),
         ],
         skills=[
@@ -142,11 +155,17 @@ async def test_render_resume_to_pdf_and_extract_text(
     text = _extract_text(pdf_path)
     assert "Alex Rivera" in text
     assert "Senior Python Engineer" in text
+    assert "alex.rivera@example.com" in text
+    assert "416-555-0199" in text
     assert "Acme Corp" in text
     assert "Python" in text
     assert "Asyncio" in text
     assert "PostgreSQL" in text
     assert "Built async microservices" in text
+
+    parsed = ResumeLoader().parse_text(text)
+    ats = ATSChecker().check(parsed)
+    assert ats.is_compatible, ats.warnings
 
 
 @pytest.mark.integration

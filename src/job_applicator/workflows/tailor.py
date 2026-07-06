@@ -215,7 +215,7 @@ async def _tailor_workflow(
     resume_template: str = "modern",
     cover_letter_template: str = "modern",
     category: str | None = None,
-) -> None:
+) -> TailoredResume | None:
     """Run the interactive tailor loop until the user accepts ([A]) or quits ([Q]).
 
     ``yes`` (the ``--yes`` flag) makes it non-interactive: auto-accept the first tailored
@@ -291,6 +291,39 @@ async def _tailor_workflow(
         console.print(action_table)
 
         if yes:
+            if (
+                result.grounding_report is not None
+                and not result.grounding_report.clean
+                and attempt < 3
+            ):
+                console.print(
+                    "\n[yellow]--yes: grounding found unsupported claims; retrying once with "
+                    "strict source-only instructions.[/yellow]"
+                )
+                feedback = (
+                    "Remove every unsupported or weakly supported claim. Use only facts, metrics, "
+                    "tools, duties, dates, employers, and outcomes explicitly present in the "
+                    "original résumé. Prefer shorter source-backed bullets over embellished "
+                    "claims. Do not add new responsibilities, optional sections, aspirations, "
+                    "deployment claims, performance claims, collaboration claims, or outcomes."
+                )
+                try:
+                    result = await partial(
+                        tailor_engine.refine_verified,
+                        resume_data,
+                        result,
+                        feedback,
+                        job,
+                        style_guide=style,
+                        tone_profile=tone_profile,
+                    )()
+                except Exception as exc:
+                    raise TailorIntegrityError(
+                        "--yes refused to auto-accept this tailored résumé because retrying "
+                        "after grounding failure did not complete."
+                    ) from exc
+                session.add_attempt(result)
+                continue
             try:
                 assert_tailored_auto_saveable(result, session.original_text)
             except TailorIntegrityError as exc:
@@ -387,7 +420,7 @@ async def _tailor_workflow(
             _write_text_file(final_meta_path, result.model_dump_json(indent=2))
             console.print(f"[green]Metadata saved: {final_meta_path}[/green]")
 
-            break
+            return result
 
         elif choice == "R":
             console.print("[yellow]Regenerating...[/yellow]")
@@ -559,3 +592,5 @@ async def _tailor_workflow(
 
         else:
             console.print("[red]Invalid choice. Please enter A, R, I, D, V, S, or Q.[/red]")
+
+    return None

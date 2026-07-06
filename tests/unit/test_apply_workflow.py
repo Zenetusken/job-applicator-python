@@ -13,6 +13,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from job_applicator.config import AppSettings
@@ -655,20 +656,21 @@ async def test_apply_failed_letter_job_surfaced_as_failed(
     applicator.apply = AsyncMock(side_effect=_apply)
     st = MagicMock(**{"has_applied.return_value": False, "count_today.return_value": 0})
     with patch.object(apply_mod, "ApplicationState", return_value=st):
-        await apply_mod._apply_to_jobs(
-            jobs,
-            applicator,
-            {},
-            app_settings,
-            "linkedin",
-            1,
-            submit=True,
-            validate=False,
-            as_json=True,
-            console=MagicMock(),
-            reporter=None,
-            cover_letter_failures={str(jobs[0].url)},
-        )
+        with pytest.raises(typer.Exit):
+            await apply_mod._apply_to_jobs(
+                jobs,
+                applicator,
+                {},
+                app_settings,
+                "linkedin",
+                1,
+                submit=True,
+                validate=False,
+                as_json=True,
+                console=MagicMock(),
+                reporter=None,
+                cover_letter_failures={str(jobs[0].url)},
+            )
     data = json.loads(capsys.readouterr().out)
     assert data[0]["status"] == "failed"
     assert "cover letter" in (data[0]["error"] or "").lower()

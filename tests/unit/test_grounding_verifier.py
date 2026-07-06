@@ -132,6 +132,13 @@ def test_coverage_clean_when_every_sentence_enumerated() -> None:
     assert coverage_gaps(generated, claims) == []
 
 
+def test_coverage_ignores_source_verbatim_role_heading() -> None:
+    source = "Staff Engineer, Acme Data (2021-Present)"
+    generated = "**Staff Engineer, Acme Data** (2021–Present)"
+
+    assert coverage_gaps(generated, [], source) == []
+
+
 # ---- audit_report: combine model flags + audit overrides + coverage ----
 
 

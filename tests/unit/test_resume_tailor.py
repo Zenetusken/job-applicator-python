@@ -95,6 +95,89 @@ async def test_refine_verified_reverifies_the_refined_result() -> None:
     tailor.refine.assert_awaited_once()  # type: ignore[attr-defined]
 
 
+def test_strip_unsupported_metric_claims_removes_invented_percentages() -> None:
+    tailor = ResumeTailor(LLMConfig(model="m"))
+    original = (
+        "Built async ingestion handling 2B events/day with asyncio.\n"
+        "Led a Pydantic v2 + mypy-strict migration across 40 services.\n"
+        "Designed PostgreSQL schemas and Redis caching for a 5M-user app."
+    )
+    tailored = (
+        "• Built async ingestion pipelines handling 2 billion events per day using asyncio, "
+        "improving throughput by 30%.\n"
+        "• Led the migration of 40+ services to Pydantic v2, reducing bugs by 45%.\n"
+        "• Designed PostgreSQL schemas for a 5 million user application.\n"
+        "References\n"
+        "Available upon request."
+    )
+
+    cleaned = tailor._strip_unsupported_metric_claims(tailored, original)
+    cleaned = tailor._strip_unbacked_references(cleaned, original)
+
+    assert "30%" not in cleaned
+    assert "45%" not in cleaned
+    assert "2B events" in cleaned
+    assert "40 services" in cleaned
+    assert "5M user" in cleaned
+    assert "References" not in cleaned
+
+
+def test_strip_unsupported_metric_claims_preserves_source_percentages() -> None:
+    tailor = ResumeTailor(LLMConfig(model="m"))
+    original = "Maintained a 95% first-call resolution rate."
+    tailored = "• Maintained a 95% first-call resolution rate."
+
+    assert tailor._strip_unsupported_metric_claims(tailored, original) == tailored
+
+
+def test_strip_unverifiable_aspirations_and_unbacked_responsibility_bullets() -> None:
+    tailor = ResumeTailor(LLMConfig(model="m"))
+    original = (
+        "Senior Python engineer, 8 years building async data pipelines and ML services.\n"
+        "Built async ingestion handling 2B events/day with asyncio."
+    )
+    tailored = (
+        "Experienced Python engineer. Seeking to leverage expertise as a Senior Python Engineer.\n"
+        "• Built async ingestion pipelines using asyncio.\n"
+        "• Collaborated with data scientists to design scalable ML service architectures."
+    )
+
+    cleaned = tailor._strip_unverifiable_aspirations(tailored)
+    cleaned = tailor._strip_unbacked_responsibility_bullets(cleaned, original)
+
+    assert "Seeking to leverage" not in cleaned
+    assert "Collaborated with data scientists" not in cleaned
+    assert "Built async ingestion" in cleaned
+
+
+def test_normalize_date_range_dashes_for_grounding() -> None:
+    tailor = ResumeTailor(LLMConfig(model="m"))
+
+    assert (
+        tailor._normalize_date_range_dashes("Staff Engineer (2021–Present)")
+        == "Staff Engineer (2021-Present)"
+    )
+
+
+def test_strip_low_evidence_bullets_keeps_source_backed_paraphrases() -> None:
+    tailor = ResumeTailor(LLMConfig(model="m"))
+    original = (
+        "Built async ingestion handling 2B events/day with asyncio.\n"
+        "Led a Pydantic v2 + mypy-strict migration across 40 services."
+    )
+    tailored = (
+        "• Built asynchronous ingestion pipelines handling 2B events per day using asyncio.\n"
+        "• Led a Pydantic v2 migration across 40 services with mypy-strict enforcement.\n"
+        "• Designed scalable Python workflows using FastAPI."
+    )
+
+    cleaned = tailor._strip_low_evidence_bullets(tailored, original)
+
+    assert "Built asynchronous ingestion" in cleaned
+    assert "Pydantic v2 migration" in cleaned
+    assert "Designed scalable Python workflows" not in cleaned
+
+
 @pytest.fixture
 def sample_resume():
     return ResumeData(
@@ -975,6 +1058,17 @@ class TestEmptySectionStripping:
         tailored = "Name\n**Languages**\nEnglish, French\n"
         result = tailor._strip_empty_certifications_languages(tailored, original)
         assert "**Languages**" in result
+
+    def test_strip_unbacked_optional_sections_removes_absent_volunteer(self, llm_config):
+        tailor = ResumeTailor(llm_config)
+        original = "Name\nSkills\nPython\nExperience\nJob"
+        tailored = "Name\nExperience\nJob\nVolunteer\n*None*\nSkills\nPython"
+
+        result = tailor._strip_unbacked_optional_sections(tailored, original)
+
+        assert "Volunteer" not in result
+        assert "*None*" not in result
+        assert "Skills" in result
 
     def test_validate_skills_keeps_comma_separated_original_skills(self, llm_config):
         tailor = ResumeTailor(llm_config)

@@ -26,6 +26,7 @@ from job_applicator.models import (
     PDFRenderingCheck,
     SelfHostCheck,
     SystemBinariesCheck,
+    VLLMProcessCheck,
 )
 from job_applicator.utils.llm import llm_call_error
 
@@ -293,6 +294,107 @@ def test_doctor_report_round_trips() -> None:
     rep = _report(reachable=True, http_status=401, model_available=False)
     again = DoctorReport.model_validate(rep.model_dump())
     assert again.ok == rep.ok
+
+
+def test_build_readiness_summarizes_capabilities() -> None:
+    readiness = diagnostics.build_readiness(
+        llm=LLMEndpointCheck(
+            api_base="http://localhost:8000/v1",
+            reachable=True,
+            http_status=200,
+            model_configured="m",
+        ),
+        embeddings=EmbeddingsCheck(model_name="emb", cached=True),
+        browser=BrowserCheck(playwright_installed=True, chromium_executable="/bin/chromium"),
+        config=ConfigCheck(
+            config_file_found=True,
+            resume_path_set=True,
+            resume_path_exists=True,
+        ),
+        pdf_rendering=PDFRenderingCheck(ok=True, message="typst compile works"),
+    )
+
+    assert readiness.ai_generation.ready
+    assert readiness.matching.ready
+    assert readiness.browser_workflows.ready
+    assert readiness.pdf_output.ready
+
+
+def test_build_readiness_marks_matching_uncertified_without_resume() -> None:
+    readiness = diagnostics.build_readiness(
+        llm=LLMEndpointCheck(api_base="x", reachable=True, http_status=200, model_configured="m"),
+        embeddings=EmbeddingsCheck(model_name="emb", cached=True),
+        browser=BrowserCheck(playwright_installed=True, chromium_executable="/bin/chromium"),
+        config=ConfigCheck(config_file_found=False, resume_path_set=False),
+        pdf_rendering=PDFRenderingCheck(ok=False, message="typst missing"),
+    )
+
+    assert not readiness.matching.ready
+    assert "resume_path" in readiness.matching.details
+
+
+def test_build_readiness_marks_matching_uncertified_when_resume_missing() -> None:
+    readiness = diagnostics.build_readiness(
+        llm=LLMEndpointCheck(api_base="x", reachable=True, http_status=200, model_configured="m"),
+        embeddings=EmbeddingsCheck(model_name="emb", cached=True),
+        browser=BrowserCheck(playwright_installed=True, chromium_executable="/bin/chromium"),
+        config=ConfigCheck(
+            config_file_found=True,
+            resume_path_set=True,
+            resume_path_exists=False,
+        ),
+        pdf_rendering=PDFRenderingCheck(ok=True, message="typst compile works"),
+    )
+
+    assert not readiness.matching.ready
+    assert "does not exist" in readiness.matching.details
+
+
+def test_render_doctor_reports_configured_local_port(capsys: pytest.CaptureFixture[str]) -> None:
+    rep = _report(reachable=False, http_status=None, model_available=False)
+    rep.llm.api_base = "http://localhost:9001/v1"
+    rep.vllm_process = VLLMProcessCheck(running=False)
+
+    cli._render_doctor(rep)
+
+    assert "port 9001" in capsys.readouterr().out
+
+
+def test_parse_listening_pid_from_ss_and_lsof() -> None:
+    assert diagnostics._parse_listening_pid('users:(("vllm",pid=1234,fd=9))') == 1234
+    assert diagnostics._parse_listening_pid("python 4321 user TCP *:8000 (LISTEN)") == 4321
+
+
+def test_assess_vllm_command_compatible() -> None:
+    settings = AppSettings()
+    settings.llm.model = "Qwen/Qwen3-8B-AWQ"
+    check = diagnostics._assess_vllm_command(
+        pid=123,
+        port=8000,
+        settings=settings,
+        cmdline=(
+            "/venv/bin/vllm serve Qwen/Qwen3-8B-AWQ --port 8000 "
+            "--tool-call-parser qwen3_xml --enable-auto-tool-choice"
+        ),
+    )
+
+    assert check.compatible
+    assert check.needs_restart_reason is None
+
+
+def test_assess_vllm_command_reports_restart_reasons() -> None:
+    settings = AppSettings()
+    settings.llm.model = "Qwen/Qwen3-8B-AWQ"
+    check = diagnostics._assess_vllm_command(
+        pid=123,
+        port=9001,
+        settings=settings,
+        cmdline="/venv/bin/vllm serve other-model --port 8000",
+    )
+
+    assert not check.compatible
+    assert "different model" in (check.needs_restart_reason or "")
+    assert "port 9001" in (check.needs_restart_reason or "")
 
 
 # --- _render_doctor never crashes on markup-shaped dynamic values ----------
