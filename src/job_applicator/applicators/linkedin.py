@@ -33,6 +33,20 @@ _DEBUG_DIR = Path.home() / ".job-applicator" / "debug"
 
 # LinkedIn's resume upload accepts these document types.
 _RESUME_UPLOAD_TYPES = (".pdf", ".doc", ".docx")
+_ADVANCE_BUTTON_SELECTOR = (
+    'button:has-text("Next"), '
+    'button:has-text("Continue"), '
+    'button[aria-label*="Next" i], '
+    'button[aria-label*="Continue" i], '
+    'button:has-text("Review"), '
+    'button[aria-label*="Review" i]'
+)
+_SUBMIT_BUTTON_SELECTOR = (
+    'button:has-text("Submit application"), '
+    'button:has-text("Submit"), '
+    'button[aria-label*="Submit application" i], '
+    'button[aria-label*="Submit" i]'
+)
 
 
 def _validated_resume_upload_path(config: AppSettings) -> Path:
@@ -50,12 +64,27 @@ def _validated_resume_upload_path(config: AppSettings) -> Path:
     return path
 
 
+def _resume_contact(config: AppSettings) -> tuple[str, str]:
+    """Best-effort email/phone parsed from the configured résumé."""
+    if not config.resume_path:
+        return "", ""
+    try:
+        from job_applicator.documents.resume import ResumeLoader
+
+        resume = ResumeLoader().load(config.resume_path)
+    except Exception as exc:
+        logger.debug("Could not parse resume contact for Easy Apply autofill: %s", exc)
+        return "", ""
+    return resume.email, resume.phone
+
+
 class LinkedInApplicator(BaseApplicator):
     """Submits job applications on LinkedIn."""
 
     def __init__(self, browser: BrowserManager, config: AppSettings) -> None:
         self._browser = browser
         self._config = config
+        self._resume_contact: tuple[str, str] | None = None
 
     async def apply(
         self, job: JobListing, cover_letter: str | None = None, submit: bool = False
@@ -139,12 +168,10 @@ class LinkedInApplicator(BaseApplicator):
         validation.fill_errors = fill_errors
 
         # Upload resume if file input exists
-        resume_input = await page.query_selector('input[type="file"]')
-        if resume_input and self._config.resume_path:
-            resume_path = _validated_resume_upload_path(self._config)  # exists + supported type
-            await resume_input.set_input_files(str(resume_path))
-            validation.resume_uploaded = True
-            await random_delay(1.0, 2.0)
+        if self._config.resume_path:
+            validation.resume_uploaded = await self._upload_resume_if_present(page)
+            if validation.resume_uploaded:
+                await random_delay(1.0, 2.0)
 
         # Fill cover letter if provided and field exists
         if cover_letter:
@@ -167,9 +194,7 @@ class LinkedInApplicator(BaseApplicator):
 
         # Advance through multi-step forms (Next / Review) — never Submit here.
         for _ in range(6):
-            advance = await page.query_selector(
-                'button:has-text("Next"), button:has-text("Review")'
-            )
+            advance = await page.query_selector(_ADVANCE_BUTTON_SELECTOR)
             if not advance:
                 break
             await advance.click()
@@ -179,18 +204,24 @@ class LinkedInApplicator(BaseApplicator):
             fill_errors.extend(more_errors)
             validation.fields_filled = fields_filled
             validation.fill_errors = fill_errors
+            if self._config.resume_path and not validation.resume_uploaded:
+                validation.resume_uploaded = await self._upload_resume_if_present(page)
+                if validation.resume_uploaded:
+                    await random_delay(1.0, 2.0)
 
         # Match the final submit by either label ("Submit application" is the
         # usual text; fall back to a bare "Submit") so a label change/locale
         # doesn't make a real application silently fail to send.
-        submit_btn = await page.query_selector(
-            'button:has-text("Submit application"), button:has-text("Submit")'
-        )
+        submit_btn = await page.query_selector(_SUBMIT_BUTTON_SELECTOR)
         if not submit_btn:
+            dump = await self._dump_apply_debug(page, job, validation)
             return ApplicationResult(
                 job=job,
                 status=ApplicationStatus.FAILED,
-                error_message="Could not reach the Submit step of the Easy Apply flow",
+                error_message=(
+                    "Could not reach the Submit step of the Easy Apply flow"
+                    + (f" (debug saved to {dump})" if dump else "")
+                ),
                 dry_run=validation,
             )
 
@@ -236,6 +267,81 @@ class LinkedInApplicator(BaseApplicator):
         result.dry_run = validation
         return result
 
+    async def _upload_resume_if_present(self, page: Page) -> bool:
+        """Upload the configured résumé when LinkedIn exposes a file input or upload button."""
+        resume_input = await page.query_selector('input[type="file"]')
+        if resume_input:
+            resume_path = _validated_resume_upload_path(self._config)  # exists + supported type
+            await resume_input.set_input_files(str(resume_path))
+            return True
+
+        upload_button = await page.query_selector(
+            'button:has-text("Upload resume"), button[aria-label*="Upload resume" i]'
+        )
+        if not upload_button:
+            return False
+        resume_path = _validated_resume_upload_path(self._config)
+        async with page.expect_file_chooser() as chooser_info:
+            await upload_button.click()
+        chooser = await chooser_info.value
+        await chooser.set_files(str(resume_path))
+        return True
+
+    async def _dump_apply_debug(
+        self, page: Page, job: JobListing, validation: DryRunValidation
+    ) -> Path | None:
+        """Write live Easy Apply diagnostics when the final Submit step is unreachable."""
+        try:
+            _DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+            set_owner_only(_DEBUG_DIR, 0o700)
+            slug = (
+                f"linkedin-apply-{safe_filename_slug(job.company)}-{safe_filename_slug(job.title)}"
+            )
+            path = _DEBUG_DIR / f"{slug}.txt"
+            buttons = await page.query_selector_all("button")
+            inputs = await page.query_selector_all("input, textarea, select")
+            lines = [
+                f"url: {page.url}",
+                f"job: {job.title} at {job.company}",
+                f"reached_submit: {validation.reached_submit}",
+                f"resume_uploaded: {validation.resume_uploaded}",
+                f"fields_filled: {', '.join(validation.fields_filled) or 'none'}",
+                f"fill_errors: {', '.join(validation.fill_errors) or 'none'}",
+                "",
+                "buttons:",
+            ]
+            for i, button in enumerate(buttons[:40], start=1):
+                try:
+                    text = (await button.inner_text()).strip().replace("\n", " ")
+                except Exception:
+                    text = "<unreadable>"
+                try:
+                    aria = await button.get_attribute("aria-label")
+                except Exception:
+                    aria = None
+                lines.append(f"{i}. text={text!r} aria={aria!r}")
+            lines += ["", "inputs:"]
+            for i, field in enumerate(inputs[:40], start=1):
+                attrs: list[str] = []
+                for attr in ("type", "name", "id", "aria-label", "placeholder", "required"):
+                    try:
+                        value = await field.get_attribute(attr)
+                    except Exception:
+                        value = None
+                    if value:
+                        attrs.append(f"{attr}={value!r}")
+                try:
+                    tag = await field.evaluate("el => el.tagName.toLowerCase()")
+                except Exception:
+                    tag = "field"
+                lines.append(f"{i}. {tag} {' '.join(attrs) or '<no attrs>'}")
+            path.write_text("\n".join(lines), encoding="utf-8")
+            logger.warning("LinkedIn Easy Apply debug dump written to %s", path)
+            return path
+        except Exception as exc:
+            logger.warning("Could not write LinkedIn Easy Apply debug dump: %s", exc)
+            return None
+
     async def _external_apply(self, page: Page, job: JobListing) -> ApplicationResult:
         """Handle external application redirect."""
         # Find and click the apply link
@@ -270,17 +376,59 @@ class LinkedInApplicator(BaseApplicator):
         name_parts = profile.profile_name.split() if profile.profile_name else []
         first_name = name_parts[0] if name_parts else ""
         last_name = name_parts[-1] if len(name_parts) > 1 else ""
+        if self._resume_contact is None:
+            self._resume_contact = _resume_contact(profile)
+        resume_email, resume_phone = self._resume_contact
 
-        field_mappings = {
-            'input[name*="first" i]': (first_name, "firstName"),
-            'input[name*="last" i]': (last_name, "lastName"),
-            'input[name*="email" i]': (profile.target.linkedin_email, "email"),
-            'input[name*="phone" i]': ("", "phone"),
-        }
+        field_mappings = [
+            (
+                (
+                    'input[name*="first" i]',
+                    'input[id*="first" i]',
+                    'input[aria-label*="first" i]',
+                ),
+                first_name,
+                "firstName",
+            ),
+            (
+                (
+                    'input[name*="last" i]',
+                    'input[id*="last" i]',
+                    'input[aria-label*="last" i]',
+                ),
+                last_name,
+                "lastName",
+            ),
+            (
+                (
+                    'input[name*="email" i]',
+                    'input[id*="email" i]',
+                    'input[aria-label*="email" i]',
+                ),
+                profile.target.linkedin_email or resume_email,
+                "email",
+            ),
+            (
+                (
+                    'input[name*="phone" i]',
+                    'input[id*="phone" i]',
+                    'input[aria-label*="phone" i]',
+                    'input[aria-label*="mobile" i]',
+                    'input[id*="mobile" i]',
+                    'input[type="tel"]',
+                ),
+                resume_phone,
+                "phone",
+            ),
+        ]
 
-        for selector, (value, label) in field_mappings.items():
+        for selectors, value, label in field_mappings:
             if value:
-                el = await page.query_selector(selector)
+                el = None
+                for selector in selectors:
+                    el = await page.query_selector(selector)
+                    if el:
+                        break
                 if el:
                     try:
                         # D4 (finding 8b): don't clobber a value the site already pre-filled
