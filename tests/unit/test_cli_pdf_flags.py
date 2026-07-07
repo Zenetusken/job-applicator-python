@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
-from job_applicator.models import JobListing, ResumeData, TailoredResume
+from job_applicator.models import GroundingReport, JobListing, ResumeData, TailoredResume
 
 
 def _tailored(text: str = "TAILORED RESUME", **kw: object) -> TailoredResume:
@@ -28,6 +28,7 @@ def _tailored(text: str = "TAILORED RESUME", **kw: object) -> TailoredResume:
         "semantic_score": 0.9,
         "skill_score": 0.7,
         "changes_summary": "reworded summary",
+        "grounding_report": GroundingReport(),
     }
     defaults.update(kw)
     return TailoredResume(**defaults)  # type: ignore[arg-type]

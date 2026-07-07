@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 import job_applicator.cli as cli
 from job_applicator.cli import app
 from job_applicator.embeddings.matching import MatchResult
-from job_applicator.models import JobBoard, JobListing, TailoredResume
+from job_applicator.models import ClaimCheck, GroundingReport, JobBoard, JobListing, TailoredResume
 
 
 @pytest.fixture
@@ -93,6 +93,7 @@ def style_guide_batch_env(
         matched_skills=["Python"],
         missing_skills=[],
         changes_summary="summary",
+        grounding_report=GroundingReport(),
     )
     tailor.tailor = AsyncMock(return_value=tailored)
     tailor.tailor_verified = AsyncMock(return_value=tailored)
@@ -492,3 +493,51 @@ class TestBatchRecovery:
         )
         assert result.exit_code == 0, result.output
         bs.complete_run.assert_called_with(ANY, BatchRunStatus.FAILED)  # not wrongly COMPLETED
+
+    def test_batch_refines_dirty_grounding_before_saving(
+        self, style_guide_batch_env: dict[str, object]
+    ) -> None:
+        """Batch is unattended like tailor --yes: dirty grounding gets one strict refine before
+        artifacts are saved."""
+        env = style_guide_batch_env
+        dirty = TailoredResume(
+            original_path=str(env["sample_resume_file"]),
+            tailored_text="Dirty tailored resume text",
+            job_title="Python Developer",
+            job_company="TechCorp",
+            job_url="https://example.com/1",
+            match_score=0.9,
+            semantic_score=0.8,
+            skill_score=0.7,
+            matched_skills=["Python"],
+            missing_skills=[],
+            changes_summary="summary",
+            grounding_report=GroundingReport(
+                unsupported=[ClaimCheck(claim="unsupported", grounded=False)]
+            ),
+        )
+        clean = dirty.model_copy(
+            update={
+                "tailored_text": "Clean tailored resume text",
+                "grounding_report": GroundingReport(),
+            }
+        )
+        env["tailor"].tailor_verified = AsyncMock(return_value=dirty)
+        env["tailor"].refine_verified = AsyncMock(return_value=clean)
+
+        result = env["runner"].invoke(  # type: ignore[attr-defined]
+            env["app"],
+            [
+                "batch",
+                "--resume",
+                str(env["sample_resume_file"]),
+                "--jobs-file",
+                str(env["sample_jobs_file"]),
+                "--top-k",
+                "1",
+                "--no-cover-letter",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        env["tailor"].refine_verified.assert_awaited_once()

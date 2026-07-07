@@ -130,6 +130,150 @@ def test_strip_unsupported_metric_claims_preserves_source_percentages() -> None:
     assert tailor._strip_unsupported_metric_claims(tailored, original) == tailored
 
 
+def test_extract_education_entries_handles_compound_source_header() -> None:
+    tailor = ResumeTailor(LLMConfig(model="m"))
+    original = (
+        "SUMMARY\nAnalyst.\n\n"
+        "EDUCATION & CERTIFICATIONS\n"
+        "Undergraduate Certificate — Analysis & Operational Cybersecurity 2024 – Present\n"
+        "Polytechnique Montréal\n"
+        "Cisco CCNA & CompTIA Linux+ Coursework 2023 – 2024\n"
+        "Dawson College\n"
+        "B.A., Accounting — Université du Québec à Montréal (UQAM) 2012 – 2015\n\n"
+        "LANGUAGES\nFluent in French and English, plus Romanian.\n"
+    )
+
+    extracted = tailor._extract_education_entries(original)
+
+    assert "EDUCATION & CERTIFICATIONS" in extracted
+    assert "Polytechnique Montréal" in extracted
+    assert "Université du Québec à Montréal" in extracted
+
+
+def test_preserve_source_required_sections_restores_education_and_languages() -> None:
+    tailor = ResumeTailor(LLMConfig(model="m"))
+    original = (
+        "ANDREI PETROV\n\n"
+        "EDUCATION & CERTIFICATIONS\n"
+        "Undergraduate Certificate — Analysis & Operational Cybersecurity 2024 – Present\n"
+        "Polytechnique Montréal\n"
+        "B.A., Accounting — Université du Québec à Montréal (UQAM) 2012 – 2015\n\n"
+        "LANGUAGES\n"
+        "Fluent in French and English, plus Romanian.\n"
+    )
+    tailored = (
+        "ANDREI PETROV\n\n"
+        "**Skills**\nSIEM, Linux\n\n"
+        "**Experience**\nSupport Analyst\n\n"
+        "**Certifications**\n"
+        "Undergraduate Certificate — Analysis & Operational Cybersecurity\n"
+        "Polytechnique Montréal\n\n"
+        "**Languages**\n"
+        "English (Professional), French (Conversational)"
+    )
+
+    result = tailor._preserve_source_required_sections(tailored, original)
+
+    assert "**Education & Certifications**" in result
+    assert "**Certifications**" not in result
+    assert "B.A., Accounting" in result
+    assert "Fluent in French and English, plus Romanian." in result
+    assert "English (Professional), French (Conversational)" not in result
+
+
+def test_validate_skills_keeps_parenthetical_skill_as_one_token(llm_config) -> None:
+    tailor = ResumeTailor(llm_config)
+    original_skills = ["Linux (Fedora, CLI, Bash)", "SIEM"]
+    tailored = "**Skills**\n• Linux (Fedora, CLI, Bash), SIEM, Bash)\n\n**Experience**\n"
+
+    result = tailor._validate_skills(tailored, original_skills)
+
+    assert "Linux (Fedora, CLI, Bash)" in result
+    assert "SIEM" in result
+    assert result.count("Bash)") == 1
+
+
+def test_strip_malformed_tool_removal_sentence_keeps_clean_summary_sentence() -> None:
+    tailored = (
+        "SUMMARY\n"
+        "Experienced operations professional with 10+ years of support experience. "
+        "Skilled in Microsoft 365, ticketing systems, and , with a strong foundation in , "
+        "and ticketing systems.\n\n"
+        "Skills\nMicrosoft 365, ticketing & escalation"
+    )
+
+    result = ResumeTailor._strip_malformed_tool_removal_sentences(tailored)
+
+    assert "Experienced operations professional" in result
+    assert "Skilled in Microsoft 365" not in result
+    assert "and ," not in result
+    assert "Skills\nMicrosoft 365" in result
+
+
+def test_ground_summary_phrases_rewrites_to_source_backed_terms() -> None:
+    original = (
+        "SUMMARY\n"
+        "Career-changer with 10+ years of operations management and high-stakes "
+        "client problem-solving in client-facing roles. University coursework spans "
+        "cybersecurity topics. Calm under pressure, with a track record of triage, "
+        "escalation, and dispute resolution.\n\n"
+        "EXPERIENCE\n"
+        "Technical Support Specialist\n"
+        "• Delivered Tier 1 technical support by phone, chat, and email.\n"
+    )
+    tailored = (
+        "SUMMARY\n"
+        "Experienced operations professional with 10+ years of incident resolution, "
+        "client support, and process improvement, now transitioning into IT support "
+        "through hands-on technical training and coursework, stakeholder coordination, "
+        "and technical troubleshooting experience.\n\n"
+        "Skills\nPython"
+    )
+
+    result = ResumeTailor._ground_summary_phrases(tailored, original)
+
+    assert "incident resolution" not in result
+    assert "process improvement" not in result
+    assert "client support" not in result
+    assert "hands-on cybersecurity training" not in result
+    assert "hands-on technical training" not in result
+    assert "stakeholder coordination" not in result
+    assert "now transitioning into IT support" not in result
+    assert "technical troubleshooting experience" not in result
+    assert "high-stakes client problem-solving" in result
+    assert "operations management" in result
+    assert "client-facing work" in result
+    assert "cybersecurity coursework" in result
+    assert "triage and escalation" in result
+    assert "front-line technical support experience" in result
+
+
+def test_ensure_source_backed_summary_replaces_generated_summary() -> None:
+    original = (
+        "SUMMARY\n"
+        "Career-changer with 10+ years of operations management and high-stakes "
+        "client problem-solving. University coursework spans cybersecurity and networking. "
+        "Calm under pressure, with a track record of triage, escalation, and dispute "
+        "resolution.\n\n"
+        "TECHNICAL SKILLS\nSIEM · SOC operations · incident response · threat intelligence\n\n"
+        "EXPERIENCE\nTechnical Support Specialist\n"
+        "• Delivered Tier 1 technical support by phone, chat, and email.\n"
+        "EDUCATION\nCybersecurity coursework\n"
+    )
+    tailored = (
+        "SUMMARY\n"
+        "Experienced candidate transitioning into IT support through certification.\n\n"
+        "**Skills**\nSIEM\n\n**Experience**\nSupport"
+    )
+
+    result = ResumeTailor._ensure_source_backed_summary(tailored, original)
+
+    assert "Operations professional with 10+ years" in result
+    assert "front-line technical support experience" in result
+    assert "transitioning into IT support" not in result
+    assert "\n\n**Skills**" in result
+
+
 def test_strip_unverifiable_aspirations_and_unbacked_responsibility_bullets() -> None:
     tailor = ResumeTailor(LLMConfig(model="m"))
     original = (
@@ -140,6 +284,7 @@ def test_strip_unverifiable_aspirations_and_unbacked_responsibility_bullets() ->
         "Experienced Python engineer. Seeking to leverage expertise as a Senior Python Engineer.\n"
         "• Built async ingestion pipelines using asyncio.\n"
         "• Collaborated with data scientists to design scalable ML service architectures."
+        "\n• Supported internal teams with technical guidance and escalation procedures."
     )
 
     cleaned = tailor._strip_unverifiable_aspirations(tailored)
@@ -147,6 +292,7 @@ def test_strip_unverifiable_aspirations_and_unbacked_responsibility_bullets() ->
 
     assert "Seeking to leverage" not in cleaned
     assert "Collaborated with data scientists" not in cleaned
+    assert "Supported internal teams with technical guidance" not in cleaned
     assert "Built async ingestion" in cleaned
 
 

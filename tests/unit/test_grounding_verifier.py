@@ -66,6 +66,39 @@ def test_audit_passes_reformatted_quote() -> None:
     assert audit_claim(c, SOURCE) is None
 
 
+def test_audit_repairs_incomplete_metric_quote_from_source_fragment() -> None:
+    # The verifier sometimes cites the non-metric half of a faithful combined claim. The audit may
+    # supplement ONLY with the source fragment carrying the same percentage and overlapping terms.
+    source = (
+        "Delivered Tier 1 technical support by phone, chat, and email, diagnosing and remotely "
+        "resolving signal, receiver, connectivity, and website issues.\n"
+        "Maintained roughly 95% first-contact resolution without Tier 2 escalation."
+    )
+    c = gc(
+        "Delivered Tier 1 technical support by phone, chat, and email, diagnosing and resolving "
+        "signal, receiver, connectivity, and website issues with a 95% first-contact resolution "
+        "rate.",
+        quote=(
+            "Delivered Tier 1 technical support by phone, chat, and email, diagnosing and remotely "
+            "resolving signal, receiver, connectivity, and website issues"
+        ),
+    )
+    assert audit_claim(c, source) is None
+
+
+def test_audit_does_not_repair_percentage_from_unrelated_source_fragment() -> None:
+    source = (
+        "Took over 100% of inbound email service requests from the sales team. "
+        "Maintained roughly 95% first-contact resolution without Tier 2 escalation."
+    )
+    c = gc(
+        "Maintained 100% first-contact resolution",
+        quote="Maintained roughly 95% first-contact resolution",
+    )
+    reason = audit_claim(c, source)
+    assert reason is not None and "percentage" in reason
+
+
 def test_audit_leaves_not_grounded_to_the_model() -> None:
     # a check the model already flagged is not the audit's to override
     c = gc("Holds a CISSP", grounded=False, note="source is silent")
@@ -95,6 +128,29 @@ def test_audit_passes_faithful_integer_match() -> None:
     # backstop only fires on a number ABSENT from its quote).
     src = "Resolved 200 tickets across a team of 5 analysts."
     c = gc("Resolved 200 tickets", quote="Resolved 200 tickets across a team of 5 analysts")
+    assert audit_claim(c, src) is None
+
+
+def test_audit_allows_supported_numeric_skill_names_when_quote_is_broad() -> None:
+    src = "TECHNICAL SKILLS\nMicrosoft 365 · 802.1X · IPv6"
+    c = gc(
+        "Skilled in Microsoft 365 and 802.1X",
+        quote="TECHNICAL SKILLS",
+    )
+
+    assert audit_claim(c, src) is None
+
+
+def test_audit_allows_source_backed_heading_years_when_quote_omits_heading() -> None:
+    src = (
+        "Customer Service Manager 2022 – 2025\n"
+        "• Took over 100% of inbound email service requests from the sales team"
+    )
+    c = gc(
+        "Customer Service Manager 2022 – 2025: Took over 100% of inbound email service requests",
+        quote="Took over 100% of inbound email service requests from the sales team",
+    )
+
     assert audit_claim(c, src) is None
 
 
@@ -139,6 +195,12 @@ def test_coverage_ignores_source_verbatim_role_heading() -> None:
     assert coverage_gaps(generated, [], source) == []
 
 
+def test_coverage_ignores_cover_letter_courtesy_sentence() -> None:
+    generated = "Thank you for considering my application."
+
+    assert coverage_gaps(generated, [], SOURCE) == []
+
+
 # ---- audit_report: combine model flags + audit overrides + coverage ----
 
 
@@ -175,6 +237,28 @@ def test_grounding_report_clean_and_complete() -> None:
     assert GroundingReport().clean and GroundingReport().complete
     r = GroundingReport(coverage_gaps=["something un-enumerated"])
     assert not r.complete and not r.clean
+
+
+def test_audit_report_ignores_cover_letter_application_framing() -> None:
+    generated = (
+        "I would welcome the opportunity to discuss how my background and skills align with "
+        "the IT On-site Support Technician role at WSP. Holds a CISSP."
+    )
+    report = VerificationReport(
+        claims=[
+            gc(
+                "I would welcome the opportunity to discuss how my background and skills align "
+                "with the IT On-site Support Technician role at WSP.",
+                grounded=False,
+                note="cited quote is not in the résumé",
+            ),
+            gc("Holds a CISSP", grounded=False, note="source is silent"),
+        ]
+    )
+
+    result = audit_report(report, generated, SOURCE)
+
+    assert [claim.claim for claim in result.unsupported] == ["Holds a CISSP"]
 
 
 # ---- GroundingVerifier (Slice 2): the LLM verify path is mocked; the audit is real ----

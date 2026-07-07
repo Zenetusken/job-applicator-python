@@ -82,6 +82,12 @@ Optional fields:
 If `keywords` are omitted, the runner derives a small keyword set from the job description. Prefer
 explicit keywords for stable certification.
 
+Keep packet cases fresh. A private manifest should point at the latest validated generated
+artifacts, not stale scratch files under `output/`. Choose keywords that are both role-relevant and
+source-backed by the applicant's CV/tailored packet. Do not include unsupported JD-only terms such
+as tools, processes, or responsibilities the candidate cannot honestly claim unless the case is
+explicitly testing that those terms stay absent.
+
 ## Scores
 
 Each packet gets four deterministic 0-4 dimension scores:
@@ -102,6 +108,16 @@ Default bars:
 This gate complements grounding and human review. It catches obvious regressions in generated
 packet usefulness and polish; it does not replace judgment about whether a packet is genuinely the
 best possible application for a role.
+
+When updating a private packet, run the gate in required JSON mode and inspect both the score and
+the prose:
+
+```bash
+.venv/bin/python scripts/eval_document_quality.py --packet-set --required --json
+```
+
+The generated cover letter should also have a clean grounding report when it was produced through
+the verified generation path.
 
 ## Gold Standards
 

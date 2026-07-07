@@ -58,7 +58,7 @@ from job_applicator.utils.path import set_owner_only
 from job_applicator.utils.profile import _detect_tone, _load_user_profile
 from job_applicator.utils.verbose import VerboseReporter
 from job_applicator.workflows.apply import _apply_to_jobs
-from job_applicator.workflows.tailor import _tailor_workflow
+from job_applicator.workflows.tailor import _tailor_workflow, assert_tailored_auto_saveable
 
 if TYPE_CHECKING:
     from job_applicator.batch_state import BatchState
@@ -2480,6 +2480,28 @@ def batch(
                             tone_profile=tone_profile,
                             matcher=matcher,
                         )
+                        if (
+                            tailored.grounding_report is not None
+                            and not tailored.grounding_report.clean
+                        ):
+                            feedback = (
+                                "Remove every unsupported or weakly supported claim. Use only "
+                                "facts, metrics, tools, duties, dates, employers, and outcomes "
+                                "explicitly present in the original résumé. Prefer shorter "
+                                "source-backed bullets over embellished claims. Do not add new "
+                                "responsibilities, optional sections, aspirations, deployment "
+                                "claims, performance claims, collaboration claims, or outcomes."
+                            )
+                            tailored = await tailor_engine.refine_verified(
+                                resume_data,
+                                tailored,
+                                feedback,
+                                job,
+                                matcher=matcher,
+                                style_guide=style,
+                                tone_profile=tone_profile,
+                            )
+                        assert_tailored_auto_saveable(tailored, resume_data.raw_text)
                         result["match_score"] = round(tailored.match_score, 4)
                         result["semantic_score"] = round(tailored.semantic_score, 4)
                         result["skill_score"] = round(tailored.skill_score, 4)

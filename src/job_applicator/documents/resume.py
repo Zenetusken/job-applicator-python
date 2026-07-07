@@ -281,6 +281,39 @@ def _company_location(line: str) -> tuple[str, str]:
 _DESC_LABEL_RE = re.compile(
     r"^[\w][\w &/'()-]{0,30}:"
 )  # "Relevant coursework:", "GPA:", "Completed:"
+_SKILL_ROW_LABELS = (
+    "security ops",
+    "threat & detection",
+    "networking",
+    "cloud & systems",
+    "tools",
+    "platforms",
+)
+_SKILL_ROW_LABEL_GAP_RE = re.compile(r"^([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ0-9 &/+.-]{1,32})\s{2,}(.+)$")
+
+
+def _strip_skill_row_label(part: str) -> str:
+    """Drop fixed-width skills-grid labels without touching ordinary skill names.
+
+    PDF extraction of the v1 CV yields rows such as ``Security ops            SIEM`` and
+    ``Threat & detection MITRE ATT&CK``. The label is layout, not a skill. Keep the first real
+    skill so matching/tailoring does not inherit label-contaminated names.
+    """
+    cleaned = part.rsplit("\t", 1)[-1].strip()
+    gap = _SKILL_ROW_LABEL_GAP_RE.match(cleaned)
+    if gap:
+        label, value = gap.groups()
+        if len(label.split()) <= 4 and value.strip():
+            return value.strip()
+
+    lower = cleaned.lower()
+    for label in _SKILL_ROW_LABELS:
+        prefix = f"{label} "
+        if lower.startswith(prefix):
+            value = cleaned[len(prefix) :].strip()
+            if value:
+                return value
+    return cleaned
 
 
 def _looks_like_entity(line: str) -> bool:
@@ -757,20 +790,33 @@ class ResumeLoader:
             # - Line list: "Skill1\nSkill2\nSkill3"
             # - Two-column bullets: "Skill1 • Skill2"
 
-            # Remove bullet characters and empty lines
+            # Remove bullet characters and empty lines. PDF fixed-width skills grids often wrap a
+            # row by indenting the continuation line under the skill column; join those before
+            # splitting so "threat" + "intelligence" stays one skill.
             lines = skills_section.split("\n")
-            clean_lines = []
+            logical_lines: list[str] = []
             for line in lines:
-                stripped = line.strip()
+                raw = line.rstrip()
+                stripped = raw.strip()
                 # Skip empty lines, bullets, and separators
                 if stripped and stripped not in ("•", "·", "-", "|", "/"):
+                    indent = len(raw) - len(raw.lstrip(" "))
+                    if indent >= 8 and logical_lines and not re.match(r"^[•·\-\|/]", stripped):
+                        logical_lines[-1] = f"{logical_lines[-1]} {stripped}"
+                    else:
+                        logical_lines.append(stripped)
+
+            clean_lines = []
+            for line in logical_lines:
+                stripped = line.strip()
+                if stripped:
                     # Split on middle bullets (two-column format)
                     parts = re.split(r"\s+[•·]\s+", stripped)
                     for part in parts:
-                        # Drop a leading "Category<tab>" label: two-column skills grids put the
-                        # bold row label before a tab, which otherwise contaminates the first
-                        # skill of each row (e.g. "Networking\tTCP/IP" must parse as "TCP/IP").
-                        part = part.rsplit("\t", 1)[-1]
+                        # Drop a leading "Category<tab/gap>" label: skills grids put the row
+                        # label before the first skill, which otherwise contaminates matching
+                        # (e.g. "Networking<TAB>TCP/IP" must parse as "TCP/IP").
+                        part = _strip_skill_row_label(part)
                         # Remove leading bullets
                         part = re.sub(r"^[•·\-\|/]\s*", "", part).strip()
                         # >= 2 so common short skills survive (Go, C#, AI, ML, UX);

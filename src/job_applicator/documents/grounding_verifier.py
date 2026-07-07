@@ -67,6 +67,66 @@ def _nums(text: str) -> set[str]:
     return set(_NUM_RE.findall(text))
 
 
+def _source_fragments(text: str) -> list[str]:
+    """Sentence/bullet-sized source fragments for supplemental evidence lookup."""
+    fragments: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        fragments.extend(s.strip() for s in _SENT_SPLIT_RE.split(stripped) if s.strip())
+    return fragments
+
+
+def _supplemental_percentage_evidence(check: ClaimCheck, source: str, missing: set[str]) -> str:
+    """Find source fragments that carry a missing percentage for the same claim.
+
+    The verifier can cite a real but incomplete source quote when a generated claim faithfully
+    combines adjacent résumé bullets. We only supplement percentages when the source fragment has
+    the exact missing percentage and overlaps the claim's content terms, so a different metric
+    elsewhere in the résumé cannot rescue an inflated claim.
+    """
+    claim_tokens = _tokens(check.claim)
+    evidence: list[str] = []
+    found: set[str] = set()
+    for fragment in _source_fragments(source):
+        fragment_pcts = _pcts(fragment)
+        if not missing & fragment_pcts:
+            continue
+        fragment_tokens = _tokens(fragment)
+        if _overlap(fragment_tokens, claim_tokens) < 0.35:
+            continue
+        evidence.append(fragment)
+        found |= missing & fragment_pcts
+        if missing <= found:
+            break
+    return " ".join(evidence)
+
+
+def _technical_number_supported(number: str, claim: str, source: str) -> bool:
+    contexts = {
+        "365": (r"\bmicrosoft\s+365\b", r"\boffice\s+365\b"),
+        "802": (r"\b802\.1x\b",),
+    }
+    patterns = contexts.get(number, ())
+    return any(
+        re.search(pattern, claim, re.IGNORECASE) and re.search(pattern, source, re.IGNORECASE)
+        for pattern in patterns
+    )
+
+
+def _source_year_supports_claim(number: str, claim: str, source: str) -> bool:
+    if not (number.isdigit() and 1900 <= int(number) <= 2100):
+        return False
+    claim_tokens = _tokens(claim)
+    for fragment in _source_fragments(source):
+        if number not in _nums(fragment):
+            continue
+        if _overlap(_tokens(fragment), claim_tokens) >= 0.35:
+            return True
+    return False
+
+
 def _overlap(part: set[str], whole: set[str]) -> float:
     return len(part & whole) / len(part) if part else 1.0
 
@@ -87,10 +147,23 @@ def audit_claim(check: ClaimCheck, source: str) -> str | None:
     # model mis-judges. Percentages are checked as percentages AND as standalone integers — the
     # integer pass is STRICTLY ADDITIONAL (it never relaxes the percentage check; a percentage whose
     # value also appears as a bare number in the quote is still caught by the percentage pass).
-    if not _pcts(check.claim) <= _pcts(check.source_quote):
+    evidence_text = check.source_quote
+    missing_percentages = _pcts(check.claim) - _pcts(evidence_text)
+    if missing_percentages:
+        supplemental = _supplemental_percentage_evidence(check, source, missing_percentages)
+        if supplemental:
+            evidence_text = f"{evidence_text} {supplemental}"
+    if not _pcts(check.claim) <= _pcts(evidence_text):
         return f"claim percentage {_pcts(check.claim) or '∅'} is not in the cited quote"
-    if not _nums(check.claim) <= _nums(check.source_quote):
-        missing = _nums(check.claim) - _nums(check.source_quote)
+    missing = _nums(check.claim) - _nums(evidence_text)
+    supported_missing = {
+        number
+        for number in missing
+        if _technical_number_supported(number, check.claim, source)
+        or _source_year_supports_claim(number, check.claim, source)
+    }
+    if missing - supported_missing:
+        missing = missing - supported_missing
         return f"claim number(s) {missing} not in the cited quote"
     return None
 
@@ -121,6 +194,36 @@ def _looks_like_contact_fragment(text: str) -> bool:
     )
 
 
+def _looks_like_application_framing(text: str) -> bool:
+    """Cover-letter courtesy/target-role framing, not a candidate résumé fact."""
+    low = text.lower()
+    return any(
+        phrase in low
+        for phrase in (
+            "thank you for considering",
+            "thank you for your consideration",
+            "welcome the opportunity to discuss",
+            "opportunity to discuss how my background",
+            "i am applying for",
+            "i am eager to bring",
+            "i would welcome",
+        )
+    )
+
+
+def _unsupported_is_application_framing(check: ClaimCheck) -> bool:
+    low_note = check.note.lower()
+    if _looks_like_application_framing(check.claim):
+        return True
+    target_only_note = (
+        "job title" in low_note or "company" in low_note
+    ) and "not mentioned in the source" in low_note
+    return target_only_note and any(
+        phrase in check.claim.lower()
+        for phrase in (" role at ", " position at ", "role with", "position with")
+    )
+
+
 def coverage_gaps(generated: str, claims: list[ClaimCheck], source: str = "") -> list[str]:
     """Sentences of *generated* that no enumerated claim covers (token-overlap).
 
@@ -137,6 +240,7 @@ def coverage_gaps(generated: str, claims: list[ClaimCheck], source: str = "") ->
         for s in _sentences(generated)
         if _overlap(_tokens(s), claim_tokens) < _COVERAGE_OVERLAP
         and _normalized_text(s) not in normalized_source
+        and not _looks_like_application_framing(s)
     ]
 
 
@@ -148,6 +252,8 @@ def audit_report(report: VerificationReport, generated: str, source: str) -> Gro
     """
     unsupported: list[ClaimCheck] = []
     for check in report.claims:
+        if not check.grounded and _unsupported_is_application_framing(check):
+            continue
         if not check.grounded:
             unsupported.append(check)
         elif reason := audit_claim(check, source):

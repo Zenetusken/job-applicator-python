@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that abort on required selector drift unless `--ignore-selector-health` is supplied. JSON reports
   stay stdout-clean, and failure diagnostics land under
   `~/.job-applicator/debug/selector-health/`.
+- **Private generated-document packet quality set.** The document-quality gate now supports a
+  populated local packet manifest at `~/.job-applicator/document-quality-eval/packet-set.jsonl`,
+  scored across usefulness, specificity, writing quality, and formatting polish. The private WSP
+  IT-support seed packet is backed by fresh generated CV/cover-letter artifacts and a CV-coherent
+  cover-letter gold-standard style fixture.
 
 - **`status` now shows which search surfaced each job.** The stored `source_query` (previously
   captured but never displayed) is surfaced as a **Found via** column in the `status` table, a
@@ -66,6 +71,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a real stale-config CV that had silently mis-scored the whole funnel.
 
 ### Fixed
+- **Generated CV/cover-letter packet honesty hardening.** The v1 PDF résumé parser now handles the
+  fixed-width skills grid without leaking row labels or splitting parenthetical skills, tailored CVs
+  preserve source-owned Education/Languages sections, and generated summaries are rebuilt from
+  source-backed phrases when the LLM draft is too dirty.
+- **Batch CV saves now share the fail-closed grounding path.** A dirty batch-tailored CV gets one
+  strict source-only refinement; if grounding/contact/ATS integrity is still not clean, the CV is
+  not saved and the job records an error instead of producing a stale-looking artifact.
+- **Cover letters reject unsupported JD-side and source-merge overclaims.** The generator now
+  pre-prompts and validates against absent job-side terms such as workstation deployment, ITIL, and
+  asset inventory, plus observed source-merge phrases such as unsupported technical-support
+  coursework or critical-systems claims. Target company/role mentions are required as application
+  context without implying prior employment.
+- **Grounding audit false positives are narrower.** The deterministic verifier can supplement an
+  incomplete model quote only with overlapping source fragments that carry the exact missing
+  percentage, accepts supported numeric skill names such as Microsoft 365 / 802.1X, accepts
+  source-backed employment-heading years, and ignores cover-letter application framing/courtesy
+  lines as non-factual claims.
 - **Style-analysis live diagnostics are no longer a black box.** `StyleAnalyzer` now logs which LLM
   path it is using (instructor structured output vs direct litellm JSON fallback), how long each path
   took, and the fallback reason. Direct litellm fallback failures now go through the shared

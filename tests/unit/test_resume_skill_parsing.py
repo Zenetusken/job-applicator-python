@@ -76,3 +76,27 @@ def test_comma_inside_parentheses_is_not_split() -> None:
     assert "Linux (Fedora, CLI, Bash)" in skills
     assert "SIEM" in skills and "EDR" in skills
     assert not any(s.count("(") != s.count(")") for s in skills)  # no unbalanced-paren tokens
+
+
+def test_fixed_width_skills_grid_strips_labels_and_joins_continuations() -> None:
+    """The v1 PDF's fixed-width skills grid is layout, not skill content."""
+    text = (
+        "ANDREI TESTER\nandrei@example.com\n\n"
+        "TECHNICAL SKILLS\n"
+        "Security ops            SIEM · SOC monitoring & triage · incident response · threat\n"
+        "                        intelligence · OSINT · log & trace analysis\n"
+        "Threat & detection MITRE ATT&CK · cyber kill chain · IDS/IPS · EDR · antivirus ·\n"
+        "                   URL/content filtering · DLP · vulnerability management\n"
+        "Cloud & systems         cloud security (IaaS/SaaS) · Linux (Fedora, CLI, Bash)\n\n"
+        "EXPERIENCE\nAnalyst at Acme (2019-Present)\n- Did things.\n"
+    )
+
+    skills = _parse_skills(text)
+
+    assert "SIEM" in skills
+    assert "threat intelligence" in skills
+    assert "MITRE ATT&CK" in skills
+    assert "URL/content filtering" in skills
+    assert "Linux (Fedora, CLI, Bash)" in skills
+    assert "Security ops            SIEM" not in skills
+    assert "Threat & detection MITRE ATT&CK" not in skills

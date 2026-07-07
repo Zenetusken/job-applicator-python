@@ -619,6 +619,13 @@ def test_cover_letter_allows_overclaim_phrase_present_in_resume() -> None:
     )  # no raise
 
 
+def test_cover_letter_rejects_home_lab_overclaim_when_absent() -> None:
+    resume = ResumeData(raw_text="Jane Roe\nEducation\nHands-on SIEM coursework.", skills=[])
+
+    with pytest.raises(LLMError, match="home lab"):
+        CoverLetterGenerator._reject_overclaim_phrases("I built a self-built home lab.", resume)
+
+
 def test_cover_letter_credential_terms_cover_key_status_words() -> None:
     """The credential guard covers the high-precision status words (mirrors the résumé tailor's
     list — PR #101; consolidate to one shared constant when both branches land)."""
@@ -663,6 +670,71 @@ def test_cover_letter_validation_rejects_unlisted_tool_via_validate_output() -> 
     )
     with pytest.raises(LLMError, match="names a tool not in"):
         generator._validate_output(letter, user, job=job, resume=resume)
+
+
+def test_cover_letter_validation_rejects_unlisted_job_side_overclaim() -> None:
+    config = LLMConfig()
+    generator = CoverLetterGenerator(config)
+    user = UserProfile(first_name="Jane", last_name="Roe", email="j@e.com", phone="")
+    job = JobListing(title="IT Support", company="Acme", url="https://x/1", board=JobBoard.INDEED)
+    resume = ResumeData(raw_text="Jane Roe\nSkills\nMicrosoft 365", skills=["Microsoft 365"])
+    letter = (
+        "Dear Hiring Team,\n\n"
+        "My background has prepared me to support users with workstation deployment and IT "
+        "infrastructure maintenance. This body is long enough to pass the minimum length check.\n\n"
+        "Sincerely,\nJane Roe"
+    )
+
+    with pytest.raises(LLMError, match="job-side term"):
+        generator._validate_output(letter, user, job=job, resume=resume)
+
+
+def test_cover_letter_validation_rejects_merged_coursework_overclaim() -> None:
+    config = LLMConfig()
+    generator = CoverLetterGenerator(config)
+    user = UserProfile(first_name="Jane", last_name="Roe", email="j@e.com", phone="")
+    job = JobListing(title="IT Support", company="Acme", url="https://x/1", board=JobBoard.INDEED)
+    resume = ResumeData(
+        raw_text=(
+            "Jane Roe\nSkills\nMicrosoft 365\n"
+            "Experience\nTechnical Support Specialist\n"
+            "Education\nCybersecurity coursework"
+        ),
+        skills=["Microsoft 365"],
+    )
+    for phrase in ("technical support coursework", "listen first", "critical systems"):
+        letter = (
+            "Dear Hiring Team,\n\n"
+            f"I now apply my communication skills to {phrase}. "
+            "This body is long enough to pass the minimum length check and keeps going.\n\n"
+            "Sincerely,\nJane Roe"
+        )
+
+        with pytest.raises(LLMError, match="merges source facts"):
+            generator._validate_output(letter, user, job=job, resume=resume)
+
+
+def test_cover_letter_prompt_lists_absent_job_side_terms_to_avoid() -> None:
+    generator = CoverLetterGenerator(LLMConfig())
+    user = UserProfile(first_name="Jane", last_name="Roe", email="j@e.com", phone="")
+    job = JobListing(
+        title="IT Support",
+        company="Acme",
+        url="https://x/1",
+        board=JobBoard.INDEED,
+        description="Workstation deployment and IT infrastructure maintenance.",
+    )
+    resume = ResumeData(raw_text="Jane Roe\nSkills\nMicrosoft 365", skills=["Microsoft 365"])
+
+    prompt = generator._build_prompt(job, user, resume)
+
+    assert "Do NOT mention these job-description terms" in prompt
+    assert "workstation deployment" in prompt
+    assert "it infrastructure maintenance" in prompt
+    assert "Do NOT use these phrases because they merge separate résumé facts" in prompt
+    assert "technical support coursework" in prompt
+    assert "critical systems" in prompt
+    assert "Name the target company and role naturally once" in prompt
 
 
 def test_cover_letter_prompt_forbids_naming_unlisted_tools() -> None:

@@ -147,11 +147,12 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
   offline/account-safe; the account-touching actions (search/apply) run only behind an
   explicit in-app confirm, and a real apply needs a danger checkbox (dry-run default) — the
   low-friction TUI must never turn an account action into a one-keypress accident.
-- **Automated CV saves fail closed.** `tailor --yes`, `tailor --json`, and the TUI one-shot
+- **Automated CV saves fail closed.** `tailor --yes`, `tailor --json`, `batch`, and the TUI one-shot
   `tailor_job` path refuse to save if grounding did not complete cleanly, if contact info disappears,
   or if an ATS-compatible base résumé becomes incompatible. CLI non-interactive runs prepend strict
-  source-only instructions and retry dirty grounding drafts before refusing. Interactive review can
-  still accept a surfaced warning because the user is the document-of-record authority.
+  source-only instructions; batch also runs one strict refinement after dirty grounding before
+  refusing. Interactive review can still accept a surfaced warning because the user is the
+  document-of-record authority.
 - **Doctor reports capability readiness.** `doctor` keeps its narrow blocking `ok` verdict tied to
   LLM `/models` HTTP 200, but also renders capability readiness for AI generation, matching,
   browser workflows, and PDF output so first-use dependency gaps are visible without changing the

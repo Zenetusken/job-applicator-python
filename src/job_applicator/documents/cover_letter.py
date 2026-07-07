@@ -198,9 +198,24 @@ _CREDENTIAL_TERMS = ("accredited", "certified", "licensed", "chartered", "creden
 _OVERCLAIM_PHRASES = (
     "cloud-native",
     "cloud native",
+    "home lab",
     "mac-first",
+    "self-built home lab",
     "uniquely positioned",
     "mastered",
+)
+_JOB_SIDE_OVERCLAIM_TERMS = (
+    "workstation deployment",
+    "it infrastructure maintenance",
+    "asset inventory",
+    "itil",
+)
+_SOURCE_MERGE_OVERCLAIM_PHRASES = (
+    "critical systems",
+    "isolate the issue",
+    "listen first",
+    "technical support coursework",
+    "it support coursework",
 )
 
 
@@ -325,6 +340,8 @@ class CoverLetterGenerator:
         self._reject_unlisted_named_tools(text, resume, job.company)
         self._reject_unearned_credentials(text, resume)
         self._reject_overclaim_phrases(text, resume)
+        self._reject_job_side_overclaim_terms(text, resume)
+        self._reject_source_merge_overclaims(text, resume)
 
         # A PRESENT sign-off must use the applicant's real name (catch a wrong/invented name). A
         # MISSING sign-off does NOT fail the draft — a 4B forgets the closing ~1 in 4 times, and
@@ -488,6 +505,28 @@ class CoverLetterGenerator:
                 raise LLMError(
                     f"Generated cover letter makes an unearned/environment claim: {phrase!r}"
                 )
+
+    @staticmethod
+    def _reject_job_side_overclaim_terms(text: str, resume: ResumeData) -> None:
+        """Raise when a generic job-side requirement is written as applicant capability.
+
+        These are not named products, but the model can still pull them from the JD and phrase them
+        as what the applicant is prepared to do. If the CV is silent, retry without the term.
+        """
+        resume_lower = resume.raw_text.lower()
+        text_lower = text.lower()
+        for term in _JOB_SIDE_OVERCLAIM_TERMS:
+            if _word_present(term, text_lower) and not _word_present(term, resume_lower):
+                raise LLMError(f"Generated cover letter claims an unlisted job-side term: {term!r}")
+
+    @staticmethod
+    def _reject_source_merge_overclaims(text: str, resume: ResumeData) -> None:
+        """Raise when separate source facts are merged into a false credential/coursework claim."""
+        resume_lower = resume.raw_text.lower()
+        text_lower = text.lower()
+        for phrase in _SOURCE_MERGE_OVERCLAIM_PHRASES:
+            if _word_present(phrase, text_lower) and not _word_present(phrase, resume_lower):
+                raise LLMError(f"Generated cover letter merges source facts into: {phrase!r}")
 
     @classmethod
     def _humanize(cls, text: str) -> str:
@@ -1084,6 +1123,14 @@ class CoverLetterGenerator:
         parts.extend(
             [
                 "",
+                "Name the target company and role naturally once as application context. "
+                "Do not turn that target mention into a prior-employment claim.",
+            ]
+        )
+
+        parts.extend(
+            [
+                "",
                 "Applicant Profile:",
                 f"Name: {user.first_name} {user.last_name}",
                 f"Email: {user.email}",
@@ -1102,6 +1149,28 @@ class CoverLetterGenerator:
 
         if resume.skills:
             parts.extend(["", f"Key Skills: {', '.join(resume.skills)}"])
+
+        absent_job_side_terms = self._absent_job_side_terms(job, resume)
+        if absent_job_side_terms:
+            parts.extend(
+                [
+                    "",
+                    "Do NOT mention these job-description terms as applicant capabilities because "
+                    "they are absent from the résumé:",
+                    ", ".join(absent_job_side_terms),
+                ]
+            )
+
+        absent_source_merge_phrases = self._absent_source_merge_phrases(resume)
+        if absent_source_merge_phrases:
+            parts.extend(
+                [
+                    "",
+                    "Do NOT use these phrases because they merge separate résumé facts or imply "
+                    "details the résumé does not state:",
+                    ", ".join(absent_source_merge_phrases),
+                ]
+            )
 
         if tone_section:
             parts.extend(["", tone_section])
@@ -1176,3 +1245,22 @@ Key Skills: {{ resume.skills | join(', ') }}
 Generate a professional cover letter:""")
 
         return template.render(job=job, user=user, resume=resume)
+
+    @staticmethod
+    def _absent_job_side_terms(job: JobListing, resume: ResumeData) -> list[str]:
+        resume_lower = resume.raw_text.lower()
+        job_text = f"{job.description} {' '.join(job.requirements)}".lower()
+        return [
+            term
+            for term in _JOB_SIDE_OVERCLAIM_TERMS
+            if _word_present(term, job_text) and not _word_present(term, resume_lower)
+        ]
+
+    @staticmethod
+    def _absent_source_merge_phrases(resume: ResumeData) -> list[str]:
+        resume_lower = resume.raw_text.lower()
+        return [
+            phrase
+            for phrase in _SOURCE_MERGE_OVERCLAIM_PHRASES
+            if not _word_present(phrase, resume_lower)
+        ]

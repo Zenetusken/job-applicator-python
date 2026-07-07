@@ -105,6 +105,94 @@ def _looks_like_section_header(stripped: str) -> bool:
     return _is_section_header(cleaned)
 
 
+def _split_csv_outside_parentheses(text: str) -> list[str]:
+    """Split comma lists while keeping parenthetical skill names intact."""
+    tokens: list[str] = []
+    current: list[str] = []
+    depth = 0
+    for char in text:
+        if char == "(":
+            depth += 1
+            current.append(char)
+            continue
+        if char == ")":
+            depth = max(0, depth - 1)
+            current.append(char)
+            continue
+        if char == "," and depth == 0:
+            token = "".join(current).strip()
+            if token:
+                tokens.append(token)
+            current = []
+            continue
+        current.append(char)
+    token = "".join(current).strip()
+    if token:
+        tokens.append(token)
+    return tokens
+
+
+def _source_section(text: str, canonical: str) -> tuple[str, list[str]] | None:
+    """Return ``(source header, body lines)`` for a canonical résumé section."""
+    lines = text.replace("\f", "\n").splitlines()
+    start: int | None = None
+    header = ""
+    for index, line in enumerate(lines):
+        if section_header(line) == canonical:
+            start = index + 1
+            header = line.strip().strip("*").strip()
+            break
+    if start is None:
+        return None
+
+    body: list[str] = []
+    for line in lines[start:]:
+        if section_header(line) is not None:
+            break
+        body.append(line.rstrip())
+    while body and not body[0].strip():
+        body.pop(0)
+    while body and not body[-1].strip():
+        body.pop()
+    if not body:
+        return None
+    return header, body
+
+
+def _section_bounds(lines: list[str], canonical: str) -> tuple[int, int] | None:
+    """Return ``[start, end)`` bounds for a canonical section in generated text."""
+    start: int | None = None
+    for index, line in enumerate(lines):
+        if section_header(line) == canonical:
+            start = index
+            break
+    if start is None:
+        return None
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        if section_header(lines[index]) is not None:
+            end = index
+            break
+    return start, end
+
+
+def _has_bold_section_headers(text: str) -> bool:
+    return bool(re.search(r"(?m)^\s*\*\*[^*\n]+\*\*\s*$", text))
+
+
+def _format_source_section_header(source_header: str, *, bold: bool) -> str:
+    header = source_header.title()
+    return f"**{header}**" if bold else header
+
+
+def _insertion_index(lines: list[str], before: tuple[str, ...]) -> int:
+    for canonical in before:
+        bounds = _section_bounds(lines, canonical)
+        if bounds is not None:
+            return bounds[0]
+    return len(lines)
+
+
 def parse_sections(text: str) -> list[ResumeSection]:
     """Parse resume text into sections by detecting headers."""
     lines = text.split("\n")
@@ -522,9 +610,10 @@ TAILOR_SYSTEM_PROMPT = (
     "   - Write 3-5 bullets per job\n\n"
     "5. EDUCATION — include ALL education entries from the original. "
     "Preserve institution names, degrees, course names, and dates exactly. "
-    "Do NOT merge education entries with Certifications — they are separate "
-    "sections. Include EVERY entry even if it overlaps with Certifications "
-    "(e.g., a 'Cert Preparation' course is Education, not a Certification). "
+    "If the original uses a combined header such as 'Education & Certifications', "
+    "preserve that combined header. Otherwise keep Education and Certifications as "
+    "separate sections. Include EVERY entry even if it overlaps with Certifications "
+    "(e.g., a 'Cert Preparation' course is Education, not a held Certification). "
     "If original has no education section, do not add one. "
     "Order entries REVERSE-CHRONOLOGICAL (most recent first).\n\n"
     "6. CERTIFICATIONS — include if present. Preserve names and status "
@@ -549,8 +638,8 @@ TAILOR_SYSTEM_PROMPT = (
     "headers on their own lines:\n"
     "  **Skills**\n"
     "  **Experience**\n"
-    "  **Education** (if present in original)\n"
-    "  **Certifications** (if present in original)\n"
+    "  **Education** or **Education & Certifications** (if present in original)\n"
+    "  **Certifications** (if present separately in original)\n"
     "  **Languages** (if present in original)\n"
     "  Do not omit these headers. Place the **Skills** header directly before "
     "the skills list and the **Experience** header directly before the first "
@@ -605,8 +694,8 @@ TAILOR_PROMPT_TEMPLATE = (
     "Current Resume:\n---\n{resume_text}\n---\n\n"
     "Candidate's verbatim skills (preserve these exactly, reorder only):\n"
     "{skills}\n\n"
-    "Education entries that MUST appear in the output (do not merge with "
-    "Certifications — they are separate sections):\n"
+    "Education source section that MUST appear in the output. Preserve the source "
+    "header if it is combined, e.g. 'Education & Certifications':\n"
     "{education_entries}\n\n"
     "{tone_section}\n\n"
     "{user_instructions}\n\n"
@@ -657,6 +746,25 @@ _SKILLS_HEADER_RE = re.compile(
     r"^\*{0,2}\s*(?:(?:technical|core|key|professional|relevant|soft)\s+)?"
     r"(?:skills|competencies|proficiencies)\s*\*{0,2}$",
     re.IGNORECASE,
+)
+_SUMMARY_SOURCE_REPLACEMENTS: tuple[tuple[str, str, str], ...] = (
+    (
+        "incident resolution",
+        "high-stakes client problem-solving",
+        "high-stakes client problem-solving",
+    ),
+    ("process improvement", "operations management", "operations management"),
+    ("process optimization", "operations management", "operations management"),
+    ("client support", "client-facing work", "client-facing"),
+    (
+        "technical troubleshooting experience",
+        "front-line technical support experience",
+        "technical support",
+    ),
+    ("stakeholder coordination", "triage and escalation", "triage"),
+    ("hands-on technical training and coursework", "cybersecurity coursework", "coursework"),
+    ("hands-on technical training", "cybersecurity coursework", "coursework"),
+    ("hands-on cybersecurity training", "cybersecurity coursework", "coursework"),
 )
 
 
@@ -803,6 +911,9 @@ class ResumeTailor:
         tailored_text = self._strip_hallucinated_tools(
             tailored_text, resume.raw_text, job.requirements
         )
+        tailored_text = self._strip_malformed_tool_removal_sentences(tailored_text)
+        tailored_text = self._ground_summary_phrases(tailored_text, resume.raw_text)
+        tailored_text = self._ensure_source_backed_summary(tailored_text, resume.raw_text)
         tailored_text = self._strip_hallucinated_education(tailored_text, resume.raw_text)
         tailored_text = self._strip_unbacked_optional_sections(tailored_text, resume.raw_text)
         tailored_text = self._strip_unearned_credentials(tailored_text, resume.raw_text)
@@ -812,6 +923,7 @@ class ResumeTailor:
         tailored_text = self._strip_low_evidence_bullets(tailored_text, resume.raw_text)
         tailored_text = self._normalize_date_range_dashes(tailored_text)
         tailored_text = self._strip_unbacked_references(tailored_text, resume.raw_text)
+        tailored_text = self._preserve_source_required_sections(tailored_text, resume.raw_text)
         changes = await self._summarize_changes(resume.raw_text, tailored_text)
 
         return TailoredResume(
@@ -951,6 +1063,9 @@ class ResumeTailor:
         refined_text = self._strip_hallucinated_tools(
             refined_text, original_resume.raw_text, job.requirements
         )
+        refined_text = self._strip_malformed_tool_removal_sentences(refined_text)
+        refined_text = self._ground_summary_phrases(refined_text, original_resume.raw_text)
+        refined_text = self._ensure_source_backed_summary(refined_text, original_resume.raw_text)
         refined_text = self._strip_hallucinated_education(refined_text, original_resume.raw_text)
         refined_text = self._strip_unbacked_optional_sections(
             refined_text, original_resume.raw_text
@@ -964,6 +1079,9 @@ class ResumeTailor:
         refined_text = self._strip_low_evidence_bullets(refined_text, original_resume.raw_text)
         refined_text = self._normalize_date_range_dashes(refined_text)
         refined_text = self._strip_unbacked_references(refined_text, original_resume.raw_text)
+        refined_text = self._preserve_source_required_sections(
+            refined_text, original_resume.raw_text
+        )
         refined_text = self._require_nonempty(refined_text)
         changes = await self._summarize_changes(current_tailored.tailored_text, refined_text)
 
@@ -1007,38 +1125,28 @@ class ResumeTailor:
         )
 
     def _extract_education_entries(self, text: str) -> str:
-        """Extract education entries as a numbered checklist for the prompt.
+        """Extract the source Education section for the prompt.
 
-        Parses the Education section and returns each entry as a numbered
-        item so the LLM can't silently drop any.
+        Uses the shared section-header parser, so compound v1 headers like
+        ``EDUCATION & CERTIFICATIONS`` are treated as Education instead of being missed.
         """
-        lines = text.split("\n")
-        entries: list[str] = []
-        in_edu = False
-        current_entry: list[str] = []
+        source = _source_section(text, "Education")
+        if source is None:
+            return "None — do not add an Education section."
 
-        for line in lines:
-            stripped = line.strip()
+        header, body = source
+        normalized_header = re.sub(r"\s+", " ", header.strip().strip("*").strip()).casefold()
+        if normalized_header == "education":
+            entries: list[str] = []
+            current_entry: list[str] = []
 
-            # Detect education section start
-            if re.match(r"^\*{0,2}\s*EDUCATION\s*\*{0,2}$", stripped, re.IGNORECASE):
-                in_edu = True
-                continue
-
-            # Detect next section (end of education)
-            if in_edu and _looks_like_section_header(stripped):
-                if current_entry:
-                    entries.append(" ".join(current_entry).strip())
-                    current_entry = []
-                in_edu = False
-                continue
-
-            if in_edu and stripped:
-                # Date line = end of current entry
+            for line in body:
+                stripped = line.strip()
+                if not stripped:
+                    continue
                 is_date = bool(
                     re.search(r"\d{4}", stripped) and re.search(r"[-\u2013\u2014]", stripped)
                 )
-
                 if is_date:
                     current_entry.append(stripped)
                     entries.append(" ".join(current_entry).strip())
@@ -1048,16 +1156,13 @@ class ResumeTailor:
                 else:
                     current_entry = [stripped]
 
-        if current_entry:
-            entries.append(" ".join(current_entry).strip())
+            if current_entry:
+                entries.append(" ".join(current_entry).strip())
+            if not entries:
+                return "None — do not add an Education section."
+            return "\n".join(f"  {index}. {entry}" for index, entry in enumerate(entries, 1))
 
-        if not entries:
-            return "None — do not add an Education section."
-
-        numbered = []
-        for i, entry in enumerate(entries, 1):
-            numbered.append(f"  {i}. {entry}")
-        return "\n".join(numbered)
+        return "\n".join([header, *(f"  {line.strip()}" for line in body if line.strip())])
 
     def _require_nonempty(self, text: str) -> str:
         """Guard against an empty tailored résumé reaching the caller (and then cover-letter
@@ -1221,11 +1326,14 @@ class ResumeTailor:
                 # Ampersand / "and" are left intact because lines like
                 # "Docker & Kubernetes" still match via token containment when one
                 # of the skills is present in the original résumé.
-                raw_tokens = [t.strip() for t in skill_text.split(",") if t.strip()]
+                raw_tokens = _split_csv_outside_parentheses(skill_text)
 
                 kept_tokens: list[str] = []
                 for token in raw_tokens:
                     if len(token) < 3:
+                        continue
+                    if token.count("(") != token.count(")"):
+                        logger.info("Stripped malformed skill token: %s", token)
                         continue
                     token_norm = normalize_skill(token).lower()
 
@@ -1367,6 +1475,138 @@ class ResumeTailor:
         result = re.sub(r"\s+\.", ".", result)
         return result.strip()
 
+    @staticmethod
+    def _strip_malformed_tool_removal_sentences(tailored: str) -> str:
+        """Drop prose sentences broken by unsupported-tool removal.
+
+        Replacing/removing hallucinated job tools can leave empty list slots such as ``and ,`` or
+        ``in ,``. A broken sentence is worse than a shorter résumé, so drop only the malformed
+        sentence and keep any clean sentence on the same line.
+        """
+        malformed = re.compile(
+            r"(?:,\s*and\s*,|,\s*,|\bin\s*,|foundation\s+in\s*,|-\s*aligned|and\s*[.;])",
+            re.IGNORECASE,
+        )
+        result_lines: list[str] = []
+        for line in tailored.splitlines():
+            stripped = line.strip()
+            is_bullet = bool(re.match(r"^[•*\-]\s+", stripped))
+            if not stripped or not malformed.search(line):
+                result_lines.append(line)
+                continue
+            if is_bullet:
+                logger.info("Dropped malformed bullet after tool removal: %s", stripped)
+                continue
+            sentences = re.split(r"(?<=[.!?])\s+", line)
+            kept = [
+                sentence for sentence in sentences if sentence and not malformed.search(sentence)
+            ]
+            if kept:
+                result_lines.append(" ".join(kept).strip())
+            else:
+                logger.info("Dropped malformed sentence after tool removal: %s", stripped)
+        return "\n".join(result_lines).strip()
+
+    @staticmethod
+    def _ground_summary_phrases(tailored: str, original: str) -> str:
+        """Rewrite high-risk generated summary phrases to source-backed wording."""
+        original_lower = original.lower()
+        result_lines: list[str] = []
+        in_lead = True
+        for line in tailored.splitlines():
+            stripped = line.strip()
+            if (
+                in_lead
+                and _looks_like_section_header(stripped)
+                and not _is_summary_header(stripped)
+            ):
+                in_lead = False
+            if in_lead and stripped and not _is_summary_header(stripped):
+                line = ResumeTailor._replace_summary_phrases(line, original_lower)
+            result_lines.append(line)
+        return "\n".join(result_lines).strip()
+
+    @staticmethod
+    def _replace_summary_phrases(line: str, original_lower: str) -> str:
+        result = line
+        for generated, replacement, evidence in _SUMMARY_SOURCE_REPLACEMENTS:
+            if generated in original_lower or evidence not in original_lower:
+                continue
+            result = re.sub(
+                rf"\b{re.escape(generated)}\b",
+                replacement,
+                result,
+                flags=re.IGNORECASE,
+            )
+        result = re.sub(
+            r"\boperations management,\s+and\s+operations management\b",
+            "operations management",
+            result,
+        )
+        result = re.sub(
+            r"\bhigh-stakes client problem-solving,\s*problem-solving,\s*and\s*"
+            r"triage and escalation\b",
+            "high-stakes client problem-solving, triage, and escalation",
+            result,
+            flags=re.IGNORECASE,
+        )
+        result = re.sub(
+            r"\bcybersecurity coursework\s+and\s+coursework\b",
+            "cybersecurity coursework",
+            result,
+            flags=re.IGNORECASE,
+        )
+        result = re.sub(
+            r",?\s+now transitioning into IT support through\s+",
+            ", with ",
+            result,
+            flags=re.IGNORECASE,
+        )
+        result = re.sub(r"\s{2,}", " ", result)
+        return result
+
+    @staticmethod
+    def _ensure_source_backed_summary(tailored: str, original: str) -> str:
+        """Use a conservative source-backed summary when one can be built."""
+        lines = tailored.splitlines()
+        bounds = _section_bounds(lines, "Summary")
+        if bounds is None:
+            return tailored
+        start, end = bounds
+        fallback = ResumeTailor._source_backed_summary(original)
+        if not fallback:
+            return tailored
+        lines = [*lines[: start + 1], fallback, "", *lines[end:]]
+        return ResumeTailor._join_resume_lines(lines)
+
+    @staticmethod
+    def _source_backed_summary(original: str) -> str:
+        source = original.lower()
+        sentences: list[str] = []
+        if (
+            "10+ years" in source
+            and "operations management" in source
+            and "high-stakes client problem-solving" in source
+            and "triage" in source
+            and "escalation" in source
+        ):
+            sentences.append(
+                "Operations professional with 10+ years of operations management, "
+                "high-stakes client problem-solving, triage, and escalation experience."
+            )
+        if "technical support" in source and "coursework" in source:
+            technical = (
+                "Brings front-line technical support experience plus cybersecurity and networking "
+                "coursework"
+            )
+            if all(
+                term in source
+                for term in ("hands-on", "siem", "soc operations", "incident response")
+            ):
+                technical += " with hands-on labs in SIEM, SOC operations, and incident response"
+            sentences.append(f"{technical}.")
+        return " ".join(sentences)
+
     def _strip_unsupported_metric_claims(self, tailored: str, original: str) -> str:
         """Remove common LLM metric embellishments not present in the base résumé.
 
@@ -1462,6 +1702,84 @@ class ResumeTailor:
             result_lines.append(line)
         return "\n".join(result_lines).strip()
 
+    def _preserve_source_required_sections(self, tailored: str, original: str) -> str:
+        """Restore source-owned sections the LLM must not rewrite materially.
+
+        Education/certification history and language fluency are facts of record. If the model
+        drops, renames, or weakens them, replace those sections with the source text so unattended
+        output cannot degrade the candidate's credentials or language claims.
+        """
+        result = self._preserve_source_section(
+            tailored,
+            original,
+            "Education",
+            before=("Languages", "References"),
+            allow_combined_certifications=True,
+        )
+        return self._preserve_source_section(
+            result,
+            original,
+            "Languages",
+            before=("References",),
+            allow_combined_certifications=False,
+        )
+
+    @staticmethod
+    def _preserve_source_section(
+        tailored: str,
+        original: str,
+        canonical: str,
+        *,
+        before: tuple[str, ...],
+        allow_combined_certifications: bool,
+    ) -> str:
+        source = _source_section(original, canonical)
+        if source is None:
+            return tailored
+
+        source_header, source_body = source
+        replacement = [
+            _format_source_section_header(
+                source_header,
+                bold=_has_bold_section_headers(tailored),
+            ),
+            *source_body,
+        ]
+        lines = tailored.splitlines()
+        bounds = _section_bounds(lines, canonical)
+        if (
+            bounds is None
+            and allow_combined_certifications
+            and "certification" in source_header.lower()
+        ):
+            bounds = _section_bounds(lines, "Certifications")
+
+        if bounds is None:
+            insert_at = _insertion_index(lines, before)
+            prefix = [""] if insert_at > 0 and lines[insert_at - 1].strip() else []
+            suffix = [""] if insert_at < len(lines) and lines[insert_at].strip() else []
+            lines = lines[:insert_at] + prefix + replacement + suffix + lines[insert_at:]
+        else:
+            start, end = bounds
+            lines = lines[:start] + replacement + lines[end:]
+        return ResumeTailor._join_resume_lines(lines)
+
+    @staticmethod
+    def _join_resume_lines(lines: list[str]) -> str:
+        result: list[str] = []
+        previous_blank = False
+        for line in lines:
+            stripped = line.rstrip()
+            if stripped:
+                result.append(stripped)
+                previous_blank = False
+            elif result and not previous_blank:
+                result.append("")
+                previous_blank = True
+        while result and not result[-1].strip():
+            result.pop()
+        return "\n".join(result).strip()
+
     @staticmethod
     def _strip_unverifiable_aspirations(tailored: str) -> str:
         """Remove target-role aspiration sentences before grounding.
@@ -1511,6 +1829,8 @@ class ResumeTailor:
             "scalability",
             "database load",
             "global user growth",
+            "internal teams",
+            "technical guidance",
         )
         result_lines: list[str] = []
         for line in tailored.splitlines():

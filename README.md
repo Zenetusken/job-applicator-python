@@ -272,7 +272,7 @@ The `tailor` command runs an interactive session that lets you iteratively refin
 - **Version History**: Press `[V]` to browse all previous attempts and select one to revert to or compare against.
 - **Section Editing**: Press `[S]` to target a specific resume section (e.g. Experience, Skills, Summary) for focused rewriting instead of regenerating the entire resume.
 - **Auto Tone Detection**: The tailor automatically detects the job posting's tone (corporate, startup, technical, or creative) and adjusts vocabulary and phrasing accordingly.
-- **Non-Interactive Integrity Gate**: `tailor --yes`, `tailor --json`, and TUI one-shot tailoring save only when grounding completed cleanly and the tailored output does not drop contact info or regress an ATS-compatible base résumé into an incompatible one. CLI non-interactive runs start with strict source-only instructions and retry dirty grounding drafts before failing closed.
+- **Non-Interactive Integrity Gate**: `tailor --yes`, `tailor --json`, batch tailoring, and TUI one-shot tailoring save only when grounding completed cleanly and the tailored output does not drop contact info or regress an ATS-compatible base résumé into an incompatible one. CLI non-interactive runs start with strict source-only instructions and retry dirty grounding drafts before failing closed.
 - **Error Handling**: Up to 10 retry attempts on LLM failures, with a warning at attempt 8. The session gracefully recovers from transient LLM errors.
 - **Post-Tailor Cover Letter**: After accepting a tailored resume, the CLI offers to generate a matching cover letter. The same tone, style guide, and job data are shared between both documents. The cover letter follows the same accept/retry/input/diff/history workflow as the resume, and is saved alongside it with linked metadata.
 
@@ -293,6 +293,7 @@ job-applicator batch --resume resume.pdf --jobs-file jobs.json --no-cover-letter
 
 - **Smart matching**: Jobs are ranked by semantic similarity + skill coverage, filtered by `--min-score`, then only the top `--top-k` are processed.
 - **Parallel execution**: Tailoring and cover letter generation run concurrently (up to 3 simultaneous LLM calls).
+- **Fail-closed CV saves**: If a generated CV comes back with dirty grounding, batch runs one strict source-only refinement and then refuses to save the CV if grounding/contact/ATS integrity is still not clean.
 - **Per-job output**: Each job produces `tailored_*.txt` + `.meta.json` and optionally `cover_letter_*.txt` + `.meta.json`. With `--format both`, the text sidecar is the authoritative metadata file and includes the generated `pdf_path`.
 - **Batch summary**: A `batch_summary_{timestamp}.json` file contains all results with scores, paths, and errors.
 

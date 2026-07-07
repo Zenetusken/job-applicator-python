@@ -154,9 +154,9 @@ src/job_applicator/
 - **Résumé tailoring has hallucination guards.** `_validate_skills()`, `_strip_hallucinated_tools()`,
   `_strip_hallucinated_education()`, metric/optional-section cleanup, and low-evidence bullet
   filtering in `documents/resume_tailor.py` keep the output aligned with the original résumé.
-  Non-interactive tailoring (`--yes`/`--json`) prepends strict source-only instructions and retries
-  dirty grounding drafts before failing closed. Skill/tool matching uses fuzzy, non-greedy logic in
-  `embeddings/matching.py`.
+  Non-interactive tailoring (`--yes`/`--json`) and `batch` prepend strict source-only instructions;
+  batch also runs one strict refinement after dirty grounding before refusing to save. Skill/tool
+  matching uses fuzzy, non-greedy logic in `embeddings/matching.py`.
 - **Grounding verifier is the language-agnostic honesty layer.** `documents/grounding_verifier.py`:
   an LLM enumerates each claim in a generated doc + cites the SOURCE line; a deterministic audit
   (`audit_report` — token-overlap + numeric backstop + coverage check) overrides ungrounded
@@ -165,8 +165,8 @@ src/job_applicator/
   `CoverLetterGroundingError` if the best draft is still unclean or verification is unavailable.
   `ResumeTailor.tailor_verified()` SURFACES the result on `TailoredResume.grounding_report` (never
   auto-strips — the résumé is the document of record). Non-interactive CV saves (`tailor --yes`,
-  `tailor --json`, TUI one-shot tailoring) fail closed unless grounding completed cleanly and the
-  tailored output preserves contact/ATS integrity. Fail-safe: a verifier failure raises
+  `tailor --json`, `batch`, TUI one-shot tailoring) fail closed unless grounding completed cleanly
+  and the tailored output preserves contact/ATS integrity. Fail-safe: a verifier failure raises
   `GroundingUnavailableError`, never a clean report. The pure audit core is unit-tested (runs on the
   fast gate); the LLM pass is `-m live`.
 - **Output language is a packet-level policy.** `[llm] language` = `auto` (mirror the JD) | `en` |
