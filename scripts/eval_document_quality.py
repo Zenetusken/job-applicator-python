@@ -28,7 +28,7 @@ _SECTION_ALIASES = {
 _CLOSINGS = ("sincerely", "best regards", "regards", "cordialement", "merci")
 _DEFAULT_PACKET_SET = "~/.job-applicator/document-quality-eval/packet-set.jsonl"
 _DOCUMENT_QUALITY_SET_ENV = "DOCUMENT_QUALITY_SET"
-_DIMENSIONS = ("usefulness", "specificity", "writing_quality", "formatting_polish")
+_DIMENSIONS = ("usefulness", "specificity", "coherence", "writing_quality", "formatting_polish")
 _DEFAULT_DIMENSION_FLOOR = 3.0
 _DEFAULT_OVERALL_FLOOR = 3.0
 _GENERIC_COVER_PHRASES = (
@@ -70,6 +70,49 @@ _STOPWORDS = {
     "you",
     "your",
 }
+_COMPANY_STOPWORDS = {
+    "and",
+    "canada",
+    "company",
+    "corp",
+    "corporation",
+    "gmbh",
+    "group",
+    "inc",
+    "in",
+    "llc",
+    "ltd",
+    "plc",
+    "the",
+}
+_ENGLISH_MARKERS = {
+    "and",
+    "background",
+    "client",
+    "education",
+    "experience",
+    "for",
+    "role",
+    "skills",
+    "support",
+    "the",
+    "with",
+}
+_FRENCH_MARKERS = {
+    "avec",
+    "compétences",
+    "competences",
+    "dans",
+    "de",
+    "des",
+    "du",
+    "expérience",
+    "experience",
+    "formation",
+    "le",
+    "les",
+    "pour",
+}
 
 
 @dataclass(frozen=True)
@@ -107,6 +150,12 @@ def _keyword_coverage(text: str, keywords: list[str]) -> float:
     low = text.lower()
     hits = sum(1 for keyword in keywords if keyword.lower() in low)
     return hits / len(keywords)
+
+
+def _phrase_present(text: str, phrase: str) -> bool:
+    normalized_text = re.sub(r"\s+", " ", text.casefold())
+    normalized_phrase = re.sub(r"\s+", " ", phrase.casefold()).strip()
+    return bool(normalized_phrase and normalized_phrase in normalized_text)
 
 
 def _clamp_dimension(value: float) -> float:
@@ -213,13 +262,64 @@ def _case_keywords(case: dict[str, Any], *, base_dir: Path) -> tuple[list[str], 
     return keywords, job_description
 
 
+def _case_coherence_terms(case: dict[str, Any], *, keywords: list[str]) -> list[str]:
+    explicit = _as_text_list(
+        _case_value(case, "coherence_terms", "shared_terms"),
+        field="coherence_terms",
+    )
+    return explicit or keywords
+
+
+def _company_terms(company: str) -> list[str]:
+    words = [
+        word
+        for word in _words(company)
+        if word not in _COMPANY_STOPWORDS and (len(word) >= 3 or word.isupper())
+    ]
+    terms = [company] if company else []
+    terms.extend(word for word in words if word not in terms)
+    return terms
+
+
 def _target_mention_score(text: str, *, job_title: str, company: str) -> float:
-    terms = [term for term in (job_title, company) if term]
-    if not terms:
+    scores: list[float] = []
+    if job_title:
+        scores.append(1.0 if _phrase_present(text, job_title) else 0.0)
+    company_terms = _company_terms(company)
+    if company_terms:
+        scores.append(1.0 if any(_phrase_present(text, term) for term in company_terms) else 0.0)
+    if not scores:
         return 1.0
-    low = text.lower()
-    hits = sum(1 for term in terms if term.lower() in low)
-    return hits / len(terms)
+    return sum(scores) / len(scores)
+
+
+def _name_mention_score(*, resume_text: str, cover_text: str, applicant_name: str) -> float:
+    if not applicant_name:
+        return 1.0
+    return (0.5 if _phrase_present(resume_text, applicant_name) else 0.0) + (
+        0.5 if _phrase_present(cover_text, applicant_name) else 0.0
+    )
+
+
+def _language_hint(text: str) -> str:
+    words = _words(text)
+    if not words:
+        return "unknown"
+    english = sum(1 for word in words if word in _ENGLISH_MARKERS)
+    french = sum(1 for word in words if word in _FRENCH_MARKERS)
+    if french >= 4 and french > english * 1.5:
+        return "fr"
+    if english >= 4 and english > french * 1.5:
+        return "en"
+    return "unknown"
+
+
+def _language_coherence_score(resume_text: str, cover_text: str) -> float:
+    resume_language = _language_hint(resume_text)
+    cover_language = _language_hint(cover_text)
+    if "unknown" in (resume_language, cover_language):
+        return 1.0
+    return 1.0 if resume_language == cover_language else 0.0
 
 
 def _score_usefulness(
@@ -250,6 +350,38 @@ def _score_specificity(
     generic_penalty = min(1.0, generic_hits * 0.25)
     raw = 4.0 * ((0.6 * packet_coverage) + (0.25 * cover_coverage) + (0.15 * target_score))
     return _clamp_dimension(raw - generic_penalty)
+
+
+def _score_coherence(
+    *,
+    resume_text: str,
+    cover_text: str,
+    applicant_name: str,
+    job_title: str,
+    company: str,
+    coherence_terms: list[str],
+) -> float:
+    identity_score = _name_mention_score(
+        resume_text=resume_text,
+        cover_text=cover_text,
+        applicant_name=applicant_name,
+    )
+    target_score = _target_mention_score(cover_text, job_title=job_title, company=company)
+    source_backed_terms = [term for term in coherence_terms if _phrase_present(resume_text, term)]
+    if source_backed_terms:
+        shared_terms = [term for term in source_backed_terms if _phrase_present(cover_text, term)]
+        shared_term_score = len(shared_terms) / len(source_backed_terms)
+    else:
+        shared_term_score = 1.0
+    language_score = _language_coherence_score(resume_text, cover_text)
+
+    raw = 4.0 * (
+        (0.20 * identity_score)
+        + (0.25 * target_score)
+        + (0.45 * shared_term_score)
+        + (0.10 * language_score)
+    )
+    return _clamp_dimension(raw)
 
 
 def _score_writing_quality(*, cover_text: str, cover_report: QualityReport) -> float:
@@ -303,6 +435,7 @@ def assess_packet_case(
     job_title = str(_case_value(case, "job_title", "title") or "")
     company = str(_case_value(case, "company", "employer") or "")
     keywords, _job_description = _case_keywords(case, base_dir=base_dir)
+    coherence_terms = _case_coherence_terms(case, keywords=keywords)
     case_min_dimension_score = float(
         _case_value(case, "min_dimension_score", "dimension_floor") or min_dimension_score
     )
@@ -326,6 +459,14 @@ def assess_packet_case(
             keywords=keywords,
             job_title=job_title,
             company=company,
+        ),
+        "coherence": _score_coherence(
+            resume_text=resume_text,
+            cover_text=cover_text,
+            applicant_name=applicant_name,
+            job_title=job_title,
+            company=company,
+            coherence_terms=coherence_terms,
         ),
         "writing_quality": _score_writing_quality(
             cover_text=cover_text,

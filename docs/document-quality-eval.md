@@ -60,7 +60,8 @@ relative to the manifest file unless they are absolute.
   "applicant_name": "John Doe",
   "job_title": "Security Analyst",
   "company": "Acme",
-  "keywords": ["Python", "Linux", "SIEM", "incident response", "IAM"]
+  "keywords": ["Python", "Linux", "SIEM", "incident response", "IAM"],
+  "coherence_terms": ["Python", "Linux", "SIEM", "incident response"]
 }
 ```
 
@@ -76,6 +77,7 @@ Optional fields:
 - `applicant_name` / `profile_name`
 - `job_title` / `title`
 - `company` / `employer`
+- `coherence_terms` / `shared_terms`
 - `min_dimension_score` / `dimension_floor`
 - `min_overall_score` / `overall_floor`
 
@@ -88,13 +90,20 @@ source-backed by the applicant's CV/tailored packet. Do not include unsupported 
 as tools, processes, or responsibilities the candidate cannot honestly claim unless the case is
 explicitly testing that those terms stay absent.
 
+Use `coherence_terms` when the packet should distinguish broad job specificity from the smaller
+set of narrative terms that must appear in both the CV and cover letter. If omitted, the coherence
+dimension uses `keywords`.
+
 ## Scores
 
-Each packet gets four deterministic 0-4 dimension scores:
+Each packet gets five deterministic 0-4 dimension scores:
 
 - `usefulness`: document completeness plus job keyword coverage.
 - `specificity`: packet and cover-letter job keyword coverage, title/company mentions, and generic
   cover-letter phrase penalties.
+- `coherence`: applicant identity, target role/company mention, CV/cover-letter language
+  consistency, and source-backed terms shared by both documents. Company aliases count when the
+  manifest contains a formal name such as `WSP in Canada` but the letter naturally says `WSP`.
 - `writing_quality`: cover-letter length, paragraph shape, repetition, and existing
   cover-letter failures/warnings.
 - `formatting_polish`: contact/section/sign-off integrity, placeholders, markdown/list leakage, and

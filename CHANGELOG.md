@@ -30,9 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `~/.job-applicator/debug/selector-health/`.
 - **Private generated-document packet quality set.** The document-quality gate now supports a
   populated local packet manifest at `~/.job-applicator/document-quality-eval/packet-set.jsonl`,
-  scored across usefulness, specificity, writing quality, and formatting polish. The private WSP
-  IT-support seed packet is backed by fresh generated CV/cover-letter artifacts and a CV-coherent
-  cover-letter gold-standard style fixture.
+  scored across usefulness, specificity, coherence, writing quality, and formatting polish. The
+  private WSP IT-support seed packet is backed by fresh generated CV/cover-letter artifacts and a
+  CV-coherent cover-letter gold-standard style fixture.
+- **Packet-level CV/cover-letter coherence scoring.** Private document-quality packets now get a
+  fifth 0-4 dimension that checks applicant identity, target role/company alignment, language
+  consistency, and source-backed terms shared by the CV and cover letter. Manifests can set
+  `coherence_terms` when the narrative bridge should be narrower than the broad keyword list.
 
 - **`status` now shows which search surfaced each job.** The stored `source_query` (previously
   captured but never displayed) is surfaced as a **Found via** column in the `status` table, a

@@ -263,7 +263,54 @@ def test_document_quality_private_packet_set_json_output(
     assert set(payload["dimension_means"]) == {
         "usefulness",
         "specificity",
+        "coherence",
         "writing_quality",
         "formatting_polish",
     }
     assert payload["packets"][0]["packet_id"] == "acme-security"
+
+
+def test_document_quality_private_packet_set_fails_incoherent_packet(tmp_path: Path) -> None:
+    resume = tmp_path / "resume.txt"
+    cover = tmp_path / "cover.txt"
+    packet_set = tmp_path / "packet-set.jsonl"
+    resume.write_text(_quality_resume(), encoding="utf-8")
+    cover.write_text(
+        (
+            "Dear Acme Security Team,\n\n"
+            "I am applying for the Security Analyst role at Acme. My background is centered on "
+            "guest relations, event coordination, vendor follow-up, and service planning, with a "
+            "focus on calm communication and dependable handoffs.\n\n"
+            "In previous work I helped teams stay organized, maintain schedules, and keep clients "
+            "informed when priorities changed. That experience would help me contribute to a team "
+            "that values patience, preparation, and clear written updates.\n\n"
+            "I would welcome the opportunity to discuss how this service background can support "
+            "your team.\n\n"
+            "Sincerely,\nJohn Doe"
+        ),
+        encoding="utf-8",
+    )
+    packet_set.write_text(
+        (
+            '{"id":"incoherent","resume_path":"resume.txt","cover_letter_path":"cover.txt",'
+            '"applicant_name":"John Doe","job_title":"Security Analyst","company":"Acme",'
+            '"keywords":["Python","Linux","SIEM","incident response","IAM","alert triage"]}\n'
+        ),
+        encoding="utf-8",
+    )
+
+    report = eval_document_quality.assess_packet_set(packet_set)[0]
+
+    assert report.dimensions["coherence"] < 3.0
+    assert any("coherence score" in item for item in report.failures)
+
+
+def test_document_quality_company_alias_counts_for_target_mention() -> None:
+    assert (
+        eval_document_quality._target_mention_score(
+            "I am applying for the IT On-site Support Technician role at WSP in Montreal.",
+            job_title="IT On-site Support Technician",
+            company="WSP in Canada",
+        )
+        == 1.0
+    )
