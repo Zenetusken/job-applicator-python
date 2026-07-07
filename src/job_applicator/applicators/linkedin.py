@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+import json
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +57,15 @@ RESUME_FILE_INPUT_SELECTOR = 'input[type="file"]'
 RESUME_UPLOAD_BUTTON_SELECTOR = (
     'button:has-text("Upload resume"), button[aria-label*="Upload resume" i]'
 )
+RESUME_UPLOAD_ACCEPTED_EVIDENCE_SELECTORS = (
+    "[role='dialog'] .jobs-document-upload__filename",
+    "[role='dialog'] .jobs-document-upload__name",
+    "[role='dialog'] .jobs-document-upload__file-name",
+    "[role='dialog'] .jobs-document-upload-redesign-card__file-name",
+    "[role='dialog'] [data-test-resume-file-name]",
+    "[role='dialog'] [data-test-resume-uploaded-file]",
+    "[role='dialog'] [aria-label*='uploaded' i][aria-label*='resume' i]",
+)
 MODAL_TITLE_SELECTORS = (
     "h2",
     "[role='dialog'] h2",
@@ -65,6 +76,30 @@ REQUIRED_FIELD_SELECTOR = (
     "input[required], textarea[required], select[required], "
     "input[aria-required='true'], textarea[aria-required='true'], "
     "select[aria-required='true']"
+)
+FORM_VALIDATION_ERROR_SELECTORS = (
+    "[role='dialog'] [role='alert']",
+    "[role='dialog'] .artdeco-inline-feedback--error",
+    "[role='dialog'] .artdeco-inline-feedback__message",
+    "[role='dialog'] .fb-dash-form-element__error-text",
+    "[role='dialog'] .jobs-easy-apply-form-element__error",
+    "[role='dialog'] .jobs-easy-apply-form-section__error",
+    "[role='dialog'] [class*='error' i]",
+    "[role='dialog'] [id*='error' i]",
+)
+_VALIDATION_ERROR_TERMS = (
+    "cannot",
+    "can't",
+    "error",
+    "invalid",
+    "missing",
+    "must",
+    "not supported",
+    "please enter",
+    "please select",
+    "required",
+    "resume",
+    "upload",
 )
 APPLICATION_SENT_SELECTOR = 'div:has-text("Application sent")'
 EXTERNAL_APPLY_BUTTON_SELECTORS = (
@@ -113,6 +148,53 @@ async def _first_selector(page: Page, selectors: tuple[str, ...]) -> tuple[Any |
         if element:
             return element, selector
     return None, ""
+
+
+async def _maybe_await(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+async def _element_is_visible(element: Any) -> bool:
+    try:
+        is_visible = getattr(element, "is_visible", None)
+        if not callable(is_visible):
+            return True
+        return bool(await _maybe_await(is_visible()))
+    except Exception:
+        return False
+
+
+async def _element_text(element: Any) -> str:
+    for method_name in ("inner_text", "text_content"):
+        method = getattr(element, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            value = await _maybe_await(method())
+        except Exception as exc:
+            logger.debug("Could not read LinkedIn element text via %s: %s", method_name, exc)
+            continue
+        if isinstance(value, str) and value.strip():
+            return _normalize_inline_text(value)
+    return ""
+
+
+def _normalize_inline_text(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _is_actionable_validation_message(text: str) -> bool:
+    if not text:
+        return False
+    normalized = text.strip()
+    if normalized.lower() in {"error", "errors", "help", "warning"}:
+        return False
+    if len(normalized) > 280:
+        return False
+    lowered = normalized.lower()
+    return any(term in lowered for term in _VALIDATION_ERROR_TERMS)
 
 
 class LinkedInApplicator(BaseApplicator):
@@ -206,9 +288,7 @@ class LinkedInApplicator(BaseApplicator):
 
         # Upload resume if file input exists
         if self._config.resume_path:
-            validation.resume_uploaded = await self._upload_resume_if_present(page)
-            if validation.resume_uploaded:
-                await random_delay(1.0, 2.0)
+            await self._attempt_resume_upload(page, validation)
 
         # Fill cover letter if provided and field exists
         if cover_letter:
@@ -244,15 +324,14 @@ class LinkedInApplicator(BaseApplicator):
             validation.fields_filled = fields_filled
             validation.fill_errors = fill_errors
             if self._config.resume_path and not validation.resume_uploaded:
-                validation.resume_uploaded = await self._upload_resume_if_present(page)
-                if validation.resume_uploaded:
-                    await random_delay(1.0, 2.0)
+                await self._attempt_resume_upload(page, validation)
 
         # Match the final submit by either label ("Submit application" is the
         # usual text; fall back to a bare "Submit") so a label change/locale
         # doesn't make a real application silently fail to send.
         validation.modal_title = await self._modal_title(page)
         validation.required_empty_fields = await self._required_empty_fields(page)
+        validation.form_validation_errors = await self._form_validation_errors(page)
         submit_btn, selector = await _first_selector(page, _SUBMIT_BUTTON_SELECTORS)
         if not submit_btn:
             dump = await self._dump_apply_debug(page, job, validation)
@@ -308,23 +387,63 @@ class LinkedInApplicator(BaseApplicator):
         result.dry_run = validation
         return result
 
-    async def _upload_resume_if_present(self, page: Page) -> bool:
+    async def _attempt_resume_upload(self, page: Page, validation: DryRunValidation) -> None:
+        resume_path = await self._upload_resume_if_present(page)
+        if not resume_path:
+            return
+        validation.resume_uploaded = True
+        await random_delay(1.0, 2.0)
+        accepted, evidence = await self._resume_upload_acceptance(page, resume_path)
+        validation.resume_upload_accepted = accepted
+        validation.resume_upload_evidence = evidence
+
+    async def _upload_resume_if_present(self, page: Page) -> Path | None:
         """Upload the configured résumé when LinkedIn exposes a file input or upload button."""
         resume_input = await page.query_selector(RESUME_FILE_INPUT_SELECTOR)
         if resume_input:
             resume_path = _validated_resume_upload_path(self._config)  # exists + supported type
             await resume_input.set_input_files(str(resume_path))
-            return True
+            return resume_path
 
         upload_button = await page.query_selector(RESUME_UPLOAD_BUTTON_SELECTOR)
         if not upload_button:
-            return False
+            return None
         resume_path = _validated_resume_upload_path(self._config)
         async with page.expect_file_chooser() as chooser_info:
             await upload_button.click()
         chooser = await chooser_info.value
         await chooser.set_files(str(resume_path))
-        return True
+        return resume_path
+
+    async def _resume_upload_acceptance(self, page: Page, resume_path: Path) -> tuple[bool, str]:
+        filename = resume_path.name
+        quoted_filename = json.dumps(filename)
+        for selector in (
+            f"[role='dialog'] >> text={quoted_filename}",
+            f"text={quoted_filename}",
+        ):
+            try:
+                element = await page.query_selector(selector)
+            except Exception as exc:
+                logger.debug(
+                    "Could not query resume upload filename evidence %s: %s", selector, exc
+                )
+                continue
+            if element and await _element_is_visible(element):
+                return True, f"filename visible: {filename}"
+
+        for selector in RESUME_UPLOAD_ACCEPTED_EVIDENCE_SELECTORS:
+            try:
+                elements = await page.query_selector_all(selector)
+            except Exception as exc:
+                logger.debug("Could not query resume upload summary evidence %s: %s", selector, exc)
+                continue
+            if not isinstance(elements, list):
+                continue
+            for element in elements[:10]:
+                if await _element_is_visible(element):
+                    return True, f"upload summary selector matched: {selector}"
+        return False, ""
 
     async def _modal_title(self, page: Page) -> str:
         title, _selector = await _first_selector(
@@ -344,6 +463,8 @@ class LinkedInApplicator(BaseApplicator):
     async def _required_empty_fields(self, page: Page) -> list[str]:
         fields = await page.query_selector_all(REQUIRED_FIELD_SELECTOR)
         missing: list[str] = []
+        if not isinstance(fields, list):
+            return missing
         for field in fields[:40]:
             try:
                 value = await field.input_value()
@@ -354,6 +475,30 @@ class LinkedInApplicator(BaseApplicator):
             label = await self._field_label(field)
             missing.append(label or "required field")
         return missing
+
+    async def _form_validation_errors(self, page: Page) -> list[str]:
+        messages: list[str] = []
+        seen: set[str] = set()
+        for selector in FORM_VALIDATION_ERROR_SELECTORS:
+            try:
+                elements = await page.query_selector_all(selector)
+            except Exception as exc:
+                logger.debug("Could not query form validation errors %s: %s", selector, exc)
+                continue
+            if not isinstance(elements, list):
+                continue
+            for element in elements[:40]:
+                if not await _element_is_visible(element):
+                    continue
+                message = await _element_text(element)
+                if not _is_actionable_validation_message(message):
+                    continue
+                key = message.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                messages.append(message)
+        return messages
 
     async def _field_label(self, field: Any) -> str:
         for attr in ("aria-label", "placeholder", "name", "id"):
@@ -397,11 +542,14 @@ class LinkedInApplicator(BaseApplicator):
                 f"job: {job.title} at {job.company}",
                 f"reached_submit: {validation.reached_submit}",
                 f"resume_uploaded: {validation.resume_uploaded}",
+                f"resume_upload_accepted: {validation.resume_upload_accepted}",
+                f"resume_upload_evidence: {validation.resume_upload_evidence or 'none'}",
                 f"advance_steps: {validation.advance_steps}",
                 f"advance_selectors: {', '.join(validation.advance_selectors) or 'none'}",
                 f"submit_selector: {validation.submit_selector or 'none'}",
                 f"modal_title: {validation.modal_title or 'none'}",
                 f"required_empty_fields: {', '.join(validation.required_empty_fields) or 'none'}",
+                f"form_validation_errors: {', '.join(validation.form_validation_errors) or 'none'}",
                 f"disabled_submit_reason: {validation.disabled_submit_reason or 'none'}",
                 f"fields_filled: {', '.join(validation.fields_filled) or 'none'}",
                 f"fill_errors: {', '.join(validation.fill_errors) or 'none'}",

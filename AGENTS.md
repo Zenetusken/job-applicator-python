@@ -251,9 +251,9 @@ src/job_applicator/
 - **Apply dry-run validation returns an `ApplicationResult` with a `DryRunValidation` field.** The
   nested object shows whether the Easy Apply button, form fields, résumé upload, cover-letter
   field, and final Submit step were reached. It also records matched advance/submit selectors,
-  advance step count, modal title, empty required fields, disabled-submit evidence, and debug
-  artifact paths when available. `job-applicator apply --validate` exits non-zero if any dry run
-  fails to reach Submit.
+  advance step count, modal title, empty required fields, resume upload acceptance evidence, visible
+  form validation errors, disabled-submit evidence, and debug artifact paths when available.
+  `job-applicator apply --validate` exits non-zero if any dry run fails to reach Submit.
 - **`search` persists discovered jobs.** Discovered listings flow into `jobs_store.py` and are
   visible via `status` and the TUI.
 - **Default `llm.max_tokens` is `4096`**, matching `config.example.toml`. 4096 fits full résumé

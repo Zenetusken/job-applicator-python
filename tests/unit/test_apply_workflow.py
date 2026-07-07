@@ -133,6 +133,55 @@ def test_apply_json_output_lists_each_result() -> None:
     assert {d["status"] for d in data} == {"pending"}
 
 
+def test_apply_json_output_includes_dry_run_evidence_fields() -> None:
+    """Dry-run validation evidence is exposed in JSON without changing the top-level shape."""
+    import json
+
+    def _with_evidence(job, letter, submit=False):  # type: ignore[no-untyped-def]
+        return ApplicationResult(
+            job=job,
+            status=ApplicationStatus.PENDING,
+            dry_run=DryRunValidation(
+                reached_submit=True,
+                resume_uploaded=True,
+                resume_upload_accepted=False,
+                form_validation_errors=["Please upload a resume."],
+            ),
+        )
+
+    result, _applicator, _ = _drive(["-q", "python", "-n", "1", "--json"], apply_fn=_with_evidence)
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output[result.output.index("[") :])
+    assert data[0]["dry_run"]["resume_uploaded"] is True
+    assert data[0]["dry_run"]["resume_upload_accepted"] is False
+    assert data[0]["dry_run"]["resume_upload_evidence"] == ""
+    assert data[0]["dry_run"]["form_validation_errors"] == ["Please upload a resume."]
+
+
+def test_apply_table_marks_actionable_dry_run_evidence() -> None:
+    """Human output stays compact but calls out unconfirmed upload and form errors."""
+
+    def _with_evidence(job, letter, submit=False):  # type: ignore[no-untyped-def]
+        return ApplicationResult(
+            job=job,
+            status=ApplicationStatus.PENDING,
+            dry_run=DryRunValidation(
+                reached_submit=True,
+                resume_uploaded=True,
+                resume_upload_accepted=False,
+                form_validation_errors=["Please upload a resume."],
+            ),
+        )
+
+    result, _applicator, _ = _drive(["-q", "python", "-n", "1"], apply_fn=_with_evidence)
+
+    assert result.exit_code == 0, result.output
+    assert "submit" in result.output
+    assert "upload unconfirmed" in result.output
+    assert "form errors: 1" in result.output
+
+
 def test_apply_json_empty_result_emits_empty_array() -> None:
     """--json + an empty search result must emit valid JSON ([]) on stdout, not the human
     'No jobs found' text (CLAUDE.md: --json output is PURE parseable stdout)."""

@@ -390,12 +390,15 @@ class DryRunValidation(BaseModel):
     fields_filled: list[str] = Field(default_factory=list)
     fill_errors: list[str] = Field(default_factory=list)  # fields present but could not be filled
     resume_uploaded: bool = False
+    resume_upload_accepted: bool = False
+    resume_upload_evidence: str = ""
     cover_letter_field_found: bool = False
     advance_steps: int = 0
     advance_selectors: list[str] = Field(default_factory=list)
     submit_selector: str = ""
     modal_title: str = ""
     required_empty_fields: list[str] = Field(default_factory=list)
+    form_validation_errors: list[str] = Field(default_factory=list)
     disabled_submit_reason: str = ""
     debug_artifacts: list[str] = Field(default_factory=list)
 

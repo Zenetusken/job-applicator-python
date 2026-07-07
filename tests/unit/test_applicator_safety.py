@@ -67,6 +67,15 @@ class _ChooserContext:
         return None
 
 
+def _visible_element(text: str = "", *, visible: bool = True) -> AsyncMock:
+    element = AsyncMock()
+    element.inner_text = AsyncMock(return_value=text)
+    element.text_content = AsyncMock(return_value=text)
+    element.is_visible = AsyncMock(return_value=visible)
+    element.get_attribute = AsyncMock(return_value=None)
+    return element
+
+
 @pytest.mark.asyncio
 async def test_easy_apply_dry_run_does_not_submit(
     app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
@@ -204,6 +213,43 @@ async def test_easy_apply_advances_continue_variant_to_submit(
 
 
 @pytest.mark.asyncio
+async def test_easy_apply_file_input_upload_records_filename_acceptance(
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The legacy resume_uploaded flag means handoff completed; accepted is page evidence."""
+    monkeypatch.setattr("job_applicator.applicators.linkedin.click", AsyncMock())
+    monkeypatch.setattr("job_applicator.applicators.linkedin.random_delay", AsyncMock())
+    resume = tmp_path / "resume.pdf"
+    resume.write_text("%PDF")
+    app_settings.resume_path = str(resume)
+    resume_input = AsyncMock()
+    filename = _visible_element("resume.pdf")
+    submit_btn = AsyncMock()
+    page = AsyncMock()
+    page.query_selector_all = AsyncMock(return_value=[])
+
+    async def query_selector(selector: str) -> object | None:
+        if selector == 'input[type="file"]':
+            return resume_input
+        if "resume.pdf" in selector:
+            return filename
+        if "Submit" in selector:
+            return submit_btn
+        return None
+
+    page.query_selector = query_selector
+    applicator = LinkedInApplicator(MagicMock(), app_settings)
+
+    result = await applicator._easy_apply(page, _job(), None, submit=False)
+
+    resume_input.set_input_files.assert_awaited_once_with(str(resume))
+    assert result.dry_run is not None
+    assert result.dry_run.resume_uploaded is True
+    assert result.dry_run.resume_upload_accepted is True
+    assert result.dry_run.resume_upload_evidence == "filename visible: resume.pdf"
+
+
+@pytest.mark.asyncio
 async def test_easy_apply_uploads_resume_via_upload_button(
     app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -215,6 +261,7 @@ async def test_easy_apply_uploads_resume_via_upload_button(
     app_settings.resume_path = str(resume)
     upload_button = AsyncMock()
     chooser = AsyncMock()
+    upload_summary = _visible_element("Resume uploaded")
     submit_btn = AsyncMock()
     page = AsyncMock()
     page.expect_file_chooser = MagicMock(return_value=_ChooserContext(chooser))
@@ -226,7 +273,13 @@ async def test_easy_apply_uploads_resume_via_upload_button(
             return submit_btn
         return None
 
+    async def query_selector_all(selector: str) -> list[object]:
+        if selector == "[role='dialog'] [data-test-resume-file-name]":
+            return [upload_summary]
+        return []
+
     page.query_selector = query_selector
+    page.query_selector_all = query_selector_all
     applicator = LinkedInApplicator(MagicMock(), app_settings)
 
     result = await applicator._easy_apply(page, _job(), None, submit=False)
@@ -234,6 +287,80 @@ async def test_easy_apply_uploads_resume_via_upload_button(
     chooser.set_files.assert_awaited_once_with(str(resume))
     assert result.dry_run is not None
     assert result.dry_run.resume_uploaded is True
+    assert result.dry_run.resume_upload_accepted is True
+    assert (
+        result.dry_run.resume_upload_evidence
+        == "upload summary selector matched: [role='dialog'] [data-test-resume-file-name]"
+    )
+
+
+@pytest.mark.asyncio
+async def test_easy_apply_upload_handoff_without_page_evidence_is_unconfirmed(
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("job_applicator.applicators.linkedin.click", AsyncMock())
+    monkeypatch.setattr("job_applicator.applicators.linkedin.random_delay", AsyncMock())
+    resume = tmp_path / "resume.pdf"
+    resume.write_text("%PDF")
+    app_settings.resume_path = str(resume)
+    resume_input = AsyncMock()
+    submit_btn = AsyncMock()
+    page = AsyncMock()
+    page.query_selector_all = AsyncMock(return_value=[])
+
+    async def query_selector(selector: str) -> object | None:
+        if selector == 'input[type="file"]':
+            return resume_input
+        if "Submit" in selector:
+            return submit_btn
+        return None
+
+    page.query_selector = query_selector
+    applicator = LinkedInApplicator(MagicMock(), app_settings)
+
+    result = await applicator._easy_apply(page, _job(), None, submit=False)
+
+    assert result.dry_run is not None
+    assert result.dry_run.resume_uploaded is True
+    assert result.dry_run.resume_upload_accepted is False
+    assert result.dry_run.resume_upload_evidence == ""
+
+
+@pytest.mark.asyncio
+async def test_easy_apply_extracts_visible_validation_errors(
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("job_applicator.applicators.linkedin.click", AsyncMock())
+    monkeypatch.setattr("job_applicator.applicators.linkedin.random_delay", AsyncMock())
+    submit_btn = AsyncMock()
+    alert = _visible_element("Please enter a valid phone number.")
+    duplicate = _visible_element(" Please enter a valid phone number. \n")
+    required = _visible_element("This field is required.")
+    hidden = _visible_element("Please select an option.", visible=False)
+    generic = _visible_element("Error")
+    page = AsyncMock()
+
+    async def query_selector(selector: str) -> object | None:
+        return submit_btn if "Submit application" in selector else None
+
+    async def query_selector_all(selector: str) -> list[object]:
+        if selector == "[role='dialog'] [role='alert']":
+            return [alert, duplicate, hidden, generic]
+        if selector == "[role='dialog'] .artdeco-inline-feedback__message":
+            return [required]
+        return []
+
+    page.query_selector = query_selector
+    page.query_selector_all = query_selector_all
+    applicator = LinkedInApplicator(MagicMock(), app_settings)
+
+    result = await applicator._easy_apply(page, _job(), None, submit=False)
+
+    assert result.dry_run is not None
+    assert result.dry_run.form_validation_errors == [
+        "Please enter a valid phone number.",
+        "This field is required.",
+    ]
 
 
 @pytest.mark.asyncio
@@ -255,18 +382,33 @@ async def test_easy_apply_missing_submit_writes_debug_dump(
     button.inner_text = AsyncMock(return_value="Continue to next step")
     button.get_attribute = AsyncMock(return_value="Continue to next step")
     button.input_value = AsyncMock(return_value="")
+    validation_error = _visible_element("Please upload a resume.")
     page = AsyncMock()
     page.url = "https://www.linkedin.com/jobs/view/1"
     page.content = AsyncMock(return_value="<html>apply modal</html>")
     page.query_selector = AsyncMock(return_value=None)
-    page.query_selector_all = AsyncMock(return_value=[button])
+
+    async def query_selector_all(selector: str) -> list[object]:
+        if selector == "button":
+            return [button]
+        if selector == "input, textarea, select":
+            return [button]
+        if selector == "[role='dialog'] [role='alert']":
+            return [validation_error]
+        return []
+
+    page.query_selector_all = query_selector_all
     applicator = LinkedInApplicator(MagicMock(), app_settings)
 
     result = await applicator._easy_apply(page, _job(), None, submit=False)
 
     assert result.status == ApplicationStatus.FAILED
     assert "debug saved" in (result.error_message or "")
-    assert "Continue to next step" in _read_first_apply_dump(tmp_path)
+    dump = _read_first_apply_dump(tmp_path)
+    assert "Continue to next step" in dump
+    assert "resume_upload_accepted: False" in dump
+    assert "resume_upload_evidence: none" in dump
+    assert "form_validation_errors: Please upload a resume." in dump
     assert (tmp_path / "linkedin-apply-Y-X.html").read_text(
         encoding="utf-8"
     ) == "<html>apply modal</html>"

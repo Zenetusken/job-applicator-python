@@ -63,10 +63,11 @@ experience/education (#14)** — resolved, see Shipped.)
   `scripts/green_gate.sh`, with agent/release/CI wrappers delegating to it. Matcher discipline now
   has `scripts/check_matcher_gate_required.py` plus `scripts/eval_matching.py --required`, which
   refuses to certify missing/incomplete private gold-set evidence. Easy Apply dry-run validation now
-  records selector provenance, advance steps, modal title, empty required fields, disabled-submit
-  evidence, and debug artifact paths; failed LinkedIn apply validation writes text, HTML, and
-  screenshot diagnostics. Document hardening added `scripts/eval_document_quality.py`, real-submit
-  fail-closed behavior when explicitly requested PDF cover letters cannot render, advisory
+  records selector provenance, advance steps, modal title, empty required fields, resume-upload
+  acceptance evidence, visible form validation errors, disabled-submit evidence, and debug artifact
+  paths; failed LinkedIn apply validation writes text, HTML, and screenshot diagnostics. Document
+  hardening added `scripts/eval_document_quality.py`, real-submit fail-closed behavior when
+  explicitly requested PDF cover letters cannot render, advisory
   employment gap/overlap findings in `ResumeDateValidator`, and ATS round-trip coverage for rendered
   résumé PDFs. Final validation tightened non-interactive tailoring with strict source-only prompts,
   dirty-grounding retries, source-verbatim grounding coverage cleanup, and deterministic filtering

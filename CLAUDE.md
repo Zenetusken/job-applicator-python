@@ -111,7 +111,11 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
 - **A board declares its browser needs.** `BaseScraper.browser_policy()` (headed / ephemeral
   profile / virtual display) lives on the scraper, not the CLI, so anti-bot requirements can't drift
   and any caller builds the right browser. `_make_browser` (in `factories.py`) reads it.
-- **Easy Apply is dry-run by default;** real submission requires `apply --submit`. Dry runs generate cover letters as a preview when `--cover-letter` is enabled and a résumé path is configured; the generated letter is surfaced in `--json` and the console table.
+- **Easy Apply is dry-run by default;** real submission requires `apply --submit`. Dry runs generate
+  cover letters as a preview when `--cover-letter` is enabled and a résumé path is configured; the
+  generated letter is surfaced in `--json` and the console table. Dry-run validation also exposes
+  upload-acceptance evidence and visible form validation errors so `apply --validate` failures can
+  be diagnosed without submitting.
 - **LinkedIn apply surfaces are distinct.** Easy Apply is in-product and often starts with
   Next/required fields before any Submit button. External "Apply on company website" is a separate
   button surface; the applicator detects it and returns SKIPPED/manual follow-up without clicking.

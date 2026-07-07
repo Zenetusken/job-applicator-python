@@ -193,7 +193,7 @@ async def _apply_to_jobs(
         table.add_column("Job", style="cyan")
         table.add_column("Company", style="green")
         table.add_column("Status")
-        table.add_column("Notes")
+        table.add_column("Notes", overflow="fold")
 
         for r in app_results:
             status_style = {
@@ -207,6 +207,10 @@ async def _apply_to_jobs(
             if r.dry_run:
                 reached = "✓" if r.dry_run.reached_submit else "✗"
                 note_parts.append(f"[submit {reached}]")
+                if r.dry_run.resume_uploaded and not r.dry_run.resume_upload_accepted:
+                    note_parts.append("[upload unconfirmed]")
+                if r.dry_run.form_validation_errors:
+                    note_parts.append(f"[form errors: {len(r.dry_run.form_validation_errors)}]")
             if r.cover_letter:
                 note_parts.append(f"[cover letter: {len(r.cover_letter)} chars]")
             job_url = str(r.job.url)
