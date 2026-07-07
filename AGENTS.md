@@ -62,6 +62,9 @@ Most commands that read a résumé accept `--resume`, `--ocr-mode {auto|on|off}`
 `generate-cover-letter` all accept `--style-guide` with a single file or comma-separated paths,
 and now also `--format`, `--template`, and `--category` for PDF rendering.
 Example style guides live in `docs/style-guide-examples/`.
+Private cover-letter/CV style gold standards, when populated, live under
+`~/.job-applicator/document-quality-eval/gold-standards/`; use the prose-only cover-letter fixture
+as style-guide input and the JSON/meta files as hard assertions for future coherence checks.
 
 - **Cover letters are hard-validated for a proper sign-off.** `documents/sign_off.py` extracts the
   closing word and signature; the signature must match the applicant's full name (or the single known
@@ -140,6 +143,10 @@ src/job_applicator/
   style, tailor, skill-extraction, PDF formatting) build the model id via the single helper
   `utils.llm.litellm_model(config)`, which adds the `openai/` prefix when `llm.api_base` is set.
   Embeddings use `sentence-transformers` directly and do not use this prefix.
+- **StyleAnalyzer has live-path observability.** It logs instructor vs direct-litellm JSON paths,
+  elapsed time, and fallback reason. Direct fallback failures route through `utils.llm.llm_call_error()`.
+  If localhost vLLM is up but the error says the runtime was denied permission to open a network
+  socket, the issue is sandbox/network permissions for Python's aiohttp/httpx path, not a dead vLLM.
 - **LLM resilience is configured centrally.** `LLMResilienceConfig` (in `config.py`) drives a shared
   circuit breaker + content-retry runtime in `utils/llm.py` for all LLM consumers.
 - **litellm banners are suppressed.** `utils.llm.quiet_litellm()` runs before litellm calls to keep
@@ -342,7 +349,9 @@ that generate cover letters. The default dry-run `apply` does not run the ATS pr
   grounding and human review. Generated packet changes can also be certified against a private
   packet set with `python scripts/eval_document_quality.py --packet-set --required`; the default
   private manifest is `~/.job-applicator/document-quality-eval/packet-set.jsonl` (override with
-  `DOCUMENT_QUALITY_SET`). See `docs/document-quality-eval.md` for the manifest and 0-4 rubric.
+  `DOCUMENT_QUALITY_SET`). Private gold-standard CV/cover-letter bundles live under
+  `~/.job-applicator/document-quality-eval/gold-standards/`. See `docs/document-quality-eval.md`
+  for the manifest, 0-4 rubric, and gold-standard bundle layout.
 - Tests use fixtures from `tests/conftest.py`.
 - Embedding tests mock the model (CPU fallback).
 

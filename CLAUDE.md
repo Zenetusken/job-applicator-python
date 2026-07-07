@@ -58,6 +58,10 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
   Generated packet changes can be certified against the private quality set with
   `.venv/bin/python scripts/eval_document_quality.py --packet-set --required`; default private
   manifest: `~/.job-applicator/document-quality-eval/packet-set.jsonl`.
+  Private gold standards live under
+  `~/.job-applicator/document-quality-eval/gold-standards/`; the cover-letter v1 bundle contains
+  a full letter, a prose-only style-guide fixture, a DOCX rendering, extracted prose JSON, and a
+  metadata contract for future CV/cover-letter coherence checks.
 
 ## Target Boards
 
@@ -104,7 +108,10 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
   `ENFORCE_EAGER=1` (avoids vLLM 0.23's V1 cudagraph-profiling OOM on 12 GB cards).
 - Instructor for structured LLM outputs (Pydantic models)
 - mxbai-embed-large-v1 for semantic job matching (~1.5 GB VRAM)
-- Style analyzer with persistent cache and multi-document support
+- Style analyzer with persistent cache and multi-document support. It tries instructor structured
+  output first, logs elapsed time and fallback reason, then falls back to direct litellm JSON
+  parsing; direct fallback failures use `utils.llm.llm_call_error()`, including the sandbox/socket
+  permission-denied diagnostic for localhost vLLM.
 - Combined scoring: 60% semantic similarity + 40% skill coverage; **semantic-only when a job lists no requirements** (skill coverage unknown → no neutral floor)
 - **Never automate login.** Seed a session once as a human (`login` headed flow, or
   `import-cookies --from-browser`); the tool only reuses it. Automated sign-in trips anti-bot

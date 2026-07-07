@@ -66,6 +66,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a real stale-config CV that had silently mis-scored the whole funnel.
 
 ### Fixed
+- **Style-analysis live diagnostics are no longer a black box.** `StyleAnalyzer` now logs which LLM
+  path it is using (instructor structured output vs direct litellm JSON fallback), how long each path
+  took, and the fallback reason. Direct litellm fallback failures now go through the shared
+  `llm_call_error()` classifier, including a specific "socket permission denied" message for
+  sandboxed localhost calls where vLLM is running but the runtime cannot open a network socket.
 - **Glued-word repair for corrupted postings** (`scrapers/text_repair.py`). Some postings arrive
   with words mashed together (`Senti\nnelKQL`, `ge)Création`) — the board's own rich-text markup
   is misaligned mid-word (verified live in two render paths; not an extraction bug). The

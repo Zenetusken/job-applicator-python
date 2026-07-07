@@ -12,12 +12,14 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any, cast
 
 from job_applicator.config import LLMConfig
 from job_applicator.exceptions import LLMError
 from job_applicator.models import StyleGuide
+from job_applicator.utils.llm import llm_call_error
 from job_applicator.utils.logging import get_logger
 from job_applicator.utils.retry import async_retry
 
@@ -184,6 +186,12 @@ class StyleAnalyzer:
             # instructor defaults to TOOLS mode, which uses vLLM's tool-call
             # parser (qwen3_xml for Qwen3.5). In our vLLM 0.23 tests this is
             # faster and more schema-accurate than json_object or guided_json.
+            started = time.monotonic()
+            logger.info(
+                "Starting style analysis via instructor: model=%s input_chars=%d",
+                model,
+                min(len(text), 3000),
+            )
             try:
                 client: Any = instructor.from_litellm(acompletion)
                 response = await client.create(
@@ -202,26 +210,47 @@ class StyleAnalyzer:
                         "chat_template_kwargs": {"enable_thinking": False},
                     },
                 )
-                logger.info("Analyzed writing style via instructor: tone=%s", response.tone)
+                logger.info(
+                    "Analyzed writing style via instructor in %.1fs: tone=%s",
+                    time.monotonic() - started,
+                    response.tone,
+                )
                 return cast(StyleGuide, response)
-            except Exception:
-                logger.debug("Instructor failed, falling back to direct litellm call")
+            except Exception as exc:
+                logger.warning(
+                    "Style analyzer instructor path failed after %.1fs (%s: %s); "
+                    "falling back to direct litellm JSON parsing",
+                    time.monotonic() - started,
+                    type(exc).__name__,
+                    exc,
+                )
 
             # Fallback: direct litellm call with manual JSON parsing
-            response = await acompletion(
-                model=model,
-                api_base=self._config.api_base,
-                api_key=self._config.api_key,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": ANALYSIS_PROMPT.format(text=text[:3000])},
-                ],
-                max_tokens=self._config.max_tokens,
-                temperature=0.1,
-                extra_body={
-                    "chat_template_kwargs": {"enable_thinking": False},
-                },
-            )
+            started = time.monotonic()
+            logger.info("Starting style analysis via direct litellm JSON fallback: model=%s", model)
+            try:
+                response = await acompletion(
+                    model=model,
+                    api_base=self._config.api_base,
+                    api_key=self._config.api_key,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": ANALYSIS_PROMPT.format(text=text[:3000])},
+                    ],
+                    max_tokens=self._config.max_tokens,
+                    temperature=0.1,
+                    extra_body={
+                        "chat_template_kwargs": {"enable_thinking": False},
+                    },
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Style analyzer direct litellm fallback failed after %.1fs (%s: %s)",
+                    time.monotonic() - started,
+                    type(exc).__name__,
+                    exc,
+                )
+                raise llm_call_error(exc, self._config.api_base) from exc
 
             content = response.choices[0].message.content
 
@@ -237,7 +266,11 @@ class StyleAnalyzer:
             # failure that must surface (StyleGuide validation raises), not be papered over with
             # invented values.
             style = StyleGuide(**data)  # type: ignore[arg-type]
-            logger.info("Analyzed writing style: tone=%s", style.tone)
+            logger.info(
+                "Analyzed writing style via direct litellm in %.1fs: tone=%s",
+                time.monotonic() - started,
+                style.tone,
+            )
             return style
 
         except LLMError:

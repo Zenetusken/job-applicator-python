@@ -23,7 +23,7 @@ mimic that style when tailoring your résumé or writing your cover letter.
 Single style guide:
 
 ```bash
-job-applicant generate-cover-letter \
+job-applicator generate-cover-letter \
   --resume /path/to/cv.pdf \
   --job-title "IT Support Specialist" \
   --company "Acme Corp" \
@@ -33,7 +33,7 @@ job-applicant generate-cover-letter \
 Combine several to create a blended style:
 
 ```bash
-job-applicant tailor \
+job-applicator tailor \
   --resume /path/to/cv.pdf \
   --job-title "IT Support Specialist" \
   --company "Acme Corp" \
@@ -42,7 +42,7 @@ job-applicant tailor \
 
 ### TUI
 
-1. Launch `job-applicant` (or `job-applicant tui`).
+1. Launch `job-applicator` (or `job-applicator tui`).
 2. Press `g` to open the **Style guide** modal.
 3. Enter the path to one file, or several comma-separated paths.
 4. Select a job and press `t` (tailor) or `c` (cover letter).
@@ -50,12 +50,30 @@ job-applicant tailor \
 The style guide will be forwarded to the LLM for that session and persisted to
 `config.toml`.
 
+### Private Gold Standard
+
+If the private document-quality gold-standard bundle has been populated locally, use its prose-only
+cover-letter fixture as the strongest CV-coherent style guide:
+
+```bash
+job-applicator generate-cover-letter \
+  --resume /path/to/cv.pdf \
+  --job-title "IT Support Specialist" \
+  --company "Acme Corp" \
+  --style-guide ~/.job-applicator/document-quality-eval/gold-standards/cover-letter-v1/cover-letter-prose-only.txt
+```
+
+The companion `cover-letter-prose.json` and `.meta.json` files are for deterministic extraction and
+coherence checks, not style imitation.
+
 ## Tips for strong results
 
 - The example should be **at least a few hundred words**. A single paragraph does
   not give the analyzer enough signal.
 - Use the kind of document you want the AI to produce. Cover-letter examples
   work best for cover letters; résumé examples work best for tailored résumés.
+- Prefer prose-only examples for style analysis. Full business-letter headers are useful for visual
+  design checks, but can add noise to prose extraction.
 - You can mix examples. The analyzer merges their styles, so combining a formal
   example with an impact-focused example can yield a "polished but confident"
   voice.

@@ -16,7 +16,10 @@ AI-powered job application tool using Playwright browser automation with modern 
 - **Semantic Job Matching**: Match resumes to jobs using mxbai-embed-large-v1 embeddings
 - **Resume Tailoring**: LLM-powered resume rewriting for specific jobs with hallucination guards and a surfaced grounding report
 - **Date Audit**: Pre-ingestion CV validation — checks ordering, staleness, and advisory employment gap/overlap findings
-- **Style Analysis**: Mimic writing style from one or more example resumes/cover letters (comma-separated paths); example guides in `docs/style-guide-examples/`
+- **Style Analysis**: Mimic writing style from one or more example resumes/cover letters
+  (comma-separated paths); the analyzer tries instructor structured output first, falls back to
+  direct litellm JSON parsing with timing logs, and fails loudly instead of fabricating a style
+  guide. Example guides live in `docs/style-guide-examples/`.
 - **Cover-Letter Sign-Off Enforcement**: Every generated or refined cover letter is validated/repaired to end with a recognized closing word and a signature matching the applicant's name
 - **ATS Compatibility Check**: Validate resumes against ATS heuristics (contact info, standard sections, length, no ASCII tables) with a score and actionable suggestions
 - **PDF Résumé & Cover Letters**: Render tailored documents to PDF with Typst (optional `[pdf]` extra). Built-in `modern`, `classic`, and `minimal` templates
@@ -109,6 +112,12 @@ capability readiness for AI generation, matching, browser workflows, and PDF out
 plus exactly what to fix if something is not ready. Run it any time the AI features
 misbehave.
 
+If a localhost LLM call fails with "denied permission to open a network socket" while
+`curl http://localhost:8000/v1/models` works elsewhere, the problem is the current runtime
+environment, not vLLM. This can happen inside a sandbox that allows `curl` but blocks Python's
+aiohttp/httpx socket path. Re-run `job-applicator doctor` or the affected CLI command from the real
+runtime.
+
 ## Usage
 
 ```bash
@@ -169,6 +178,8 @@ job-applicator tailor --resume resume.pdf --job-title "Tech Support" --company "
 job-applicator generate-cover-letter --resume resume.pdf --style-guide example.txt
 job-applicator generate-cover-letter --resume resume.pdf \
   --style-guide "cover_letter_example.txt,resume_example.pdf"
+# Private gold-standard prose/style fixture, if populated locally:
+# ~/.job-applicator/document-quality-eval/gold-standards/cover-letter-v1/cover-letter-prose-only.txt
 
 # Apply with a style guide
 job-applicator apply --site linkedin --query "python" --limit 5 \
@@ -295,6 +306,8 @@ Copy `config.example.toml` to `config.toml` and fill in your details, or use env
 profile_name = "default"   # leave as "default"/empty to derive from the parsed résumé
 resume_path = "/path/to/your/resume.pdf"
 # style_guide_path = "docs/style-guide-examples/01_enterprise-formal.txt"
+# For a private, CV-coherent cover-letter standard:
+# style_guide_path = "~/.job-applicator/document-quality-eval/gold-standards/cover-letter-v1/cover-letter-prose-only.txt"
 ```
 
 ### LLM Configuration

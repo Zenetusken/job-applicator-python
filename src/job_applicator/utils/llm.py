@@ -28,6 +28,7 @@ SERVE_SCRIPT = "scripts/serve-vllm.sh"
 # timeout means the endpoint is reachable but slow, not down — classifying it as
 # "unreachable" (and telling the user to start an already-running server) was a bug.
 _CONNECTION_MARKERS = (
+    "cannot connect to host",
     "connection refused",
     "connection error",
     "failed to establish",
@@ -35,6 +36,7 @@ _CONNECTION_MARKERS = (
     "errno 111",
     "name or service not known",
     "nodename nor servname",
+    "operation not permitted",
 )
 
 
@@ -65,6 +67,13 @@ def llm_call_error(exc: Exception, api_base: str) -> LLMError:
             f"The LLM endpoint at {api_base} timed out — reachable but slow or "
             f"overloaded. Check it with `job-applicator doctor`; a smaller model "
             f"responds faster. (cause: {exc})"
+        )
+    if "operation not permitted" in lowered:
+        return LLMError(
+            f"Can't reach the LLM endpoint at {api_base}: the runtime was denied permission to "
+            f"open a network socket. This can happen inside a sandbox even when the local vLLM "
+            f"server is running; verify from the real runtime with `job-applicator doctor`. "
+            f"(cause: {exc})"
         )
     if (conn_types and isinstance(exc, conn_types)) or any(
         m in lowered for m in _CONNECTION_MARKERS

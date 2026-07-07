@@ -17,6 +17,12 @@ Override it with:
 DOCUMENT_QUALITY_SET=/path/to/packet-set.jsonl
 ```
 
+Private gold standards are also local and should not be committed. The default root is:
+
+```bash
+~/.job-applicator/document-quality-eval/gold-standards/
+```
+
 ## Run
 
 ```bash
@@ -96,3 +102,35 @@ Default bars:
 This gate complements grounding and human review. It catches obvious regressions in generated
 packet usefulness and polish; it does not replace judgment about whether a packet is genuinely the
 best possible application for a role.
+
+## Gold Standards
+
+Gold-standard bundles are human-authored private fixtures for target packet quality and future
+coherence checks. They are not generated artifacts and should not be treated as packet-set cases.
+
+The cover-letter v1 bundle uses this layout:
+
+```text
+~/.job-applicator/document-quality-eval/gold-standards/cover-letter-v1/
+├── README.md
+├── cover-letter-gold-standard.txt
+├── cover-letter-prose-only.txt
+├── cover-letter-prose.json
+├── cover-letter-design-gold-standard.docx
+└── cover-letter-gold-standard.meta.json
+```
+
+- `cover-letter-gold-standard.txt`: full business-letter exemplar, including applicant header,
+  date, recipient, greeting, body, sign-off, and signature.
+- `cover-letter-prose-only.txt`: greeting, body paragraphs, closing, and signature only. Use this
+  as the style-guide input when you want the analyzer to extract prose without header/layout noise.
+- `cover-letter-prose.json`: canonical extracted fields (`date`, `recipient`, `greeting`,
+  `body_paragraphs`, `closing`, `signature`) for deterministic tests.
+- `cover-letter-design-gold-standard.docx`: CV-coherent visual rendering for future format
+  comparisons.
+- `cover-letter-gold-standard.meta.json`: the hard contract: source materials, visual design,
+  style, truth constraints, extraction fields, and coherence-check seeds.
+
+Use the JSON/meta contract for hard assertions. Treat `StyleAnalyzer` output as soft style guidance:
+LLM style summaries can be useful but may contain small semantic noise, so they should not replace
+the deterministic gold metadata.

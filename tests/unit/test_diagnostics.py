@@ -473,6 +473,23 @@ def test_llm_call_error_classifies_litellm_wrapped_connection_failure() -> None:
     assert "Can't reach the LLM endpoint" in str(llm_call_error(exc, "http://127.0.0.1:9999/v1"))
 
 
+def test_llm_call_error_classifies_socket_permission_denied() -> None:
+    """Sandboxed localhost calls can fail before connect() with EPERM. Report that as an
+    environment/socket permission problem, not as an instruction to start an already-running
+    server."""
+    from litellm.exceptions import InternalServerError
+
+    exc = InternalServerError(
+        message="Cannot connect to host localhost:8000 [Operation not permitted]",
+        llm_provider="openai",
+        model="openai/m",
+    )
+
+    msg = str(llm_call_error(exc, "http://localhost:8000/v1"))
+    assert "denied permission to open a network socket" in msg
+    assert "sandbox" in msg
+
+
 # --- config-init sources the model from LLMConfig (no drift) ---------------
 
 
