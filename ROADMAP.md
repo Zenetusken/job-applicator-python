@@ -66,13 +66,15 @@ experience/education (#14)** — resolved, see Shipped.)
   records selector provenance, advance steps, modal title, empty required fields, resume-upload
   acceptance evidence, visible form validation errors, disabled-submit evidence, and debug artifact
   paths; failed LinkedIn apply validation writes text, HTML, and screenshot diagnostics. Document
-  hardening added `scripts/eval_document_quality.py`, real-submit fail-closed behavior when
-  explicitly requested PDF cover letters cannot render, advisory
-  employment gap/overlap findings in `ResumeDateValidator`, and ATS round-trip coverage for rendered
-  résumé PDFs. Final validation tightened non-interactive tailoring with strict source-only prompts,
-  dirty-grounding retries, source-verbatim grounding coverage cleanup, and deterministic filtering
-  of unsupported metrics, optional sections, and low-evidence bullets; PDF rendering now compiles
-  Typst directly after spawned executor compilation was found to hang in integration validation.
+  hardening added `scripts/eval_document_quality.py` for artifact smoke checks and private generated
+  packet-set certification (`--packet-set --required`) across usefulness, specificity, writing
+  quality, and formatting polish; real-submit fail-closed behavior when explicitly requested PDF
+  cover letters cannot render; advisory employment gap/overlap findings in `ResumeDateValidator`;
+  and ATS round-trip coverage for rendered résumé PDFs. Final validation tightened non-interactive
+  tailoring with strict source-only prompts, dirty-grounding retries, source-verbatim grounding
+  coverage cleanup, and deterministic filtering of unsupported metrics, optional sections, and
+  low-evidence bullets; PDF rendering now compiles Typst directly after spawned executor
+  compilation was found to hang in integration validation.
   Validation: green gate green (`1418 passed`), full isolated QA sanity green (`PASS=64`), PDF
   rendering integration green, required matcher eval green (Spearman `+0.859`).
 

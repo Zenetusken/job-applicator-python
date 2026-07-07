@@ -125,3 +125,145 @@ def test_document_quality_rejects_bad_packet() -> None:
     assert not resume_report.passed
     assert any("placeholder" in item for item in cover_report.failures)
     assert any("email" in item for item in resume_report.failures)
+
+
+def _quality_resume() -> str:
+    return (
+        "John Doe\njohn@example.com\n514-555-0199\n\n"
+        "Experience\nSecurity Support Analyst, Acme, 2021 - Present\n"
+        "Used Python, SQL, Linux, SIEM, incident response, alert triage, IAM, and log analysis "
+        "workflows to investigate authentication failures, document evidence, and coordinate "
+        "escalations across support and infrastructure teams. Improved recurring monitoring "
+        "checks through scripts, runbooks, and clear handoff notes that helped analysts compare "
+        "patterns across shifts.\n\n"
+        "Technical Support Analyst, Beta, 2019 - 2021\n"
+        "Resolved workstation, account, network, and access issues for users while documenting "
+        "repeatable fixes. Partnered with infrastructure staff on monitoring alerts and "
+        "service-impacting incidents. Built small Python automation helpers to reduce manual "
+        "follow-up and reviewed Linux logs before escalating ambiguous security symptoms.\n\n"
+        "Education\nCertificate in Cybersecurity, 2024\n\n"
+        "Skills\nPython, SQL, Linux, SIEM, incident response, IAM, log analysis, alert triage, "
+        "documentation, support, networking, automation, troubleshooting, monitoring, escalation, "
+        "communication."
+    )
+
+
+def _quality_cover_letter() -> str:
+    return (
+        "Dear Acme Security Team,\n\n"
+        "I bring practical Python, Linux, SIEM, and incident response experience from support "
+        "work where I triaged alerts, reviewed authentication failures, documented root causes, "
+        "and coordinated follow-up with technical teams. That background maps directly to the "
+        "Security Analyst role's need for reliable investigation habits and clear communication "
+        "under pressure.\n\n"
+        "In recent projects I used Python and SQL to automate checks, review Linux logs, and make "
+        "recurring operational work easier to track. I also supported IAM and access issues, "
+        "which gave me a careful evidence-first approach to alert triage and escalation decisions "
+        "when symptoms were incomplete or noisy.\n\n"
+        "I would welcome the chance to discuss how that mix of support discipline, automation, "
+        "SIEM analysis, and incident response practice can help Acme move investigations forward "
+        "with less friction while keeping handoffs accurate and useful.\n\n"
+        "Sincerely,\n"
+        "John Doe"
+    )
+
+
+def test_document_quality_missing_private_set_is_skip_by_default(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    missing = tmp_path / "missing.jsonl"
+
+    assert eval_document_quality._run_packet_set(packet_set=missing, required=False) == 0
+    assert "not certified" in capsys.readouterr().out
+
+
+def test_document_quality_missing_private_set_fails_when_required(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    missing = tmp_path / "missing.jsonl"
+
+    assert eval_document_quality._run_packet_set(packet_set=missing, required=True) == 2
+    assert "not certified" in capsys.readouterr().out
+
+
+def test_document_quality_private_packet_set_scores_complete_packets(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    resume = tmp_path / "resume.txt"
+    cover = tmp_path / "cover.txt"
+    packet_set = tmp_path / "packet-set.jsonl"
+    resume.write_text(_quality_resume(), encoding="utf-8")
+    cover.write_text(_quality_cover_letter(), encoding="utf-8")
+    packet_set.write_text(
+        (
+            '{"id":"acme-security","resume_path":"resume.txt","cover_letter_path":"cover.txt",'
+            '"applicant_name":"John Doe","job_title":"Security Analyst","company":"Acme",'
+            '"keywords":["Python","Linux","SIEM","incident response","IAM","alert triage"]}\n'
+        ),
+        encoding="utf-8",
+    )
+
+    assert eval_document_quality._run_packet_set(packet_set=packet_set, required=True) == 0
+    output = capsys.readouterr().out
+
+    assert "PASS document packet quality" in output
+    assert "PASS acme-security" in output
+
+
+def test_document_quality_private_packet_set_fails_weak_packets(tmp_path: Path) -> None:
+    resume = tmp_path / "resume.txt"
+    cover = tmp_path / "cover.txt"
+    packet_set = tmp_path / "packet-set.jsonl"
+    resume.write_text("Jane\nNo sections yet", encoding="utf-8")
+    cover.write_text("- TODO: write letter\n\nRegards,\nYour Name", encoding="utf-8")
+    packet_set.write_text(
+        (
+            '{"id":"weak","resume_path":"resume.txt","cover_letter_path":"cover.txt",'
+            '"applicant_name":"Jane Doe","keywords":["Python","SIEM"]}\n'
+        ),
+        encoding="utf-8",
+    )
+
+    reports = eval_document_quality.assess_packet_set(packet_set)
+
+    assert eval_document_quality._run_packet_set(packet_set=packet_set, required=True) == 1
+    assert reports[0].overall < 3
+    assert any("usefulness score" in item for item in reports[0].failures)
+
+
+def test_document_quality_private_packet_set_json_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    resume = tmp_path / "resume.txt"
+    cover = tmp_path / "cover.txt"
+    packet_set = tmp_path / "packet-set.jsonl"
+    resume.write_text(_quality_resume(), encoding="utf-8")
+    cover.write_text(_quality_cover_letter(), encoding="utf-8")
+    packet_set.write_text(
+        (
+            '{"id":"acme-security","resume_path":"resume.txt","cover_letter_path":"cover.txt",'
+            '"applicant_name":"John Doe","job_title":"Security Analyst","company":"Acme",'
+            '"keywords":["Python","Linux","SIEM","incident response","IAM","alert triage"]}\n'
+        ),
+        encoding="utf-8",
+    )
+
+    assert (
+        eval_document_quality._run_packet_set(
+            packet_set=packet_set, required=True, json_output=True
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["passed"] is True
+    assert payload["count"] == 1
+    assert set(payload["dimension_means"]) == {
+        "usefulness",
+        "specificity",
+        "writing_quality",
+        "formatting_polish",
+    }
+    assert payload["packets"][0]["packet_id"] == "acme-security"

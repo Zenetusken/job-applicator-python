@@ -55,6 +55,9 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
   `.venv/bin/python scripts/eval_matching.py --required` when required.
 - Generated document artifacts can be smoke-checked with
   `.venv/bin/python scripts/eval_document_quality.py --resume <txt> --cover-letter <txt>`.
+  Generated packet changes can be certified against the private quality set with
+  `.venv/bin/python scripts/eval_document_quality.py --packet-set --required`; default private
+  manifest: `~/.job-applicator/document-quality-eval/packet-set.jsonl`.
 
 ## Target Boards
 

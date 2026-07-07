@@ -339,7 +339,10 @@ that generate cover letters. The default dry-run `apply` does not run the ATS pr
   `python scripts/eval_document_quality.py --resume <txt> --cover-letter <txt> --keyword <job-term>`.
   It checks obvious quality regressions (missing contact/sections/sign-off, placeholders, markdowny
   cover letters, repetition warnings, and basic job-keyword coverage). It complements, not replaces,
-  grounding and human review.
+  grounding and human review. Generated packet changes can also be certified against a private
+  packet set with `python scripts/eval_document_quality.py --packet-set --required`; the default
+  private manifest is `~/.job-applicator/document-quality-eval/packet-set.jsonl` (override with
+  `DOCUMENT_QUALITY_SET`). See `docs/document-quality-eval.md` for the manifest and 0-4 rubric.
 - Tests use fixtures from `tests/conftest.py`.
 - Embedding tests mock the model (CPU fallback).
 

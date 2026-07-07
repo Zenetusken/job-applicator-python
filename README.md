@@ -353,6 +353,9 @@ bash scripts/green_gate.sh
 
 # Generated document artifact quality smoke gate
 .venv/bin/python scripts/eval_document_quality.py --resume tailored.txt --cover-letter cover.txt --keyword Python
+
+# Private generated-packet quality certification
+.venv/bin/python scripts/eval_document_quality.py --packet-set --required
 ```
 
 ## Architecture
