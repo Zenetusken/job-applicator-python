@@ -145,6 +145,31 @@ async def test_easy_apply_missing_submit_button_reports_failed_validation(
 
 
 @pytest.mark.asyncio
+async def test_external_apply_button_detected_without_clicking(
+    app_settings: AppSettings,
+) -> None:
+    button = AsyncMock()
+    button.get_attribute = AsyncMock(
+        side_effect=lambda name: (
+            "Apply to Engineer on company website" if name == "aria-label" else None
+        )
+    )
+    page = AsyncMock()
+
+    async def query_selector(selector: str) -> object | None:
+        return button if selector == 'button[aria-label^="Apply to" i]' else None
+
+    page.query_selector = query_selector
+    applicator = LinkedInApplicator(MagicMock(), app_settings)
+
+    result = await applicator._external_apply(page, _job())
+
+    assert result.status == ApplicationStatus.SKIPPED
+    assert "External application required" in result.notes
+    button.click.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_easy_apply_advances_continue_variant_to_submit(
     app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
 ) -> None:

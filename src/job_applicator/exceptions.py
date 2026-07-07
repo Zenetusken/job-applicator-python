@@ -93,3 +93,7 @@ class GroundingUnavailableError(JobApplicatorError):
     verified document. Callers catch this, fall back to the deterministic English floor, and
     surface "semantic check skipped" — never report the document as honesty-verified.
     """
+
+
+class SelectorHealthError(JobApplicatorError):
+    """Live selector health preflight found required selector drift."""

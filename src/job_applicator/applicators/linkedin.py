@@ -34,6 +34,8 @@ _DEBUG_DIR = Path.home() / ".job-applicator" / "debug"
 
 # LinkedIn's resume upload accepts these document types.
 _RESUME_UPLOAD_TYPES = (".pdf", ".doc", ".docx")
+APPLIED_BUTTON_SELECTOR = 'button:has-text("Applied")'
+EASY_APPLY_BUTTON_SELECTOR = 'button:has-text("Easy Apply")'
 _ADVANCE_BUTTON_SELECTORS = (
     'button:has-text("Next")',
     'button:has-text("Continue")',
@@ -48,6 +50,31 @@ _SUBMIT_BUTTON_SELECTORS = (
     'button[aria-label*="Submit application" i]',
     'button[aria-label*="Submit" i]',
 )
+COVER_LETTER_FIELD_SELECTOR = 'textarea[aria-label*="cover" i]'
+RESUME_FILE_INPUT_SELECTOR = 'input[type="file"]'
+RESUME_UPLOAD_BUTTON_SELECTOR = (
+    'button:has-text("Upload resume"), button[aria-label*="Upload resume" i]'
+)
+MODAL_TITLE_SELECTORS = (
+    "h2",
+    "[role='dialog'] h2",
+    "[role='dialog'] h3",
+    ".artdeco-modal__header h2",
+)
+REQUIRED_FIELD_SELECTOR = (
+    "input[required], textarea[required], select[required], "
+    "input[aria-required='true'], textarea[aria-required='true'], "
+    "select[aria-required='true']"
+)
+APPLICATION_SENT_SELECTOR = 'div:has-text("Application sent")'
+EXTERNAL_APPLY_BUTTON_SELECTORS = (
+    'button[aria-label^="Apply to" i]',
+    'button[aria-label*="company website" i]',
+    'button[aria-label*="company site" i]',
+    'button:text-is("Apply")',
+    'a:has-text("Apply")',
+)
+EXTERNAL_APPLY_LINK_SELECTOR = ", ".join(EXTERNAL_APPLY_BUTTON_SELECTORS)
 
 
 def _validated_resume_upload_path(config: AppSettings) -> Path:
@@ -120,13 +147,13 @@ class LinkedInApplicator(BaseApplicator):
                 # non-blocking query: the Applied state renders with the page, and
                 # wait_for_selector would block the full timeout on every fresh
                 # job where the element is absent (~3s wasted per listing).
-                if await page.query_selector('button:has-text("Applied")'):
+                if await page.query_selector(APPLIED_BUTTON_SELECTOR):
                     logger.info("Already applied to %s at %s", job.title, job.company)
                     return ApplicationResult(job=job, status=ApplicationStatus.ALREADY_APPLIED)
 
                 # Check for "Easy Apply" button
                 easy_apply = await wait_for_selector(
-                    page, 'button:has-text("Easy Apply")', timeout_ms=5_000
+                    page, EASY_APPLY_BUTTON_SELECTOR, timeout_ms=5_000
                 )
 
                 if easy_apply:
@@ -169,7 +196,7 @@ class LinkedInApplicator(BaseApplicator):
         """
         validation = DryRunValidation(easy_apply_button_found=True)
 
-        await click(page, 'button:has-text("Easy Apply")')
+        await click(page, EASY_APPLY_BUTTON_SELECTOR)
         await random_delay(1.0, 2.0)
 
         # Fill contact info if present
@@ -185,7 +212,7 @@ class LinkedInApplicator(BaseApplicator):
 
         # Fill cover letter if provided and field exists
         if cover_letter:
-            cl_field = await page.query_selector('textarea[aria-label*="cover" i]')
+            cl_field = await page.query_selector(COVER_LETTER_FIELD_SELECTOR)
             if cl_field:
                 # Paste-like: focus + a brief human pause so the sequence reads as a deliberate
                 # paste (click → text appears) rather than a value materializing on its own. The
@@ -254,9 +281,7 @@ class LinkedInApplicator(BaseApplicator):
         async def _do_submit() -> ApplicationResult:
             await submit_btn.click()
             await random_delay(2.0, 3.0)
-            confirmed = await wait_for_selector(
-                page, 'div:has-text("Application sent")', timeout_ms=5_000
-            )
+            confirmed = await wait_for_selector(page, APPLICATION_SENT_SELECTOR, timeout_ms=5_000)
             if confirmed:
                 logger.info("Successfully applied to %s at %s", job.title, job.company)
                 return ApplicationResult(
@@ -285,15 +310,13 @@ class LinkedInApplicator(BaseApplicator):
 
     async def _upload_resume_if_present(self, page: Page) -> bool:
         """Upload the configured résumé when LinkedIn exposes a file input or upload button."""
-        resume_input = await page.query_selector('input[type="file"]')
+        resume_input = await page.query_selector(RESUME_FILE_INPUT_SELECTOR)
         if resume_input:
             resume_path = _validated_resume_upload_path(self._config)  # exists + supported type
             await resume_input.set_input_files(str(resume_path))
             return True
 
-        upload_button = await page.query_selector(
-            'button:has-text("Upload resume"), button[aria-label*="Upload resume" i]'
-        )
+        upload_button = await page.query_selector(RESUME_UPLOAD_BUTTON_SELECTOR)
         if not upload_button:
             return False
         resume_path = _validated_resume_upload_path(self._config)
@@ -306,12 +329,7 @@ class LinkedInApplicator(BaseApplicator):
     async def _modal_title(self, page: Page) -> str:
         title, _selector = await _first_selector(
             page,
-            (
-                "h2",
-                "[role='dialog'] h2",
-                "[role='dialog'] h3",
-                ".artdeco-modal__header h2",
-            ),
+            MODAL_TITLE_SELECTORS,
         )
         if not title:
             return ""
@@ -324,11 +342,7 @@ class LinkedInApplicator(BaseApplicator):
         return text.strip().replace("\n", " ")
 
     async def _required_empty_fields(self, page: Page) -> list[str]:
-        fields = await page.query_selector_all(
-            "input[required], textarea[required], select[required], "
-            "input[aria-required='true'], textarea[aria-required='true'], "
-            "select[aria-required='true']"
-        )
+        fields = await page.query_selector_all(REQUIRED_FIELD_SELECTOR)
         missing: list[str] = []
         for field in fields[:40]:
             try:
@@ -441,11 +455,19 @@ class LinkedInApplicator(BaseApplicator):
 
     async def _external_apply(self, page: Page, job: JobListing) -> ApplicationResult:
         """Handle external application redirect."""
-        # Find and click the apply link
-        apply_link = await page.query_selector('a:has-text("Apply")')
+        # LinkedIn renders external apply primarily as a button with an
+        # aria-label like "Apply to ... on company website"; older layouts may
+        # expose an anchor. We only identify it here and never click it.
+        apply_link, selector = await _first_selector(page, EXTERNAL_APPLY_BUTTON_SELECTORS)
         if apply_link:
             href = await apply_link.get_attribute("href")
-            logger.info("External application redirect to: %s", href)
+            aria = await apply_link.get_attribute("aria-label")
+            logger.info(
+                "External application required (%s, href=%s, aria=%s)",
+                selector,
+                href,
+                aria,
+            )
             return ApplicationResult(
                 job=job,
                 status=ApplicationStatus.SKIPPED,
@@ -548,5 +570,5 @@ class LinkedInApplicator(BaseApplicator):
             await navigate(page, str(job.url))
             await random_delay(1.0, 2.0)
 
-            applied = await wait_for_selector(page, 'button:has-text("Applied")', timeout_ms=3_000)
+            applied = await wait_for_selector(page, APPLIED_BUTTON_SELECTOR, timeout_ms=3_000)
             return bool(applied)

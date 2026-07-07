@@ -393,7 +393,7 @@ def core_checks(fx: dict[str, Path]) -> None:
            and "Provide --jobs-file" not in cp.stdout,
            f"exit={cp.returncode}")
 
-    for cmd in ("apply", "login", "import-cookies"):
+    for cmd in ("apply", "login", "import-cookies", "selector-health"):
         cp = run(cmd, "--help")
         record(f"account-safe: {cmd} --help works (NOT executed)", t,
                cp.returncode == 0 and "Usage" in cp.stdout, f"exit={cp.returncode}")

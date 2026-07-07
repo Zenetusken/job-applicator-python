@@ -25,14 +25,26 @@ from job_applicator.documents.artifacts import (
     write_tailored,
     write_tailored_pdf,
 )
-from job_applicator.exceptions import ConfigError, CookieError, JobApplicatorError
+from job_applicator.exceptions import (
+    ConfigError,
+    CookieError,
+    JobApplicatorError,
+    SelectorHealthError,
+)
 from job_applicator.factories import (
     _make_applicator,
     _make_browser,
     _make_runtime,
     _make_scraper,
 )
-from job_applicator.models import BatchRunSpec, DoctorReport, Format, coverage_measured
+from job_applicator.models import (
+    BatchRunSpec,
+    DoctorReport,
+    Format,
+    SelectorHealthReport,
+    SelectorProbeStatus,
+    coverage_measured,
+)
 from job_applicator.utils.console import console, err_console
 from job_applicator.utils.cookies import (
     _cookies_from_browser,
@@ -50,6 +62,7 @@ from job_applicator.workflows.tailor import _tailor_workflow
 
 if TYPE_CHECKING:
     from job_applicator.batch_state import BatchState
+    from job_applicator.browser.manager import BrowserManager
     from job_applicator.jobs_store import JobStore
     from job_applicator.models import (
         ATSCompatibilityResult,
@@ -119,6 +132,13 @@ class OCRMode(StrEnum):
     AUTO = "auto"
     ON = "on"
     OFF = "off"
+
+
+class SelectorSurface(StrEnum):
+    """Selector-health surfaces supported by the CLI."""
+
+    SEARCH = "search"
+    APPLY = "apply"
 
 
 def _resolve_ocr_mode(ocr_mode: OCRMode, force_ocr: bool) -> str:
@@ -207,6 +227,108 @@ def _get_jobs_store() -> JobStore:
     from job_applicator.jobs_store import JobStore
 
     return JobStore()
+
+
+async def _run_selector_health_report(
+    *,
+    site: str,
+    surface: SelectorSurface,
+    settings: AppSettings,
+    browser: BrowserManager,
+    query: str = "",
+    location: str = "",
+    job_url: str = "",
+    max_cards: int = 3,
+) -> SelectorHealthReport:
+    """Run a selector-health probe against an already-open browser manager."""
+    from job_applicator.selector_health import SelectorHealthService
+
+    service = SelectorHealthService(browser, settings)
+    if surface == SelectorSurface.SEARCH:
+        if not query:
+            raise SelectorHealthError("Search selector health requires --query.")
+        return await service.probe_search(site, query, location, max_cards=max_cards)
+    if surface == SelectorSurface.APPLY:
+        if not job_url:
+            raise SelectorHealthError("Apply selector health requires --from <id-or-url>.")
+        return await service.probe_apply(site, job_url)
+    raise SelectorHealthError(f"Unsupported selector-health surface: {surface}")
+
+
+def _selector_health_failed(report: SelectorHealthReport) -> bool:
+    return report.status == SelectorProbeStatus.FAIL
+
+
+def _status_markup(status: SelectorProbeStatus) -> str:
+    styles = {
+        SelectorProbeStatus.PASSED: "green",
+        SelectorProbeStatus.WARN: "yellow",
+        SelectorProbeStatus.FAIL: "red",
+        SelectorProbeStatus.SKIPPED: "dim",
+    }
+    return f"[{styles[status]}]{status.value}[/{styles[status]}]"
+
+
+def _render_selector_health(
+    report: SelectorHealthReport, target_console: Console = console
+) -> None:
+    """Render a compact selector-health table."""
+    table = Table(title=f"Selector health: {report.status.value}")
+    table.add_column("Board")
+    table.add_column("Surface")
+    table.add_column("Group", style="cyan")
+    table.add_column("Req")
+    table.add_column("Matches", justify="right")
+    table.add_column("Status")
+    table.add_column("Details", overflow="fold")
+
+    for board in report.boards:
+        for result in board.results:
+            table.add_row(
+                board.board.display_name,
+                board.surface,
+                result.name,
+                "yes" if result.required else "no",
+                str(result.matched_count),
+                _status_markup(result.status),
+                result.details,
+            )
+    target_console.print(table)
+    if report.artifacts:
+        target_console.print(
+            "[yellow]Diagnostics:[/yellow] " + ", ".join(escape(path) for path in report.artifacts)
+        )
+
+
+def _enforce_selector_health_preflight(
+    report: SelectorHealthReport, *, ignore_failure: bool
+) -> None:
+    if not _selector_health_failed(report):
+        return
+    if ignore_failure:
+        err_console.print(
+            "[yellow]Selector health failed; continuing because "
+            "--ignore-selector-health was provided.[/yellow]"
+        )
+        return
+    raise SelectorHealthError(
+        "Selector health preflight failed. Re-run with --ignore-selector-health to continue anyway."
+    )
+
+
+def _resolve_selector_health_job(from_ref: str, default_site: str) -> tuple[str, str]:
+    """Resolve a selector-health --from value to (site, url)."""
+    if from_ref.startswith(("http://", "https://")):
+        return default_site, from_ref
+    stored = _get_jobs_store().get(from_ref)
+    if stored is None:
+        from job_applicator.exceptions import DocumentError
+
+        raise DocumentError(
+            f"No stored job matches --from {from_ref!r}. Run `job-applicator status` to list "
+            "saved jobs."
+        )
+    return stored.job.board.value, str(stored.job.url)
 
 
 async def _write_tailored_artifacts(
@@ -465,6 +587,16 @@ def search(
     max_results: int = typer.Option(25, "--max", "-n", min=1, max=50, help="Max results (1-50)."),
     headed: bool = typer.Option(False, "--headed", help="Run browser in headed mode."),
     as_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
+    selector_health: bool = typer.Option(
+        False,
+        "--selector-health",
+        help="Run a live selector-health preflight before scraping.",
+    ),
+    ignore_selector_health: bool = typer.Option(
+        False,
+        "--ignore-selector-health",
+        help="Continue even if the selector-health preflight fails.",
+    ),
     verbose: bool = _verbose_option(),
     log_file: str | None = _log_file_option(),
 ) -> None:
@@ -536,6 +668,20 @@ def search(
 
         async with _make_browser(site, settings) as browser:
             scraper = _make_scraper(site, browser, settings)
+            if selector_health:
+                with err_console.status("Checking live selectors..."):
+                    health_report = await _run_selector_health_report(
+                        site=site,
+                        surface=SelectorSurface.SEARCH,
+                        settings=settings,
+                        browser=browser,
+                        query=query,
+                        location=location,
+                    )
+                _render_selector_health(health_report, err_console)
+                _enforce_selector_health_preflight(
+                    health_report, ignore_failure=ignore_selector_health
+                )
 
             with err_console.status(f"Searching {site} for '{query}'..."):
                 jobs = await scraper.scrape(params)
@@ -883,6 +1029,16 @@ def apply(
         "--validate",
         help="Exit non-zero if a dry run does not reach the Submit button.",
     ),
+    selector_health: bool = typer.Option(
+        False,
+        "--selector-health",
+        help="Run a live selector-health preflight before filling application forms.",
+    ),
+    ignore_selector_health: bool = typer.Option(
+        False,
+        "--ignore-selector-health",
+        help="Continue even if the selector-health preflight fails.",
+    ),
     output_format: Format | None = typer.Option(
         None,
         "--format",
@@ -1012,6 +1168,21 @@ def apply(
                 else:
                     console.print("[yellow]No jobs found to apply to.[/yellow]")
                 return
+
+            if selector_health:
+                preflight_job = jobs[0]
+                with err_console.status("Checking live apply selectors..."):
+                    health_report = await _run_selector_health_report(
+                        site=effective_site,
+                        surface=SelectorSurface.APPLY,
+                        settings=settings,
+                        browser=browser,
+                        job_url=str(preflight_job.url),
+                    )
+                _render_selector_health(health_report, err_console)
+                _enforce_selector_health_preflight(
+                    health_report, ignore_failure=ignore_selector_health
+                )
 
             # Generate cover letters whenever they are requested and a résumé is
             # available. Dry runs use them as a preview; real submissions use them
@@ -3224,6 +3395,72 @@ cover_letter_template = "__OUTPUT_COVER_LETTER_TEMPLATE__"
             if isinstance(vctx, VerboseContext):
                 log_file = vctx.log_file
             reporter.render(err_console, log_file=log_file)
+
+
+@app.command("selector-health")
+def selector_health(
+    site: str = typer.Option("linkedin", "--site", "-s", help="Job board: linkedin or indeed."),
+    surface: SelectorSurface = typer.Option(
+        SelectorSurface.SEARCH,
+        "--surface",
+        help="Board surface to probe: search or apply.",
+    ),
+    query: str = typer.Option("", "--query", "-q", help="Search query for search probes."),
+    location: str = typer.Option("", "--location", "-l", help="Location filter for search probes."),
+    from_ref: str = typer.Option(
+        "",
+        "--from",
+        help="Stored job id or URL for apply probes.",
+    ),
+    max_cards: int = typer.Option(
+        3,
+        "--max-cards",
+        min=1,
+        max=10,
+        help="Max result cards to sample for search field probes.",
+    ),
+    headed: bool = typer.Option(False, "--headed", help="Run browser in headed mode."),
+    as_json: bool = typer.Option(False, "--json", help="Output the selector report as JSON."),
+) -> None:
+    """Probe known live-board selectors without scraping listings or submitting applications."""
+    try:
+        effective_site = site
+        job_url = ""
+        if surface == SelectorSurface.SEARCH and not query:
+            err_console.print("[red]--query is required for search selector health.[/red]")
+            raise typer.Exit(1)
+        if surface == SelectorSurface.APPLY:
+            if not from_ref:
+                err_console.print("[red]--from is required for apply selector health.[/red]")
+                raise typer.Exit(1)
+            effective_site, job_url = _resolve_selector_health_job(from_ref, site)
+
+        settings = _get_settings(headed=headed)
+        setup_logging(settings.log_level)
+
+        async def _run() -> SelectorHealthReport:
+            async with _make_browser(effective_site, settings) as browser:
+                return await _run_selector_health_report(
+                    site=effective_site,
+                    surface=surface,
+                    settings=settings,
+                    browser=browser,
+                    query=query,
+                    location=location,
+                    job_url=job_url,
+                    max_cards=max_cards,
+                )
+
+        report = asyncio.run(_run())
+        if as_json:
+            sys.stdout.write(report.model_dump_json(indent=2) + "\n")
+        else:
+            _render_selector_health(report)
+        if _selector_health_failed(report):
+            raise typer.Exit(1)
+    except JobApplicatorError as exc:
+        err_console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
+        raise typer.Exit(1) from exc
 
 
 @app.command("check-session")

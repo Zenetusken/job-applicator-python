@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, HttpUrl, computed_field
 
@@ -55,6 +55,78 @@ class Format(StrEnum):
     TXT = "txt"
     PDF = "pdf"
     BOTH = "both"
+
+
+class SelectorProbeStatus(StrEnum):
+    """Health classification for a selector probe or aggregate report."""
+
+    PASSED = "pass"
+    WARN = "warn"
+    FAIL = "fail"
+    SKIPPED = "skipped"
+
+
+SelectorProbeScope = Literal["page", "first_card"]
+
+
+class SelectorProbe(BaseModel):
+    """A selector group to probe on a live board surface."""
+
+    board: JobBoard
+    surface: str
+    name: str
+    selector: str = Field(description="Human-readable selector expression for this probe group")
+    selectors: list[str] = Field(default_factory=list)
+    required: bool = True
+    scope: SelectorProbeScope = "page"
+
+    model_config = {"extra": "forbid"}
+
+
+class SelectorProbeResult(BaseModel):
+    """Observed result for one selector probe group."""
+
+    board: JobBoard
+    surface: str
+    name: str
+    selector: str
+    required: bool
+    matched_count: int = 0
+    status: SelectorProbeStatus
+    details: str = ""
+    url: str = ""
+    artifacts: list[str] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
+class BoardSelectorHealth(BaseModel):
+    """Selector health for one board/surface check."""
+
+    board: JobBoard
+    surface: str
+    status: SelectorProbeStatus
+    url: str = ""
+    results: list[SelectorProbeResult] = Field(default_factory=list)
+    artifacts: list[str] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
+class SelectorHealthReport(BaseModel):
+    """Top-level selector drift report for CLI JSON and preflight checks."""
+
+    status: SelectorProbeStatus
+    boards: list[BoardSelectorHealth] = Field(default_factory=list)
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    artifacts: list[str] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def ok(self) -> bool:
+        return self.status != SelectorProbeStatus.FAIL
 
 
 class JobListing(BaseModel):

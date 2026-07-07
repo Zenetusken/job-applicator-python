@@ -66,6 +66,11 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
   **Indeed is search/match-only:** automated apply is intentionally unsupported (Cloudflare
   anti-bot + ToS risk), not a pending feature — the applicator returns a clean SKIPPED result
   directing the user to apply manually. LinkedIn Easy Apply remains the only automated apply path.
+- Selector health is explicit live-board diagnostics. `selector-health` and `search/apply
+  --selector-health` reuse the real board browser/session, so they are opt-in and separate from
+  `doctor`. Search probes validate card/field/description selectors; LinkedIn apply probes validate
+  Easy Apply entry + form controls without submitting; Indeed apply probing is intentionally out of
+  scope.
 
 ## Key Design Decisions
 
@@ -107,6 +112,13 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
   profile / virtual display) lives on the scraper, not the CLI, so anti-bot requirements can't drift
   and any caller builds the right browser. `_make_browser` (in `factories.py`) reads it.
 - **Easy Apply is dry-run by default;** real submission requires `apply --submit`. Dry runs generate cover letters as a preview when `--cover-letter` is enabled and a résumé path is configured; the generated letter is surfaced in `--json` and the console table.
+- **LinkedIn apply surfaces are distinct.** Easy Apply is in-product and often starts with
+  Next/required fields before any Submit button. External "Apply on company website" is a separate
+  button surface; the applicator detects it and returns SKIPPED/manual follow-up without clicking.
+- **Selector-health failures are honest diagnostics.** Required misses fail and optional misses warn;
+  external LinkedIn apply jobs are `skipped` because Easy Apply form selectors are not applicable.
+  JSON goes to stdout, logs/diagnostic artifact paths go to stderr, and failure dumps live under
+  `~/.job-applicator/debug/selector-health/`.
 - **The job funnel is persisted.** `search`/`match` upsert into a SQLite `JobStore`
   (`jobs_store.py`, in `~/.job-applicator/applications.db`) so jobs flow
   search→match→tailor→cover-letter without re-typing. `ApplicationState` stays the

@@ -25,7 +25,7 @@ ruff format src/ tests/
 # Release (see RELEASING.md)
 bash scripts/release.sh <version>   # bump version, update CHANGELOG.md, tag, build dist
 
-# Tests — ~1370 fast unit tests (the green gate); ~1428 total = ~1370 unit + 23 integration + 35 live
+# Tests — ~1428 fast unit tests (the green gate); ~1486 total = ~1428 unit + 23 integration + 35 live
 pytest -m unit -v               # or: pytest tests/unit/ -v   (auto-marked by location)
 pytest -m unit -v -k test_name  # single test
 python scripts/check_matcher_gate_required.py --base HEAD
@@ -41,6 +41,7 @@ job-applicator login                        # Headed sign-in once; reuse session
 job-applicator import-cookies --from-browser chrome
 job-applicator check-session                # Verify board session is ready
 job-applicator search --site linkedin --query "python developer"
+job-applicator search --site linkedin --query "python developer" --selector-health  # Opt-in live selector preflight
 job-applicator status                       # Show saved job funnel
 job-applicator match --resume resume.pdf --jobs-file jobs.json
 job-applicator rescore                      # Re-score STORED funnel jobs vs the current résumé (no re-scraping)
@@ -49,6 +50,9 @@ job-applicator generate-cover-letter --resume resume.pdf --job-title "..." --com
 job-applicator ats-check --resume resume.pdf [--json] [--strict]
 job-applicator apply --query "python" --validate [--style-guide example.txt] [--format txt|pdf|both] [--template modern|classic|minimal] [--category <category>]            # Dry-run Easy Apply and validate it reaches Submit
 job-applicator apply --query "python" --submit --limit 5 [--style-guide example.txt] [--format txt|pdf|both] [--template modern|classic|minimal] [--category <category>]    # Send real applications
+job-applicator selector-health --site linkedin --surface search --query "python developer"  # Live selector drift report
+job-applicator selector-health --site linkedin --surface apply --from <id-or-url>            # Easy Apply selector probe; never submits
+job-applicator selector-health --site indeed --surface search --query "python developer"     # Indeed search/description selectors
 job-applicator batch --resume resume.pdf --jobs-file jobs.json --top-k 10 --resume-run [--style-guide "ex1.txt,ex2.pdf"] [--format txt|pdf|both] [--template modern|classic|minimal] [--category <category>]
 job-applicator tui                          # Full-screen terminal UI over the funnel store
 ```
@@ -79,6 +83,8 @@ src/job_applicator/
 ├── models.py           # Shared Pydantic models
 ├── exceptions.py       # JobApplicatorError hierarchy (incl. CookieError)
 ├── diagnostics.py      # doctor health checks
+├── selector_registry.py # Shared board selector groups for live drift probes
+├── selector_health.py  # Live selector-health service + diagnostics
 ├── state.py            # SQLite application-history store (duplicate-app prevention)
 ├── batch_state.py      # SQLite batch-progress store (crash recovery)
 ├── jobs_store.py       # SQLite job-funnel store (found → matched → tailored → cover_letter)
@@ -213,6 +219,18 @@ src/job_applicator/
   suffix checks. It is also used to drop look-alike hosts when importing cookies from a browser.
 - **LinkedIn description extraction clicks cards.** The scraper clicks each card, waits for content
   change, clicks the correct "show more" button, then extracts with a 5 000-char cap.
+- **Selector health is live-board diagnostics, not `doctor`.** `selector-health` and the opt-in
+  `search/apply --selector-health` preflights open real board pages and add traffic, so they are
+  explicit only. Required selector misses fail/abort unless `--ignore-selector-health` is supplied;
+  optional selector misses warn. JSON reports stay on stdout; logs/diagnostics go to stderr; failure
+  artifacts land in `~/.job-applicator/debug/selector-health/`.
+- **LinkedIn apply has two live surfaces.** In-product Easy Apply uses an `Easy Apply` button and
+  often shows `Next`/required fields before any Submit button. External apply uses an `Apply` button
+  with aria like "Apply to ... on company website"; that is reported as SKIPPED/manual follow-up,
+  not treated as Easy Apply selector drift.
+- **Indeed apply remains search-only/unsupported.** Indeed search and description selectors are
+  probed; on-site apply buttons may appear as `#indeedApplyButton`, but automation intentionally
+  returns SKIPPED and directs the user to apply manually.
 - **`--verbose` and `--log-file` work both before and after the *data* commands** (search, match,
   tailor, apply, batch, generate-cover-letter, ats-check). `--verbose` emits a structured
   `VerboseReport`; `--log-file` persists it to disk. The status-only `status`/`doctor`/`check-session`
@@ -300,7 +318,7 @@ that generate cover letters. The default dry-run `apply` does not run the ATS pr
 ## Testing
 
 - Tests are auto-marked by location (`tests/conftest.py`): `pytest -m unit` / `-m live` /
-  `-m integration` all work. Unit suite (`pytest -m unit`, ~1370) is fast — no browser/GPU; the green
+  `-m integration` all work. Unit suite (`pytest -m unit`, ~1428) is fast — no browser/GPU; the green
   gate.
 - 23 integration tests live in `tests/integration/` and exercise cross-component seams with no
   vLLM/GPU: board browser-policy wiring, PDF rendering, the apply-loop + batch-loop against a real

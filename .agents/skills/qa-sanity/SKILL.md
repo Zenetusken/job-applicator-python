@@ -3,7 +3,7 @@ name: qa-sanity
 description: Deterministic end-to-end QA / critical-paths sanity check for the job-applicator CLI. Drives every SAFE critical path (doctor, ats-check, match, generate-cover-letter, tailor, batch + crash-recovery) through the real CLI in FULL ISOLATION from real user state, and emits a PASS/FAIL/XFAIL report. Use at the END OF EVERY implementation arc, before opening/merging a PR, after any change to the CLI / commands / workflows / documents / batch / state, or whenever asked to sanity-check, regression-check, smoke-test, QA, or "make sure nothing broke" in job-applicator. Prefer this over ad-hoc manual CLI testing — it is isolated and account-safe by construction.
 ---
 
-A single deterministic harness, **`.Codex/skills/qa-sanity/qa.py`**, that exercises the
+A single deterministic harness, **`.agents/skills/qa-sanity/qa.py`**, that exercises the
 job-applicator CLI the way a user would and grades the result. It is the automated form of
 a manual end-to-end QA pass: run it at the end of an arc or as a general sanity check.
 Paths below are relative to the repo root.
@@ -22,7 +22,7 @@ Paths below are relative to the repo root.
 
 ## Prerequisites
 
-The repo set up per `.Codex/skills/run-job-applicator/SKILL.md` (venv + deps). The **LIVE**
+The repo set up per `.agents/skills/run-job-applicator/SKILL.md` (venv + deps). The **LIVE**
 tier additionally needs vLLM at `http://localhost:8000/v1` and the embedding model cached
 (both already true on the dev box); LIVE auto-SKIPs if vLLM is down. If self-hosting, use
 `scripts/serve-vllm.sh` (vLLM 0.23.x CUDA 13.0 wheel; defaults to the project's own binary
@@ -31,9 +31,9 @@ with `GPU_MEM=0.70` and `ENFORCE_EAGER=1` for 12 GB cards).
 ## Run (agent path)
 
 ```bash
-.venv/bin/python .Codex/skills/qa-sanity/qa.py            # CORE + LIVE (LIVE skips if vLLM down)
-.venv/bin/python .Codex/skills/qa-sanity/qa.py --core     # offline only (fast, no GPU/LLM)
-.venv/bin/python .Codex/skills/qa-sanity/qa.py --live     # live only
+.venv/bin/python .agents/skills/qa-sanity/qa.py            # CORE + LIVE (LIVE skips if vLLM down)
+.venv/bin/python .agents/skills/qa-sanity/qa.py --core     # offline only (fast, no GPU/LLM)
+.venv/bin/python .agents/skills/qa-sanity/qa.py --live     # live only
 ```
 
 It prints a markdown report to stdout and writes a copy to `/tmp/job-applicator-qa-report.md`.

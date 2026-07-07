@@ -7,7 +7,8 @@ AI-powered job application tool using Playwright browser automation with modern 
 - **Job Search**: Scrape job listings from LinkedIn (session-authenticated) and Indeed (public, Cloudflare-fronted)
 - **Session Reuse**: Sign in once in your real browser; the tool reuses the session — it never automates login (which would trip anti-bot defenses and risk your account)
 - **Region-Aware Browser**: Auto-detects the host's locale, IANA timezone, and Chrome version so geo-aware boards serve your real region
-- **Auto-Apply**: Automatically fill and submit job applications (dry-run by default; `--submit` to send)
+- **LinkedIn Easy Apply**: Fill LinkedIn Easy Apply forms in a dry run by default; real submission requires `--submit`. LinkedIn external-apply jobs and Indeed applications are reported for manual follow-up rather than guessed through
+- **Selector Health Diagnostics**: Probe live LinkedIn/Indeed selectors on demand, or as an opt-in `search` / `apply` preflight, so board DOM drift is reported before a real run
 - **AI Cover Letters**: Generate personalized cover letters using LLM (litellm - supports 100+ providers) as three connected paragraphs with deterministic honesty guards and an enforced sign-off. Dry runs generate the letter as a preview before you opt in with `--submit`
 - **Output-Language Policy**: The generated CV and cover letter always resolve the *same* language — `[llm] language = "auto"` mirrors the job posting's language, or force `"en"` / `"fr"` (a French posting yields a French packet with an in-language sign-off and localized PDF date)
 - **Grounding Verification (honesty layer)**: A language-agnostic LLM pass enumerates every claim in a generated document and cites the résumé line that grounds it; a deterministic audit then overrides any ungrounded claim. Cover letters regenerate once, then **fail closed** if the best draft is still unclean or the verifier is unavailable. Tailored résumés surface unsupported claims for human review (printed as a "claims to review" panel and carried in `--json`), never silently stripped; non-interactive saves use stricter source-only prompting, retry dirty drafts, then refuse dirty or unverified output.
@@ -120,6 +121,8 @@ job-applicator doctor
 # Search for jobs
 job-applicator search --site linkedin --query "python developer"
 job-applicator search --site indeed --query "python developer" --location "Montreal, QC"
+# Optional live selector preflight before scraping (extra board traffic)
+job-applicator search --site linkedin --query "python developer" --selector-health
 
 # Auto-apply with AI cover letters (dry run — fills forms, previews the cover letter, but does NOT submit)
 job-applicator apply --site linkedin --query "python" --limit 5
@@ -129,6 +132,13 @@ job-applicator apply --site linkedin --query "python" --limit 1 --resume resume.
 job-applicator apply --site linkedin --query "python" --limit 5 --submit
 # Skip cover-letter generation entirely
 job-applicator apply --site linkedin --query "python" --limit 5 --no-cover-letter
+# Optional live selector preflight before filling a stored/target job
+job-applicator apply --from <id-or-url> --selector-health
+
+# Standalone live selector diagnostics (no scraping persistence, no submission)
+job-applicator selector-health --site linkedin --surface search --query "python developer"
+job-applicator selector-health --site linkedin --surface apply --from <id-or-url>
+job-applicator selector-health --site indeed --surface search --query "python developer"
 
 # Generate a cover letter
 job-applicator generate-cover-letter --resume resume.pdf --job-title "Python Dev" --company "Acme"
@@ -216,6 +226,32 @@ job-applicator import-cookies --site indeed --file cookies.json   # a cookie-man
 - **Region** is auto-detected: the browser advertises the host locale + timezone + Chrome UA,
   and the Indeed host is derived from your timezone (e.g. `ca.indeed.com` in Canada). Pin one
   explicitly with `target.indeed_domain` (e.g. `ca.indeed.com`) if needed.
+
+### Selector Health
+
+`selector-health` is a live diagnostic surface, separate from `doctor`. It opens real
+LinkedIn/Indeed pages and checks the selector groups the scraper/applicator depends on, but it does
+not persist scraped jobs and never submits an application. Use it when a board layout looks suspect:
+
+```bash
+job-applicator selector-health --site linkedin --surface search --query "SOC" --location "Montreal, QC"
+job-applicator selector-health --site linkedin --surface apply --from <stored-id-or-url>
+job-applicator selector-health --site indeed --surface search --query "python developer" --json
+```
+
+Search/apply preflights are opt-in via `--selector-health`; failed required selector groups abort
+before scraping/filling unless `--ignore-selector-health` is also provided. JSON reports are written
+to stdout, with logs/diagnostics on stderr. Failure artifacts are saved under
+`~/.job-applicator/debug/selector-health/`.
+
+LinkedIn apply checks distinguish in-product Easy Apply from external "Apply on company website"
+postings. External apply jobs are reported as `skipped` because Easy Apply form selectors do not
+apply. Easy Apply probes require the entry button plus form controls such as Next/Continue/Review or
+Submit; Submit itself can be absent until the form has been advanced and filled.
+
+Indeed selector health covers search results and the description pane only. Indeed automated apply
+remains intentionally unsupported; live recon showed on-site apply buttons are best identified by
+`#indeedApplyButton`, but the app still directs the user to apply manually.
 
 ### Enhanced Tailor Workflow
 

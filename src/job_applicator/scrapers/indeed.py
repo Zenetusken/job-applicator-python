@@ -49,6 +49,22 @@ logger = get_logger("scrapers.indeed")
 # stderr logs, so this file is the only record of *why* a scrape came up empty. A module
 # constant so tests can redirect it away from the real ~/.job-applicator.
 _DEBUG_DIR = Path.home() / ".job-applicator" / "debug"
+INDEED_CARD_SELECTORS = ("div.job_seen_beacon", "[data-jk]", "div.cardOutline")
+INDEED_TITLE_SELECTOR = "a.jcs-JobTitle, h2 a"
+INDEED_COMPANY_SELECTOR = '[data-testid="company-name"], span.companyName'
+INDEED_LOCATION_SELECTOR = '[data-testid="text-location"], div.companyLocation'
+INDEED_SALARY_SELECTOR = '[class*="salary-snippet"], [data-testid*="salary-snippet"]'
+INDEED_JK_SELECTOR = "[data-jk]"
+INDEED_SNIPPET_SELECTORS = (
+    '[data-testid="jobsnippet_footer"]',
+    "div.job-snippet",
+    "div[class*='job-snippet']",
+)
+INDEED_DESC_SELECTORS = (
+    "#jobDescriptionText",
+    ".jobsearch-JobComponent-description",
+    "[id^='jobDescriptionText']",
+)
 
 
 def _is_indeed_host(host: str) -> bool:
@@ -83,25 +99,17 @@ class IndeedScraper(BaseScraper):
 
     # Result-card containers, tried in order (Indeed varies by region / A/B bucket). Shared
     # with the diagnostic dump so it reports a match count per selector.
-    _CARD_SELECTORS = ("div.job_seen_beacon", "[data-jk]", "div.cardOutline")
+    _CARD_SELECTORS = INDEED_CARD_SELECTORS
 
     # Short description teaser shown ON the result card (no click needed) — best-effort, used
     # as the baseline description so every Indeed job carries SOME text even when the full
     # description panel can't be loaded.
-    _SNIPPET_SELECTORS = (
-        '[data-testid="jobsnippet_footer"]',
-        "div.job-snippet",
-        "div[class*='job-snippet']",
-    )
+    _SNIPPET_SELECTORS = INDEED_SNIPPET_SELECTORS
 
     # Full description in Indeed's right-hand detail PANE after a card is clicked.
     # ``#jobDescriptionText`` is Indeed's long-stable description id (both the standalone
     # viewjob page and the search split-pane); the rest are best-effort fallbacks.
-    _DESC_SELECTORS = (
-        "#jobDescriptionText",
-        ".jobsearch-JobComponent-description",
-        "[id^='jobDescriptionText']",
-    )
+    _DESC_SELECTORS = INDEED_DESC_SELECTORS
 
     @classmethod
     def browser_policy(cls) -> BrowserPolicy:
@@ -371,7 +379,7 @@ class IndeedScraper(BaseScraper):
         # the legacy fallbacks (span.companyName / div.companyLocation) still
         # appear on some regional sites and A/B buckets, so keep them rather than
         # silently degrade company/location to "Unknown"/"".
-        title_el = await card.query_selector("a.jcs-JobTitle, h2 a")
+        title_el = await card.query_selector(INDEED_TITLE_SELECTOR)
         if not title_el:
             return None
         title = (await title_el.inner_text()).strip()
@@ -388,20 +396,16 @@ class IndeedScraper(BaseScraper):
         else:
             return None
 
-        company_el = await card.query_selector('[data-testid="company-name"], span.companyName')
+        company_el = await card.query_selector(INDEED_COMPANY_SELECTOR)
         company = (await company_el.inner_text()).strip() if company_el else "Unknown"
 
-        location_el = await card.query_selector(
-            '[data-testid="text-location"], div.companyLocation'
-        )
+        location_el = await card.query_selector(INDEED_LOCATION_SELECTOR)
         location = (await location_el.inner_text()).strip() if location_el else ""
 
         # Salary teaser shown on the card (best-effort; most postings omit it). Selector
         # verified against the live DOM (2026-06-24): the figure sits in a
         # ``li.salary-snippet-container`` (its inner_text is just the "$86,000-$112,000/yr" text).
-        salary_el = await card.query_selector(
-            '[class*="salary-snippet"], [data-testid*="salary-snippet"]'
-        )
+        salary_el = await card.query_selector(INDEED_SALARY_SELECTOR)
         salary = (await salary_el.inner_text()).strip() if salary_el else None
 
         # The on-card snippet (best-effort) is the baseline description: it needs no click, so
@@ -432,7 +436,7 @@ class IndeedScraper(BaseScraper):
             jk = await el.get_attribute("data-jk")
             if jk:
                 return jk
-        holder = await card.query_selector("[data-jk]")
+        holder = await card.query_selector(INDEED_JK_SELECTOR)
         return await holder.get_attribute("data-jk") if holder else None
 
     async def _get_desc_text(self, page: Page) -> str:
@@ -496,7 +500,7 @@ class IndeedScraper(BaseScraper):
                     text = (await el.inner_text()).strip()
                     lines.append(f"  {selector}: present, text len={len(text)}")
             lines += ["", "card selector match counts (on the failing card):"]
-            for selector in (*self._SNIPPET_SELECTORS, "[data-jk]", "a.jcs-JobTitle, h2 a"):
+            for selector in (*self._SNIPPET_SELECTORS, INDEED_JK_SELECTOR, INDEED_TITLE_SELECTOR):
                 try:
                     count = len(await card.query_selector_all(selector))
                 except Exception:  # a bad selector must not break the diagnostic

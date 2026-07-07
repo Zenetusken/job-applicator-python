@@ -4,7 +4,7 @@ description: Build, run, smoke-test, and drive the job-applicator CLI. Use when 
 ---
 
 job-applicator is a Python (Typer) CLI for AI-assisted job applications. The agent
-path is the committed smoke driver **`.Codex/skills/run-job-applicator/driver.sh`**,
+path is the committed smoke driver **`.agents/skills/run-job-applicator/driver.sh`**,
 which generates a throwaway résumé and exercises the safe surface in two tiers — an
 offline CORE tier and a vLLM-gated LIVE tier. All paths below are relative to the
 repo root (the unit).
@@ -57,9 +57,9 @@ from the `serve` extra).
 ## Run (agent path) — the driver
 
 ```bash
-bash .Codex/skills/run-job-applicator/driver.sh           # CORE + LIVE (LIVE auto-skips if vLLM is down)
-bash .Codex/skills/run-job-applicator/driver.sh --core    # offline only
-bash .Codex/skills/run-job-applicator/driver.sh --live    # live only
+bash .agents/skills/run-job-applicator/driver.sh           # CORE + LIVE (LIVE auto-skips if vLLM is down)
+bash .agents/skills/run-job-applicator/driver.sh --core    # offline only
+bash .agents/skills/run-job-applicator/driver.sh --live    # live only
 ```
 
 It resolves the repo from its own location (run it from any CWD), uses
