@@ -17,10 +17,6 @@ from job_applicator.exceptions import ConfigError
 from job_applicator.models import ResumeData
 
 
-async def _inline_to_thread(fn, *args, **kwargs):  # type: ignore[no-untyped-def]
-    return fn(*args, **kwargs)
-
-
 class TestEmbeddingConfig:
     """Tests for embedding configuration."""
 
@@ -28,7 +24,7 @@ class TestEmbeddingConfig:
         config = EmbeddingConfig()
         assert config.model_name == "mixedbread-ai/mxbai-embed-large-v1"
         assert config.device == "cuda"
-        assert config.memory_limit_gb == 1.5
+        assert config.memory_limit_gb == 1.3
         assert config.normalize_embeddings is True
 
     def test_custom_config(self) -> None:
@@ -53,10 +49,10 @@ class TestEmbeddingService:
     def service(self, config: EmbeddingConfig) -> EmbeddingService:
         return EmbeddingService(config)
 
-    def test_resolve_device_falls_back_to_cpu_when_cuda_unavailable(
+    def test_resolve_device_requires_cuda_when_configured(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A `cuda` request on a box without CUDA falls back to CPU rather than crashing."""
+        """A `cuda` request on a box without CUDA fails loudly instead of silently using CPU."""
         import sys
         from types import SimpleNamespace
 
@@ -64,7 +60,8 @@ class TestEmbeddingService:
             sys.modules, "torch", SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False))
         )
         svc = EmbeddingService(EmbeddingConfig(device="cuda", memory_limit_gb=0.5))
-        assert svc._resolve_device() == "cpu"
+        with pytest.raises(ConfigError, match="CUDA is not available"):
+            svc._resolve_device()
 
     def test_resolve_device_honors_cpu_and_available_cuda(
         self, monkeypatch: pytest.MonkeyPatch
@@ -80,6 +77,28 @@ class TestEmbeddingService:
         )
         cuda_svc = EmbeddingService(EmbeddingConfig(device="cuda", memory_limit_gb=0.5))
         assert cuda_svc._resolve_device() == "cuda"
+
+    def test_configure_cpu_threads_caps_oversubscription(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sys
+        from types import SimpleNamespace
+
+        state = {"threads": 16, "interop": 16}
+
+        fake_torch = SimpleNamespace(
+            get_num_threads=lambda: state["threads"],
+            set_num_threads=lambda value: state.__setitem__("threads", value),
+            get_num_interop_threads=lambda: state["interop"],
+            set_num_interop_threads=lambda value: state.__setitem__("interop", value),
+        )
+        monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+        EmbeddingService(
+            EmbeddingConfig(device="cpu", memory_limit_gb=0.5)
+        )._configure_cpu_threads()
+
+        assert state == {"threads": 4, "interop": 1}
 
     def test_load_model_uses_local_only_when_snapshot_is_cached(
         self, monkeypatch: pytest.MonkeyPatch, config: EmbeddingConfig
@@ -104,8 +123,80 @@ class TestEmbeddingService:
         model = EmbeddingService(config)._load_model()
 
         assert isinstance(model, FakeSentenceTransformer)
+        assert calls[0]["device"] == "cpu"
         assert calls[0]["local_files_only"] is True
+        assert calls[0]["model_kwargs"] == {"torch_dtype": "float32"}
         assert model.max_seq_length == config.max_seq_length
+
+    def test_load_model_uses_fp16_only_on_cuda(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sys
+        from types import SimpleNamespace
+
+        calls: list[dict[str, object]] = []
+
+        class FakeSentenceTransformer:
+            max_seq_length = 0
+
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                calls.append({"args": args, **kwargs})
+
+        monkeypatch.setitem(
+            sys.modules,
+            "torch",
+            SimpleNamespace(
+                cuda=SimpleNamespace(
+                    is_available=lambda: True,
+                    mem_get_info=lambda _idx: (2 * 1024**3, 12 * 1024**3),
+                ),
+                device=lambda _device: SimpleNamespace(index=0),
+            ),
+        )
+        monkeypatch.setattr(
+            "job_applicator.embeddings.service.probe_hf_model_cache",
+            lambda _model_name: (True, "/cache/model"),
+        )
+        monkeypatch.setattr(
+            "sentence_transformers.SentenceTransformer",
+            FakeSentenceTransformer,
+        )
+
+        EmbeddingService(EmbeddingConfig(device="cuda", memory_limit_gb=0.5))._load_model()
+
+        assert calls[0]["device"] == "cuda"
+        assert calls[0]["model_kwargs"] == {"torch_dtype": "float16"}
+
+    def test_load_model_fails_when_cuda_headroom_below_budget(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sys
+        from types import SimpleNamespace
+
+        class FakeSentenceTransformer:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                raise AssertionError("model load should be skipped by VRAM preflight")
+
+        monkeypatch.setitem(
+            sys.modules,
+            "torch",
+            SimpleNamespace(
+                cuda=SimpleNamespace(
+                    is_available=lambda: True,
+                    mem_get_info=lambda _idx: (512 * 1024**2, 12 * 1024**3),
+                ),
+                device=lambda _device: SimpleNamespace(index=0),
+            ),
+        )
+        monkeypatch.setattr(
+            "job_applicator.embeddings.service.probe_hf_model_cache",
+            lambda _model_name: (True, "/cache/model"),
+        )
+        monkeypatch.setattr(
+            "sentence_transformers.SentenceTransformer",
+            FakeSentenceTransformer,
+        )
+
+        with pytest.raises(ConfigError, match="free VRAM"):
+            EmbeddingService(EmbeddingConfig(device="cuda", memory_limit_gb=1.5))._load_model()
 
     def test_load_model_allows_download_when_snapshot_is_uncached(
         self, monkeypatch: pytest.MonkeyPatch, config: EmbeddingConfig
@@ -182,6 +273,78 @@ class TestEmbeddingService:
         svc1 = EmbeddingService(config1)
         svc2 = EmbeddingService(config2)
         assert svc1._get_cache_key("hello") != svc2._get_cache_key("hello")
+
+    def test_embed_tolerates_cache_write_failure(
+        self,
+        service: EmbeddingService,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        vector = np.array([1.0, 0.0], dtype=np.float32)
+
+        class FakeModel:
+            def encode(self, _text: str, **_kwargs: object) -> np.ndarray:
+                return vector
+
+        monkeypatch.setattr(service, "_load_model", lambda: FakeModel())
+
+        def fail_save(*_args: object, **_kwargs: object) -> None:
+            raise OSError("read-only cache")
+
+        monkeypatch.setattr("job_applicator.embeddings.service.np.save", fail_save)
+
+        result = service.embed("uncached text")
+
+        np.testing.assert_array_equal(result, vector)
+
+    def test_embed_batch_tolerates_cache_write_failure(
+        self,
+        service: EmbeddingService,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        vectors = [
+            np.array([1.0, 0.0], dtype=np.float32),
+            np.array([0.0, 1.0], dtype=np.float32),
+        ]
+
+        class FakeModel:
+            def encode(self, _texts: list[str], **_kwargs: object) -> list[np.ndarray]:
+                return vectors
+
+        monkeypatch.setattr(service, "_load_model", lambda: FakeModel())
+
+        def fail_save(*_args: object, **_kwargs: object) -> None:
+            raise OSError("read-only cache")
+
+        monkeypatch.setattr("job_applicator.embeddings.service.np.save", fail_save)
+
+        results = service.embed_batch(["first", "second"])
+
+        assert len(results) == 2
+        np.testing.assert_array_equal(results[0], vectors[0])
+        np.testing.assert_array_equal(results[1], vectors[1])
+
+    def test_embed_batch_deduplicates_uncached_texts(
+        self,
+        service: EmbeddingService,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls: list[list[str]] = []
+
+        class FakeModel:
+            def encode(self, texts: list[str], **_kwargs: object) -> list[np.ndarray]:
+                calls.append(list(texts))
+                return [
+                    np.array([float(index), 0.0], dtype=np.float32)
+                    for index, _text in enumerate(texts, start=1)
+                ]
+
+        monkeypatch.setattr(service, "_load_model", lambda: FakeModel())
+
+        results = service.embed_batch(["same", "other", "same"], use_cache=False)
+
+        assert calls == [["same", "other"]]
+        assert len(results) == 3
+        np.testing.assert_array_equal(results[0], results[2])
 
     def test_similarity_fast_path_normalized(self) -> None:
         """When normalize_embeddings=True, similarity uses dot product."""
@@ -295,13 +458,6 @@ class TestJobMatcher:
         # Stub the model out — control the cosine directly (no model load).
         monkeypatch.setattr(svc, "embed_batch", lambda texts, **kw: [[1.0]] * len(texts))
 
-        async def _inline_to_thread(fn, *args, **kwargs):  # type: ignore[no-untyped-def]
-            return fn(*args, **kwargs)
-
-        monkeypatch.setattr(
-            "job_applicator.embeddings.matching.asyncio.to_thread", _inline_to_thread
-        )
-
         monkeypatch.setattr(svc, "similarity", lambda a, b: 0.62)  # false-positive band
         matched, missing = await matcher._match_skills(["Python"], ["React"])
         assert matched == [] and missing == ["React"]  # NOT covered at 0.75 (was at 0.55)
@@ -398,13 +554,6 @@ class TestJobMatcher:
 
         # Pass strings straight through as their own "embeddings".
         matcher._service.embed_batch = lambda texts: list(texts)  # type: ignore[method-assign]
-
-        async def _inline_to_thread(fn, *args, **kwargs):  # type: ignore[no-untyped-def]
-            return fn(*args, **kwargs)
-
-        monkeypatch.setattr(
-            "job_applicator.embeddings.matching.asyncio.to_thread", _inline_to_thread
-        )
 
         # Synthetic scores (not real cosines) — all "matched" values are above the 0.75
         # threshold so this test exercises the used-skills CLAIMING logic, not the threshold.
@@ -1021,12 +1170,9 @@ class TestJobMatcherAsyncExtraction:
     """Tests for JobMatcher using LLMSkillExtractor for descriptions."""
 
     @pytest.fixture
-    def matcher(self, monkeypatch: pytest.MonkeyPatch) -> JobMatcher:
+    def matcher(self) -> JobMatcher:
         from job_applicator.embeddings.matching import JobMatcher
 
-        monkeypatch.setattr(
-            "job_applicator.embeddings.matching.asyncio.to_thread", _inline_to_thread
-        )
         return JobMatcher(
             EmbeddingConfig(device="cpu", memory_limit_gb=0.5),
             LLMConfig(model="test-model"),
@@ -1145,10 +1291,7 @@ class TestJobMatcherRanking:
     """Tests for JobMatcher async ranking behavior."""
 
     @pytest.fixture
-    def matcher(self, monkeypatch: pytest.MonkeyPatch) -> JobMatcher:
-        monkeypatch.setattr(
-            "job_applicator.embeddings.matching.asyncio.to_thread", _inline_to_thread
-        )
+    def matcher(self) -> JobMatcher:
         return JobMatcher(
             EmbeddingConfig(device="cpu", memory_limit_gb=0.5),
             LLMConfig(model="test-model"),
@@ -1179,17 +1322,16 @@ class TestJobMatcherRanking:
             lambda _a, _b: 0.5,
         )
 
-        async def fake_match_skills(
-            resume_skills: list[str],
-            job_requirements: list[str],
-            resume_text: str = "",
-            job_description: str = "",
-        ) -> tuple[list[str], list[str]]:
-            if "Python" in job_requirements:
-                return ["Python"], ["Django"]
-            return [], ["Rust"]
+        async def fake_match_skills_for_jobs(
+            _resume: ResumeData,
+            ranked_jobs: list[JobListing],
+        ) -> list[tuple[list[str], list[str]]]:
+            return [
+                (["Python"], ["Django"]) if "Python" in job.requirements else ([], ["Rust"])
+                for job in ranked_jobs
+            ]
 
-        monkeypatch.setattr(matcher, "_match_skills", fake_match_skills)
+        monkeypatch.setattr(matcher, "_match_skills_for_jobs", fake_match_skills_for_jobs)
 
         resume = ResumeData(raw_text="Skills: Python", skills=["Python"])
         jobs = [
@@ -1215,12 +1357,87 @@ class TestJobMatcherRanking:
         assert results[0].job.company == "Acme"
         assert "Python" in results[0].matched_skills
 
+    async def test_rank_jobs_batches_skill_embeddings_once(
+        self,
+        matcher: JobMatcher,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Ranking must not re-embed the same résumé skills once per job.
+
+        Live QA runs match several jobs through the real embedding model. If ranking sends the
+        same résumé skills through sentence-transformers for every job, a CUDA fallback turns a
+        small fixture into repeated blocking CPU encode work.
+        """
+        from job_applicator.models import JobBoard, JobListing
+
+        embed_batch_calls: list[list[str]] = []
+
+        def vector_for(text: str) -> np.ndarray:
+            vectors = {
+                "Python": np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+                "FastAPI": np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32),
+                "Django": np.array([0.0, 0.0, 1.0, 0.0], dtype=np.float32),
+            }
+            return vectors.get(text, np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32))
+
+        monkeypatch.setattr(
+            matcher._service,
+            "embed",
+            lambda _text: np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        )
+
+        def fake_embed_batch(texts: list[str]) -> list[np.ndarray]:
+            embed_batch_calls.append(list(texts))
+            return [vector_for(text) for text in texts]
+
+        monkeypatch.setattr(matcher._service, "embed_batch", fake_embed_batch)
+        monkeypatch.setattr(
+            matcher._service,
+            "similarity",
+            lambda a, b: float(np.dot(a, b)),
+        )
+
+        resume = ResumeData(
+            raw_text="Skills: Python, FastAPI, Django",
+            skills=["Python", "FastAPI", "Django"],
+        )
+        jobs = [
+            JobListing(
+                title="Backend Dev",
+                company="Acme",
+                url="https://example.com/1",
+                board=JobBoard.LINKEDIN,
+                requirements=["Python", "FastAPI"],
+            ),
+            JobListing(
+                title="Platform Dev",
+                company="Beta",
+                url="https://example.com/2",
+                board=JobBoard.LINKEDIN,
+                requirements=["Python", "Django"],
+            ),
+        ]
+
+        results = await matcher.rank_jobs(resume, jobs, top_k=2)
+
+        assert len(results) == 2
+        assert embed_batch_calls == [
+            [
+                "Job: Backend Dev at Acme | Requirements: Python, FastAPI",
+                "Job: Platform Dev at Beta | Requirements: Python, Django",
+            ],
+            ["Python", "FastAPI", "Django"],
+            ["Python", "FastAPI", "Django"],
+        ]
+        assert results[0].matched_skills
+        assert results[1].matched_skills
+
 
 async def test_match_offloads_blocking_encode_off_event_loop(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """The blocking sentence-transformers encode must run OFF the event loop (asyncio.to_thread),
+    """The blocking sentence-transformers encode must run OFF the event loop,
     so matching never freezes the TUI / blocks concurrency (CLAUDE.md: async for I/O; CPU work
     offloaded, not run inline on the loop)."""
-    import asyncio
+    from concurrent.futures import Future
 
     import numpy as np
 
@@ -1237,14 +1454,20 @@ async def test_match_offloads_blocking_encode_off_event_loop(monkeypatch) -> Non
         "embed_batch",
         lambda texts, **_k: [np.zeros(1024, dtype=np.float32) for _ in texts],
     )
+    monkeypatch.setattr(matcher._service, "_resolve_device", lambda: "cuda")
 
     calls: list[str] = []
 
-    async def _spy(fn, *a, **k):  # type: ignore[no-untyped-def]
+    def _spy_submit(fn, *args, **kwargs):  # type: ignore[no-untyped-def]
         calls.append(getattr(fn, "__name__", str(fn)))
-        return fn(*a, **k)
+        future: Future[object] = Future()
+        try:
+            future.set_result(fn(*args, **kwargs))
+        except BaseException as exc:
+            future.set_exception(exc)
+        return future
 
-    monkeypatch.setattr(asyncio, "to_thread", _spy)
+    monkeypatch.setattr(matcher._embedding_executor, "submit", _spy_submit)
 
     resume = ResumeData(raw_text="Python developer", skills=["Python"])
     job = JobListing(
@@ -1256,7 +1479,44 @@ async def test_match_offloads_blocking_encode_off_event_loop(monkeypatch) -> Non
     )
     result = await matcher.match_resume_to_job(resume, job)
     assert result is not None
-    assert calls  # embeddings ran off the event loop (to_thread was used)
+    assert calls  # embeddings ran through the matcher-owned executor.
+
+
+async def test_match_explicit_cpu_runs_embedding_inline(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Explicit CPU mode avoids worker-thread PyTorch inference, which can stall on this stack."""
+    import numpy as np
+
+    from job_applicator.config import EmbeddingConfig, LLMConfig
+    from job_applicator.embeddings.matching import JobMatcher
+    from job_applicator.models import JobBoard, JobListing, ResumeData
+
+    matcher = JobMatcher(EmbeddingConfig(device="cpu", memory_limit_gb=0.5), LLMConfig())
+    monkeypatch.setattr(
+        matcher._service, "embed", lambda *_a, **_k: np.zeros(1024, dtype=np.float32)
+    )
+    monkeypatch.setattr(
+        matcher._service,
+        "embed_batch",
+        lambda texts, **_k: [np.zeros(1024, dtype=np.float32) for _ in texts],
+    )
+
+    def fail_submit(*_a, **_k):  # type: ignore[no-untyped-def]
+        raise AssertionError("explicit CPU mode must not use worker-thread offload")
+
+    monkeypatch.setattr(matcher._embedding_executor, "submit", fail_submit)
+
+    resume = ResumeData(raw_text="Python developer", skills=["Python"])
+    job = JobListing(
+        title="Dev",
+        company="Co",
+        url="https://x/1",
+        board=JobBoard.LINKEDIN,
+        requirements=["Python"],
+    )
+
+    result = await matcher.match_resume_to_job(resume, job)
+
+    assert result is not None
 
 
 def test_combined_score_semantic_only_when_no_requirements() -> None:

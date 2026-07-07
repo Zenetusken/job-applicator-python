@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 from scripts import check_matcher_gate_required as matcher_gate
 from scripts import eval_document_quality, eval_matching
+from typer.testing import CliRunner
 
 
 def test_matcher_gate_detects_sensitive_paths() -> None:
@@ -314,3 +315,129 @@ def test_document_quality_company_alias_counts_for_target_mention() -> None:
         )
         == 1.0
     )
+
+
+def test_document_quality_cli_single_artifact_json(tmp_path: Path) -> None:
+    import json
+
+    from job_applicator import cli
+
+    resume = tmp_path / "resume.txt"
+    cover = tmp_path / "cover.txt"
+    resume.write_text(_quality_resume(), encoding="utf-8")
+    cover.write_text(_quality_cover_letter(), encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "document-quality",
+            "--resume",
+            str(resume),
+            "--cover-letter",
+            str(cover),
+            "--applicant-name",
+            "John Doe",
+            "--keyword",
+            "Python",
+            "--keyword",
+            "SIEM",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert {report["kind"] for report in payload} == {"resume", "cover_letter"}
+    assert all(report["passed"] for report in payload)
+
+
+def test_document_quality_cli_missing_optional_packet_set_skips(tmp_path: Path) -> None:
+    from job_applicator import cli
+
+    missing = tmp_path / "missing.jsonl"
+
+    result = CliRunner().invoke(cli.app, ["document-quality", "--packet-set", str(missing)])
+
+    assert result.exit_code == 0
+    assert "not certified" in result.output
+
+
+def test_document_quality_cli_missing_required_packet_set_fails(tmp_path: Path) -> None:
+    from job_applicator import cli
+
+    missing = tmp_path / "missing.jsonl"
+
+    result = CliRunner().invoke(
+        cli.app, ["document-quality", "--packet-set", str(missing), "--required"]
+    )
+
+    assert result.exit_code == 2
+    assert "not certified" in result.output
+
+
+def test_document_quality_cli_private_packet_set_json_output(tmp_path: Path) -> None:
+    import json
+
+    from job_applicator import cli
+
+    resume = tmp_path / "resume.txt"
+    cover = tmp_path / "cover.txt"
+    packet_set = tmp_path / "packet-set.jsonl"
+    resume.write_text(_quality_resume(), encoding="utf-8")
+    cover.write_text(_quality_cover_letter(), encoding="utf-8")
+    packet_set.write_text(
+        (
+            '{"id":"acme-security","resume_path":"resume.txt","cover_letter_path":"cover.txt",'
+            '"applicant_name":"John Doe","job_title":"Security Analyst","company":"Acme",'
+            '"keywords":["Python","Linux","SIEM","incident response","IAM","alert triage"],'
+            '"coherence_terms":["Python","SIEM","incident response"]}\n'
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "document-quality",
+            "--packet-set",
+            str(packet_set),
+            "--required",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["passed"] is True
+    assert payload["packets"][0]["dimensions"]["coherence"] >= 3.0
+
+
+def test_document_quality_cli_private_packet_set_uses_env_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    from job_applicator import cli
+
+    resume = tmp_path / "resume.txt"
+    cover = tmp_path / "cover.txt"
+    packet_set = tmp_path / "packet-set.jsonl"
+    resume.write_text(_quality_resume(), encoding="utf-8")
+    cover.write_text(_quality_cover_letter(), encoding="utf-8")
+    packet_set.write_text(
+        (
+            '{"id":"acme-security","resume_path":"resume.txt","cover_letter_path":"cover.txt",'
+            '"applicant_name":"John Doe","job_title":"Security Analyst","company":"Acme",'
+            '"keywords":["Python","Linux","SIEM","incident response","IAM","alert triage"]}\n'
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DOCUMENT_QUALITY_SET", str(packet_set))
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["document-quality", "--private-packet-set", "--required", "--json"],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.output)["packet_set"] == str(packet_set)

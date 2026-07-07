@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -28,6 +29,7 @@ from job_applicator.documents.artifacts import (
 from job_applicator.exceptions import (
     ConfigError,
     CookieError,
+    DocumentError,
     JobApplicatorError,
     SelectorHealthError,
 )
@@ -58,7 +60,8 @@ from job_applicator.utils.path import set_owner_only
 from job_applicator.utils.profile import _detect_tone, _load_user_profile
 from job_applicator.utils.verbose import VerboseReporter
 from job_applicator.workflows.apply import _apply_to_jobs
-from job_applicator.workflows.tailor import _tailor_workflow, assert_tailored_auto_saveable
+from job_applicator.workflows.tailor import _tailor_workflow
+from job_applicator.workflows.tailor_auto import tailor_auto_verified_saveable
 
 if TYPE_CHECKING:
     from job_applicator.batch_state import BatchState
@@ -71,6 +74,7 @@ if TYPE_CHECKING:
         ResumeData,
         TailoredResume,
     )
+    from job_applicator.utils.llm import LLMRuntime
 
 app = typer.Typer(
     name="job-applicator",
@@ -340,6 +344,7 @@ async def _write_tailored_artifacts(
     template: str,
     category: str | None,
     when: datetime,
+    runtime: LLMRuntime | None = None,
 ) -> tuple[str | None, str | None]:
     """Write tailored résumé artifacts according to ``output_format``.
 
@@ -353,7 +358,13 @@ async def _write_tailored_artifacts(
 
     if output_format == Format.PDF:
         pdf_path = await write_tailored_pdf(
-            output_dir, tailored, settings, template=template, category=category, when=when
+            output_dir,
+            tailored,
+            settings,
+            template=template,
+            category=category,
+            when=when,
+            runtime=runtime,
         )
         return None, str(pdf_path)
 
@@ -368,6 +379,7 @@ async def _write_tailored_artifacts(
         category=category,
         when=when,
         write_meta=False,
+        runtime=runtime,
     )
     tailored.pdf_path = str(pdf_path)
     _write_text_file(meta_path, tailored.model_dump_json(indent=2))
@@ -388,6 +400,7 @@ async def _write_cover_letter_artifacts(
     template: str,
     category: str | None,
     when: datetime,
+    runtime: LLMRuntime | None = None,
 ) -> tuple[str | None, str | None]:
     """Write cover-letter artifacts according to ``output_format``.
 
@@ -400,7 +413,13 @@ async def _write_cover_letter_artifacts(
 
     if output_format == Format.PDF:
         pdf_path = await write_cover_letter_pdf(
-            output_dir, result, settings, template=template, category=category, when=when
+            output_dir,
+            result,
+            settings,
+            template=template,
+            category=category,
+            when=when,
+            runtime=runtime,
         )
         return None, str(pdf_path)
 
@@ -415,6 +434,7 @@ async def _write_cover_letter_artifacts(
         category=category,
         when=when,
         write_meta=False,
+        runtime=runtime,
     )
     result.pdf_path = str(pdf_path)
     _write_text_file(meta_path, result.model_dump_json(indent=2))
@@ -1209,9 +1229,8 @@ def apply(
 
                 user_profile = _load_user_profile(settings, resume_name=resume_data.name)
 
-                generator = CoverLetterGenerator(
-                    settings.cover_letter_llm(), runtime=_make_runtime(settings)
-                )
+                runtime = _make_runtime(settings)
+                generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=runtime)
                 style = None
                 if settings.style_guide_path:
                     with err_console.status("Analyzing writing style..."):
@@ -1257,6 +1276,7 @@ def apply(
                                         template=effective_template,
                                         category=effective_category,
                                         when=when,
+                                        runtime=runtime,
                                     )
                                 except Exception as exc:
                                     if submit:
@@ -1435,9 +1455,8 @@ def generate_cover_letter(
             f"(confidence: {tone_profile.confidence:.0%})[/dim]"
         )
 
-        generator = CoverLetterGenerator(
-            settings.cover_letter_llm(), runtime=_make_runtime(settings)
-        )
+        runtime = _make_runtime(settings)
+        generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=runtime)
 
         # Load style guide if provided (supports comma-separated paths)
         style = None
@@ -1482,6 +1501,7 @@ def generate_cover_letter(
             template=effective_template,
             category=effective_category,
             when=when,
+            runtime=runtime,
         )
 
         if as_json:
@@ -2206,6 +2226,7 @@ def batch(
         from job_applicator.documents.job_category import detect_job_category
         from job_applicator.documents.resume import ResumeLoader
         from job_applicator.documents.resume_tailor import ResumeTailor
+        from job_applicator.documents.tone_detector import ToneDetector
         from job_applicator.embeddings.matching import JobMatcher, MatchResult
         from job_applicator.models import CoverLetterResult, JobBoard, TailoringReport
 
@@ -2337,6 +2358,17 @@ def batch(
                 console.print("[yellow]No jobs above minimum score threshold.[/yellow]")
             return
 
+        duplicate_urls = [
+            url for url, count in Counter(str(m.job.url) for m in matches).items() if count > 1
+        ]
+        if duplicate_urls:
+            preview = ", ".join(duplicate_urls[:3])
+            suffix = "..." if len(duplicate_urls) > 3 else ""
+            raise DocumentError(
+                "Batch jobs must have unique URLs because recovery state is keyed by URL. "
+                f"Duplicate URL(s): {preview}{suffix}"
+            )
+
         batch_state = BatchState()
         run_spec = BatchRunSpec(
             site=site,
@@ -2346,6 +2378,12 @@ def batch(
             top_k=top_k,
             min_score=min_score,
             cover_letter=cover_letter,
+            style_guide_path=settings.style_guide_path or None,
+            output_format=effective_output_format.value,
+            resume_template=effective_resume_template,
+            cover_letter_template=effective_cl_template,
+            category=category,
+            ocr_mode=effective_ocr_mode,
         )
         # One spec is the single source for the run id AND the resume-match key.
         effective_run_id = run_id or run_spec.run_id()
@@ -2417,6 +2455,7 @@ def batch(
             user_instructions = ""
             when = dt.now()
             resume_pdf_path: str | None = None
+            tone_profile = _detect_tone(job)
 
             async with sem:
                 result: dict[str, object] = {
@@ -2438,7 +2477,7 @@ def batch(
                     result["resumed"] = True
                     if effective_output_format in (Format.PDF, Format.BOTH):
                         try:
-                            _text_path, resume_pdf_path = await _write_tailored_artifacts(
+                            text_path, resume_pdf_path = await _write_tailored_artifacts(
                                 Path(output_dir),
                                 tailored,
                                 settings,
@@ -2446,12 +2485,23 @@ def batch(
                                 template=effective_resume_template,
                                 category=category or detect_job_category(job),
                                 when=when,
+                                runtime=runtime,
                             )
-                            if _text_path:
-                                written_paths.append(_text_path)
+                            if text_path:
+                                resume_path_out = text_path
+                                written_paths.append(text_path)
                             if resume_pdf_path:
                                 written_paths.append(resume_pdf_path)
+                                if effective_output_format == Format.PDF:
+                                    resume_path_out = resume_pdf_path
                             meta_path = str(Path(resume_path_out).with_suffix(".meta.json"))
+                            batch_state.record_job(
+                                effective_run_id,
+                                job,
+                                BatchJobStatus.TAILORED,
+                                resume_path=resume_path_out,
+                                pdf_path=resume_pdf_path,
+                            )
                         except Exception as exc:
                             err_console.print(
                                 f"[yellow]PDF résumé failed for {job.title}: {exc}[/yellow]"
@@ -2460,7 +2510,6 @@ def batch(
                     result["pdf_path"] = resume_pdf_path
                 else:
                     try:
-                        tone_profile = _detect_tone(job)
                         if reporter:
                             reporter.record_llm_call(
                                 model=settings.llm.model,
@@ -2472,36 +2521,17 @@ def batch(
                                     "type": "tailor",
                                 },
                             )
-                        tailored = await tailor_engine.tailor_verified(
+                        auto_tailor = await tailor_auto_verified_saveable(
+                            tailor_engine=tailor_engine,
                             resume=resume_data,
                             job=job,
                             user_instructions=user_instructions,
                             style_guide=style,
                             tone_profile=tone_profile,
                             matcher=matcher,
+                            match_result=match_result,
                         )
-                        if (
-                            tailored.grounding_report is not None
-                            and not tailored.grounding_report.clean
-                        ):
-                            feedback = (
-                                "Remove every unsupported or weakly supported claim. Use only "
-                                "facts, metrics, tools, duties, dates, employers, and outcomes "
-                                "explicitly present in the original résumé. Prefer shorter "
-                                "source-backed bullets over embellished claims. Do not add new "
-                                "responsibilities, optional sections, aspirations, deployment "
-                                "claims, performance claims, collaboration claims, or outcomes."
-                            )
-                            tailored = await tailor_engine.refine_verified(
-                                resume_data,
-                                tailored,
-                                feedback,
-                                job,
-                                matcher=matcher,
-                                style_guide=style,
-                                tone_profile=tone_profile,
-                            )
-                        assert_tailored_auto_saveable(tailored, resume_data.raw_text)
+                        tailored = auto_tailor.tailored
                         result["match_score"] = round(tailored.match_score, 4)
                         result["semantic_score"] = round(tailored.semantic_score, 4)
                         result["skill_score"] = round(tailored.skill_score, 4)
@@ -2516,7 +2546,7 @@ def batch(
                                 company=job.company,
                                 tone=tone_profile.primary,
                                 tone_confidence=tone_profile.confidence,
-                                attempts=1,
+                                attempts=auto_tailor.attempts,
                                 ats_before=ats_result.score if ats_result else 0.0,
                                 ats_after=ats_score,
                                 changes_summary=tailored.changes_summary or "",
@@ -2531,6 +2561,7 @@ def batch(
                             template=effective_resume_template,
                             category=category or detect_job_category(job),
                             when=when,
+                            runtime=runtime,
                         )
                         resume_path_out = text_path or resume_pdf_path or ""
                         if text_path:
@@ -2548,6 +2579,17 @@ def batch(
                             resume_path=resume_path_out,
                             pdf_path=resume_pdf_path,
                         )
+                        try:
+                            _get_jobs_store().mark_tailored(
+                                job,
+                                tailored_resume_path=resume_path_out,
+                                pdf_path=resume_pdf_path or "",
+                            )
+                        except JobApplicatorError as exc:
+                            err_console.print(
+                                f"[yellow]⚠ Could not update the job store: "
+                                f"{escape(str(exc))}[/yellow]"
+                            )
                     except Exception as exc:
                         result["tailored"] = False
                         result["error"] = str(exc)
@@ -2560,6 +2602,43 @@ def batch(
                         return result
 
                 if cl_generator is not None and cover_letter:
+                    existing_cover_letter_path = tailored.cover_letter_path
+                    existing_cover_letter = Path(existing_cover_letter_path)
+                    existing_cover_letter_exists = bool(
+                        existing_cover_letter_path
+                        and await asyncio.to_thread(existing_cover_letter.exists)
+                    )
+                    if existing_cover_letter_exists:
+                        result["cover_letter_path"] = existing_cover_letter_path
+                        result["cover_letter"] = True
+                        cover_letter_pdf_path = (
+                            existing_cover_letter_path
+                            if existing_cover_letter.suffix.lower() == ".pdf"
+                            else None
+                        )
+                        batch_state.record_job(
+                            effective_run_id,
+                            job,
+                            BatchJobStatus.COMPLETED,
+                            resume_path=resume_path_out,
+                            cover_letter_path=existing_cover_letter_path,
+                            pdf_path=resume_pdf_path,
+                            cover_letter_pdf_path=cover_letter_pdf_path,
+                        )
+                        try:
+                            _get_jobs_store().mark_tailored(
+                                job,
+                                tailored_resume_path=resume_path_out,
+                                cover_letter_path=existing_cover_letter_path,
+                                pdf_path=resume_pdf_path or "",
+                                cover_letter_pdf_path=cover_letter_pdf_path or "",
+                            )
+                        except JobApplicatorError as exc:
+                            err_console.print(
+                                f"[yellow]⚠ Could not update the job store: "
+                                f"{escape(str(exc))}[/yellow]"
+                            )
+                        return result
                     try:
                         if reporter:
                             reporter.record_llm_call(
@@ -2572,11 +2651,13 @@ def batch(
                                     "type": "cover_letter",
                                 },
                             )
+                        tone_section = ToneDetector().format_for_prompt(tone_profile)
                         letter = await cl_generator.generate_verified(
                             job,
                             user_profile,
                             resume_data,
                             style_guide=style,
+                            tone_section=tone_section,
                             tailored_resume_text=tailored.tailored_text,
                         )
                         cl_result = CoverLetterResult(
@@ -2593,6 +2674,7 @@ def batch(
                             template=effective_cl_template,
                             category=category or detect_job_category(job),
                             when=when,
+                            runtime=runtime,
                         )
                         cl_path = cl_text_path or cl_pdf_path or ""
                         if cl_text_path:
@@ -2611,16 +2693,31 @@ def batch(
                             BatchJobStatus.COMPLETED,
                             resume_path=resume_path_out,
                             cover_letter_path=cl_path,
-                            pdf_path=cl_pdf_path or resume_pdf_path,
+                            pdf_path=resume_pdf_path,
+                            cover_letter_pdf_path=cl_pdf_path,
                         )
+                        try:
+                            _get_jobs_store().mark_tailored(
+                                job,
+                                tailored_resume_path=resume_path_out,
+                                cover_letter_path=cl_path,
+                                pdf_path=resume_pdf_path or "",
+                                cover_letter_pdf_path=cl_pdf_path or "",
+                            )
+                        except JobApplicatorError as exc:
+                            err_console.print(
+                                f"[yellow]⚠ Could not update the job store: "
+                                f"{escape(str(exc))}[/yellow]"
+                            )
                     except Exception as exc:
                         result["cover_letter"] = False
                         result["cl_error"] = str(exc)
                         batch_state.record_job(
                             effective_run_id,
                             job,
-                            BatchJobStatus.FAILED,
+                            BatchJobStatus.TAILORED,
                             resume_path=resume_path_out,
+                            pdf_path=resume_pdf_path,
                             error_message=str(exc),
                         )
                 else:
@@ -2631,6 +2728,16 @@ def batch(
                         resume_path=resume_path_out,
                         pdf_path=resume_pdf_path,
                     )
+                    try:
+                        _get_jobs_store().mark_tailored(
+                            job,
+                            tailored_resume_path=resume_path_out,
+                            pdf_path=resume_pdf_path or "",
+                        )
+                    except JobApplicatorError as exc:
+                        err_console.print(
+                            f"[yellow]⚠ Could not update the job store: {escape(str(exc))}[/yellow]"
+                        )
 
                 return result
 
@@ -2712,6 +2819,13 @@ def batch(
                 f"\n[green]{tailored_ok}[/green] tailored, [green]{cl_ok}[/green] {cl_label}"
             )
             console.print(f"Summary: {summary_path}")
+            if any_failed:
+                console.print(
+                    "[red]One or more batch jobs failed. See the summary for details.[/red]"
+                )
+
+        if any_failed:
+            raise typer.Exit(1)
 
     try:
         asyncio.run(_run())
@@ -2965,19 +3079,21 @@ def tailor(
         else:
             console.print("[green]✓ Dates look coherent and current.[/green]")
 
+        from job_applicator.embeddings.matching import JobMatcher
+
+        matcher = JobMatcher(
+            settings.embedding,
+            settings.llm,
+            runtime,
+            reporter=reporter,
+            grounding_mode=settings.skills.grounding_mode,
+            matching=settings.matching,
+        )
+
         # Pre-tailor match score check
         pre_match_score = None
+        pre_match = None
         if min_score > 0:
-            from job_applicator.embeddings.matching import JobMatcher
-
-            matcher = JobMatcher(
-                settings.embedding,
-                settings.llm,
-                runtime,
-                reporter=reporter,
-                grounding_mode=settings.skills.grounding_mode,
-                matching=settings.matching,
-            )
             with err_console.status("Computing match score..."):
                 pre_match = await matcher.match_resume_to_job(resume_data, job)
             pre_match_score = pre_match.score
@@ -3011,7 +3127,13 @@ def tailor(
                 )
             with err_console.status("Tailoring + verifying resume..."):
                 result = await tailor_engine.tailor_verified(
-                    resume_data, job, effective_user_instructions, style, tone_profile
+                    resume_data,
+                    job,
+                    effective_user_instructions,
+                    style,
+                    tone_profile,
+                    matcher,
+                    pre_match,
                 )
             session.add_attempt(result)
 
@@ -3134,6 +3256,106 @@ def _redact_secrets(obj: Any) -> None:
     elif isinstance(obj, list):
         for item in obj:
             _redact_secrets(item)
+
+
+@app.command("document-quality")
+def document_quality(
+    resume_path: Path | None = typer.Option(
+        None,
+        "--resume",
+        help="Path to a generated résumé/CV text artifact.",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+    ),
+    cover_letter_path: Path | None = typer.Option(
+        None,
+        "--cover-letter",
+        help="Path to a generated cover-letter text artifact.",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+    ),
+    applicant_name: str = typer.Option(
+        "",
+        "--applicant-name",
+        help="Applicant full name expected in the cover-letter sign-off.",
+    ),
+    keyword: list[str] | None = typer.Option(
+        None,
+        "--keyword",
+        help="Required job keyword to check in the résumé. Repeatable.",
+    ),
+    packet_set: Path | None = typer.Option(
+        None,
+        "--packet-set",
+        help="Path to a private generated CV+cover-letter packet-set manifest.",
+        file_okay=True,
+        dir_okay=False,
+    ),
+    private_packet_set: bool = typer.Option(
+        False,
+        "--private-packet-set",
+        help="Score $DOCUMENT_QUALITY_SET or the default private packet-set manifest.",
+    ),
+    required: bool = typer.Option(
+        False,
+        "--required",
+        help="Exit non-zero when private packet-set evidence is unavailable or empty.",
+    ),
+    min_dimension_score: float = typer.Option(
+        3.0,
+        "--min-dimension-score",
+        min=0.0,
+        max=4.0,
+        help="Minimum required 0-4 score for each packet quality dimension.",
+    ),
+    min_overall_score: float = typer.Option(
+        3.0,
+        "--min-overall-score",
+        min=0.0,
+        max=4.0,
+        help="Minimum required 0-4 overall score for each packet.",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """Evaluate generated CV and cover-letter artifact quality."""
+    from job_applicator.documents import quality_eval
+
+    packet_mode = private_packet_set or packet_set is not None
+    if packet_mode and (resume_path is not None or cover_letter_path is not None):
+        raise typer.BadParameter("--packet-set cannot be combined with --resume or --cover-letter")
+    if private_packet_set and packet_set is not None:
+        raise typer.BadParameter("--private-packet-set cannot be combined with --packet-set")
+    if required and not packet_mode:
+        raise typer.BadParameter("--required is only valid with --packet-set/--private-packet-set")
+
+    try:
+        if packet_mode:
+            exit_code = quality_eval.run_packet_set_quality(
+                packet_set=packet_set,
+                required=required,
+                json_output=as_json,
+                min_dimension_score=min_dimension_score,
+                min_overall_score=min_overall_score,
+            )
+        else:
+            exit_code = quality_eval.run_artifact_quality(
+                resume_path=resume_path,
+                cover_letter_path=cover_letter_path,
+                applicant_name=applicant_name,
+                keywords=list(keyword or []),
+                json_output=as_json,
+            )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    except OSError as exc:
+        err_console.print(f"[yellow]document quality input is invalid: {escape(str(exc))}[/yellow]")
+        raise typer.Exit(2) from exc
+
+    raise typer.Exit(exit_code)
 
 
 @app.command()
@@ -3614,13 +3836,32 @@ def _render_doctor(report: DoctorReport) -> None:
         console.print("                 → start one: [cyan]scripts/serve-vllm.sh[/cyan]")
 
     emb = report.embeddings
+    emb_device = emb.resolved_device or emb.configured_device
     if emb.cached:
-        console.print(f"  Embeddings     {good} {escape(emb.model_name)} cached")
+        cache_status = f"{good} {escape(emb.model_name)} cached"
     else:
+        cache_status = f"{warn} {escape(emb.model_name)} not cached (auto-downloads on first match)"
+    console.print(f"  Embeddings     {cache_status}")
+    if emb.device_ready:
         console.print(
-            f"  Embeddings     {warn} {escape(emb.model_name)} not cached "
-            "(auto-downloads on first match)"
+            f"    device       {good} configured={escape(emb.configured_device)} "
+            f"resolved={escape(emb_device)}"
         )
+        if emb.cuda_device_name:
+            vram = ""
+            if emb.vram_free_mb is not None and emb.vram_total_mb is not None:
+                vram = f" · VRAM free {emb.vram_free_mb} / {emb.vram_total_mb} MiB"
+            console.print(f"                 {escape(emb.cuda_device_name)}{vram}")
+    else:
+        reason = emb.runtime_error or "embedding runtime is not ready"
+        console.print(
+            f"    device       {bad} configured={escape(emb.configured_device)} — {escape(reason)}"
+        )
+        if emb.configured_device.lower().startswith("cuda"):
+            console.print(
+                "                 → expose the NVIDIA device/install CUDA torch, or set "
+                "[cyan]embedding.device='cpu'[/cyan] explicitly for degraded CPU matching"
+            )
 
     sh = report.self_host
     vproc = report.vllm_process

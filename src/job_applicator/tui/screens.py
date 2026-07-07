@@ -22,6 +22,7 @@ from job_applicator.scrapers.base import SearchParams
 
 if TYPE_CHECKING:
     from job_applicator.models import ATSCompatibilityResult, JobListing
+    from job_applicator.tui.actions import DocumentQualityResult
 
 T = TypeVar("T")
 
@@ -507,6 +508,74 @@ class AtsScreen(_FadeModalScreen[None]):
         self.dismiss(None)
 
 
+class DocumentQualityScreen(_FadeModalScreen[None]):
+    """Read-only generated document-quality result for the selected job."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "close", "Close")]
+
+    CSS = """
+    DocumentQualityScreen { align: center middle; }
+    #qualitybox {
+        width: 88; height: auto; max-height: 85%; padding: 1 2;
+        border: thick $accent; background: $surface;
+    }
+    #qualitybody { height: auto; max-height: 24; }
+    #buttons { height: auto; align: right middle; }
+    """
+
+    def __init__(self, result: DocumentQualityResult) -> None:
+        super().__init__()
+        self._result = result
+
+    def compose(self) -> ComposeResult:
+        result = self._result
+        verdict = "[green]✓ passed[/green]" if result.passed else "[red]✗ failed[/red]"
+        lines = [
+            f"[bold]Document quality[/bold]   {verdict}",
+            f"[dim]Source: {escape(result.source)}[/dim]",
+            f"[dim]Keywords: {escape(result.keyword_source)}[/dim]",
+        ]
+        if result.artifact_paths:
+            lines.append("")
+            lines.append("[bold]Artifacts[/bold]")
+            lines.extend(f"  {escape(path)}" for path in result.artifact_paths)
+        if result.packet is not None:
+            lines.append("")
+            lines.append(f"[bold]Packet[/bold]  overall={result.packet.overall:.2f}/4")
+            for name, score in result.packet.dimensions.items():
+                lines.append(f"  {escape(name)}: {score:.2f}/4")
+
+        for report in result.reports:
+            lines.append("")
+            lines.append(
+                f"[bold]{escape(report.kind.replace('_', ' ').title())}[/bold]  "
+                f"score={report.score}"
+            )
+            for item in report.failures:
+                lines.append(f"  [red]failure:[/red] {escape(item)}")
+            for item in report.warnings:
+                lines.append(f"  [yellow]warning:[/yellow] {escape(item)}")
+            if not report.failures and not report.warnings:
+                lines.append("  [green]No issues found.[/green]")
+
+        if result.packet is not None:
+            for item in result.packet.failures:
+                lines.append(f"  [red]packet failure:[/red] {escape(item)}")
+            for item in result.packet.warnings:
+                lines.append(f"  [yellow]packet warning:[/yellow] {escape(item)}")
+
+        with Vertical(id="qualitybox"):
+            yield VerticalScroll(Static("\n".join(lines)), id="qualitybody")
+            with Horizontal(id="buttons"):
+                yield Button("Close", variant="primary", id="close")
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(None)
+
+
 class HelpScreen(_FadeModalScreen[None]):
     """Read-only key reference, grouped by account-safety tier so the safe/local keys read
     as distinct from the account-touching ones. Esc / Close dismisses."""
@@ -546,6 +615,7 @@ class HelpScreen(_FadeModalScreen[None]):
             "  C           cover letter PDF",
             "  p           open generated PDF (résumé, or cover letter as fallback)",
             "  A           ATS-compatibility check",
+            "  D           document-quality check",
             "  e           set résumé path",
             "  g           set style-guide path",
             "",

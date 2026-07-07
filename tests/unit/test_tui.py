@@ -68,6 +68,44 @@ def _mr(job: JobListing, score: float = 0.8) -> object:
     )
 
 
+def _quality_resume_text() -> str:
+    return (
+        "John Doe\njohn@example.com\n514-555-0199\n\n"
+        "Experience\nSecurity Support Analyst, Acme, 2021 - Present\n"
+        "Used Python, Linux, alert triage, log analysis, and incident response workflows to "
+        "investigate authentication failures, document evidence, and coordinate escalations "
+        "with infrastructure teams. Built repeatable checks and runbooks that helped analysts "
+        "compare operational patterns across shifts and reduce avoidable handoff gaps.\n\n"
+        "Technical Support Analyst, Beta, 2019 - 2021\n"
+        "Resolved workstation, network, account, and access issues while documenting repeatable "
+        "fixes. Partnered with infrastructure staff on monitoring alerts and service-impacting "
+        "incidents. Used Python helpers and Linux logs to reduce manual follow-up before "
+        "escalating ambiguous security symptoms.\n\n"
+        "Education\nCertificate in Cybersecurity, 2024\n\n"
+        "Skills\nPython, Linux, incident response, alert triage, log analysis, support, "
+        "networking, automation, monitoring, escalation, documentation, troubleshooting."
+    )
+
+
+def _quality_cover_text() -> str:
+    return (
+        "Dear Co1 Team,\n\n"
+        "I bring practical Python, Linux, alert triage, and incident response experience from "
+        "support work where I reviewed authentication failures, documented evidence, and "
+        "coordinated follow-up with technical teams. That background maps directly to the "
+        "Engineer 1 role's need for reliable investigation habits and clear communication.\n\n"
+        "In recent projects I used Python automation and Linux log review to make recurring "
+        "operational checks easier to track. I also supported account and access issues, which "
+        "gave me a careful evidence-first approach to triage decisions when symptoms were "
+        "incomplete or noisy.\n\n"
+        "I would welcome the chance to discuss how that mix of support discipline, automation, "
+        "and incident response practice can help Co1 move investigations forward with accurate "
+        "handoffs and less operational friction.\n\n"
+        "Sincerely,\n"
+        "John Doe"
+    )
+
+
 def _open_external_inline(app: JobApplicatorApp, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import webbrowser
 
@@ -1324,7 +1362,10 @@ async def test_tailor_job_refuses_dirty_grounding_report(  # type: ignore[no-unt
     )
     monkeypatch.setattr(
         "job_applicator.documents.resume_tailor.ResumeTailor",
-        lambda *a, **k: MagicMock(tailor_verified=AsyncMock(return_value=tailored)),
+        lambda *a, **k: MagicMock(
+            tailor_verified=AsyncMock(return_value=tailored),
+            refine_verified=AsyncMock(return_value=tailored),
+        ),
     )
     monkeypatch.setattr("job_applicator.factories._make_runtime", lambda s: MagicMock())
 
@@ -1353,7 +1394,6 @@ async def test_tailor_job_both_updates_text_meta_with_pdf_path(  # type: ignore[
         changes_summary="focused skills",
         grounding_report=GroundingReport(),
     )
-    monkeypatch.setattr(actions, "assert_tailored_auto_saveable", lambda *_a, **_k: None)
     monkeypatch.setattr(
         "job_applicator.documents.resume.ResumeLoader",
         lambda: MagicMock(load=lambda _p: ResumeData(raw_text="John Doe\njohn@example.com")),
@@ -1519,6 +1559,116 @@ async def test_tui_ats_check_needs_resume(tmp_path: Path, monkeypatch) -> None: 
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("A")
+        await pilot.pause()
+    never.assert_not_called()
+
+
+async def test_document_quality_scores_selected_generated_packet(tmp_path: Path) -> None:
+    """The TUI quality action scores a generated CV+cover-letter packet using matched skills."""
+    from job_applicator.tui import actions
+
+    resume = tmp_path / "tailored.txt"
+    cover = tmp_path / "cover.txt"
+    resume.write_text(_quality_resume_text(), encoding="utf-8")
+    cover.write_text(_quality_cover_text(), encoding="utf-8")
+    store = JobStore(db_path=tmp_path / "applications.db")
+    job = _job(1)
+    store.upsert_match(_mr(job))
+    store.mark_tailored(job, tailored_resume_path=str(resume))
+    store.set_cover_letter(str(job.url), str(cover))
+    stored = store.get(str(job.url))
+
+    assert stored is not None
+    result = await actions.document_quality(AppSettings(profile_name="John Doe"), stored)
+
+    assert result.passed
+    assert result.packet is not None
+    assert result.keyword_source == "matched skills"
+    assert result.packet.dimensions["coherence"] >= 3.0
+
+
+async def test_document_quality_without_matched_skills_is_limited_certification(
+    tmp_path: Path,
+) -> None:
+    """No matched skills means the TUI reports smoke checks, not packet specificity."""
+    from job_applicator.tui import actions
+
+    resume = tmp_path / "tailored.txt"
+    cover = tmp_path / "cover.txt"
+    resume.write_text(_quality_resume_text(), encoding="utf-8")
+    cover.write_text(_quality_cover_text(), encoding="utf-8")
+    store = JobStore(db_path=tmp_path / "applications.db")
+    job = _job(1)
+    store.upsert_job(job)
+    store.mark_tailored(job, tailored_resume_path=str(resume))
+    store.set_cover_letter(str(job.url), str(cover))
+    stored = store.get(str(job.url))
+
+    assert stored is not None
+    result = await actions.document_quality(AppSettings(profile_name="John Doe"), stored)
+
+    assert result.packet is None
+    assert result.keyword_source == "unavailable; structure/format only"
+    assert result.passed
+
+
+async def test_tui_document_quality_shows_modal(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """`D` runs the quality action for selected artifacts and opens the result modal."""
+    from job_applicator.documents.quality_eval import QualityReport
+    from job_applicator.tui import actions
+    from job_applicator.tui.screens import DocumentQualityScreen
+
+    resume = tmp_path / "tailored.txt"
+    resume.write_text(_quality_resume_text(), encoding="utf-8")
+    store = JobStore(db_path=tmp_path / "applications.db")
+    job = _job(1)
+    store.upsert_job(job)
+    store.mark_tailored(job, tailored_resume_path=str(resume))
+    captured: dict[str, object] = {}
+    fake = actions.DocumentQualityResult(
+        passed=True,
+        source="tailored résumé",
+        keyword_source="unavailable; structure/format only",
+        artifact_paths=[str(resume)],
+        reports=[QualityReport("resume", True, 100, [], [])],
+    )
+
+    async def _fake_quality(settings: AppSettings, stored_job: object) -> object:
+        captured["settings"] = settings
+        captured["stored_job"] = stored_job
+        return fake
+
+    monkeypatch.setattr(actions, "document_quality", _fake_quality)
+    app = JobApplicatorApp(
+        settings=AppSettings(),
+        store=store,
+        app_state=MagicMock(list_recent=lambda **k: []),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("D")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert isinstance(app.screen, DocumentQualityScreen)
+    assert captured["stored_job"] is not None
+
+
+async def test_tui_document_quality_no_artifacts_does_not_run(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """`D` without generated text artifacts warns and does not run the quality action."""
+    from job_applicator.tui import actions
+
+    store = JobStore(db_path=tmp_path / "applications.db")
+    store.upsert_job(_job(1))
+    never = MagicMock()
+    monkeypatch.setattr(actions, "document_quality", never)
+    app = JobApplicatorApp(
+        settings=AppSettings(),
+        store=store,
+        app_state=MagicMock(list_recent=lambda **k: []),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("D")
         await pilot.pause()
     never.assert_not_called()
 
@@ -3007,6 +3157,116 @@ async def test_tui_cover_letter_action_passes_style_guide(tmp_path: Path, monkey
     assert captured.get("style_guide_path") == "/style.pdf"
     got = store.get("https://linkedin.com/jobs/1")
     assert got is not None and got.funnel_status is FunnelStatus.COVER_LETTER
+
+
+async def test_tui_tailor_style_analysis_uses_main_llm_config(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """TUI résumé tailoring analyzes style with [llm], not [cover_letter] overrides."""
+    from job_applicator.config import CoverLetterConfig, LLMConfig
+    from job_applicator.models import GroundingReport, TailoredResume
+    from job_applicator.tui import actions
+
+    captured_models: list[str] = []
+    style = MagicMock(tone="professional")
+
+    class FakeCoverLetterGenerator:
+        def __init__(self, llm_config: LLMConfig, **_kwargs: object) -> None:
+            captured_models.append(llm_config.model)
+
+        async def load_style_guide(self, _path: str) -> object:
+            return style
+
+    tailored = TailoredResume(
+        original_path="/r.pdf",
+        tailored_text="John Doe\njohn@example.com\nSkills\nPython",
+        job_title="Engineer 1",
+        job_company="Co1",
+        match_score=0.8,
+        semantic_score=0.8,
+        skill_score=0.8,
+        changes_summary="focused skills",
+        grounding_report=GroundingReport(),
+    )
+    monkeypatch.setattr(
+        "job_applicator.documents.cover_letter.CoverLetterGenerator",
+        FakeCoverLetterGenerator,
+    )
+    monkeypatch.setattr(
+        "job_applicator.documents.resume.ResumeLoader",
+        lambda: MagicMock(load=lambda _p: ResumeData(raw_text="John Doe\nSkills\nPython")),
+    )
+    monkeypatch.setattr(
+        "job_applicator.documents.resume_tailor.ResumeTailor",
+        lambda *a, **k: MagicMock(tailor_verified=AsyncMock(return_value=tailored)),
+    )
+    monkeypatch.setattr("job_applicator.factories._make_runtime", lambda s: MagicMock())
+    settings = AppSettings(
+        resume_path="/r.pdf",
+        output_dir=str(tmp_path / "out"),
+        llm=LLMConfig(model="main-model"),
+        cover_letter=CoverLetterConfig(model="cover-model"),
+    )
+
+    await actions.tailor_job(settings, _job(1), style_guide_path="/style.pdf")
+
+    assert captured_models == ["main-model"]
+
+
+async def test_tui_cover_letter_style_analysis_uses_cover_letter_llm_config(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """TUI cover-letter style analysis keeps using [cover_letter] overrides."""
+    from job_applicator.config import CoverLetterConfig, LLMConfig
+    from job_applicator.tui import actions
+
+    captured_models: list[str] = []
+    style = MagicMock(tone="professional")
+
+    class FakeCoverLetterGenerator:
+        def __init__(self, llm_config: LLMConfig, **_kwargs: object) -> None:
+            captured_models.append(llm_config.model)
+
+        async def load_style_guide(self, _path: str) -> object:
+            return style
+
+        async def generate_verified(
+            self,
+            _job: object,
+            _user: object,
+            _resume: object,
+            **_kwargs: object,
+        ) -> str:
+            return "Dear hiring manager,\n\nLetter.\n\nSincerely,\nSam Sample"
+
+    monkeypatch.setattr(
+        "job_applicator.documents.cover_letter.CoverLetterGenerator",
+        FakeCoverLetterGenerator,
+    )
+    monkeypatch.setattr(
+        "job_applicator.documents.resume.ResumeLoader",
+        lambda: MagicMock(load=lambda _p: ResumeData(raw_text="resume text", name="Sam Sample")),
+    )
+    monkeypatch.setattr("job_applicator.factories._make_runtime", lambda s: MagicMock())
+    monkeypatch.setattr(
+        "job_applicator.documents.tone_detector.ToneDetector",
+        lambda: MagicMock(format_for_prompt=lambda t: ""),
+    )
+    monkeypatch.setattr("job_applicator.utils.profile._detect_tone", lambda job: MagicMock())
+    monkeypatch.setattr(
+        "job_applicator.utils.profile._load_user_profile",
+        lambda s, *, resume_name="": UserProfile(
+            first_name="Sam", last_name="Sample", email="s@e.com", phone=""
+        ),
+    )
+    settings = AppSettings(
+        resume_path="/r.pdf",
+        output_dir=str(tmp_path / "out"),
+        llm=LLMConfig(model="main-model"),
+        cover_letter=CoverLetterConfig(model="cover-model"),
+    )
+
+    await actions.cover_letter_job(settings, _job(1), style_guide_path="/style.pdf")
+
+    assert captured_models[:1] == ["cover-model"]
 
 
 async def test_tui_style_guide_cancel_keeps_previous(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

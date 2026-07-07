@@ -111,6 +111,8 @@ Python Developer | CodeBase Corp | 2019-2021
         resume=resume,
         job=job,
         user_instructions="Emphasize cloud and scalability experience.",
+        matcher=matcher,
+        match_result=match_result,
     )
 
     # 5. Verify output

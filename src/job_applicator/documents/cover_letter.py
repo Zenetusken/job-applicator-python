@@ -305,7 +305,7 @@ class CoverLetterGenerator:
                 raise DocumentError(f"Could not load style guide {path}: {exc}") from exc
             texts.append(resume_data.raw_text)
 
-        analyzer = StyleAnalyzer(self._config)
+        analyzer = StyleAnalyzer(self._config, runtime=self._runtime)
         if len(texts) == 1:
             style = await analyzer.analyze(texts[0])
         else:

@@ -1,17 +1,13 @@
-"""Visual regression spike for PDF rendering.
+"""Visual regression tests for PDF rendering.
 
 Generates PDFs from fixed inputs, rasterizes them with PyMuPDF at a fixed DPI, and
-compares against checked-in reference images. The test is skipped by default because
-raster output can drift across OS, font, and HarfBuzz versions. Run with:
-
-    JOB_APPLICATOR_PDF_REGRESSION=1 pytest tests/integration/test_pdf_regression.py
+compares against checked-in reference images as part of the regular integration suite.
 
 When references are missing, the test saves them as baselines and skips the assertion.
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -32,13 +28,7 @@ from job_applicator.documents.formatted_models import (
 from job_applicator.documents.pdf_renderer import PDFRenderer
 from job_applicator.models import CoverLetterResult, TailoredResume
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(
-        os.environ.get("JOB_APPLICATOR_PDF_REGRESSION") != "1",
-        reason="Visual regression is opt-in (set JOB_APPLICATOR_PDF_REGRESSION=1)",
-    ),
-]
+pytestmark = pytest.mark.integration
 
 _REF_DIR = Path(__file__).with_suffix("").parent / "references"
 _REF_DIR.mkdir(parents=True, exist_ok=True)

@@ -40,9 +40,9 @@ AI-powered job application tool using Playwright browser automation with modern 
 | Component | Allocation |
 |---|---|
 | GPU | NVIDIA RTX 4070 (12 GB VRAM) |
-| vLLM (Qwen3-8B-AWQ, eager mode, GPU_MEM=0.70) | ~8.4 GB (6.1 GB weights + KV) |
-| Embeddings (mxbai-embed-large-v1) | ~1.5 GB |
-| Free VRAM | ~2.4 GB |
+| vLLM (Qwen3-8B-AWQ, eager mode, GPU_MEM=0.65) | ~7.9 GB (6.1 GB weights + KV) |
+| Embeddings (mxbai-embed-large-v1) | ~1.4 GB |
+| Runtime headroom | ~1.5-1.8 GB free on the validated RTX 4070 desktop profile |
 
 ## Installation
 
@@ -81,7 +81,7 @@ pip install -e ".[serve]"          # installs vLLM 0.23.x (CUDA 13.0 wheel)
 scripts/serve-vllm.sh               # serves :8000
 ```
 
-Environment overrides: `MODEL`, `HOST`, `PORT`, `GPU_MEM` (default `0.70`),
+Environment overrides: `MODEL`, `HOST`, `PORT`, `GPU_MEM` (default `0.65`),
 `MAX_MODEL_LEN` (default `8192`), `ENFORCE_EAGER` (default `1`), and `VLLM_BIN`
 (default: this project's `.venv/bin/vllm`). For isolation the script uses **only**
 that in-project binary or an explicit `VLLM_BIN`; if neither is present it errors
@@ -89,10 +89,12 @@ rather than silently adopting a `vllm` found on `$PATH` (which could be another
 project's). Set `VLLM_BIN` to share a vLLM executable from another venv without
 touching that project's config.
 
-The defaults are tuned for a 12 GB desktop GPU. On tighter cards vLLM 0.23's V1
-cudagraph profiler can OOM during startup; `ENFORCE_EAGER=1` avoids that by disabling
-CUDA graphs. If you have ample VRAM you can run with `ENFORCE_EAGER=0` for higher
-throughput.
+The defaults are tuned for a 12 GB desktop GPU running local CUDA embeddings
+alongside the 8B LLM. `GPU_MEM=0.65` keeps enough 8K KV cache for Qwen3-8B-AWQ
+while leaving the embedder's 1.3 GB free-VRAM preflight budget available. On tighter cards
+vLLM 0.23's V1 cudagraph profiler can OOM during startup; `ENFORCE_EAGER=1` avoids
+that by disabling CUDA graphs. If you have ample VRAM you can raise `GPU_MEM` or run
+with `ENFORCE_EAGER=0` for higher throughput.
 
 The first launch **auto-downloads the model** from Hugging Face Hub (~6 GB for the
 default; cached to `~/.cache/huggingface`) — no separate step. Needs network on first
@@ -154,6 +156,10 @@ job-applicator generate-cover-letter --resume resume.pdf --job-title "Python Dev
 
 # Check resume ATS compatibility (score >= 60% = compatible)
 job-applicator ats-check --resume resume.pdf
+
+# Check generated CV/cover-letter quality
+job-applicator document-quality --resume tailored.txt --cover-letter cover.txt --keyword Python
+job-applicator document-quality --private-packet-set --required --json
 
 # Match resume to jobs using embeddings
 job-applicator match --resume resume.pdf --jobs-file jobs.json --top-k 10
@@ -294,6 +300,9 @@ job-applicator batch --resume resume.pdf --jobs-file jobs.json --no-cover-letter
 - **Smart matching**: Jobs are ranked by semantic similarity + skill coverage, filtered by `--min-score`, then only the top `--top-k` are processed.
 - **Parallel execution**: Tailoring and cover letter generation run concurrently (up to 3 simultaneous LLM calls).
 - **Fail-closed CV saves**: If a generated CV comes back with dirty grounding, batch runs one strict source-only refinement and then refuses to save the CV if grounding/contact/ATS integrity is still not clean.
+- **Recovery-safe identity**: Resume state is keyed by the job source, résumé, score/filter inputs, style guide, output format, templates, category, and OCR mode. `--resume-run` only resumes an incomplete run with the same output-affecting parameters.
+- **Partial failure semantics**: A verified CV is kept as a resumable `TAILORED` job if only the cover letter fails, so a later resume-run retries the cover letter without re-tailoring. Any requested document failure still writes the batch summary and exits non-zero.
+- **Unique job URLs required**: Batch rejects duplicate matched URLs before concurrent document generation because recovery state is keyed by URL.
 - **Per-job output**: Each job produces `tailored_*.txt` + `.meta.json` and optionally `cover_letter_*.txt` + `.meta.json`. With `--format both`, the text sidecar is the authoritative metadata file and includes the generated `pdf_path`.
 - **Batch summary**: A `batch_summary_{timestamp}.json` file contains all results with scores, paths, and errors.
 
@@ -334,7 +343,7 @@ the 4B couldn't, while still fitting the 12 GB card alongside the embeddings.
 [embedding]
 model_name = "mixedbread-ai/mxbai-embed-large-v1"
 device = "cuda"
-memory_limit_gb = 1.5
+memory_limit_gb = 1.3
 ```
 
 ### Browser & Region Configuration
@@ -366,10 +375,10 @@ bash scripts/green_gate.sh
 .venv/bin/python scripts/eval_matching.py --required
 
 # Generated document artifact quality smoke gate
-.venv/bin/python scripts/eval_document_quality.py --resume tailored.txt --cover-letter cover.txt --keyword Python
+job-applicator document-quality --resume tailored.txt --cover-letter cover.txt --keyword Python
 
 # Private generated-packet quality certification
-.venv/bin/python scripts/eval_document_quality.py --packet-set --required
+job-applicator document-quality --private-packet-set --required
 ```
 
 ## Architecture
@@ -378,16 +387,16 @@ bash scripts/green_gate.sh
 ┌─────────────────────────────────────────────────────────────┐
 │                    GPU Memory (12 GB)                       │
 ├─────────────────────────────────────────────────────────────┤
-│  vLLM Orchestrator (Qwen3-8B-AWQ)       ~8.4 GB            │
+│  vLLM Orchestrator (Qwen3-8B-AWQ)       ~7.9 GB            │
 │  ├── Cover letter generation                               │
 │  ├── Style analysis                                        │
 │  └── Job description understanding                         │
 ├─────────────────────────────────────────────────────────────┤
-│  Embedding Model (mxbai-embed-large-v1)  ~1.5 GB           │
+│  Embedding Model (mxbai-embed-large-v1)  ~1.4 GB           │
 │  ├── Resume embedding                                      │
 │  ├── Job matching                                          │
 │  └── Skill similarity                                      │
 ├─────────────────────────────────────────────────────────────┤
-│  Free VRAM                           ~2.4 GB               │
+│  Runtime headroom                    ~1.5-1.8 GB           │
 └─────────────────────────────────────────────────────────────┘
 ```

@@ -388,7 +388,15 @@ class TestResumeTailorPipeline:
             "• Architected REST APIs with FastAPI\n"
         )
 
-        mock_match = MagicMock(score=0.75, matched_skills=["Python"], missing_skills=["AWS"])
+        mock_match = MagicMock(
+            score=0.75,
+            semantic_score=0.75,
+            skill_score=0.75,
+            matched_skills=["Python"],
+            missing_skills=["AWS"],
+        )
+        mock_matcher = MagicMock()
+        mock_matcher.match_resume_to_job = AsyncMock(return_value=mock_match)
         with (
             patch.object(
                 tailor,
@@ -402,12 +410,8 @@ class TestResumeTailorPipeline:
                 new_callable=AsyncMock,
                 return_value="Enhanced bullets",
             ),
-            patch(
-                "job_applicator.embeddings.matching.JobMatcher.match_resume_to_job",
-                return_value=mock_match,
-            ),
         ):
-            result = await tailor.tailor(sample_resume, sample_job)
+            result = await tailor.tailor(sample_resume, sample_job, matcher=mock_matcher)
 
         assert isinstance(result, TailoredResume)
         assert result.job_title == "Senior Python Developer"
@@ -422,7 +426,15 @@ class TestResumeTailorPipeline:
     async def test_tailor_includes_tone_in_prompt(self, llm_config, sample_resume, sample_job):
         tailor = ResumeTailor(llm_config)
 
-        mock_match = MagicMock(score=0.5, matched_skills=[], missing_skills=[])
+        mock_match = MagicMock(
+            score=0.5,
+            semantic_score=0.5,
+            skill_score=0.5,
+            matched_skills=[],
+            missing_skills=[],
+        )
+        mock_matcher = MagicMock()
+        mock_matcher.match_resume_to_job = AsyncMock(return_value=mock_match)
         with (
             patch.object(
                 tailor,
@@ -436,12 +448,8 @@ class TestResumeTailorPipeline:
                 new_callable=AsyncMock,
                 return_value="changes",
             ),
-            patch(
-                "job_applicator.embeddings.matching.JobMatcher.match_resume_to_job",
-                return_value=mock_match,
-            ),
         ):
-            await tailor.tailor(sample_resume, sample_job)
+            await tailor.tailor(sample_resume, sample_job, matcher=mock_matcher)
 
         prompt = mock_llm.call_args[0][0]
         assert "TONE:" in prompt
@@ -454,7 +462,15 @@ class TestResumeTailorPipeline:
         )
         tailor = ResumeTailor(llm_config)
 
-        mock_match = MagicMock(score=0.5, matched_skills=[], missing_skills=[])
+        mock_match = MagicMock(
+            score=0.5,
+            semantic_score=0.5,
+            skill_score=0.5,
+            matched_skills=[],
+            missing_skills=[],
+        )
+        mock_matcher = MagicMock()
+        mock_matcher.match_resume_to_job = AsyncMock(return_value=mock_match)
         with (
             patch.object(
                 tailor,
@@ -468,12 +484,8 @@ class TestResumeTailorPipeline:
                 new_callable=AsyncMock,
                 return_value="changes",
             ),
-            patch(
-                "job_applicator.embeddings.matching.JobMatcher.match_resume_to_job",
-                return_value=mock_match,
-            ),
         ):
-            await tailor.tailor(resume_with_edu, sample_job)
+            await tailor.tailor(resume_with_edu, sample_job, matcher=mock_matcher)
 
         prompt = mock_llm.call_args[0][0]
         assert "EDUCATION" in prompt.upper() or "education" in prompt.lower()
@@ -487,7 +499,15 @@ class TestResumeTailorPipeline:
             "EXPERIENCE\nJob\nCorp\n2020 - Present\n"
         )
 
-        mock_match = MagicMock(score=0.5, matched_skills=[], missing_skills=[])
+        mock_match = MagicMock(
+            score=0.5,
+            semantic_score=0.5,
+            skill_score=0.5,
+            matched_skills=[],
+            missing_skills=[],
+        )
+        mock_matcher = MagicMock()
+        mock_matcher.match_resume_to_job = AsyncMock(return_value=mock_match)
         with (
             patch.object(
                 tailor,
@@ -501,12 +521,8 @@ class TestResumeTailorPipeline:
                 new_callable=AsyncMock,
                 return_value="changes",
             ),
-            patch(
-                "job_applicator.embeddings.matching.JobMatcher.match_resume_to_job",
-                return_value=mock_match,
-            ),
         ):
-            result = await tailor.tailor(sample_resume, sample_job)
+            result = await tailor.tailor(sample_resume, sample_job, matcher=mock_matcher)
 
         # Hallucination guard should have processed the text
         assert isinstance(result.tailored_text, str)

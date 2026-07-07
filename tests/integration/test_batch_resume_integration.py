@@ -26,7 +26,13 @@ import job_applicator.cli as cli
 from job_applicator.batch_state import BatchJobStatus, BatchState
 from job_applicator.cli import app
 from job_applicator.embeddings.matching import MatchResult
-from job_applicator.models import JobBoard, JobListing
+from job_applicator.models import (
+    BatchRunSpec,
+    GroundingReport,
+    JobBoard,
+    JobListing,
+    TailoredResume,
+)
 
 # Path-bearing URL on purpose: record_job writes str(job.url) and the test reads _JOB_URL back,
 # so the two must be byte-identical. A bare-domain URL ("https://example.com") would normalize to
@@ -89,7 +95,7 @@ def real_batchstate_env(resume_file: Path, tmp_path: Path) -> Iterator[dict[str,
     matcher.match_resume_to_job = AsyncMock(return_value=match)
 
     tailored = MagicMock()
-    tailored.tailored_text = "Tailored resume text"
+    tailored.tailored_text = "Jane Dev\njane@example.com\n555-0100\nTailored resume text"
     tailored.match_score = 0.9
     tailored.semantic_score = 0.8
     tailored.skill_score = 0.7
@@ -124,6 +130,10 @@ def real_batchstate_env(resume_file: Path, tmp_path: Path) -> Iterator[dict[str,
         settings.llm.temperature = 0.7
         settings.output_dir = str(output_dir)
         settings.ensure_output_dir.return_value = output_dir
+        settings.output = MagicMock()
+        settings.output.default_format = "txt"
+        settings.output.resume_template = "modern"
+        settings.output.cover_letter_template = "modern"
         settings.embedding = MagicMock()
         settings.log_level = "INFO"
         settings.browser = MagicMock()
@@ -173,7 +183,84 @@ def test_batch_failure_persists_failed_job_to_real_store(
     tailor.tailor_verified = AsyncMock(side_effect=RuntimeError("tailor boom"))
 
     result = _run_batch(real_batchstate_env, jobs_file)
-    assert result.exit_code == 0, result.output  # type: ignore[attr-defined]
+    assert result.exit_code != 0, result.output  # type: ignore[attr-defined]
 
     status = BatchState().get_job_status(_RUN_ID, _JOB_URL)
     assert status == BatchJobStatus.FAILED
+
+
+def test_batch_resume_reuses_existing_cover_letter_from_tailored_meta(
+    real_batchstate_env: dict[str, object], jobs_file: Path, tmp_path: Path
+) -> None:
+    """If a crash happens after the cover-letter file/meta write but before DB completion,
+    resume-run should mark the job complete without regenerating the existing letter."""
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    tailored_path = output_dir / "tailored.txt"
+    cover_path = output_dir / "cover.txt"
+    tailored_path.write_text("Tailored resume text", encoding="utf-8")
+    cover_path.write_text("Existing cover letter", encoding="utf-8")
+    tailored = TailoredResume(
+        original_path=str(real_batchstate_env["resume_file"]),
+        tailored_text="Tailored resume text",
+        job_title="Python Developer",
+        job_company="TechCorp",
+        job_url=_JOB_URL,
+        match_score=0.9,
+        semantic_score=0.8,
+        skill_score=0.7,
+        matched_skills=["Python"],
+        missing_skills=[],
+        changes_summary="summary",
+        output_path=str(tailored_path),
+        cover_letter_path=str(cover_path),
+        grounding_report=GroundingReport(),
+    )
+    tailored_path.with_suffix(".meta.json").write_text(
+        tailored.model_dump_json(indent=2), encoding="utf-8"
+    )
+    job = JobListing(
+        title="Python Developer",
+        company="TechCorp",
+        url=_JOB_URL,
+        description="Python, FastAPI",
+        requirements=["Python", "FastAPI"],
+        board=JobBoard.LINKEDIN,
+    )
+    spec = BatchRunSpec(
+        site="linkedin",
+        jobs_file=str(jobs_file),
+        resume_path=str(real_batchstate_env["resume_file"]),
+        top_k=1,
+        min_score=0.0,
+        cover_letter=True,
+    )
+    state = BatchState()
+    state.start_run(spec, run_id=_RUN_ID)
+    state.record_job(_RUN_ID, job, BatchJobStatus.TAILORED, resume_path=str(tailored_path))
+
+    cl_generator = MagicMock()
+    cl_generator.generate_verified = AsyncMock(side_effect=AssertionError("should not regenerate"))
+    with patch(
+        "job_applicator.documents.cover_letter.CoverLetterGenerator",
+        return_value=cl_generator,
+    ):
+        runner: CliRunner = real_batchstate_env["runner"]  # type: ignore[assignment]
+        result = runner.invoke(
+            app,
+            [
+                "batch",
+                "--resume",
+                str(real_batchstate_env["resume_file"]),
+                "--jobs-file",
+                str(jobs_file),
+                "--top-k",
+                "1",
+                "--run-id",
+                _RUN_ID,
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    cl_generator.generate_verified.assert_not_called()
+    assert BatchState().get_job_status(_RUN_ID, _JOB_URL) == BatchJobStatus.COMPLETED

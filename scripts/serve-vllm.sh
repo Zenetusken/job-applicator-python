@@ -19,7 +19,7 @@
 #   MODEL    model id            (default: Qwen/Qwen3-8B-AWQ)
 #   HOST     bind address        (default: 127.0.0.1)
 #   PORT     bind port           (default: 8000 — must match [llm] api_base)
-#   GPU_MEM  GPU memory fraction (default: 0.70 — tuned for 12 GB desktops;
+#   GPU_MEM  GPU memory fraction (default: 0.65 — tuned for 12 GB desktops;
 #                                 raise/lower for your GPU)
 #   MAX_MODEL_LEN  context length (default: 8192). Lowering this shrinks the KV
 #                  cache and can let cudagraphs fit on tight GPUs.
@@ -44,9 +44,9 @@ MODEL="${MODEL:-Qwen/Qwen3-8B-AWQ}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8000}"
 # vLLM 0.23's V1 engine + cudagraph profiling can OOM on 12 GB desktop GPUs with
-# Qwen3.5-style hybrid models. 0.70 gives the engine enough headroom for the KV
-# cache when CUDA graphs are disabled; raise/lower for your GPU.
-GPU_MEM="${GPU_MEM:-0.70}"
+# Qwen3.5-style hybrid models. 0.65 keeps enough 8K KV cache for Qwen3-8B-AWQ
+# while leaving headroom for CUDA embeddings on 12 GB desktops; raise/lower for your GPU.
+GPU_MEM="${GPU_MEM:-0.65}"
 # Context length. Lowering this shrinks the KV cache and can let cudagraphs fit
 # on tight GPUs (try 4096 with ENFORCE_EAGER=0). Default 8192 matches the model.
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
@@ -67,7 +67,7 @@ Environment variables:
   MODEL           model id (default: Qwen/Qwen3-8B-AWQ)
   HOST            bind address (default: 127.0.0.1)
   PORT            bind port (default: 8000)
-  GPU_MEM         GPU memory fraction (default: 0.70)
+  GPU_MEM         GPU memory fraction (default: 0.65)
   MAX_MODEL_LEN   context length (default: 8192)
   VLLM_BIN        path to vllm executable (default: .venv/bin/vllm)
   TOOL_CALL_PARSER tool-call parser (default: auto-detected for Qwen3/Qwen3.5)
@@ -168,13 +168,52 @@ _build_cmd() {
 
 # Find an existing vLLM server process listening on the target port.
 _find_running_vllm() {
-    local pid
-    pid=$(ss -tlnp 2>/dev/null | grep ":$PORT " | grep -oP 'pid=\K[0-9]+' | head -1)
-    if [ -z "$pid" ]; then
-        # Fallback for systems where ss output differs.
-        pid=$(netstat -tlnp 2>/dev/null | grep ":$PORT " | grep -oP '/[0-9]+' | head -1 | tr -d '/')
+    local py="$PROJECT_DIR/.venv/bin/python"
+    if [ ! -x "$py" ]; then
+        py="python3"
     fi
-    echo "$pid"
+    "$py" - "$PORT" <<'PY' || true
+import os
+import sys
+
+port = int(sys.argv[1])
+target_port = f"{port:04X}"
+listener_inodes: set[str] = set()
+
+for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+    try:
+        with open(table, encoding="utf-8") as handle:
+            rows = handle.read().splitlines()[1:]
+    except OSError:
+        continue
+    for row in rows:
+        parts = row.split()
+        if len(parts) < 10:
+            continue
+        local_address = parts[1]
+        state = parts[3]
+        inode = parts[9]
+        if state == "0A" and local_address.rsplit(":", 1)[-1].upper() == target_port:
+            listener_inodes.add(inode)
+
+if not listener_inodes:
+    raise SystemExit(0)
+
+for pid in sorted((p for p in os.listdir("/proc") if p.isdigit()), key=int):
+    fd_dir = f"/proc/{pid}/fd"
+    try:
+        fds = os.listdir(fd_dir)
+    except OSError:
+        continue
+    for fd in fds:
+        try:
+            link = os.readlink(f"{fd_dir}/{fd}")
+        except OSError:
+            continue
+        if link.startswith("socket:[") and link[8:-1] in listener_inodes:
+            print(pid)
+            raise SystemExit(0)
+PY
 }
 
 # Inspect the command line of a running vLLM process.
@@ -202,6 +241,20 @@ _is_compatible_vllm() {
     fi
     if ! echo "$cmdline" | grep -q -- "--port $PORT"; then
         return 1
+    fi
+    if ! echo "$cmdline" | grep -q -- "--gpu-memory-utilization $GPU_MEM"; then
+        return 1
+    fi
+    if ! echo "$cmdline" | grep -q -- "--max-model-len $MAX_MODEL_LEN"; then
+        return 1
+    fi
+    if ! echo "$cmdline" | grep -q -- "--enable-prefix-caching"; then
+        return 1
+    fi
+    if [ "$ENFORCE_EAGER" = "1" ]; then
+        if ! echo "$cmdline" | grep -q -- "--enforce-eager"; then
+            return 1
+        fi
     fi
     # If we require a tool parser, the running instance must have it.
     if [ "$TOOL_CALL_PARSER" != "none" ] && [ -n "$TOOL_CALL_PARSER" ]; then

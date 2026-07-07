@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import re
+import weakref
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import partial
+from typing import ParamSpec, TypeVar
 
 from job_applicator.config import EmbeddingConfig, LLMConfig, MatchingConfig
 from job_applicator.embeddings.service import EmbeddingService, EmbeddingVector
@@ -15,6 +20,9 @@ from job_applicator.utils.logging import get_logger
 from job_applicator.utils.verbose import VerboseReporter
 
 logger = get_logger("embeddings.matching")
+SKILL_EXTRACTION_CONCURRENCY = 4
+P = ParamSpec("P")
+T = TypeVar("T")
 
 
 @dataclass
@@ -45,6 +53,15 @@ class SkillMatch:
     matched: bool
 
 
+@dataclass
+class _PreparedSkillMatch:
+    """Normalized inputs for one job's skill coverage check."""
+
+    valid_skills: list[str]
+    valid_reqs: list[tuple[str, str]]
+    fallback_missing: list[str]
+
+
 class JobMatcher:
     """Match resumes to job listings using embeddings.
 
@@ -70,6 +87,17 @@ class JobMatcher:
         )
         self._runtime = runtime
         self._reporter = reporter
+        self._embedding_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="job-applicator-embedding",
+        )
+        self._embedding_executor_finalizer = weakref.finalize(
+            self,
+            self._embedding_executor.shutdown,
+            False,
+            cancel_futures=True,
+        )
+        self._embedding_lock = asyncio.Lock()
         # Compile the declared target-role rules once (ordered — FIRST match wins). The
         # config validator already rejected bad regexes at load; IGNORECASE matches titles
         # like "AI Safety Expert - Red Team" / "Analyste en gestion des identités".
@@ -77,6 +105,32 @@ class JobMatcher:
             (rule.name, re.compile(rule.title_pattern, re.IGNORECASE), rule.boost)
             for rule in (matching.target_roles if matching else [])
         ]
+
+    async def _run_embedding_work(
+        self,
+        func: Callable[P, T],
+        *args: P.args,
+        **kwargs: P.kwargs,
+    ) -> T:
+        """Run embedding work using the execution mode that is stable for the resolved device."""
+        # PyTorch CPU inference can stall when launched from a Python worker thread on this
+        # stack. CPU mode is explicit degraded mode, so prefer a responsive command over
+        # event-loop purity. CUDA remains offloaded to keep TUI/async callers responsive,
+        # but serialized through one matcher-owned worker to avoid concurrent access to the
+        # same sentence-transformers model on a tight VRAM budget.
+        if self._service._resolve_device() == "cpu":
+            return func(*args, **kwargs)
+        loop = asyncio.get_running_loop()
+        async with self._embedding_lock:
+            return await loop.run_in_executor(
+                self._embedding_executor,
+                partial(func, *args, **kwargs),
+            )
+
+    def close(self) -> None:
+        """Release the matcher-owned embedding worker."""
+        if self._embedding_executor_finalizer.alive:
+            self._embedding_executor_finalizer()
 
     def _apply_target_boost(self, title: str, score: float) -> tuple[float, str | None]:
         """Apply the first matching ``[matching] target_roles`` rule to a combined score.
@@ -225,9 +279,9 @@ class JobMatcher:
         Returns:
             MatchResult with score, matched/missing skills, and summary
         """
-        # Compute embeddings off the event loop (encode is blocking CPU work).
-        resume_emb = await asyncio.to_thread(self.compute_resume_embedding, resume)
-        job_emb = await asyncio.to_thread(self.compute_job_embedding, job)
+        # Compute embeddings through the device-stable execution path.
+        resume_emb = await self._run_embedding_work(self.compute_resume_embedding, resume)
+        job_emb = await self._run_embedding_work(self.compute_job_embedding, job)
 
         # Compute semantic similarity
         semantic_score = self._service.similarity(resume_emb, job_emb)
@@ -279,8 +333,9 @@ class JobMatcher:
         if not jobs:
             return []
 
-        # Compute resume embedding once (off the event loop — blocking CPU encode).
-        resume_emb = await asyncio.to_thread(self.compute_resume_embedding, resume)
+        # Compute resume embedding once through the device-stable execution path.
+        logger.debug("Ranking %d jobs: computing resume embedding", len(jobs))
+        resume_emb = await self._run_embedding_work(self.compute_resume_embedding, resume)
 
         # Compute job embeddings in batch
         job_texts = []
@@ -294,15 +349,15 @@ class JobMatcher:
                 parts.append(f"Requirements: {', '.join(job.requirements)}")
             job_texts.append(" | ".join(parts)[:1500])
 
-        job_embs = await asyncio.to_thread(self._service.embed_batch, job_texts)
+        logger.debug("Ranking %d jobs: embedding job texts", len(jobs))
+        job_embs = await self._run_embedding_work(self._service.embed_batch, job_texts)
+        skill_matches = await self._match_skills_for_jobs(resume, jobs)
 
         # Compute similarities with combined scoring
         matches = []
-        for job, job_emb in zip(jobs, job_embs, strict=False):
+        for job, job_emb, skill_match in zip(jobs, job_embs, skill_matches, strict=False):
             semantic_score = self._service.similarity(resume_emb, job_emb)
-            matched, missing = await self._match_skills(
-                resume.skills, job.requirements, resume.raw_text, job.description
-            )
+            matched, missing = skill_match
             # Combined score: 60% semantic + 40% skill coverage (semantic-only when unknown).
             # Summarize the PURE fit score first (the summary describes fit — "X% similarity" —
             # so it must not carry the ranking boost), THEN apply the target-role boost to the
@@ -347,10 +402,102 @@ class JobMatcher:
         Returns:
             Tuple of (matched_skills, missing_requirements)
         """
+        prepared = await self._prepare_skill_match(
+            resume_skills, job_requirements, resume_text, job_description
+        )
+        if not prepared.valid_skills or not prepared.valid_reqs:
+            return [], prepared.fallback_missing
+
+        # Compute embeddings on normalized texts through the device-stable execution path.
+        skill_embs = await self._run_embedding_work(
+            self._service.embed_batch, prepared.valid_skills
+        )
+        req_texts = [n for n, _ in prepared.valid_reqs]
+        req_embs = await self._run_embedding_work(self._service.embed_batch, req_texts)
+
+        return self._match_prepared_skill_embeddings(
+            prepared,
+            dict(zip(prepared.valid_skills, skill_embs, strict=False)),
+            dict(zip(req_texts, req_embs, strict=False)),
+        )
+
+    async def _match_skills_for_jobs(
+        self,
+        resume: ResumeData,
+        jobs: list[JobListing],
+    ) -> list[tuple[list[str], list[str]]]:
+        """Compute skill coverage for ranked jobs with shared embedding batches.
+
+        ``rank_jobs`` is the batch/ranking path, so repeated résumé skills and repeated
+        requirements must be embedded once per ranking call rather than once per job.
+        """
+        semaphore = asyncio.Semaphore(SKILL_EXTRACTION_CONCURRENCY)
+
+        async def prepare(job: JobListing) -> _PreparedSkillMatch:
+            async with semaphore:
+                return await self._prepare_skill_match(
+                    resume.skills,
+                    job.requirements,
+                    resume.raw_text,
+                    job.description,
+                )
+
+        prepared_matches = list(await asyncio.gather(*(prepare(job) for job in jobs)))
+        matchable = [
+            prepared
+            for prepared in prepared_matches
+            if prepared.valid_skills and prepared.valid_reqs
+        ]
+        unique_skills = list(
+            dict.fromkeys(skill for prepared in matchable for skill in prepared.valid_skills)
+        )
+        unique_req_texts = list(
+            dict.fromkeys(norm_req for prepared in matchable for norm_req, _ in prepared.valid_reqs)
+        )
+
+        logger.debug(
+            "Ranking %d jobs: embedding %d unique skills and %d unique requirements",
+            len(jobs),
+            len(unique_skills),
+            len(unique_req_texts),
+        )
+        skill_embeddings: dict[str, EmbeddingVector] = {}
+        if unique_skills:
+            skill_embs = await self._run_embedding_work(self._service.embed_batch, unique_skills)
+            skill_embeddings = dict(zip(unique_skills, skill_embs, strict=False))
+
+        req_embeddings: dict[str, EmbeddingVector] = {}
+        if unique_req_texts:
+            req_embs = await self._run_embedding_work(self._service.embed_batch, unique_req_texts)
+            req_embeddings = dict(zip(unique_req_texts, req_embs, strict=False))
+
+        results: list[tuple[list[str], list[str]]] = []
+        for prepared in prepared_matches:
+            if not prepared.valid_skills or not prepared.valid_reqs:
+                results.append(([], prepared.fallback_missing))
+                continue
+            results.append(
+                self._match_prepared_skill_embeddings(
+                    prepared,
+                    skill_embeddings,
+                    req_embeddings,
+                )
+            )
+        return results
+
+    async def _prepare_skill_match(
+        self,
+        resume_skills: list[str],
+        job_requirements: list[str],
+        resume_text: str = "",
+        job_description: str = "",
+    ) -> _PreparedSkillMatch:
+        """Normalize one job's skill-match inputs without embedding them."""
         from job_applicator.skills import is_hard_negative, normalize_skill
 
-        if not job_requirements:
-            job_requirements = await self._skill_extractor.extract(
+        requirements = list(job_requirements)
+        if not requirements:
+            requirements = await self._skill_extractor.extract(
                 job_description,
                 runtime=self._runtime,
                 reporter=self._reporter,
@@ -367,11 +514,11 @@ class JobMatcher:
 
         # Preserve original requirement text for reporting while matching on
         # normalized forms.
-        norm_reqs = [normalize_skill(r) for r in job_requirements]
-        req_lookup = {n: r for n, r in zip(norm_reqs, job_requirements, strict=False) if n}
+        norm_reqs = [normalize_skill(r) for r in requirements]
+        req_lookup = {n: r for n, r in zip(norm_reqs, requirements, strict=False) if n}
         valid_reqs = [
             (n, r)
-            for n, r in zip(norm_reqs, job_requirements, strict=False)
+            for n, r in zip(norm_reqs, requirements, strict=False)
             if n and not is_hard_negative(n)
         ]
 
@@ -389,14 +536,19 @@ class JobMatcher:
 
         if not valid_skills or not valid_reqs:
             fallback_missing = [
-                req_lookup.get(n, r) for n, r in zip(norm_reqs, job_requirements, strict=False) if n
+                req_lookup.get(n, r) for n, r in zip(norm_reqs, requirements, strict=False) if n
             ]
-            return [], fallback_missing
+            return _PreparedSkillMatch(valid_skills, valid_reqs, fallback_missing)
 
-        # Compute embeddings on normalized texts (off the event loop — blocking CPU encode).
-        skill_embs = await asyncio.to_thread(self._service.embed_batch, valid_skills)
-        req_texts = [n for n, _ in valid_reqs]
-        req_embs = await asyncio.to_thread(self._service.embed_batch, req_texts)
+        return _PreparedSkillMatch(valid_skills, valid_reqs, [])
+
+    def _match_prepared_skill_embeddings(
+        self,
+        prepared: _PreparedSkillMatch,
+        skill_embeddings: dict[str, EmbeddingVector],
+        req_embeddings: dict[str, EmbeddingVector],
+    ) -> tuple[list[str], list[str]]:
+        """Score one prepared skill match from already-computed embedding maps."""
 
         # Find matches using similarity threshold
         matched: list[str] = []
@@ -411,17 +563,25 @@ class JobMatcher:
         threshold = 0.75
 
         used_skills: set[str] = set()
-        for i, (_norm_req, original_req) in enumerate(valid_reqs):
+        for norm_req, original_req in prepared.valid_reqs:
+            req_emb = req_embeddings.get(norm_req)
+            if req_emb is None:
+                missing.append(original_req)
+                continue
+
             best_score = 0.0
             best_skill = ""
 
             # Pick the best skill that hasn't already been claimed by an
             # earlier requirement, so two requirements never fight over the
             # same skill (which used to mark the loser as falsely "missing").
-            for j, skill in enumerate(valid_skills):
+            for skill in prepared.valid_skills:
                 if skill in used_skills:
                     continue
-                sim = self._service.similarity(req_embs[i], skill_embs[j])
+                skill_emb = skill_embeddings.get(skill)
+                if skill_emb is None:
+                    continue
+                sim = self._service.similarity(req_emb, skill_emb)
                 if sim > best_score:
                     best_score = sim
                     best_skill = skill

@@ -18,6 +18,7 @@ use only the match/tailor pipeline and intentionally skip browser features.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import os
 import shutil
 import tempfile
@@ -123,7 +124,7 @@ async def check_llm_endpoint(llm: LLMConfig) -> LLMEndpointCheck:
 
 
 def check_embeddings(emb: EmbeddingConfig) -> EmbeddingsCheck:
-    """Report whether the embedding model is already cached (no model load).
+    """Report embedding cache and lightweight runtime readiness (no model load).
 
     Prefers ``huggingface_hub``'s own cache resolution (honors ``HF_HUB_CACHE`` /
     ``HF_HOME`` and the real on-disk layout); otherwise falls back to a filesystem
@@ -131,7 +132,84 @@ def check_embeddings(emb: EmbeddingConfig) -> EmbeddingsCheck:
     partial/interrupted download isn't reported as cached.
     """
     cached, path = probe_hf_model_cache(emb.model_name)
-    return EmbeddingsCheck(model_name=emb.model_name, cached=cached, cache_path=path)
+    sentence_transformers_available = importlib.util.find_spec("sentence_transformers") is not None
+    configured_device = emb.device
+    requested_cuda = configured_device.lower().startswith("cuda")
+    resolved_device: str | None = None
+    device_ready = False
+    runtime_error: str | None = None
+    torch_available = False
+    torch_version: str | None = None
+    torch_cuda_version: str | None = None
+    cuda_available = False
+    cuda_device_count = 0
+    cuda_device_name: str | None = None
+    vram_total_mb: int | None = None
+    vram_free_mb: int | None = None
+
+    try:
+        import torch
+
+        torch_available = True
+        torch_version = str(torch.__version__)
+        torch_cuda_version = str(torch.version.cuda) if torch.version.cuda else None
+        cuda_available = bool(torch.cuda.is_available())
+        if cuda_available:
+            cuda_device_count = int(torch.cuda.device_count())
+            if cuda_device_count:
+                cuda_device_name = str(torch.cuda.get_device_name(0))
+                try:
+                    free_bytes, total_bytes = torch.cuda.mem_get_info(0)
+                    vram_free_mb = int(free_bytes // (1024 * 1024))
+                    vram_total_mb = int(total_bytes // (1024 * 1024))
+                except Exception as exc:  # pragma: no cover - driver/runtime dependent.
+                    logger.debug("Could not read CUDA memory info: %s", exc)
+    except ImportError:
+        runtime_error = "torch is not installed"
+    except Exception as exc:
+        runtime_error = f"torch/CUDA probe failed: {exc}"
+
+    if not sentence_transformers_available:
+        runtime_error = "sentence-transformers is not installed"
+    elif not torch_available:
+        runtime_error = runtime_error or "torch is not installed"
+    elif requested_cuda:
+        if not torch_available:
+            runtime_error = runtime_error or "torch is not installed"
+        elif not cuda_available:
+            runtime_error = runtime_error or "CUDA is not available to torch"
+        else:
+            required_mib = int(emb.memory_limit_gb * 1024)
+            if vram_free_mb is not None and vram_free_mb < required_mib:
+                runtime_error = (
+                    f"CUDA free VRAM is below embedding.memory_limit_gb "
+                    f"({vram_free_mb} MiB free; {required_mib} MiB required)"
+                )
+            else:
+                resolved_device = configured_device
+                device_ready = True
+    else:
+        resolved_device = configured_device
+        device_ready = True
+
+    return EmbeddingsCheck(
+        model_name=emb.model_name,
+        cached=cached,
+        cache_path=path,
+        configured_device=configured_device,
+        resolved_device=resolved_device,
+        device_ready=device_ready,
+        sentence_transformers_available=sentence_transformers_available,
+        torch_available=torch_available,
+        torch_version=torch_version,
+        torch_cuda_version=torch_cuda_version,
+        cuda_available=cuda_available,
+        cuda_device_count=cuda_device_count,
+        cuda_device_name=cuda_device_name,
+        vram_total_mb=vram_total_mb,
+        vram_free_mb=vram_free_mb,
+        runtime_error=runtime_error,
+    )
 
 
 def check_self_host() -> SelfHostCheck:
@@ -503,12 +581,19 @@ def build_readiness(
     llm_ready = llm.reachable and llm.http_status == 200
     ai_details = "LLM endpoint reachable" if llm_ready else "LLM endpoint is not ready"
 
-    matching_ready = embeddings.cached
-    matching_details = (
+    matching_ready = embeddings.cached and embeddings.device_ready
+    matching_details_parts = [
         "embedding model cached locally"
-        if matching_ready
+        if embeddings.cached
         else "embedding model will need first-use network download"
-    )
+    ]
+    if embeddings.device_ready:
+        matching_details_parts.append(
+            f"embedding device ready ({embeddings.resolved_device or embeddings.configured_device})"
+        )
+    else:
+        matching_details_parts.append(embeddings.runtime_error or "embedding runtime is not ready")
+    matching_details = "; ".join(matching_details_parts)
 
     browser_ready = browser.playwright_installed and (
         bool(browser.chromium_executable) or bool(browser.host_chrome)

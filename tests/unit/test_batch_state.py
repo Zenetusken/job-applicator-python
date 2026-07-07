@@ -33,6 +33,12 @@ def _spec(
     top_k: int = 5,
     min_score: float = 0.0,
     cover_letter: bool = True,
+    style_guide_path: str | None = None,
+    output_format: str = "txt",
+    resume_template: str = "modern",
+    cover_letter_template: str = "modern",
+    category: str | None = None,
+    ocr_mode: str = "auto",
 ) -> BatchRunSpec:
     return BatchRunSpec(
         site=site,
@@ -42,6 +48,12 @@ def _spec(
         top_k=top_k,
         min_score=min_score,
         cover_letter=cover_letter,
+        style_guide_path=style_guide_path,
+        output_format=output_format,
+        resume_template=resume_template,
+        cover_letter_template=cover_letter_template,
+        category=category,
+        ocr_mode=ocr_mode,
     )
 
 
@@ -128,6 +140,11 @@ def test_find_existing_run_requires_matching_params(tmp_path: Path) -> None:
     state = BatchState(db_path=tmp_path / "batch.db")
     state.start_run(_spec(), run_id="run-6")
     assert state.find_existing_run(_spec(top_k=10)) is None
+    assert state.find_existing_run(_spec(output_format="pdf")) is None
+    assert state.find_existing_run(_spec(style_guide_path="/tmp/style.txt")) is None
+    assert state.find_existing_run(_spec(resume_template="classic")) is None
+    assert state.find_existing_run(_spec(category="cybersecurity")) is None
+    assert state.find_existing_run(_spec(ocr_mode="on")) is None
     assert state.find_existing_run(_spec(top_k=5)) == "run-6"
 
 
@@ -138,6 +155,11 @@ def test_batch_run_spec_run_id_deterministic_and_param_sensitive() -> None:
     assert _spec().run_id() == _spec().run_id()
     assert _spec().run_id() != _spec(top_k=10).run_id()
     assert _spec().run_id() != _spec(query="rust").run_id()
+    assert _spec().run_id() != _spec(output_format="pdf").run_id()
+    assert _spec().run_id() != _spec(style_guide_path="/tmp/style.txt").run_id()
+    assert _spec().run_id() != _spec(resume_template="classic").run_id()
+    assert _spec().run_id() != _spec(category="cybersecurity").run_id()
+    assert _spec().run_id() != _spec(ocr_mode="on").run_id()
     assert len(_spec().run_id()) == 16
 
 

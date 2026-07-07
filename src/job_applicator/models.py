@@ -433,6 +433,12 @@ class BatchRunSpec(BaseModel):
     top_k: int
     min_score: float
     cover_letter: bool
+    style_guide_path: str | None = None
+    output_format: str = "txt"
+    resume_template: str = "modern"
+    cover_letter_template: str = "modern"
+    category: str | None = None
+    ocr_mode: str = "auto"
 
     model_config = {"extra": "forbid"}
 
@@ -442,7 +448,9 @@ class BatchRunSpec(BaseModel):
 
         key = (
             f"{self.site}|{self.query or ''}|{self.jobs_file or ''}|"
-            f"{self.resume_path}|{self.top_k}|{self.min_score}|{self.cover_letter}"
+            f"{self.resume_path}|{self.top_k}|{self.min_score}|{self.cover_letter}|"
+            f"{self.style_guide_path or ''}|{self.output_format}|{self.resume_template}|"
+            f"{self.cover_letter_template}|{self.category or ''}|{self.ocr_mode}"
         )
         return hashlib.sha256(key.encode()).hexdigest()[:16]
 
@@ -774,11 +782,24 @@ class VLLMProcessCheck(BaseModel):
 
 
 class EmbeddingsCheck(BaseModel):
-    """Whether the semantic-matching embedding model is already downloaded."""
+    """Semantic-matching embedding model and runtime readiness."""
 
     model_name: str
     cached: bool
     cache_path: str | None = None
+    configured_device: str = "cuda"
+    resolved_device: str | None = None
+    device_ready: bool = False
+    sentence_transformers_available: bool = False
+    torch_available: bool = False
+    torch_version: str | None = None
+    torch_cuda_version: str | None = None
+    cuda_available: bool = False
+    cuda_device_count: int = 0
+    cuda_device_name: str | None = None
+    vram_total_mb: int | None = None
+    vram_free_mb: int | None = None
+    runtime_error: str | None = None
 
     model_config = {"extra": "forbid"}
 

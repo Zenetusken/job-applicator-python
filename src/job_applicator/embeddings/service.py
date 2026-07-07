@@ -1,12 +1,14 @@
 """Embedding service using sentence-transformers with mxbai-embed-large-v1.
 
 Provides semantic embeddings for job matching, skill matching, and style similarity.
-Allocates ~1.5GB VRAM alongside the main orchestrator (vLLM).
+Allocates about 1.4GB VRAM alongside the main orchestrator (vLLM), with a lower
+preflight budget so small desktop/VLLM VRAM fluctuations do not fail healthy loads.
 """
 
 from __future__ import annotations
 
 import hashlib
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -15,6 +17,7 @@ from numpy.typing import NDArray
 
 from job_applicator.config import EmbeddingConfig
 from job_applicator.embeddings.cache import probe_hf_model_cache
+from job_applicator.exceptions import ConfigError
 from job_applicator.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -24,6 +27,8 @@ logger = get_logger("embeddings.service")
 
 # Type alias for embedding vectors
 EmbeddingVector = NDArray[np.float32]
+CPU_THREAD_CAP = 4
+CPU_INTEROP_THREAD_CAP = 1
 
 
 class EmbeddingService:
@@ -36,32 +41,72 @@ class EmbeddingService:
     def __init__(self, config: EmbeddingConfig) -> None:
         self._config = config
         self._model: SentenceTransformer | None = None
+        self._resolved_device: str | None = None
         self._cache_dir = Path.home() / ".job-applicator" / "embeddings"
         self._cache_dir.mkdir(parents=True, exist_ok=True)
+        self._memory_cache: dict[str, EmbeddingVector] = {}
+        self._memory_cache_lock = threading.Lock()
 
     def _resolve_device(self) -> str:
-        """Resolve the embedding device, falling back to CPU when CUDA is requested
-        but unavailable — so a CPU-only box runs (slower) instead of crashing at load.
+        """Resolve the embedding device.
 
-        Only ``cuda*`` requests are checked; an explicit ``cpu``/``mps``/other is honored
-        as-is. The fallback is loud (a warning) so the user knows performance will differ.
+        ``cuda`` is strict: if the user configured CUDA, matching must either run on CUDA
+        or fail with an actionable error. CPU is still available when explicitly requested.
         """
+        if self._resolved_device is not None:
+            return self._resolved_device
         configured = self._config.device
         if not configured.lower().startswith("cuda"):
+            self._resolved_device = configured
             return configured
         try:
             import torch
         except ImportError:
-            logger.warning("embedding.device=%r but torch is unavailable; using CPU.", configured)
-            return "cpu"
+            raise ConfigError(
+                "embedding.device is set to CUDA but torch is not installed. Install the "
+                "CUDA-enabled embedding dependencies or set embedding.device='cpu' explicitly "
+                "for a CPU-only environment."
+            ) from None
         if not torch.cuda.is_available():
-            logger.warning(
-                "embedding.device=%r but CUDA is not available; falling back to CPU (slower). "
-                "Set embedding.device='cpu' in config to silence this.",
-                configured,
+            raise ConfigError(
+                "embedding.device is set to CUDA but CUDA is not available to torch. Expose the "
+                "NVIDIA device to this process, install a CUDA-enabled torch wheel, or set "
+                "embedding.device='cpu' explicitly for degraded CPU matching."
             )
-            return "cpu"
+        self._resolved_device = configured
         return configured
+
+    def _configure_cpu_threads(self) -> None:
+        """Cap Torch CPU threading for embedding fallback.
+
+        The default 16x16 thread settings on the dev box made tiny CPU embedding batches stall
+        long enough to trip live QA timeouts. A small cap is more predictable for CLI workloads.
+        """
+        try:
+            import torch
+        except ImportError:
+            return
+
+        current_threads = torch.get_num_threads()
+        if current_threads > CPU_THREAD_CAP:
+            torch.set_num_threads(CPU_THREAD_CAP)
+            logger.info(
+                "Capped Torch CPU embedding threads: intra-op %d -> %d",
+                current_threads,
+                CPU_THREAD_CAP,
+            )
+
+        try:
+            current_interop = torch.get_num_interop_threads()
+            if current_interop > CPU_INTEROP_THREAD_CAP:
+                torch.set_num_interop_threads(CPU_INTEROP_THREAD_CAP)
+                logger.info(
+                    "Capped Torch CPU embedding threads: inter-op %d -> %d",
+                    current_interop,
+                    CPU_INTEROP_THREAD_CAP,
+                )
+        except RuntimeError as exc:
+            logger.debug("Torch inter-op thread cap could not be changed: %s", exc)
 
     def _load_model(self) -> SentenceTransformer:
         """Lazy-load the embedding model with VRAM limits."""
@@ -82,32 +127,45 @@ class EmbeddingService:
                         cache_path,
                     )
 
+                resolved_device = self._resolve_device()
+                model_kwargs: dict[str, object] = {}
+                if resolved_device.lower().startswith("cuda"):
+                    self._check_cuda_memory_headroom(resolved_device)
+                    model_kwargs["torch_dtype"] = "float16"  # Use FP16 to save VRAM.
+                elif resolved_device == "cpu":
+                    model_kwargs["torch_dtype"] = "float32"
+                    self._configure_cpu_threads()
+
                 # Load model with memory limit. When the snapshot is already cached, force
                 # local-only mode so Hugging Face does not block on metadata probes in offline
-                # or sandboxed environments.
+                # or sandboxed environments. FP16 is only safe for CUDA; CPU fallback is forced
+                # to FP32 because some embedding snapshots load half-precision weights by default.
                 self._model = SentenceTransformer(
                     self._config.model_name,
-                    device=self._resolve_device(),
+                    device=resolved_device,
                     local_files_only=cached,
-                    model_kwargs={
-                        "torch_dtype": "float16",  # Use FP16 to save VRAM
-                    },
+                    model_kwargs=model_kwargs,
                 )
 
                 # Set max sequence length
                 if self._model is not None and hasattr(self._model, "max_seq_length"):
                     self._model.max_seq_length = self._config.max_seq_length
 
-                logger.info("Embedding model loaded successfully")
+                logger.info("Embedding model loaded successfully on %s", resolved_device)
             except ImportError as exc:
-                from job_applicator.exceptions import ConfigError
-
                 raise ConfigError(
                     "sentence-transformers not installed. Run: pip install sentence-transformers"
                 ) from exc
+            except ConfigError:
+                raise
             except Exception as exc:
-                from job_applicator.exceptions import ConfigError
-
+                if "out of memory" in str(exc).lower():
+                    raise ConfigError(
+                        "CUDA ran out of memory while loading the embedding model. "
+                        "Reduce vLLM GPU_MEM / --gpu-memory-utilization, stop other GPU "
+                        "processes, or explicitly set embedding.device='cpu' for degraded "
+                        "CPU matching."
+                    ) from exc
                 raise ConfigError(
                     "Embedding model could not be loaded. If this machine is offline or running "
                     f"in a restricted sandbox, pre-download {self._config.model_name!r} into the "
@@ -115,6 +173,29 @@ class EmbeddingService:
                     "can fetch it."
                 ) from exc
         return self._model
+
+    def _check_cuda_memory_headroom(self, resolved_device: str) -> None:
+        """Fail early when configured CUDA matching does not have enough free VRAM."""
+        try:
+            import torch
+
+            index = torch.device(resolved_device).index or 0
+            free_bytes, _total_bytes = torch.cuda.mem_get_info(index)
+        except Exception as exc:
+            logger.debug("Could not preflight CUDA embedding memory: %s", exc)
+            return
+
+        required_bytes = int(self._config.memory_limit_gb * 1024**3)
+        if free_bytes < required_bytes:
+            free_mib = free_bytes // (1024 * 1024)
+            required_mib = required_bytes // (1024 * 1024)
+            raise ConfigError(
+                "embedding.device is CUDA, but free VRAM is below the configured embedding "
+                f"budget ({free_mib} MiB free; {required_mib} MiB required by "
+                "embedding.memory_limit_gb). Reduce vLLM GPU_MEM / --gpu-memory-utilization, "
+                "stop other GPU processes, or explicitly set embedding.device='cpu' for "
+                "degraded CPU matching."
+            )
 
     def _get_cache_key(self, text: str) -> str:
         """Generate cache key for text, including model and config."""
@@ -131,6 +212,14 @@ class EmbeddingService:
         key = self._get_cache_key(text)
         return self._cache_dir / f"{key}.npy"
 
+    def _get_memory_cached(self, text: str) -> EmbeddingVector | None:
+        with self._memory_cache_lock:
+            return self._memory_cache.get(self._get_cache_key(text))
+
+    def _set_memory_cached(self, text: str, embedding: EmbeddingVector) -> None:
+        with self._memory_cache_lock:
+            self._memory_cache[self._get_cache_key(text)] = embedding
+
     def embed(self, text: str, use_cache: bool = True) -> EmbeddingVector:
         """Generate embedding for a single text.
 
@@ -143,10 +232,15 @@ class EmbeddingService:
         """
         # Check cache
         if use_cache:
+            memory_cached = self._get_memory_cached(text)
+            if memory_cached is not None:
+                return memory_cached
             cache_path = self._get_cache_path(text)
             if cache_path.exists():
                 try:
-                    return np.load(str(cache_path))  # type: ignore[no-any-return]
+                    cached = np.load(str(cache_path))
+                    self._set_memory_cached(text, cached)
+                    return cached  # type: ignore[no-any-return]
                 except Exception as e:
                     logger.debug("Cache miss: %s", e)
 
@@ -167,8 +261,12 @@ class EmbeddingService:
 
         # Save to cache
         if use_cache:
+            self._set_memory_cached(text, embedding)
             cache_path = self._get_cache_path(text)
-            np.save(str(cache_path), embedding)
+            try:
+                np.save(str(cache_path), embedding)
+            except OSError as exc:
+                logger.debug("Could not write embedding cache %s: %s", cache_path, exc)
 
         return embedding
 
@@ -182,43 +280,57 @@ class EmbeddingService:
         Returns:
             List of embedding vectors
         """
-        # Check cache for all texts
+        # Check memory/disk cache for all texts and deduplicate model work for repeated texts.
         results: list[EmbeddingVector | None] = []
-        uncached_indices: list[int] = []
-        uncached_texts: list[str] = []
+        unique_uncached_texts: list[str] = []
+        pending_by_text: dict[str, list[int]] = {}
 
         for i, text in enumerate(texts):
             if use_cache:
+                memory_cached = self._get_memory_cached(text)
+                if memory_cached is not None:
+                    results.append(memory_cached)
+                    continue
                 cache_path = self._get_cache_path(text)
                 if cache_path.exists():
                     try:
-                        results.append(np.load(str(cache_path)))
+                        cached = np.load(str(cache_path))
+                        self._set_memory_cached(text, cached)
+                        results.append(cached)
                         continue
                     except Exception as e:
                         logger.debug("Cache miss for index %d: %s", i, e)
             results.append(None)
-            uncached_indices.append(i)
-            uncached_texts.append(text)
+            if text in pending_by_text:
+                pending_by_text[text].append(i)
+            else:
+                pending_by_text[text] = [i]
+                unique_uncached_texts.append(text)
 
         # Generate embeddings for uncached texts
-        if uncached_texts:
+        if unique_uncached_texts:
             model = self._load_model()
             embeddings = cast(
                 list[EmbeddingVector],
                 model.encode(
-                    uncached_texts,
+                    unique_uncached_texts,
                     batch_size=self._config.batch_size,
                     normalize_embeddings=self._config.normalize_embeddings,
-                    show_progress_bar=len(uncached_texts) > 10,
+                    show_progress_bar=len(unique_uncached_texts) > 10,
                 ),
             )
 
             # Save to cache and fill results
-            for idx, embedding in zip(uncached_indices, embeddings, strict=False):
+            for text, embedding in zip(unique_uncached_texts, embeddings, strict=False):
                 if use_cache:
-                    cache_path = self._get_cache_path(texts[idx])
-                    np.save(str(cache_path), embedding)
-                results[idx] = embedding
+                    self._set_memory_cached(text, embedding)
+                    cache_path = self._get_cache_path(text)
+                    try:
+                        np.save(str(cache_path), embedding)
+                    except OSError as exc:
+                        logger.debug("Could not write embedding cache %s: %s", cache_path, exc)
+                for idx in pending_by_text[text]:
+                    results[idx] = embedding
 
         return [r for r in results if r is not None]
 

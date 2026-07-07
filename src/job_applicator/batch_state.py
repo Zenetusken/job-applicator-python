@@ -32,6 +32,12 @@ CREATE TABLE IF NOT EXISTS batch_runs (
     top_k INTEGER,
     min_score REAL,
     cover_letter BOOLEAN,
+    style_guide_path TEXT,
+    output_format TEXT,
+    resume_template TEXT,
+    cover_letter_template TEXT,
+    category TEXT,
+    ocr_mode TEXT,
     status TEXT NOT NULL,
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL
@@ -47,6 +53,7 @@ CREATE TABLE IF NOT EXISTS batch_jobs (
     resume_path TEXT,
     cover_letter_path TEXT,
     pdf_path TEXT,
+    cover_letter_pdf_path TEXT,
     error_message TEXT,
     updated_at TIMESTAMP NOT NULL,
     PRIMARY KEY (run_id, job_url)
@@ -118,6 +125,8 @@ class BatchState:
                 conn.executescript(_CREATE_SQL)
                 # Migration: older databases were created without pdf_path.
                 self._migrate_add_pdf_path(conn)
+                self._migrate_add_batch_identity_columns(conn)
+                self._migrate_add_cover_letter_pdf_path(conn)
         except sqlite3.Error as exc:
             raise BatchStateError(f"Cannot initialize batch schema: {exc}") from exc
 
@@ -128,6 +137,29 @@ class BatchState:
         if "pdf_path" not in columns:
             conn.execute("ALTER TABLE batch_jobs ADD COLUMN pdf_path TEXT")
 
+    @staticmethod
+    def _migrate_add_cover_letter_pdf_path(conn: sqlite3.Connection) -> None:
+        """Add the ``cover_letter_pdf_path`` column to ``batch_jobs`` if it is missing."""
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(batch_jobs)")}
+        if "cover_letter_pdf_path" not in columns:
+            conn.execute("ALTER TABLE batch_jobs ADD COLUMN cover_letter_pdf_path TEXT")
+
+    @staticmethod
+    def _migrate_add_batch_identity_columns(conn: sqlite3.Connection) -> None:
+        """Add output-affecting batch identity columns to older ``batch_runs`` tables."""
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(batch_runs)")}
+        additions = {
+            "style_guide_path": "TEXT",
+            "output_format": "TEXT",
+            "resume_template": "TEXT",
+            "cover_letter_template": "TEXT",
+            "category": "TEXT",
+            "ocr_mode": "TEXT",
+        }
+        for name, sql_type in additions.items():
+            if name not in columns:
+                conn.execute(f"ALTER TABLE batch_runs ADD COLUMN {name} {sql_type}")
+
     def start_run(self, spec: BatchRunSpec, *, run_id: str, reset: bool = True) -> str:
         """Create or reset a batch run record. Returns the run_id."""
         now = datetime.now(UTC).isoformat()
@@ -136,7 +168,9 @@ class BatchState:
                 # Guard: refuse to reset a run_id that already belongs to a DIFFERENT spec — an
                 # explicit --run-id reuse must never silently wipe an unrelated run's progress.
                 prior = conn.execute(
-                    "SELECT site, query, jobs_file, resume_path, top_k, min_score, cover_letter "
+                    "SELECT site, query, jobs_file, resume_path, top_k, min_score, cover_letter, "
+                    "style_guide_path, output_format, resume_template, cover_letter_template, "
+                    "category, ocr_mode "
                     "FROM batch_runs WHERE run_id = ?",
                     (run_id,),
                 ).fetchone()
@@ -148,6 +182,12 @@ class BatchState:
                     or prior[4] != spec.top_k
                     or prior[5] != spec.min_score
                     or bool(prior[6]) != spec.cover_letter
+                    or prior[7] != spec.style_guide_path
+                    or prior[8] != spec.output_format
+                    or prior[9] != spec.resume_template
+                    or prior[10] != spec.cover_letter_template
+                    or prior[11] != spec.category
+                    or prior[12] != spec.ocr_mode
                 ):
                     raise BatchStateError(
                         f"run_id {run_id!r} already belongs to a different batch run; omit "
@@ -157,14 +197,21 @@ class BatchState:
                     """
                     INSERT INTO batch_runs (
                         run_id, site, query, jobs_file, resume_path, top_k, min_score,
-                        cover_letter, status, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        cover_letter, style_guide_path, output_format, resume_template,
+                        cover_letter_template, category, ocr_mode, status, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(run_id) DO UPDATE SET
                         status=excluded.status,
                         updated_at=excluded.updated_at,
                         top_k=excluded.top_k,
                         min_score=excluded.min_score,
-                        cover_letter=excluded.cover_letter
+                        cover_letter=excluded.cover_letter,
+                        style_guide_path=excluded.style_guide_path,
+                        output_format=excluded.output_format,
+                        resume_template=excluded.resume_template,
+                        cover_letter_template=excluded.cover_letter_template,
+                        category=excluded.category,
+                        ocr_mode=excluded.ocr_mode
                     """,
                     (
                         run_id,
@@ -175,6 +222,12 @@ class BatchState:
                         spec.top_k,
                         spec.min_score,
                         spec.cover_letter,
+                        spec.style_guide_path,
+                        spec.output_format,
+                        spec.resume_template,
+                        spec.cover_letter_template,
+                        spec.category,
+                        spec.ocr_mode,
                         BatchRunStatus.RUNNING,
                         now,
                         now,
@@ -201,6 +254,8 @@ class BatchState:
                     SELECT run_id FROM batch_runs
                     WHERE site = ? AND query IS ? AND jobs_file IS ? AND resume_path = ?
                       AND top_k = ? AND min_score = ? AND cover_letter = ?
+                      AND style_guide_path IS ? AND output_format = ? AND resume_template = ?
+                      AND cover_letter_template = ? AND category IS ? AND ocr_mode = ?
                       AND status IN (?, ?)
                     ORDER BY updated_at DESC
                     LIMIT 1
@@ -213,6 +268,12 @@ class BatchState:
                         spec.top_k,
                         spec.min_score,
                         spec.cover_letter,
+                        spec.style_guide_path,
+                        spec.output_format,
+                        spec.resume_template,
+                        spec.cover_letter_template,
+                        spec.category,
+                        spec.ocr_mode,
                         BatchRunStatus.RUNNING,
                         BatchRunStatus.FAILED,
                     ),
@@ -230,6 +291,7 @@ class BatchState:
         resume_path: str | None = None,
         cover_letter_path: str | None = None,
         pdf_path: str | None = None,
+        cover_letter_pdf_path: str | None = None,
         error_message: str | None = None,
     ) -> None:
         """Persist the status of a single job within a batch run."""
@@ -240,14 +302,16 @@ class BatchState:
                     """
                     INSERT INTO batch_jobs (
                         run_id, job_url, title, company, board, status, resume_path,
-                        cover_letter_path, pdf_path, error_message, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        cover_letter_path, pdf_path, cover_letter_pdf_path, error_message,
+                        updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(run_id, job_url) DO UPDATE SET
                         status=excluded.status,
                         board=excluded.board,
                         resume_path=excluded.resume_path,
                         cover_letter_path=excluded.cover_letter_path,
                         pdf_path=excluded.pdf_path,
+                        cover_letter_pdf_path=excluded.cover_letter_pdf_path,
                         error_message=excluded.error_message,
                         updated_at=excluded.updated_at
                     """,
@@ -261,6 +325,7 @@ class BatchState:
                         resume_path,
                         cover_letter_path,
                         pdf_path,
+                        cover_letter_pdf_path,
                         error_message,
                         now,
                     ),

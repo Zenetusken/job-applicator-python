@@ -104,10 +104,12 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
   OpenAI-compatible endpoint (`[llm] api_base`, default `localhost:8000`); the app never starts
   one. Embeddings run in-process. Optional `[serve]` extra (vLLM 0.23.x, CUDA 13.0 wheel) +
   `scripts/serve-vllm.sh` self-host a local vLLM for standalone boxes. The script defaults to
-  job-applicator's own `.venv/bin/vllm`, `GPU_MEM=0.70`, `MAX_MODEL_LEN=8192`, and
-  `ENFORCE_EAGER=1` (avoids vLLM 0.23's V1 cudagraph-profiling OOM on 12 GB cards).
+  job-applicator's own `.venv/bin/vllm`, `GPU_MEM=0.65`, `MAX_MODEL_LEN=8192`, and
+  `ENFORCE_EAGER=1`, which keeps enough 8K KV cache for Qwen3-8B-AWQ while leaving CUDA
+  embedding headroom on the validated 12 GB RTX 4070 profile.
 - Instructor for structured LLM outputs (Pydantic models)
-- mxbai-embed-large-v1 for semantic job matching (~1.5 GB VRAM)
+- mxbai-embed-large-v1 for semantic job matching (~1.4 GB runtime allocation,
+  1.3 GB free-VRAM preflight budget)
 - Style analyzer with persistent cache and multi-document support. It tries instructor structured
   output first, logs elapsed time and fallback reason, then falls back to direct litellm JSON
   parsing; direct fallback failures use `utils.llm.llm_call_error()`, including the sandbox/socket
@@ -170,9 +172,9 @@ one base model at a time; a per-step bigger model (the `[cover_letter]` override
 
 | Component | Allocation |
 |---|---|
-| vLLM (Qwen3-8B-AWQ, eager mode, GPU_MEM=0.70) | ~8.4 GB (6.1 GB weights + KV) |
-| Embeddings (mxbai-embed-large-v1) | ~1.5 GB |
-| Free VRAM | ~2.4 GB |
+| vLLM (Qwen3-8B-AWQ, eager mode, GPU_MEM=0.65) | ~7.9 GB (6.1 GB weights + KV) |
+| Embeddings (mxbai-embed-large-v1) | ~1.4 GB |
+| Runtime headroom | ~1.5-1.8 GB free on the validated RTX 4070 desktop profile |
 
 ## Embedding Service
 

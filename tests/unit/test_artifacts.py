@@ -91,6 +91,32 @@ def test_write_cover_letter_writes_files_and_sets_output_path(tmp_path: Path) ->
     assert Path(cl_path).name == "cover_letter_Acme_Sr_Eng_20260622_143000.txt"
 
 
+def test_text_artifacts_do_not_overwrite_same_second_same_name_outputs(
+    tmp_path: Path,
+) -> None:
+    first = _tailored()
+    second = _tailored()
+    first_path, first_meta = write_tailored(tmp_path, first, when=WHEN)
+    second_path, second_meta = write_tailored(tmp_path, second, when=WHEN)
+
+    assert second_path != first_path
+    assert Path(first_path).exists()
+    assert Path(second_path).exists()
+    assert Path(second_path).name == "tailored_Ac_me_Inc_Sr_Eng_20260622_143000_1.txt"
+    assert second.output_path == second_path
+    assert second_meta != first_meta
+
+    first_letter = _cover_letter()
+    second_letter = _cover_letter()
+    first_cl_path, first_cl_meta = write_cover_letter(tmp_path, first_letter, when=WHEN)
+    second_cl_path, second_cl_meta = write_cover_letter(tmp_path, second_letter, when=WHEN)
+
+    assert second_cl_path != first_cl_path
+    assert Path(second_cl_path).name == "cover_letter_Acme_Sr_Eng_20260622_143000_1.txt"
+    assert second_letter.output_path == second_cl_path
+    assert second_cl_meta != first_cl_meta
+
+
 def test_safe_filename_slug_sanitizes_and_caps_at_30() -> None:
     slug = safe_filename_slug("A Very Long Company Name That Exceeds Thirty Characters")
     assert "/" not in slug and ":" not in slug  # specials → "_"

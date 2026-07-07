@@ -173,6 +173,98 @@ def test_embeddings_via_hub_miss(monkeypatch: pytest.MonkeyPatch) -> None:
     assert res.cache_path is None
 
 
+def test_embeddings_cuda_device_not_ready_when_torch_cannot_see_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        diagnostics.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "sentence_transformers" else None,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(
+            __version__="2.11.0+cu130",
+            version=SimpleNamespace(cuda="13.0"),
+            cuda=SimpleNamespace(is_available=lambda: False, device_count=lambda: 0),
+        ),
+    )
+
+    res = diagnostics.check_embeddings(EmbeddingConfig(model_name="org/name", device="cuda"))
+
+    assert res.configured_device == "cuda"
+    assert res.resolved_device is None
+    assert not res.device_ready
+    assert "CUDA is not available" in (res.runtime_error or "")
+
+
+def test_embeddings_explicit_cpu_reports_ready_when_runtime_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        diagnostics.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "sentence_transformers" else None,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(
+            __version__="2.11.0+cu130",
+            version=SimpleNamespace(cuda="13.0"),
+            cuda=SimpleNamespace(is_available=lambda: False, device_count=lambda: 0),
+        ),
+    )
+
+    res = diagnostics.check_embeddings(EmbeddingConfig(model_name="org/name", device="cpu"))
+
+    assert res.configured_device == "cpu"
+    assert res.resolved_device == "cpu"
+    assert res.device_ready
+
+
+def test_embeddings_cuda_not_ready_when_free_vram_below_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        diagnostics.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "sentence_transformers" else None,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(
+            __version__="2.11.0+cu130",
+            version=SimpleNamespace(cuda="13.0"),
+            cuda=SimpleNamespace(
+                is_available=lambda: True,
+                device_count=lambda: 1,
+                get_device_name=lambda _idx: "GPU",
+                mem_get_info=lambda _idx: (512 * 1024 * 1024, 12 * 1024 * 1024 * 1024),
+            ),
+        ),
+    )
+
+    res = diagnostics.check_embeddings(
+        EmbeddingConfig(model_name="org/name", device="cuda", memory_limit_gb=1.4)
+    )
+
+    assert not res.device_ready
+    assert res.resolved_device is None
+    assert "free VRAM" in (res.runtime_error or "")
+
+
 def test_embeddings_fallback_honors_hf_hub_cache(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -248,7 +340,7 @@ def _report(*, reachable: bool, http_status: int | None, model_available: bool) 
             http_status=http_status,
             model_available=model_available,
         ),
-        embeddings=EmbeddingsCheck(model_name="m", cached=False),
+        embeddings=EmbeddingsCheck(model_name="m", cached=False, device_ready=False),
         self_host=SelfHostCheck(vllm_installed=False, hf_token_present=False),
         browser=BrowserCheck(playwright_installed=True, chromium_executable="/bin/chromium"),
         system=SystemBinariesCheck(
@@ -304,7 +396,13 @@ def test_build_readiness_summarizes_capabilities() -> None:
             http_status=200,
             model_configured="m",
         ),
-        embeddings=EmbeddingsCheck(model_name="emb", cached=True),
+        embeddings=EmbeddingsCheck(
+            model_name="emb",
+            cached=True,
+            configured_device="cuda",
+            resolved_device="cuda",
+            device_ready=True,
+        ),
         browser=BrowserCheck(playwright_installed=True, chromium_executable="/bin/chromium"),
         config=ConfigCheck(
             config_file_found=True,
@@ -323,7 +421,13 @@ def test_build_readiness_summarizes_capabilities() -> None:
 def test_build_readiness_marks_matching_uncertified_without_resume() -> None:
     readiness = diagnostics.build_readiness(
         llm=LLMEndpointCheck(api_base="x", reachable=True, http_status=200, model_configured="m"),
-        embeddings=EmbeddingsCheck(model_name="emb", cached=True),
+        embeddings=EmbeddingsCheck(
+            model_name="emb",
+            cached=True,
+            configured_device="cuda",
+            resolved_device="cuda",
+            device_ready=True,
+        ),
         browser=BrowserCheck(playwright_installed=True, chromium_executable="/bin/chromium"),
         config=ConfigCheck(config_file_found=False, resume_path_set=False),
         pdf_rendering=PDFRenderingCheck(ok=False, message="typst missing"),
@@ -336,7 +440,13 @@ def test_build_readiness_marks_matching_uncertified_without_resume() -> None:
 def test_build_readiness_marks_matching_uncertified_when_resume_missing() -> None:
     readiness = diagnostics.build_readiness(
         llm=LLMEndpointCheck(api_base="x", reachable=True, http_status=200, model_configured="m"),
-        embeddings=EmbeddingsCheck(model_name="emb", cached=True),
+        embeddings=EmbeddingsCheck(
+            model_name="emb",
+            cached=True,
+            configured_device="cuda",
+            resolved_device="cuda",
+            device_ready=True,
+        ),
         browser=BrowserCheck(playwright_installed=True, chromium_executable="/bin/chromium"),
         config=ConfigCheck(
             config_file_found=True,
@@ -412,7 +522,7 @@ def test_render_doctor_escapes_dynamic_values(status: int | None) -> None:
             models_seen=["a [/] b"],
             error="boom [/] [red] boom" if status != 200 else None,
         ),
-        embeddings=EmbeddingsCheck(model_name="m-[/]", cached=False),
+        embeddings=EmbeddingsCheck(model_name="m-[/]", cached=False, device_ready=False),
         self_host=SelfHostCheck(vllm_installed=False, hf_token_present=False),
         browser=BrowserCheck(playwright_installed=False, error="[red]fail[/red]"),
         system=SystemBinariesCheck(

@@ -9,6 +9,7 @@ Refinements:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -19,7 +20,13 @@ from typing import Any, cast
 from job_applicator.config import LLMConfig
 from job_applicator.exceptions import LLMError
 from job_applicator.models import StyleGuide
-from job_applicator.utils.llm import llm_call_error
+from job_applicator.utils.llm import (
+    LLMRuntime,
+    litellm_model,
+    llm_call_error,
+    quiet_litellm,
+    strip_thinking_process,
+)
 from job_applicator.utils.logging import get_logger
 from job_applicator.utils.retry import async_retry
 
@@ -126,10 +133,12 @@ class StyleAnalyzer:
     - Richer style dimensions
     """
 
-    def __init__(self, config: LLMConfig) -> None:
+    def __init__(self, config: LLMConfig, runtime: LLMRuntime | None = None) -> None:
         self._config = config
+        self._runtime = runtime or LLMRuntime.defaults(name="style-analyzer")
         self._cache_dir = Path.home() / ".job-applicator" / "styles"
         self._cache_dir.mkdir(parents=True, exist_ok=True)
+        self._instructor_unavailable = False
 
     def _get_cache_key(self, text: str) -> str:
         """Generate cache key from text hash + model name."""
@@ -174,75 +183,85 @@ class StyleAnalyzer:
     async def _analyze_with_llm(self, text: str) -> StyleGuide:
         """Perform the actual LLM analysis using instructor for structured output."""
         try:
-            from job_applicator.utils.llm import litellm_model, quiet_litellm
-
             quiet_litellm()
-            import instructor
             from litellm import acompletion
 
             model = litellm_model(self._config)
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": ANALYSIS_PROMPT.format(text=text[:3000])},
+            ]
+            max_tokens = min(self._config.max_tokens, STYLE_MAX_TOKENS)
 
             # Try instructor first (structured output with automatic retry).
             # instructor defaults to TOOLS mode, which uses vLLM's tool-call
             # parser (qwen3_xml for Qwen3.5). In our vLLM 0.23 tests this is
             # faster and more schema-accurate than json_object or guided_json.
             started = time.monotonic()
-            logger.info(
-                "Starting style analysis via instructor: model=%s input_chars=%d",
-                model,
-                min(len(text), 3000),
-            )
-            try:
-                client: Any = instructor.from_litellm(acompletion)
-                response = await client.create(
-                    model=model,
-                    api_base=self._config.api_base,
-                    api_key=self._config.api_key,
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": ANALYSIS_PROMPT.format(text=text[:3000])},
-                    ],
-                    response_model=StyleGuide,
-                    max_retries=2,
-                    max_tokens=min(self._config.max_tokens, STYLE_MAX_TOKENS),
-                    temperature=0.1,
-                    extra_body={
-                        "chat_template_kwargs": {"enable_thinking": False},
-                    },
-                )
+            if not self._instructor_unavailable:
                 logger.info(
-                    "Analyzed writing style via instructor in %.1fs: tone=%s",
-                    time.monotonic() - started,
-                    response.tone,
+                    "Starting style analysis via instructor: model=%s input_chars=%d",
+                    model,
+                    min(len(text), 3000),
                 )
-                return cast(StyleGuide, response)
-            except Exception as exc:
-                logger.warning(
-                    "Style analyzer instructor path failed after %.1fs (%s: %s); "
-                    "falling back to direct litellm JSON parsing",
-                    time.monotonic() - started,
-                    type(exc).__name__,
-                    exc,
-                )
+                try:
+                    import instructor
+
+                    client: Any = instructor.from_litellm(acompletion)
+
+                    async def _call_instructor(_prev: LLMError | None) -> StyleGuide:
+                        response = await client.create(
+                            model=model,
+                            api_base=self._config.api_base,
+                            api_key=self._config.api_key,
+                            messages=messages,
+                            response_model=StyleGuide,
+                            max_retries=self._runtime.validation_max_retries,
+                            max_tokens=max_tokens,
+                            temperature=0.1,
+                            extra_body={
+                                "chat_template_kwargs": {"enable_thinking": False},
+                            },
+                        )
+                        return cast(StyleGuide, response)
+
+                    response = await self._runtime.run(_call_instructor)
+                    logger.info(
+                        "Analyzed writing style via instructor in %.1fs: tone=%s",
+                        time.monotonic() - started,
+                        response.tone,
+                    )
+                    return response
+                except Exception as exc:
+                    if "tool" in str(exc).lower() or "parser" in str(exc).lower():
+                        self._instructor_unavailable = True
+                    logger.warning(
+                        "Style analyzer instructor path failed after %.1fs (%s: %s); "
+                        "falling back to direct litellm JSON parsing",
+                        time.monotonic() - started,
+                        type(exc).__name__,
+                        exc,
+                    )
 
             # Fallback: direct litellm call with manual JSON parsing
             started = time.monotonic()
             logger.info("Starting style analysis via direct litellm JSON fallback: model=%s", model)
             try:
-                response = await acompletion(
-                    model=model,
-                    api_base=self._config.api_base,
-                    api_key=self._config.api_key,
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": ANALYSIS_PROMPT.format(text=text[:3000])},
-                    ],
-                    max_tokens=self._config.max_tokens,
-                    temperature=0.1,
-                    extra_body={
-                        "chat_template_kwargs": {"enable_thinking": False},
-                    },
-                )
+
+                async def _call_direct(_prev: LLMError | None) -> Any:
+                    return await acompletion(
+                        model=model,
+                        api_base=self._config.api_base,
+                        api_key=self._config.api_key,
+                        messages=messages,
+                        max_tokens=max_tokens,
+                        temperature=0.1,
+                        extra_body={
+                            "chat_template_kwargs": {"enable_thinking": False},
+                        },
+                    )
+
+                direct_response = await self._runtime.run(_call_direct)
             except Exception as exc:
                 logger.warning(
                     "Style analyzer direct litellm fallback failed after %.1fs (%s: %s)",
@@ -252,9 +271,7 @@ class StyleAnalyzer:
                 )
                 raise llm_call_error(exc, self._config.api_base) from exc
 
-            content = response.choices[0].message.content
-
-            from job_applicator.utils.llm import strip_thinking_process
+            content = direct_response.choices[0].message.content
 
             content = strip_thinking_process(content)
 
@@ -342,11 +359,14 @@ class StyleAnalyzer:
         if len(texts) == 1:
             return await self.analyze(texts[0], use_cache)
 
-        # Analyze each document
-        styles = []
-        for text in texts:
-            style = await self.analyze(text, use_cache)
-            styles.append(style)
+        # Analyze each document with bounded concurrency. Per-text cache still applies.
+        semaphore = asyncio.Semaphore(3)
+
+        async def analyze_one(text: str) -> StyleGuide:
+            async with semaphore:
+                return await self.analyze(text, use_cache)
+
+        styles = list(await asyncio.gather(*(analyze_one(text) for text in texts)))
 
         # Merge styles
         return self._merge_styles(styles)

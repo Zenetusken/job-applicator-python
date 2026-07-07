@@ -96,7 +96,7 @@ class EmbeddingConfig(BaseSettings):
     device: str = "cuda"
     batch_size: int = 32
     max_seq_length: int = 512
-    memory_limit_gb: float = 1.5  # VRAM allocation
+    memory_limit_gb: float = 1.3  # minimum free VRAM preflight budget for CUDA embeddings
     normalize_embeddings: bool = True
 
 

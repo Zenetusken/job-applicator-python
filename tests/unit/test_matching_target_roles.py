@@ -17,10 +17,6 @@ from job_applicator.embeddings.matching import JobMatcher, MatchResult
 from job_applicator.models import JobBoard, JobListing, ResumeData
 
 
-async def _inline_to_thread(fn: Any, *args: Any, **kwargs: Any) -> Any:
-    return fn(*args, **kwargs)
-
-
 def _matcher(rules: list[TargetRoleRule]) -> JobMatcher:
     return JobMatcher(
         EmbeddingConfig(device="cpu", memory_limit_gb=0.5),
@@ -138,39 +134,35 @@ class TestBoostSeamSeparation:
         async def _no_skills(*a: Any, **k: Any) -> tuple[list[str], list[str]]:
             return [], []
 
+        async def _no_skills_for_jobs(
+            _resume: ResumeData,
+            jobs: list[JobListing],
+        ) -> list[tuple[list[str], list[str]]]:
+            return [([], []) for _ in jobs]
+
         m._match_skills = _no_skills  # type: ignore[method-assign]
+        m._match_skills_for_jobs = _no_skills_for_jobs  # type: ignore[method-assign]
         return m
 
     @staticmethod
     def _resume() -> ResumeData:
         return ResumeData(raw_text="SOC analyst. Skills: SIEM, incident response.")
 
-    async def test_fit_path_never_boosted(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
-            "job_applicator.embeddings.matching.asyncio.to_thread", _inline_to_thread
-        )
+    async def test_fit_path_never_boosted(self) -> None:
         m = self._stubbed_matcher()
         res = await m.match_resume_to_job(self._resume(), _job("AI Safety Expert - Red Team"))
         assert res.target_role is None  # fit path never tags
         assert res.score == pytest.approx(0.5)  # pure combined fit, NO +0.15 boost
 
-    async def test_ranking_path_boosted_and_tagged(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
-            "job_applicator.embeddings.matching.asyncio.to_thread", _inline_to_thread
-        )
+    async def test_ranking_path_boosted_and_tagged(self) -> None:
         m = self._stubbed_matcher()
         ranked = await m.rank_jobs(self._resume(), [_job("AI Safety Expert - Red Team")], top_k=1)
         assert ranked[0].target_role == "red-team"
         assert ranked[0].score == pytest.approx(0.65)  # 0.5 fit + 0.15 boost
         assert ranked[0].semantic_score == pytest.approx(0.5)  # fit component stays pure
 
-    async def test_ranking_summary_describes_pure_fit_not_boosted(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_ranking_summary_describes_pure_fit_not_boosted(self) -> None:
         # Finding [7]: the "(X% similarity)" summary must reflect pure fit, not the boosted score.
-        monkeypatch.setattr(
-            "job_applicator.embeddings.matching.asyncio.to_thread", _inline_to_thread
-        )
         m = self._stubbed_matcher()
         ranked = await m.rank_jobs(self._resume(), [_job("AI Safety Expert - Red Team")], top_k=1)
         assert "50%" in ranked[0].summary  # pure 0.5, not boosted 0.65

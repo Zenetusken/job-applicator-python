@@ -73,6 +73,8 @@ ENV = {
     "PLAYWRIGHT_BROWSERS_PATH": PW_PATH,
     "NO_COLOR": "1",
     "COLUMNS": "200",
+    # Keep live LLM checks repeatable enough for a gate without changing product defaults.
+    "JOB_APPLICATOR_LLM_TEMPERATURE": "0.2",
 }
 # NO_COLOR alone is NOT enough under a dev shell's FORCE_COLOR: FORCE_COLOR forces Rich's
 # is_terminal=True, so the progress SPINNER still ANIMATES onto a piped stdout (NO_COLOR only strips
@@ -144,6 +146,24 @@ def run(
 
 def has_traceback(cp: subprocess.CompletedProcess[str]) -> bool:
     return "Traceback (most recent call last)" in (cp.stdout + cp.stderr)
+
+
+def _compact_tail(text: str, *, limit: int = 260) -> str:
+    tail = " ".join(text.split())
+    if len(tail) <= limit:
+        return tail
+    return "…" + tail[-limit:]
+
+
+def command_detail(cp: subprocess.CompletedProcess[str], *, prefix: str = "") -> str:
+    parts = [f"exit={cp.returncode}"]
+    if prefix:
+        parts.insert(0, prefix)
+    if cp.stderr:
+        parts.append(f"stderr={_compact_tail(cp.stderr)}")
+    elif cp.stdout:
+        parts.append(f"stdout={_compact_tail(cp.stdout)}")
+    return "; ".join(parts)
 
 
 def grounding_fail_closed(cp: subprocess.CompletedProcess[str]) -> bool:
@@ -236,6 +256,33 @@ def make_fixtures() -> dict[str, Path]:
     ]
     jf = WORK / "jobs.json"
     jf.write_text(json.dumps(jobs))
+    batch_jobs = [
+        {"title": "Senior Python Engineer", "company": "Initech",
+         "url": "https://example.com/batch/1",
+         "description": "Async data pipelines in Python; asyncio, Pydantic, PostgreSQL, AWS.",
+         "requirements": ["Python", "asyncio", "PostgreSQL"], "board": "linkedin"},
+        {"title": "Backend Platform Engineer", "company": "Globex",
+         "url": "https://example.com/batch/2",
+         "description": "High-throughput Python backend services with asyncio, Redis, PostgreSQL, "
+                        "Docker, and AWS.",
+         "requirements": ["Python", "Redis", "Docker"], "board": "linkedin"},
+        {"title": "Data Pipeline Engineer", "company": "Acme Analytics",
+         "url": "https://example.com/batch/3",
+         "description": "Build async ingestion services with Python, Pydantic, PostgreSQL, and AWS.",
+         "requirements": ["Python", "Pydantic", "AWS"], "board": "linkedin"},
+    ]
+    batch_jf = WORK / "batch_jobs.json"
+    batch_jf.write_text(json.dumps(batch_jobs))
+    recovery_jobs = batch_jobs + [
+        {"title": f"Python Platform Engineer {i}", "company": f"BatchCo{i}",
+         "url": f"https://example.com/batch/recovery/{i}",
+         "description": "Python async services, Pydantic data validation, PostgreSQL schemas, "
+                        "Redis caching, Docker delivery, and AWS operations.",
+         "requirements": ["Python", "Pydantic", "PostgreSQL"], "board": "linkedin"}
+        for i in range(4, 9)
+    ]
+    recovery_jf = WORK / "batch_recovery_jobs.json"
+    recovery_jf.write_text(json.dumps(recovery_jobs))
     bigjobs = jobs + [
         {"title": f"Engineer {i}", "company": f"Co{i}", "url": f"https://example.com/jobs/1{i}",
          "description": "Python, asyncio, AWS, distributed systems.",
@@ -247,7 +294,8 @@ def make_fixtures() -> dict[str, Path]:
     malformed = WORK / "malformed.json"
     malformed.write_text('[{"title":"X",')
     return {"resume": rdoc, "low": low, "corrupt": corrupt, "empty": empty,
-            "jobs": jf, "bigjobs": bf, "malformed": malformed}
+            "jobs": jf, "batch_jobs": batch_jf, "batch_recovery_jobs": recovery_jf,
+            "bigjobs": bf, "malformed": malformed}
 
 
 # ---------------------------------------------------------------- CORE checks (offline)
@@ -626,11 +674,12 @@ def live_checks(fx: dict[str, Path]) -> None:
            f"exit={tfrom_exit}")
 
     # batch: clean multi-job run + artifacts
-    cp = run("batch", "--resume", str(fx["resume"]), "--jobs-file", str(fx["jobs"]),
+    cp = run("batch", "--resume", str(fx["resume"]), "--jobs-file", str(fx["batch_jobs"]),
              "--no-cover-letter", "--run-id", "qa_a", timeout=300)
     bscraped = any(s in (cp.stdout + cp.stderr).lower() for s in ("playwright", "chromium"))
     record("batch: --jobs-file tailors (no scraping)", t,
-           cp.returncode == 0 and "tailored" in cp.stdout and not bscraped, f"exit={cp.returncode}")
+           cp.returncode == 0 and "tailored" in cp.stdout and not bscraped,
+           command_detail(cp))
 
     cp = run("batch", "--resume", str(fx["resume"]), "--jobs-file", str(fx["malformed"]),
              "--no-cover-letter", timeout=60)
@@ -642,15 +691,17 @@ def live_checks(fx: dict[str, Path]) -> None:
 
 def crash_recovery_check(fx: dict[str, Path], t: str) -> None:
     """Deterministic resume test: run a batch, then SIMULATE an interrupted run by
-    editing the isolated DB (mark run incomplete, drop 3 completed jobs + artifacts),
+    editing the isolated DB (mark run incomplete, drop completed job rows),
     and assert --resume-run skips the survivors and finishes the rest. No kill-timing
     flakiness — the resume LOGIC is what matters and the units cover the kill path."""
     db = ISO_HOME / ".job-applicator" / "applications.db"
-    cp = run("batch", "--resume", str(fx["resume"]), "--jobs-file", str(fx["bigjobs"]),
-             "--top-k", "8", "--no-cover-letter", "--run-id", "qa_cr", timeout=420)
-    if cp.returncode != 0 or not db.exists():
-        skip("batch: crash recovery (resume skips completed)", t,
-             f"setup run failed (exit={cp.returncode}); resume logic covered by test_batch_state")
+    cp = run("batch", "--resume", str(fx["resume"]), "--jobs-file",
+             str(fx["batch_recovery_jobs"]), "--top-k", "8", "--no-cover-letter",
+             "--run-id", "qa_cr", timeout=420)
+    setup_exit = cp.returncode
+    if not db.exists():
+        record("batch: crash recovery (resume skips completed)", t, False,
+               command_detail(cp, prefix="setup did not create DB"))
         return
     try:
         c = sqlite3.connect(str(db))
@@ -659,9 +710,14 @@ def crash_recovery_check(fx: dict[str, Path], t: str) -> None:
         ).fetchone()[0]
         if done < 5:
             c.close()
-            skip("batch: crash recovery (resume skips completed)", t,
-                 f"only {done} completed; need ≥5 to simulate partial")
+            record("batch: crash recovery (resume skips completed)", t, False,
+                   f"setup produced only {done} completed rows; need >=5 to simulate partial")
             return
+        # A live generation setup can fail closed on one generated résumé while still leaving
+        # enough completed rows to simulate an interrupted partial run. Recovery should operate
+        # on the resumable partial state, so remove failed/incomplete rows and force the run back
+        # to running before invoking --resume-run.
+        c.execute("delete from batch_jobs where run_id='qa_cr' and status != 'completed'")
         victims = [r[0] for r in c.execute(
             "select job_url from batch_jobs where status='completed' and run_id='qa_cr' limit 3")]
         c.execute(
@@ -670,18 +726,22 @@ def crash_recovery_check(fx: dict[str, Path], t: str) -> None:
         c.commit()
         c.close()
     except Exception as exc:
-        skip("batch: crash recovery (resume skips completed)", t, f"db edit failed: {exc}")
+        record("batch: crash recovery (resume skips completed)", t, False, f"db edit failed: {exc}")
         return
-    cp = run("batch", "--resume", str(fx["resume"]), "--jobs-file", str(fx["bigjobs"]),
-             "--top-k", "8", "--no-cover-letter", "--run-id", "qa_cr", "--resume-run", timeout=420)
+    cp = run("batch", "--resume", str(fx["resume"]), "--jobs-file",
+             str(fx["batch_recovery_jobs"]), "--top-k", "8", "--no-cover-letter",
+             "--run-id", "qa_cr", "--resume-run", timeout=420)
     c = sqlite3.connect(str(db))
     final = c.execute(
         "select count(*) from batch_jobs where status='completed' and run_id='qa_cr'"
     ).fetchone()[0]
     c.close()
     record("batch: crash recovery (resume skips completed)", t,
-           cp.returncode == 0 and "Resuming" in cp.stdout and "Skipping" in cp.stdout and final == 8,
-           f"exit={cp.returncode}, final_completed={final}")
+           cp.returncode == 0
+           and "Resuming" in cp.stdout
+           and "Skipping" in cp.stdout
+           and final == 8,
+           f"setup_exit={setup_exit}; {command_detail(cp)}, final_completed={final}")
 
 
 # ---------------------------------------------------------------- report
@@ -695,7 +755,8 @@ def render() -> int:
     lines = ["# job-applicator — QA sanity report", ""]
     lines.append(f"isolation: real ~/.job-applicator/applications.db **{'UNCHANGED ✓' if isolation_ok else 'CHANGED ✗ — ISOLATION BREACH'}**")
     lines.append("note: isolated run uses CONFIG DEFAULTS (no real config.toml) — reproducible, "
-                 "won't catch config-specific issues.")
+                 "won't catch config-specific issues; live LLM checks pin temperature=0.2 for "
+                 "repeatability.")
     lines.append("")
     summary = "  ".join(f"{k}={counts[k]}" for k in
                         ("PASS", "FAIL", "XFAIL", "XPASS", "WARN", "SKIP") if k in counts)

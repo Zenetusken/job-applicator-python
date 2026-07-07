@@ -83,7 +83,7 @@ def style_guide_batch_env(
     tailor = MagicMock()
     tailored = TailoredResume(
         original_path=str(sample_resume_file),
-        tailored_text="Tailored resume text",
+        tailored_text="John Doe\njohn@example.com\n555-0123\nTailored resume text",
         job_title="Python Developer",
         job_company="TechCorp",
         job_url="https://example.com/1",
@@ -103,6 +103,7 @@ def style_guide_batch_env(
     cl_generator = MagicMock()
     cl_generator.load_style_guide = AsyncMock(return_value=style)
     cl_generator.generate = AsyncMock(return_value="cover letter")
+    cl_generator.generate_verified = AsyncMock(return_value="cover letter")
 
     with (
         patch.object(cli, "_get_settings", return_value=MagicMock()) as mock_settings,
@@ -127,6 +128,10 @@ def style_guide_batch_env(
         settings.output_dir = str(sample_jobs_file.parent / "out")
         Path(settings.output_dir).mkdir(parents=True, exist_ok=True)
         settings.ensure_output_dir.return_value = Path(settings.output_dir)
+        settings.output = MagicMock()
+        settings.output.default_format = "txt"
+        settings.output.resume_template = "modern"
+        settings.output.cover_letter_template = "modern"
         settings.embedding = MagicMock()
         settings.log_level = "INFO"
         settings.browser = MagicMock()
@@ -386,7 +391,7 @@ class TestBatchStyleGuide:
         )
 
         assert result.exit_code == 0, result.output
-        env["cl_generator"].generate.assert_not_called()
+        env["cl_generator"].generate_verified.assert_not_called()
 
     def test_style_guide_load_receives_ocr_mode(
         self, style_guide_batch_env: dict[str, object]
@@ -465,7 +470,7 @@ class TestBatchRecovery:
                 "1",
             ],
         )
-        assert result.exit_code == 0, result.output
+        assert result.exit_code != 0, result.output
         bs.complete_run.assert_called_with(ANY, BatchRunStatus.FAILED)  # FAILED, not COMPLETED
 
     def test_batch_marks_run_failed_on_empty_message_error(
@@ -491,7 +496,7 @@ class TestBatchRecovery:
                 "1",
             ],
         )
-        assert result.exit_code == 0, result.output
+        assert result.exit_code != 0, result.output
         bs.complete_run.assert_called_with(ANY, BatchRunStatus.FAILED)  # not wrongly COMPLETED
 
     def test_batch_refines_dirty_grounding_before_saving(
@@ -502,7 +507,7 @@ class TestBatchRecovery:
         env = style_guide_batch_env
         dirty = TailoredResume(
             original_path=str(env["sample_resume_file"]),
-            tailored_text="Dirty tailored resume text",
+            tailored_text="John Doe\njohn@example.com\n555-0123\nDirty tailored resume text",
             job_title="Python Developer",
             job_company="TechCorp",
             job_url="https://example.com/1",
@@ -518,7 +523,7 @@ class TestBatchRecovery:
         )
         clean = dirty.model_copy(
             update={
-                "tailored_text": "Clean tailored resume text",
+                "tailored_text": "John Doe\njohn@example.com\n555-0123\nClean tailored resume text",
                 "grounding_report": GroundingReport(),
             }
         )
@@ -541,3 +546,103 @@ class TestBatchRecovery:
 
         assert result.exit_code == 0, result.output
         env["tailor"].refine_verified.assert_awaited_once()
+
+    def test_batch_cover_letter_receives_tone_section(
+        self, style_guide_batch_env: dict[str, object]
+    ) -> None:
+        """Batch cover letters should get the same tone directive as standalone/TUI generation."""
+        env = style_guide_batch_env
+
+        result = env["runner"].invoke(  # type: ignore[attr-defined]
+            env["app"],
+            [
+                "batch",
+                "--resume",
+                str(env["sample_resume_file"]),
+                "--jobs-file",
+                str(env["sample_jobs_file"]),
+                "--top-k",
+                "1",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        kwargs = env["cl_generator"].generate_verified.await_args.kwargs
+        assert kwargs["tone_section"]
+        assert kwargs["tailored_resume_text"] == (
+            "John Doe\njohn@example.com\n555-0123\nTailored resume text"
+        )
+
+    def test_cover_letter_failure_preserves_tailored_state_for_resume(
+        self, style_guide_batch_env: dict[str, object]
+    ) -> None:
+        """If the CV is verified but the cover letter fails, keep the job TAILORED so resume-run
+        can continue from the saved CV instead of re-tailoring."""
+        from job_applicator.batch_state import BatchJobStatus, BatchRunStatus
+
+        env = style_guide_batch_env
+        env["cl_generator"].generate_verified = AsyncMock(side_effect=RuntimeError("cl boom"))
+        bs = env["batch_state"]
+
+        result = env["runner"].invoke(  # type: ignore[attr-defined]
+            env["app"],
+            [
+                "batch",
+                "--resume",
+                str(env["sample_resume_file"]),
+                "--jobs-file",
+                str(env["sample_jobs_file"]),
+                "--top-k",
+                "1",
+            ],
+        )
+
+        assert result.exit_code != 0, result.output
+        bs.complete_run.assert_called_with(ANY, BatchRunStatus.FAILED)
+        last_record = bs.record_job.call_args_list[-1]
+        assert last_record.args[2] == BatchJobStatus.TAILORED
+        assert last_record.kwargs["resume_path"]
+        assert last_record.kwargs["error_message"] == "cl boom"
+
+    def test_duplicate_matched_urls_are_rejected(
+        self, style_guide_batch_env: dict[str, object]
+    ) -> None:
+        """Batch recovery is keyed by URL, so duplicate matched URLs must fail before concurrent
+        document generation begins."""
+        env = style_guide_batch_env
+        duplicate = MatchResult(
+            job=JobListing(
+                title="Duplicate Python Developer",
+                company="TechCorp",
+                url="https://example.com/1",
+                description="Python",
+                requirements=["Python"],
+                board=JobBoard.LINKEDIN,
+            ),
+            score=0.85,
+            semantic_score=0.8,
+            skill_score=0.75,
+            matched_skills=["Python"],
+            missing_skills=[],
+            summary="duplicate",
+        )
+        first = env["matcher"].rank_jobs.return_value[0]  # type: ignore[index,union-attr]
+        env["matcher"].rank_jobs = AsyncMock(return_value=[first, duplicate])
+        bs = env["batch_state"]
+
+        result = env["runner"].invoke(  # type: ignore[attr-defined]
+            env["app"],
+            [
+                "batch",
+                "--resume",
+                str(env["sample_resume_file"]),
+                "--jobs-file",
+                str(env["sample_jobs_file"]),
+                "--top-k",
+                "2",
+            ],
+        )
+
+        assert result.exit_code != 0, result.output
+        assert "unique URLs" in result.output
+        bs.start_run.assert_not_called()

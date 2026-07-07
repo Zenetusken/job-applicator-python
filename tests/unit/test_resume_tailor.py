@@ -15,7 +15,7 @@ from job_applicator.documents.resume_tailor import (
     parse_sections,
 )
 from job_applicator.embeddings.matching import MatchResult
-from job_applicator.exceptions import GroundingUnavailableError
+from job_applicator.exceptions import ConfigError, GroundingUnavailableError
 from job_applicator.models import (
     ClaimCheck,
     GroundingReport,
@@ -78,6 +78,14 @@ async def test_verify_tailored_failsafe_leaves_none() -> None:
     )
     out = await tailor.verify_tailored(_tr("anything"), ResumeData(raw_text="src", skills=[]))
     assert out.grounding_report is None
+
+
+async def test_tailor_requires_matcher_or_match_result() -> None:
+    tailor = ResumeTailor(LLMConfig(model="m"))
+    resume = ResumeData(raw_text="src", skills=[])
+    job = MagicMock()
+    with pytest.raises(ConfigError, match="configured JobMatcher"):
+        await tailor.tailor(resume, job)
 
 
 async def test_refine_verified_reverifies_the_refined_result() -> None:

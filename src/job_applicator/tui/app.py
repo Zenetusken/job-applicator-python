@@ -9,10 +9,11 @@ navigating, and filtering touch only local state.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable
+import inspect
+from collections.abc import Awaitable, Callable
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
 from rich.console import Console, ConsoleOptions, RenderResult
 from rich.markup import escape
@@ -40,6 +41,7 @@ from job_applicator.tui.textfmt import format_job_description
 
 if TYPE_CHECKING:
     from job_applicator.config import AppSettings
+    from job_applicator.embeddings.matching import JobMatcher
     from job_applicator.jobs_store import JobStore
     from job_applicator.models import JobListing, StoredJob
     from job_applicator.scrapers.base import SearchParams
@@ -245,6 +247,7 @@ class JobApplicatorApp(App[None]):
         Binding("e", "set_resume", "Résumé"),
         Binding("g", "set_style_guide", "Style guide", show=False),
         Binding("A", "ats_check", "ATS", show=False),
+        Binding("D", "document_quality", "Quality", show=False),
         Binding("o", "open_url", "Open"),
         Binding("y", "copy_url", "Copy URL", show=False),
         Binding("slash", "filter", "Find"),
@@ -288,6 +291,7 @@ class JobApplicatorApp(App[None]):
         self._min_salary = 0  # min annual-salary floor (0 = off; see _SALARY_CYCLE)
         self._hide_unlisted = False  # when True, hide jobs with no parseable salary
         self._load_error = ""
+        self._matcher: JobMatcher | None = None
         # True while we programmatically move the stage tab to mirror _stage_filter, so the
         # tab-activated handler doesn't re-apply/reload. Starts True to swallow the auto-activation
         # of the first tab during mount (on_mount drives the first real reload itself).
@@ -310,6 +314,44 @@ class JobApplicatorApp(App[None]):
         self._reload()  # builds the job cards + seeds the stage-tab counts + sets the highlight
         self._tab_sync = False  # mount done — real tab clicks now apply + reload
         self.query_one("#joblist", JobList).focus()  # the list owns focus, not tabs / filter
+
+    def on_unmount(self) -> None:
+        """Release long-lived workers owned by the TUI session."""
+        if self._matcher is not None:
+            self._matcher.close()
+            self._matcher = None
+
+    def _job_matcher(self) -> JobMatcher:
+        """Session-scoped matcher reused by TUI search and tailoring actions."""
+        if self._matcher is None:
+            from job_applicator.embeddings.matching import JobMatcher
+            from job_applicator.factories import _make_runtime
+
+            runtime = _make_runtime(self._settings, name="tui-matching")
+            self._matcher = JobMatcher(
+                self._settings.embedding,
+                self._settings.llm,
+                runtime,
+                grounding_mode=self._settings.skills.grounding_mode,
+                matching=self._settings.matching,
+            )
+        return self._matcher
+
+    @staticmethod
+    def _supports_action_kw(func: Callable[..., Any], name: str) -> bool:
+        """Whether an injected action callable accepts a keyword argument.
+
+        Unit tests replace action functions with small fakes; production actions accept
+        ``matcher`` for session-scoped embedding reuse, while older/fake callables may not.
+        """
+        try:
+            signature = inspect.signature(func)
+        except (TypeError, ValueError):
+            return True
+        return any(
+            param_name == name or param.kind is inspect.Parameter.VAR_KEYWORD
+            for param_name, param in signature.parameters.items()
+        )
 
     def on_tabs_tab_activated(self, event: Tabs.TabActivated) -> None:
         """A stage tab was clicked/selected → apply it as the stage filter. Suppressed while we
@@ -997,15 +1039,16 @@ class JobApplicatorApp(App[None]):
             else f"Tailoring {job.title}…"
         )
         self._set_busy(label)
+        tailor_kwargs: dict[str, Any] = {
+            "style_guide_path": self._settings.style_guide_path,
+            "output_format": output_format,
+        }
+        if self._supports_action_kw(actions.tailor_job, "matcher"):
+            tailor_kwargs["matcher"] = self._job_matcher()
         try:
             tailored = await self._run_action(
                 "Tailor",
-                actions.tailor_job(
-                    self._settings,
-                    job,
-                    style_guide_path=self._settings.style_guide_path,
-                    output_format=output_format,
-                ),
+                actions.tailor_job(self._settings, job, **tailor_kwargs),
             )
         finally:
             self._set_busy("")
@@ -1119,6 +1162,34 @@ class JobApplicatorApp(App[None]):
         source = "tailored résumé" if tailored_resume_path else "configured résumé"
         self.push_screen(AtsScreen(result, source))
 
+    def action_document_quality(self) -> None:
+        """Evaluate generated document artifacts for the selected job. Account-safe."""
+        if self._current is None:
+            self.notify("No job selected.", severity="warning")
+            return
+        if not (self._current.tailored_resume_path or self._current.cover_letter_path):
+            self.notify("No generated document artifacts for this job.", severity="warning")
+            return
+        self._document_quality_worker(self._current)
+
+    @work(exclusive=True, group="action")
+    async def _document_quality_worker(self, stored_job: StoredJob) -> None:
+        from job_applicator.tui import actions
+
+        self._set_busy("Checking document quality…")
+        try:
+            result = await self._run_action(
+                "Document quality",
+                actions.document_quality(self._settings, stored_job),
+            )
+        finally:
+            self._set_busy("")
+        if result is None:
+            return
+        from job_applicator.tui.screens import DocumentQualityScreen
+
+        self.push_screen(DocumentQualityScreen(result))
+
     def action_search(self) -> None:
         """Open the search modal. Touches the account only on submit — the modal collects
         the query and shows the 'opens a browser on your real account' warning."""
@@ -1166,14 +1237,19 @@ class JobApplicatorApp(App[None]):
         results: list[tuple[str, int | None]] = []
         try:
             for params in plans:
+                search_kwargs: dict[str, Any] = {
+                    "on_progress": self._set_busy,
+                    "on_job": on_job,
+                }
+                if self._supports_action_kw(actions.search_jobs, "matcher"):
+                    search_kwargs["matcher"] = self._job_matcher()
                 found = await self._run_action(
                     f"Search {params.board.display_name}",
                     actions.search_jobs(
                         self._settings,
                         self._store,
                         params,
-                        on_progress=self._set_busy,
-                        on_job=on_job,
+                        **search_kwargs,
                     ),
                 )
                 results.append((params.board.display_name, found))

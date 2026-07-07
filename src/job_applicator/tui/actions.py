@@ -10,6 +10,7 @@ below, and the UI gates them behind an explicit confirm.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -22,25 +23,40 @@ from job_applicator.documents.artifacts import (
 )
 from job_applicator.documents.job_category import detect_job_category
 from job_applicator.models import Format
-from job_applicator.workflows.tailor import assert_tailored_auto_saveable
+from job_applicator.workflows.tailor_auto import tailor_auto_verified_saveable
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from job_applicator.config import AppSettings
-    from job_applicator.embeddings.matching import MatchResult
+    from job_applicator.config import AppSettings, LLMConfig
+    from job_applicator.documents.quality_eval import PacketQualityReport, QualityReport
+    from job_applicator.embeddings.matching import JobMatcher, MatchResult
     from job_applicator.jobs_store import JobStore
     from job_applicator.models import (
         ApplicationResult,
         ATSCompatibilityResult,
         CoverLetterResult,
         JobListing,
+        StoredJob,
         StyleGuide,
         TailoredResume,
     )
     from job_applicator.scrapers.base import SearchParams
+    from job_applicator.utils.llm import LLMRuntime
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class DocumentQualityResult:
+    """Display-ready quality result for a selected TUI job."""
+
+    passed: bool
+    source: str
+    keyword_source: str
+    artifact_paths: list[str]
+    reports: list[QualityReport]
+    packet: PacketQualityReport | None = None
 
 
 def _read_text_file(path: str | Path) -> str:
@@ -51,7 +67,12 @@ def _write_text_file(path: str | Path, content: str) -> None:
     Path(path).write_text(content, encoding="utf-8")
 
 
-async def _load_style_guide(settings: AppSettings, style_guide_path: str) -> StyleGuide | None:
+async def _load_style_guide(
+    settings: AppSettings,
+    style_guide_path: str,
+    llm_config: LLMConfig,
+    runtime: LLMRuntime | None = None,
+) -> StyleGuide | None:
     """Analyze the configured style-guide path(s) into a ``StyleGuide``.
 
     Returns ``None`` when no path is configured. Errors are raised as
@@ -62,7 +83,7 @@ async def _load_style_guide(settings: AppSettings, style_guide_path: str) -> Sty
     from job_applicator.documents.cover_letter import CoverLetterGenerator
     from job_applicator.factories import _make_runtime
 
-    generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=_make_runtime(settings))
+    generator = CoverLetterGenerator(llm_config, runtime=runtime or _make_runtime(settings))
     return await generator.load_style_guide(style_guide_path)
 
 
@@ -73,6 +94,7 @@ async def tailor_job(
     style_guide_path: str = "",
     output_format: Format = Format.TXT,
     template: str | None = None,
+    matcher: JobMatcher | None = None,
 ) -> TailoredResume:
     """Tailor the configured résumé for ``job`` (non-interactive, first version) and write
     the artifact; returns the ``TailoredResume`` with ``output_path`` set.
@@ -89,14 +111,31 @@ async def tailor_job(
     from job_applicator.documents.resume import ResumeLoader
     from job_applicator.documents.resume_tailor import ResumeTailor
     from job_applicator.factories import _make_runtime
+    from job_applicator.utils.profile import _detect_tone
 
+    runtime = _make_runtime(settings)
     resume_data = ResumeLoader().load(settings.resume_path)
-    style = await _load_style_guide(settings, style_guide_path)
-    engine = ResumeTailor(settings.llm, runtime=_make_runtime(settings))
-    tailored = await engine.tailor_verified(
-        resume=resume_data, job=job, user_instructions="", style_guide=style
+    style = await _load_style_guide(settings, style_guide_path, settings.llm, runtime)
+    engine = ResumeTailor(settings.llm, runtime=runtime)
+    if matcher is None:
+        from job_applicator.embeddings.matching import JobMatcher
+
+        matcher = JobMatcher(
+            settings.embedding,
+            settings.llm,
+            runtime,
+            grounding_mode=settings.skills.grounding_mode,
+            matching=settings.matching,
+        )
+    auto_tailor = await tailor_auto_verified_saveable(
+        tailor_engine=engine,
+        resume=resume_data,
+        job=job,
+        style_guide=style,
+        tone_profile=_detect_tone(job),
+        matcher=matcher,
     )
-    assert_tailored_auto_saveable(tailored, resume_data.raw_text)
+    tailored = auto_tailor.tailored
     output_dir = settings.ensure_output_dir()
     when = datetime.now()
     category = detect_job_category(job)
@@ -112,6 +151,7 @@ async def tailor_job(
             template=effective_template,
             category=category,
             when=when,
+            runtime=runtime,
         )
     else:  # both
         _text_path, meta_path = write_tailored(output_dir, tailored, when=when)
@@ -123,6 +163,7 @@ async def tailor_job(
             category=category,
             when=when,
             write_meta=False,
+            runtime=runtime,
         )
         _write_text_file(meta_path, tailored.model_dump_json(indent=2))
     return tailored
@@ -167,8 +208,11 @@ async def cover_letter_job(
         except OSError:  # artifact gone/unreadable → fall back to the original résumé
             logger.warning("cover letter: tailored résumé unreadable; using the original")
     tone_section = ToneDetector().format_for_prompt(_detect_tone(job))
-    style = await _load_style_guide(settings, style_guide_path)
-    generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=_make_runtime(settings))
+    runtime = _make_runtime(settings)
+    style = await _load_style_guide(
+        settings, style_guide_path, settings.cover_letter_llm(), runtime
+    )
+    generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=runtime)
     letter = await generator.generate_verified(
         job,
         _load_user_profile(settings, resume_name=resume_data.name),
@@ -194,7 +238,13 @@ async def cover_letter_job(
         write_cover_letter(output_dir, result, when=when)
     elif output_format == Format.PDF:
         await write_cover_letter_pdf(
-            output_dir, result, settings, template=effective_template, category=category, when=when
+            output_dir,
+            result,
+            settings,
+            template=effective_template,
+            category=category,
+            when=when,
+            runtime=runtime,
         )
     else:  # both
         _text_path, meta_path = write_cover_letter(output_dir, result, when=when)
@@ -206,6 +256,7 @@ async def cover_letter_job(
             category=category,
             when=when,
             write_meta=False,
+            runtime=runtime,
         )
         _write_text_file(meta_path, result.model_dump_json(indent=2))
     return result
@@ -217,6 +268,7 @@ async def search_jobs(
     params: SearchParams,
     on_progress: Callable[[str], None] | None = None,
     on_job: Callable[[JobListing], None] | None = None,
+    matcher: JobMatcher | None = None,
 ) -> int:
     """Scrape ``params``, score against the résumé if one is set (→ matched, with scores;
     else → found), and persist to ``store``; returns the scraped count.
@@ -266,7 +318,10 @@ async def search_jobs(
     if settings.resume_path and jobs:
         progress(f"Scoring {len(jobs)} job(s) against your résumé…")
         try:
-            matches = await _score_jobs(settings, jobs)
+            if matcher is None:
+                matches = await _score_jobs(settings, jobs)
+            else:
+                matches = await _score_jobs(settings, jobs, matcher)
         except Exception:
             logger.warning("search: scoring failed; persisting jobs unscored", exc_info=True)
     if matches is not None:
@@ -281,21 +336,25 @@ async def search_jobs(
     return len(jobs)
 
 
-async def _score_jobs(settings: AppSettings, jobs: list[JobListing]) -> list[MatchResult]:
+async def _score_jobs(
+    settings: AppSettings, jobs: list[JobListing], matcher: JobMatcher | None = None
+) -> list[MatchResult]:
     """Load the résumé and rank ``jobs`` against it."""
     from job_applicator.documents.resume import ResumeLoader
-    from job_applicator.embeddings.matching import JobMatcher
-    from job_applicator.factories import _make_runtime
 
     resume = ResumeLoader().load(settings.resume_path)
-    runtime = _make_runtime(settings, name="tui-score")
-    matcher = JobMatcher(
-        settings.embedding,
-        settings.llm,
-        runtime,
-        grounding_mode=settings.skills.grounding_mode,
-        matching=settings.matching,
-    )
+    if matcher is None:
+        from job_applicator.embeddings.matching import JobMatcher
+        from job_applicator.factories import _make_runtime
+
+        runtime = _make_runtime(settings, name="tui-score")
+        matcher = JobMatcher(
+            settings.embedding,
+            settings.llm,
+            runtime,
+            grounding_mode=settings.skills.grounding_mode,
+            matching=settings.matching,
+        )
     return await matcher.rank_jobs(resume, jobs, len(jobs))
 
 
@@ -375,3 +434,67 @@ async def ats_check(
         return ATSChecker().check(resume)
 
     return _run()
+
+
+async def document_quality(settings: AppSettings, stored_job: StoredJob) -> DocumentQualityResult:
+    """Evaluate saved generated artifacts for the selected job. Offline and account-safe."""
+    from job_applicator.documents.quality_eval import assess_artifacts, assess_packet_case
+    from job_applicator.exceptions import DocumentError
+
+    def _artifact(raw: str, label: str) -> Path | None:
+        if not raw:
+            return None
+        path = Path(raw)
+        if not path.exists():
+            raise DocumentError(f"{label} artifact is missing: {path}")
+        if not path.is_file():
+            raise DocumentError(f"{label} artifact is not a file: {path}")
+        return path
+
+    resume_path = _artifact(stored_job.tailored_resume_path, "tailored résumé")
+    cover_path = _artifact(stored_job.cover_letter_path, "cover letter")
+    if resume_path is None and cover_path is None:
+        raise DocumentError("No generated résumé or cover-letter text artifact for this job.")
+
+    applicant_name = "" if settings.profile_name == "default" else settings.profile_name
+    keywords = [skill.strip() for skill in stored_job.matched_skills if skill.strip()]
+    artifact_paths = [str(path) for path in (resume_path, cover_path) if path is not None]
+
+    if resume_path is not None and cover_path is not None and keywords:
+        packet = assess_packet_case(
+            {
+                "id": str(stored_job.id),
+                "resume_path": str(resume_path),
+                "cover_letter_path": str(cover_path),
+                "applicant_name": applicant_name,
+                "job_title": stored_job.job.title,
+                "company": stored_job.job.company,
+                "keywords": keywords,
+                "coherence_terms": keywords,
+            },
+            base_dir=Path.cwd(),
+        )
+        return DocumentQualityResult(
+            passed=packet.passed,
+            source="tailored résumé + cover letter",
+            keyword_source="matched skills",
+            artifact_paths=artifact_paths,
+            reports=[packet.resume, packet.cover_letter],
+            packet=packet,
+        )
+
+    reports = assess_artifacts(
+        resume_path=resume_path,
+        cover_letter_path=cover_path,
+        applicant_name=applicant_name,
+        keywords=keywords,
+    )
+    source = "generated artifacts" if len(reports) > 1 else reports[0].kind.replace("_", " ")
+    keyword_source = "matched skills" if keywords else "unavailable; structure/format only"
+    return DocumentQualityResult(
+        passed=all(report.passed for report in reports),
+        source=source,
+        keyword_source=keyword_source,
+        artifact_paths=artifact_paths,
+        reports=reports,
+    )

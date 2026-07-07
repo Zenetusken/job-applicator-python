@@ -19,6 +19,7 @@ from job_applicator.utils.path import safe_filename_slug
 if TYPE_CHECKING:
     from job_applicator.config import AppSettings
     from job_applicator.models import CoverLetterResult, TailoredResume
+    from job_applicator.utils.llm import LLMRuntime
 
 
 def strip_markdown_bold(text: str) -> str:
@@ -40,6 +41,23 @@ def _write_text(path: Path, content: str) -> None:
         path.write_text(content, encoding="utf-8")
     except OSError as exc:
         raise DocumentError(f"Cannot write {path}: {exc}") from exc
+
+
+def _write_unique_text(path: Path, content: str) -> Path:
+    """Write text to ``path`` or a suffixed sibling without overwriting an existing artifact."""
+    candidate = path
+    for index in range(1000):
+        if index:
+            candidate = path.with_name(f"{path.stem}_{index}{path.suffix}")
+        try:
+            with candidate.open("x", encoding="utf-8") as handle:
+                handle.write(content)
+            return candidate
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            raise DocumentError(f"Cannot write {candidate}: {exc}") from exc
+    raise DocumentError(f"Cannot find an unused artifact path for {path}")
 
 
 def artifact_basename(company: str, title: str, *, when: datetime) -> str:
@@ -74,9 +92,9 @@ def write_tailored(
     """
     base = artifact_basename(tailored.job_company, tailored.job_title, when=when)
     resume_path = output_dir / f"{base}.txt"
-    _write_text(resume_path, strip_markdown_bold(tailored.tailored_text))
+    resume_path = _write_unique_text(resume_path, strip_markdown_bold(tailored.tailored_text))
     tailored.output_path = str(resume_path)
-    meta_path = output_dir / f"{base}.meta.json"
+    meta_path = resume_path.with_suffix(".meta.json")
     _write_text(meta_path, tailored.model_dump_json(indent=2))
     return str(resume_path), str(meta_path)
 
@@ -90,9 +108,9 @@ def write_cover_letter(
         f"_{when.strftime('%Y%m%d_%H%M%S')}"
     )
     cl_path = output_dir / f"{base}.txt"
-    _write_text(cl_path, result.cover_letter_text)
+    cl_path = _write_unique_text(cl_path, result.cover_letter_text)
     result.output_path = str(cl_path)
-    meta_path = output_dir / f"{base}.meta.json"
+    meta_path = cl_path.with_suffix(".meta.json")
     _write_text(meta_path, result.model_dump_json(indent=2))
     return str(cl_path), str(meta_path)
 
@@ -106,6 +124,7 @@ async def write_tailored_pdf(
     category: str | None = None,
     when: datetime,
     write_meta: bool = True,
+    runtime: LLMRuntime | None = None,
 ) -> Path:
     """Render a tailored résumé to PDF and update its sidecar.
 
@@ -117,7 +136,7 @@ async def write_tailored_pdf(
         PDFRenderError: if rendering fails or the renderer did not produce a PDF.
         DocumentError: if the sidecar cannot be written.
     """
-    renderer = PDFRenderer(settings, output_dir=output_dir)
+    renderer = PDFRenderer(settings, output_dir=output_dir, runtime=runtime)
     base = pdf_artifact_basename(
         tailored.job_company, tailored.job_title, when=when, template=template
     )
@@ -150,6 +169,7 @@ async def write_cover_letter_pdf(
     category: str | None = None,
     when: datetime,
     write_meta: bool = True,
+    runtime: LLMRuntime | None = None,
 ) -> Path:
     """Render a cover letter to PDF and update its sidecar.
 
@@ -161,7 +181,7 @@ async def write_cover_letter_pdf(
         PDFRenderError: if rendering fails or the renderer did not produce a PDF.
         DocumentError: if the sidecar cannot be written.
     """
-    renderer = PDFRenderer(settings, output_dir=output_dir)
+    renderer = PDFRenderer(settings, output_dir=output_dir, runtime=runtime)
     base = cover_letter_pdf_basename(
         result.job_company, result.job_title, when=when, template=template
     )

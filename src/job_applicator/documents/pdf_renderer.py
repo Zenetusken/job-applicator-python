@@ -204,6 +204,7 @@ class PDFRenderer:
         settings: AppSettings,
         template_dir: Path | None = None,
         output_dir: Path | None = None,
+        runtime: LLMRuntime | None = None,
     ) -> None:
         self.settings = settings
         self.output_dir = output_dir or Path(settings.output_dir)
@@ -211,7 +212,9 @@ class PDFRenderer:
         self._env = typst_template_env(template_dir)
         self._client: Any | None = None
         self._client_lock = asyncio.Lock()
-        self._llm_runtime = LLMRuntime.from_config(settings.llm_resilience, name="pdf_renderer")
+        self._llm_runtime = runtime or LLMRuntime.from_config(
+            settings.llm_resilience, name="pdf_renderer"
+        )
 
     @classmethod
     def shutdown(cls) -> None:

@@ -25,12 +25,12 @@ ruff format src/ tests/
 # Release (see RELEASING.md)
 bash scripts/release.sh <version>   # bump version, update CHANGELOG.md, tag, build dist
 
-# Tests — ~1428 fast unit tests (the green gate); ~1486 total = ~1428 unit + 23 integration + 35 live
+# Tests — 1487 fast unit tests (the green gate); 1546 total = 1487 unit + 24 integration + 35 live
 pytest -m unit -v               # or: pytest tests/unit/ -v   (auto-marked by location)
 pytest -m unit -v -k test_name  # single test
 python scripts/check_matcher_gate_required.py --base HEAD
 python scripts/eval_matching.py --required # REQUIRED after matcher/skill/target-role scoring changes
-python scripts/eval_document_quality.py --resume tailored.txt --cover-letter cover.txt --keyword Python
+job-applicator document-quality --resume tailored.txt --cover-letter cover.txt --keyword Python
 
 # CLI
 job-applicator                              # bare tty invocation opens the TUI
@@ -48,6 +48,8 @@ job-applicator rescore                      # Re-score STORED funnel jobs vs the
 job-applicator tailor --resume resume.pdf --from <id-or-url> [--style-guide example.txt] [--format txt|pdf|both] [--template modern|classic|minimal] [--category <category>]
 job-applicator generate-cover-letter --resume resume.pdf --job-title "..." --company "..." [--style-guide example.txt] [--format txt|pdf|both] [--template modern|classic|minimal] [--category <category>]
 job-applicator ats-check --resume resume.pdf [--json] [--strict]
+job-applicator document-quality --resume tailored.txt --cover-letter cover.txt --keyword Python [--json]
+job-applicator document-quality --private-packet-set --required [--json]
 job-applicator apply --query "python" --validate [--style-guide example.txt] [--format txt|pdf|both] [--template modern|classic|minimal] [--category <category>]            # Dry-run Easy Apply and validate it reaches Submit
 job-applicator apply --query "python" --submit --limit 5 [--style-guide example.txt] [--format txt|pdf|both] [--template modern|classic|minimal] [--category <category>]    # Send real applications
 job-applicator selector-health --site linkedin --surface search --query "python developer"  # Live selector drift report
@@ -183,7 +185,7 @@ src/job_applicator/
 - **Skill-match threshold is 0.75.** Related-but-different tech terms score below this; genuine
   synonyms/supersets pass. Do not lower without re-tuning against real résumé/job pairs.
 - **Default embedding model is `mixedbread-ai/mxbai-embed-large-v1`.** Embeddings default to CUDA
-  FP16 with ~1.5 GB VRAM; set `embedding.device="cpu"` for CPU-only boxes.
+  FP16 with a 1.3 GB free-VRAM preflight budget; set `embedding.device="cpu"` for CPU-only boxes.
 - **Embedding cache at `~/.job-applicator/embeddings/`.** Style cache at
   `~/.job-applicator/styles/`. Clear with `EmbeddingService.clear_cache()`. The first embedding
   model load also depends on the Hugging Face cache (`~/.cache/huggingface` by default); offline or
@@ -246,9 +248,14 @@ src/job_applicator/
   without Rich wrapping corruption.
 - **Batch runs persist progress for crash recovery.** State lives in
   `~/.job-applicator/applications.db` (tables `batch_runs`, `batch_jobs`, and `applications` for
-  submitted apps). Re-run with matching parameters and `--resume-run` to skip already-completed or
-  explicitly skipped jobs. `TAILORED` jobs are re-processed so their cover letters are generated,
-  reusing persisted tailored artifacts when available.
+  submitted apps). Re-run with matching output-affecting parameters and `--resume-run` to skip
+  already-completed or explicitly skipped jobs; the resume key includes the job source, résumé,
+  top-k/min-score, cover-letter flag, style guide, output format, templates, category, and OCR mode.
+  `TAILORED` jobs are re-processed so their cover letters are generated, reusing persisted tailored
+  artifacts when available. If a CV succeeds but its requested cover letter fails, the row stays
+  `TAILORED` and the run is marked `FAILED`; the CLI still writes `batch_summary_*.json` and exits
+  non-zero. Duplicate matched URLs are rejected before concurrent document generation because batch
+  recovery is keyed by URL.
 - **`apply` is dry-run by default.** Real applications require the explicit `--submit` flag.
   Without it the Easy Apply form is filled but never submitted.
 - **Dry-run `apply` generates cover letters as a preview.** Whenever `--cover-letter` is enabled
@@ -298,8 +305,9 @@ var or `config.toml`. Default `llm.max_tokens` is `4096`.
 To self-host, install the `[serve]` extra (vLLM 0.23.x, CUDA 13.0 wheel) and run
 `scripts/serve-vllm.sh`. The script runs job-applicator's own `.venv/bin/vllm` (or an explicit
 `VLLM_BIN`) — for isolation it does NOT silently fall back to a `vllm` on `$PATH`; if neither is
-present it errors. Defaults: `GPU_MEM=0.70`, `MAX_MODEL_LEN=8192`, and `ENFORCE_EAGER=1` (needed
-on 12 GB cards to avoid vLLM 0.23's V1 cudagraph-profiling OOM). Override with `VLLM_BIN`,
+present it errors. Defaults: `GPU_MEM=0.65`, `MAX_MODEL_LEN=8192`, and `ENFORCE_EAGER=1`; this
+keeps enough 8K KV cache for Qwen3-8B-AWQ while leaving the CUDA embedder's 1.3 GB free-VRAM
+preflight budget available on the validated 12 GB RTX 4070 profile. Override with `VLLM_BIN`,
 `GPU_MEM`, `MAX_MODEL_LEN`, and `ENFORCE_EAGER` env vars.
 
 `serve-vllm.sh` auto-sets `--tool-call-parser qwen3_xml --enable-auto-tool-choice` for Qwen3
@@ -325,9 +333,9 @@ that generate cover letters. The default dry-run `apply` does not run the ATS pr
 ## Testing
 
 - Tests are auto-marked by location (`tests/conftest.py`): `pytest -m unit` / `-m live` /
-  `-m integration` all work. Unit suite (`pytest -m unit`, ~1428) is fast — no browser/GPU; the green
+  `-m integration` all work. Unit suite (`pytest -m unit`, 1487) is fast — no browser/GPU; the green
   gate.
-- 23 integration tests live in `tests/integration/` and exercise cross-component seams with no
+- 24 integration tests live in `tests/integration/` and exercise cross-component seams with no
   vLLM/GPU: board browser-policy wiring, PDF rendering, the apply-loop + batch-loop against a real
   SQLite state store (real daily-cap / dedup / resume persistence the mock-state unit tests can't
   reach), and the offline browser-fingerprint self-consistency gate (real Chrome, loopback only).
@@ -342,16 +350,18 @@ that generate cover letters. The default dry-run `apply` does not run the ATS pr
   DB. Use `--required` for matcher-sensitive changes: missing private data, missing résumé, empty
   labels, no labeled jobs, or incomplete coverage exit non-zero so absence of evidence cannot
   certify a matcher change.
-- Generated document packet quality has a lightweight artifact gate:
-  `python scripts/eval_document_quality.py --resume <txt> --cover-letter <txt> --keyword <job-term>`.
+- Generated document packet quality has a first-class artifact gate:
+  `job-applicator document-quality --resume <txt> --cover-letter <txt> --keyword <job-term>`.
   It checks obvious quality regressions (missing contact/sections/sign-off, placeholders, markdowny
   cover letters, repetition warnings, and basic job-keyword coverage). It complements, not replaces,
   grounding and human review. Generated packet changes can also be certified against a private
-  packet set with `python scripts/eval_document_quality.py --packet-set --required`; the default
+  packet set with `job-applicator document-quality --private-packet-set --required`; the default
   private manifest is `~/.job-applicator/document-quality-eval/packet-set.jsonl` (override with
-  `DOCUMENT_QUALITY_SET`). Private gold-standard CV/cover-letter bundles live under
-  `~/.job-applicator/document-quality-eval/gold-standards/`. See `docs/document-quality-eval.md`
-  for the manifest, 0-4 rubric, and gold-standard bundle layout.
+  `DOCUMENT_QUALITY_SET`). `scripts/eval_document_quality.py` remains a compatibility wrapper for
+  script-based gates. Private gold-standard CV/cover-letter bundles live under
+  `~/.job-applicator/document-quality-eval/gold-standards/`. The TUI has an explicit `D`
+  document-quality action for the selected job's saved text artifacts. See
+  `docs/document-quality-eval.md` for the manifest, 0-4 rubric, and gold-standard bundle layout.
 - Tests use fixtures from `tests/conftest.py`.
 - Embedding tests mock the model (CPU fallback).
 

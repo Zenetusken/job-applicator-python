@@ -12,7 +12,7 @@ from job_applicator.config import LLMConfig
 from job_applicator.documents.grounding_verifier import GroundingVerifier
 from job_applicator.documents.resume import MONTH_MAP, parse_date_range, section_header
 from job_applicator.documents.style_analyzer import StyleAnalyzer
-from job_applicator.exceptions import GroundingUnavailableError, LLMError
+from job_applicator.exceptions import ConfigError, GroundingUnavailableError, LLMError
 from job_applicator.models import (
     DateAuditResult,
     JobListing,
@@ -27,7 +27,7 @@ from job_applicator.utils.retry import async_retry
 
 if TYPE_CHECKING:
     from job_applicator.documents.tone_detector import ToneProfile
-    from job_applicator.embeddings.matching import JobMatcher
+    from job_applicator.embeddings.matching import JobMatcher, MatchResult
 
 logger = get_logger("documents.resume_tailor")
 
@@ -824,6 +824,7 @@ class ResumeTailor:
         style_guide: StyleGuide | None = None,
         tone_profile: ToneProfile | None = None,
         matcher: JobMatcher | None = None,
+        match_result: MatchResult | None = None,
     ) -> TailoredResume:
         """Tailor a resume for a specific job.
 
@@ -833,21 +834,27 @@ class ResumeTailor:
             user_instructions: Optional user guidance for tailoring
             style_guide: Optional style guide to apply
             tone_profile: Optional pre-detected ToneProfile to avoid re-detection
-            matcher: Optional JobMatcher instance to reuse (avoids re-creating)
+            matcher: Optional configured JobMatcher instance to reuse
+            match_result: Optional already-computed fit score to avoid duplicate matching
 
         Returns:
             TailoredResume with full metadata
         """
-        from job_applicator.config import EmbeddingConfig
-        from job_applicator.embeddings.matching import JobMatcher
-
-        if matcher is None:
-            matcher = JobMatcher(
-                EmbeddingConfig(device="cpu", memory_limit_gb=0.5),
-                self._config,
-                self._runtime,
+        if match_result is None:
+            if matcher is None:
+                raise ConfigError(
+                    "Resume tailoring requires a configured JobMatcher or precomputed "
+                    "MatchResult. Pass the command/TUI/batch matcher so embeddings use the "
+                    "configured device instead of constructing a hidden fallback matcher."
+                )
+            match_result = await matcher.match_resume_to_job(resume, job)
+        elif match_result.job != job:
+            logger.debug(
+                "Using caller-provided MatchResult for %s at %s; job object differs from "
+                "the tailoring target.",
+                match_result.job.title,
+                match_result.job.company,
             )
-        match_result = await matcher.match_resume_to_job(resume, job)
 
         logger.info("Current match: %.0f%%", match_result.score * 100)
 
@@ -949,6 +956,7 @@ class ResumeTailor:
         style_guide: StyleGuide | None = None,
         tone_profile: ToneProfile | None = None,
         matcher: JobMatcher | None = None,
+        match_result: MatchResult | None = None,
     ) -> TailoredResume:
         """``tailor`` plus a language-agnostic grounding pass (spec §6).
 
@@ -960,7 +968,7 @@ class ResumeTailor:
         never reported as verified.
         """
         result = await self.tailor(
-            resume, job, user_instructions, style_guide, tone_profile, matcher
+            resume, job, user_instructions, style_guide, tone_profile, matcher, match_result
         )
         return await self.verify_tailored(result, resume)
 
@@ -1086,14 +1094,11 @@ class ResumeTailor:
         changes = await self._summarize_changes(current_tailored.tailored_text, refined_text)
 
         # Recompute match scores against the refined text
-        from job_applicator.config import EmbeddingConfig
-        from job_applicator.embeddings.matching import JobMatcher
-
         if matcher is None:
-            matcher = JobMatcher(
-                EmbeddingConfig(device="cpu", memory_limit_gb=0.5),
-                self._config,
-                self._runtime,
+            raise ConfigError(
+                "Résumé refinement requires a configured JobMatcher. Pass the command/TUI/batch "
+                "matcher so embeddings use the configured device instead of constructing a "
+                "hidden fallback matcher."
             )
 
         synthetic_resume = ResumeData(

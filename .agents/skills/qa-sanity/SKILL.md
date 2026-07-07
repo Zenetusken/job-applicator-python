@@ -26,7 +26,8 @@ The repo set up per `.agents/skills/run-job-applicator/SKILL.md` (venv + deps). 
 tier additionally needs vLLM at `http://localhost:8000/v1` and the embedding model cached
 (both already true on the dev box); LIVE auto-SKIPs if vLLM is down. If self-hosting, use
 `scripts/serve-vllm.sh` (vLLM 0.23.x CUDA 13.0 wheel; defaults to the project's own binary
-with `GPU_MEM=0.70` and `ENFORCE_EAGER=1` for 12 GB cards).
+with `GPU_MEM=0.65`, `MAX_MODEL_LEN=8192`, and `ENFORCE_EAGER=1` for the validated 12 GB
+CUDA-embedding coexistence profile).
 
 ## Run (agent path)
 
@@ -90,6 +91,8 @@ account-touching commands to `--help` probes only.
 
 - **Isolated run uses CONFIG DEFAULTS** (no real `config.toml` is loaded). Reproducible, but
   it won't catch config-specific issues — those need a separate, non-isolated check.
+- **Live LLM checks pin `JOB_APPLICATOR_LLM_TEMPERATURE=0.2`** to keep the gate repeatable while
+  preserving product defaults for normal CLI use.
 - **Don't "fix" a red XFAIL by changing the assertion to match the bug.** The check asserts
   what *should* happen on purpose; that's what makes XPASS a fix signal.
 - A check that drives a command expecting it to be **non-interactive** spends its full timeout

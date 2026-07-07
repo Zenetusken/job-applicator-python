@@ -1,9 +1,12 @@
 # Generated Document Quality Eval
 
-`scripts/eval_document_quality.py` has two modes:
+`job-applicator document-quality` has two modes:
 
 - Single-artifact smoke checks for one generated CV and/or cover letter.
 - Private packet-set certification for generated CV + cover-letter packets.
+
+`scripts/eval_document_quality.py` remains a compatibility wrapper for script-based gates and
+supports the same scoring logic.
 
 The private packet set is local data and should not be committed. The default path is:
 
@@ -27,21 +30,27 @@ Private gold standards are also local and should not be committed. The default r
 
 ```bash
 # Smoke-check one generated packet.
-.venv/bin/python scripts/eval_document_quality.py \
+job-applicator document-quality \
   --resume output/tailored_example.txt \
   --cover-letter output/cover_letter_example.txt \
   --keyword Python \
   --keyword SIEM
 
 # Certify the private packet set. Missing private data exits non-zero.
-.venv/bin/python scripts/eval_document_quality.py --packet-set --required
+job-applicator document-quality --private-packet-set --required
 
 # Use an explicit manifest and machine-readable output.
-.venv/bin/python scripts/eval_document_quality.py \
+job-applicator document-quality \
   --packet-set ~/.job-applicator/document-quality-eval/packet-set.jsonl \
   --required \
   --json
 ```
+
+In the TUI, select a job with saved generated text artifacts and press `D` to open the explicit
+document-quality panel. If both a tailored CV and a cover letter are present and the row has matched
+skills, the panel shows packet dimensions, including coherence. If matched skills are absent, it
+reports a limited structure/format certification instead of treating missing requirements as
+source-backed keywords.
 
 Without `--required`, a missing or empty packet set prints "not certified" and exits `0`.
 With `--required`, missing or empty private evidence exits `2`. A present packet set that scores
@@ -122,7 +131,7 @@ When updating a private packet, run the gate in required JSON mode and inspect b
 the prose:
 
 ```bash
-.venv/bin/python scripts/eval_document_quality.py --packet-set --required --json
+job-applicator document-quality --private-packet-set --required --json
 ```
 
 The generated cover letter should also have a clean grounding report when it was produced through

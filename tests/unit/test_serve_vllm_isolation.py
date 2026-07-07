@@ -115,6 +115,30 @@ def _bash_auto_tool_parser(model_tag: str) -> str:
     return result.stdout.strip()
 
 
+def _bash_is_compatible_vllm(cmdline: str, *, gpu_mem: str = "0.65") -> bool:
+    """Invoke the real bash ``_is_compatible_vllm`` without launching vLLM."""
+    text = SERVE_SCRIPT.read_text(encoding="utf-8")
+    match = re.search(r"^_is_compatible_vllm\(\)\s*\{.*?^\}", text, re.MULTILINE | re.DOTALL)
+    assert match, "could not extract _is_compatible_vllm() from serve-vllm.sh"
+    script = (
+        f"{match.group(0)}\n"
+        "MODEL='Qwen/Qwen3-8B-AWQ'\n"
+        "PORT=8000\n"
+        f"GPU_MEM='{gpu_mem}'\n"
+        "MAX_MODEL_LEN=8192\n"
+        "TOOL_CALL_PARSER='qwen3_xml'\n"
+        "ENFORCE_EAGER=1\n"
+        '_is_compatible_vllm "$1"\n'
+    )
+    result = subprocess.run(  # noqa: S603
+        ["bash", "-c", script, "_", cmdline],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    return result.returncode == 0
+
+
 @pytest.mark.parametrize(
     ("model_tag", "expected"),
     [
@@ -136,3 +160,15 @@ def test_bash_and_python_auto_tool_parser_agree(model_tag: str, expected: str) -
     assert bash_result == expected, f"bash mapping changed for {model_tag!r}"
     assert py_result == expected, f"python mapping changed for {model_tag!r}"
     assert bash_result == py_result, f"bash/python parser drift for {model_tag!r}"
+
+
+def test_serve_script_compatibility_checks_gpu_memory_setting() -> None:
+    """A different requested GPU_MEM must force RESTART=1 to replace the server."""
+    cmdline = (
+        "/repo/.venv/bin/vllm serve Qwen/Qwen3-8B-AWQ --host 127.0.0.1 --port 8000 "
+        "--gpu-memory-utilization 0.65 --max-model-len 8192 --enable-prefix-caching "
+        "--tool-call-parser qwen3_xml --enable-auto-tool-choice --enforce-eager"
+    )
+
+    assert _bash_is_compatible_vllm(cmdline, gpu_mem="0.65")
+    assert not _bash_is_compatible_vllm(cmdline, gpu_mem="0.60")

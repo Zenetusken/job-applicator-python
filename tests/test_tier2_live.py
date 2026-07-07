@@ -493,7 +493,11 @@ async def test_live_pipeline_tier2():
     # A9: Tailor with few-shot examples (LLM call)
     tailor = ResumeTailor(llm_config)
     result = await tailor.tailor(
-        resume=resume, job=job, user_instructions="Emphasize full-stack skills."
+        resume=resume,
+        job=job,
+        user_instructions="Emphasize full-stack skills.",
+        matcher=matcher,
+        match_result=match,
     )
 
     report("LIVE", "A9: tailor produces output", len(result.tailored_text) > 100)
