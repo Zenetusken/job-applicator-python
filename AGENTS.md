@@ -15,10 +15,8 @@ pip install -e ".[dev]"
 # First-run setup
 job-applicator config-init                  # Create a starter config.toml
 
-# Lint + format + typecheck (run in this order)
-ruff check src/ tests/
-ruff format --check src/ tests/
-mypy src/   # strict on src/; tests are checked by ruff only
+# Fast quality gate (canonical: lint + format + typecheck + unit tests)
+bash scripts/green_gate.sh
 
 # Auto-fix lint/format
 ruff check --fix src/ tests/
@@ -27,19 +25,23 @@ ruff format src/ tests/
 # Release (see RELEASING.md)
 bash scripts/release.sh <version>   # bump version, update CHANGELOG.md, tag, build dist
 
-# Tests — ~1370 fast unit tests (the green gate); ~1428 total = ~1370 unit + 23 integration + 35 live
+# Tests — ~1428 fast unit tests (the green gate); ~1486 total = ~1428 unit + 23 integration + 35 live
 pytest -m unit -v               # or: pytest tests/unit/ -v   (auto-marked by location)
 pytest -m unit -v -k test_name  # single test
+python scripts/check_matcher_gate_required.py --base HEAD
+python scripts/eval_matching.py --required # REQUIRED after matcher/skill/target-role scoring changes
+python scripts/eval_document_quality.py --resume tailored.txt --cover-letter cover.txt --keyword Python
 
 # CLI
 job-applicator                              # bare tty invocation opens the TUI
 job-applicator --help
-job-applicator doctor                       # Health check: LLM, embeddings, browser, system bins, config, résumé (identity/age/skills), self-host
+job-applicator doctor                       # Health + capability readiness: AI, matching, browser, PDF
 job-applicator config-init                  # Generate config.toml
 job-applicator login                        # Headed sign-in once; reuse session headlessly
 job-applicator import-cookies --from-browser chrome
 job-applicator check-session                # Verify board session is ready
 job-applicator search --site linkedin --query "python developer"
+job-applicator search --site linkedin --query "python developer" --selector-health  # Opt-in live selector preflight
 job-applicator status                       # Show saved job funnel
 job-applicator match --resume resume.pdf --jobs-file jobs.json
 job-applicator rescore                      # Re-score STORED funnel jobs vs the current résumé (no re-scraping)
@@ -48,6 +50,9 @@ job-applicator generate-cover-letter --resume resume.pdf --job-title "..." --com
 job-applicator ats-check --resume resume.pdf [--json] [--strict]
 job-applicator apply --query "python" --validate [--style-guide example.txt] [--format txt|pdf|both] [--template modern|classic|minimal] [--category <category>]            # Dry-run Easy Apply and validate it reaches Submit
 job-applicator apply --query "python" --submit --limit 5 [--style-guide example.txt] [--format txt|pdf|both] [--template modern|classic|minimal] [--category <category>]    # Send real applications
+job-applicator selector-health --site linkedin --surface search --query "python developer"  # Live selector drift report
+job-applicator selector-health --site linkedin --surface apply --from <id-or-url>            # Easy Apply selector probe; never submits
+job-applicator selector-health --site indeed --surface search --query "python developer"     # Indeed search/description selectors
 job-applicator batch --resume resume.pdf --jobs-file jobs.json --top-k 10 --resume-run [--style-guide "ex1.txt,ex2.pdf"] [--format txt|pdf|both] [--template modern|classic|minimal] [--category <category>]
 job-applicator tui                          # Full-screen terminal UI over the funnel store
 ```
@@ -78,6 +83,8 @@ src/job_applicator/
 ├── models.py           # Shared Pydantic models
 ├── exceptions.py       # JobApplicatorError hierarchy (incl. CookieError)
 ├── diagnostics.py      # doctor health checks
+├── selector_registry.py # Shared board selector groups for live drift probes
+├── selector_health.py  # Live selector-health service + diagnostics
 ├── state.py            # SQLite application-history store (duplicate-app prevention)
 ├── batch_state.py      # SQLite batch-progress store (crash recovery)
 ├── jobs_store.py       # SQLite job-funnel store (found → matched → tailored → cover_letter)
@@ -138,25 +145,30 @@ src/job_applicator/
 - **litellm banners are suppressed.** `utils.llm.quiet_litellm()` runs before litellm calls to keep
   feedback/help banners and INFO logs off stdout/stderr.
 - **Résumé tailoring has hallucination guards.** `_validate_skills()`, `_strip_hallucinated_tools()`,
-  and `_strip_hallucinated_education()` in `documents/resume_tailor.py` keep the output aligned
-  with the original résumé. Skill/tool matching uses fuzzy, non-greedy logic in
+  `_strip_hallucinated_education()`, metric/optional-section cleanup, and low-evidence bullet
+  filtering in `documents/resume_tailor.py` keep the output aligned with the original résumé.
+  Non-interactive tailoring (`--yes`/`--json`) prepends strict source-only instructions and retries
+  dirty grounding drafts before failing closed. Skill/tool matching uses fuzzy, non-greedy logic in
   `embeddings/matching.py`.
 - **Grounding verifier is the language-agnostic honesty layer.** `documents/grounding_verifier.py`:
   an LLM enumerates each claim in a generated doc + cites the SOURCE line; a deterministic audit
   (`audit_report` — token-overlap + numeric backstop + coverage check) overrides ungrounded
   verdicts. SOURCE is ALWAYS the BASE résumé (`resume.raw_text`) — never the JD or the tailored
-  intermediate. `CoverLetterGenerator.generate_verified()` regenerates ONCE and keeps the
-  strictly-cleaner draft; `ResumeTailor.tailor_verified()` SURFACES the result on
-  `TailoredResume.grounding_report` (never auto-strips — the résumé is the document of record).
-  Fail-safe: a verifier failure raises `GroundingUnavailableError`, never a clean report. The pure
-  audit core is unit-tested (runs on the fast gate); the LLM pass is `-m live`.
+  intermediate. `CoverLetterGenerator.generate_verified()` regenerates ONCE, then raises
+  `CoverLetterGroundingError` if the best draft is still unclean or verification is unavailable.
+  `ResumeTailor.tailor_verified()` SURFACES the result on `TailoredResume.grounding_report` (never
+  auto-strips — the résumé is the document of record). Non-interactive CV saves (`tailor --yes`,
+  `tailor --json`, TUI one-shot tailoring) fail closed unless grounding completed cleanly and the
+  tailored output preserves contact/ATS integrity. Fail-safe: a verifier failure raises
+  `GroundingUnavailableError`, never a clean report. The pure audit core is unit-tested (runs on the
+  fast gate); the LLM pass is `-m live`.
 - **Output language is a packet-level policy.** `[llm] language` = `auto` (mirror the JD) | `en` |
   `fr`, resolved by `utils/language.py` (small FR/EN heuristic, logged per job). It lives on `[llm]`
   so `cover_letter_llm` inherits it — the CV and cover letter ALWAYS resolve the SAME language.
   French gets an in-language sign-off ("Cordialement,"), a localized PDF date, and recognized French
   closings in `documents/sign_off.py`.
 - **Tailoring includes a date audit.** `ResumeDateValidator` checks chronological ordering,
-  staleness, and education-date age before generating output.
+  staleness, and advisory employment gap/overlap findings before generating output.
 - **Skills are normalized and hard-negative filtered before matching/validation.**
   `skills/normalization.py` canonicalizes aliases (`Python 3` → `Python`, `reactjs` → `React`) and
   drops generic traits (`team player`, `communication skills`) from skill coverage scoring and
@@ -166,7 +178,11 @@ src/job_applicator/
 - **Default embedding model is `mixedbread-ai/mxbai-embed-large-v1`.** Embeddings default to CUDA
   FP16 with ~1.5 GB VRAM; set `embedding.device="cpu"` for CPU-only boxes.
 - **Embedding cache at `~/.job-applicator/embeddings/`.** Style cache at
-  `~/.job-applicator/styles/`. Clear with `EmbeddingService.clear_cache()`.
+  `~/.job-applicator/styles/`. Clear with `EmbeddingService.clear_cache()`. The first embedding
+  model load also depends on the Hugging Face cache (`~/.cache/huggingface` by default); offline or
+  sandboxed `match`/`batch` runs load cached model snapshots with `local_files_only=True` to avoid
+  Hugging Face metadata probes. If no snapshot is cached, first use still needs network access to
+  download `mixedbread-ai/mxbai-embed-large-v1`.
 - **`sentence-transformers` needs CUDA torch.** The default PyPI `torch==2.11.0` wheel is already
   the CUDA 13.0 build, so a plain install matches CUDA-13 drivers. Only if your driver needs an
   *older* CUDA (you get `libcudart.so` errors) reinstall from the index matching your driver, e.g.
@@ -203,6 +219,18 @@ src/job_applicator/
   suffix checks. It is also used to drop look-alike hosts when importing cookies from a browser.
 - **LinkedIn description extraction clicks cards.** The scraper clicks each card, waits for content
   change, clicks the correct "show more" button, then extracts with a 5 000-char cap.
+- **Selector health is live-board diagnostics, not `doctor`.** `selector-health` and the opt-in
+  `search/apply --selector-health` preflights open real board pages and add traffic, so they are
+  explicit only. Required selector misses fail/abort unless `--ignore-selector-health` is supplied;
+  optional selector misses warn. JSON reports stay on stdout; logs/diagnostics go to stderr; failure
+  artifacts land in `~/.job-applicator/debug/selector-health/`.
+- **LinkedIn apply has two live surfaces.** In-product Easy Apply uses an `Easy Apply` button and
+  often shows `Next`/required fields before any Submit button. External apply uses an `Apply` button
+  with aria like "Apply to ... on company website"; that is reported as SKIPPED/manual follow-up,
+  not treated as Easy Apply selector drift.
+- **Indeed apply remains search-only/unsupported.** Indeed search and description selectors are
+  probed; on-site apply buttons may appear as `#indeedApplyButton`, but automation intentionally
+  returns SKIPPED and directs the user to apply manually.
 - **`--verbose` and `--log-file` work both before and after the *data* commands** (search, match,
   tailor, apply, batch, generate-cover-letter, ats-check). `--verbose` emits a structured
   `VerboseReport`; `--log-file` persists it to disk. The status-only `status`/`doctor`/`check-session`
@@ -222,8 +250,10 @@ src/job_applicator/
   The application is still not submitted. Use `--no-cover-letter` to skip generation.
 - **Apply dry-run validation returns an `ApplicationResult` with a `DryRunValidation` field.** The
   nested object shows whether the Easy Apply button, form fields, résumé upload, cover-letter
-  field, and final Submit step were reached. `job-applicator apply --validate` exits non-zero if
-  any dry run fails to reach Submit.
+  field, and final Submit step were reached. It also records matched advance/submit selectors,
+  advance step count, modal title, empty required fields, disabled-submit evidence, and debug
+  artifact paths when available. `job-applicator apply --validate` exits non-zero if any dry run
+  fails to reach Submit.
 - **`search` persists discovered jobs.** Discovered listings flow into `jobs_store.py` and are
   visible via `status` and the TUI.
 - **Default `llm.max_tokens` is `4096`**, matching `config.example.toml`. 4096 fits full résumé
@@ -234,7 +264,8 @@ src/job_applicator/
   `JOB_APPLICATOR_CONFIG_FILE`; a missing file is a no-op.
 - **PDF rendering requires the optional `[pdf]` extra.** Install with
   `pip install -e ".[pdf]"` (pulls in `typst`). Without it, `--format pdf` produces a clear
-  error message and `doctor` reports PDF rendering as unavailable.
+  error message and `doctor` reports PDF rendering as unavailable. `PDFRenderer` compiles Typst
+  directly in-process; spawned executor compile paths previously hung in local integration runs.
 - **PDF templates live in `src/job_applicator/templates/`** (Typst `.typ` files) and are packaged
   into the wheel via `[tool.hatch.build.targets.wheel] include`. Built-ins: `modern`, `classic`,
   `minimal`. Set `output.template_dir` to a directory containing `cv/<name>.typ` and/or
@@ -242,7 +273,8 @@ src/job_applicator/
 - **PDF artifact basenames include microseconds and the template suffix.** Plain text keeps
   `tailored_<company>_<title>_<YYYYMMDD_HHMMSS>.txt`; the PDF is
   `tailored_<company>_<title>_<YYYYMMDD_HHMMSS>_<microseconds>_<template>.pdf`. With
-  `--format both` the `.txt` + `.pdf` + one `.meta.json` sidecar (beside the `.txt`) is produced.
+  `--format both` the `.txt` + `.pdf` + one `.meta.json` sidecar (beside the `.txt`) is produced;
+  that text sidecar is updated after PDF render so it includes `pdf_path`.
 
 ## LLM Setup
 
@@ -286,7 +318,7 @@ that generate cover letters. The default dry-run `apply` does not run the ATS pr
 ## Testing
 
 - Tests are auto-marked by location (`tests/conftest.py`): `pytest -m unit` / `-m live` /
-  `-m integration` all work. Unit suite (`pytest -m unit`, ~1370) is fast — no browser/GPU; the green
+  `-m integration` all work. Unit suite (`pytest -m unit`, ~1428) is fast — no browser/GPU; the green
   gate.
 - 23 integration tests live in `tests/integration/` and exercise cross-component seams with no
   vLLM/GPU: board browser-policy wiring, PDF rendering, the apply-loop + batch-loop against a real
@@ -294,6 +326,20 @@ that generate cover letters. The default dry-run `apply` does not run the ATS pr
   reach), and the offline browser-fingerprint self-consistency gate (real Chrome, loopback only).
 - The 35 live tests at `tests/` root carry `-m live`; they need vLLM (`localhost:8000`) + GPU; run
   them manually.
+- Matcher changes have a private-data companion gate: run `python scripts/eval_matching.py` after
+  edits to `embeddings/matching.py`, skill extraction/normalization/grounding, score weights,
+  thresholds, or `[matching] target_roles` behavior. Use
+  `python scripts/check_matcher_gate_required.py --base <base>` to detect whether the gate is
+  required. The eval script reads
+  `~/.job-applicator/matching-eval/gold-set.csv` (override with `GOLD_SET_CSV`) and the live funnel
+  DB. Use `--required` for matcher-sensitive changes: missing private data, missing résumé, empty
+  labels, no labeled jobs, or incomplete coverage exit non-zero so absence of evidence cannot
+  certify a matcher change.
+- Generated document packet quality has a lightweight artifact gate:
+  `python scripts/eval_document_quality.py --resume <txt> --cover-letter <txt> --keyword <job-term>`.
+  It checks obvious quality regressions (missing contact/sections/sign-off, placeholders, markdowny
+  cover letters, repetition warnings, and basic job-keyword coverage). It complements, not replaces,
+  grounding and human review.
 - Tests use fixtures from `tests/conftest.py`.
 - Embedding tests mock the model (CPU fallback).
 

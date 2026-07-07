@@ -467,6 +467,81 @@ def test_apply_pdf_flags_accepted(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     assert mock_render.await_args.kwargs["category"] == "cybersecurity"
 
 
+def test_apply_submit_refuses_when_requested_pdf_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A real submit must not proceed when explicit PDF cover-letter output fails."""
+    import job_applicator.cli as cli
+    from job_applicator.models import JobBoard, JobListing
+
+    job = JobListing(
+        title="Dev",
+        company="Acme",
+        url="https://example.com/1",
+        board=JobBoard.LINKEDIN,
+        description="cybersecurity role",
+    )
+    loader = MagicMock()
+    loader.load.return_value = ResumeData(raw_text="John Doe\njohn@example.com\nPython")
+    apply_mock = AsyncMock()
+
+    class _BrowserCtx:
+        async def __aenter__(self) -> MagicMock:
+            return MagicMock()
+
+        async def __aexit__(self, *args: object) -> bool:
+            return False
+
+    class _State:
+        def count_today(self, *, board: str) -> int:
+            return 0
+
+        def has_applied(self, *_args: object, **_kwargs: object) -> bool:
+            return False
+
+    monkeypatch.setattr("job_applicator.documents.resume.ResumeLoader", lambda: loader)
+    monkeypatch.setattr(cli, "_run_ats_preflight", lambda r: MagicMock(score=0.8))
+    monkeypatch.setattr(cli, "_make_browser", lambda *a, **k: _BrowserCtx())
+    monkeypatch.setattr(
+        cli,
+        "_make_scraper",
+        lambda *a, **k: MagicMock(scrape=AsyncMock(return_value=[job])),
+    )
+    monkeypatch.setattr(cli, "_make_applicator", lambda *a, **k: MagicMock(apply=apply_mock))
+    monkeypatch.setattr("job_applicator.state.ApplicationState", _State)
+
+    with (
+        patch("job_applicator.documents.cover_letter.CoverLetterGenerator") as mock_gen_cls,
+        patch(
+            "job_applicator.documents.pdf_renderer.PDFRenderer.render_cover_letter",
+            new=AsyncMock(side_effect=OSError("typst failed")),
+        ),
+    ):
+        mock_gen_cls.return_value.generate_verified = AsyncMock(return_value="Dear Hiring Manager,")
+
+        result = CliRunner().invoke(
+            cli.app,
+            [
+                "apply",
+                "--query",
+                "python",
+                "--resume",
+                "r.pdf",
+                "--format",
+                "pdf",
+                "--limit",
+                "1",
+                "--submit",
+                "--yes",
+            ],
+            env={"JOB_APPLICATOR_OUTPUT_DIR": str(tmp_path)},
+        )
+
+    assert result.exit_code == 1, result.output
+    apply_mock.assert_not_awaited()
+    assert "not submitting" in result.output
+
+
 def _write_jobs_file(tmp_path: Path, jobs: list[JobListing]) -> Path:
     import json
 

@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`~/.job-applicator/matching-eval/`, personal data, not in the repo) through the LIVE pipeline —
   embeddings + extraction + boosts — and fails (exit 1) when Spearman drops below the STRONG bar
   or a non-security job crosses the fixed review floor. Run it whenever matching logic changes.
+- **Live selector-health diagnostics.** New `job-applicator selector-health` probes LinkedIn/Indeed
+  selector groups against live pages without scraping persistence or submitting applications. Search
+  probes validate card/field/description selectors; LinkedIn apply probes validate Easy Apply entry
+  and form controls. `search --selector-health` and `apply --selector-health` add opt-in preflights
+  that abort on required selector drift unless `--ignore-selector-health` is supplied. JSON reports
+  stay stdout-clean, and failure diagnostics land under
+  `~/.job-applicator/debug/selector-health/`.
 
 - **`status` now shows which search surfaced each job.** The stored `source_query` (previously
   captured but never displayed) is surfaced as a **Found via** column in the `status` table, a
@@ -87,6 +94,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   DOM"). The scrape now snapshots all card metadata first, then loads each description by re-resolving
   the card fresh by exact job id — a description that won't load degrades to a metadata-only listing
   instead of losing the whole job.
+- **LinkedIn external apply is no longer mistaken for selector drift.** Live recon showed external
+  postings render a button like "Apply to ... on company website", not the in-product Easy Apply
+  button. The applicator now detects that surface and returns SKIPPED/manual follow-up without
+  clicking it. Selector health reports external apply jobs as `skipped/ok`, while Easy Apply probes
+  accept initial Next/Continue/Review controls because Submit often appears only after the form is
+  advanced and filled.
 - **Bare `match` ranks the saved funnel.** `match` with no `--jobs-file` errored "provide
   --jobs-file" instead of ranking the jobs `search` already stored (and that it writes scores back
   to). It now reads the funnel — `search` → `match` → `tailor` flows without re-exporting a JSON file.

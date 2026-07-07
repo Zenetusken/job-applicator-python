@@ -146,6 +146,33 @@ def has_traceback(cp: subprocess.CompletedProcess[str]) -> bool:
     return "Traceback (most recent call last)" in (cp.stdout + cp.stderr)
 
 
+def grounding_fail_closed(cp: subprocess.CompletedProcess[str]) -> bool:
+    combined = (cp.stdout + cp.stderr).lower()
+    return (
+        cp.returncode != 0
+        and not has_traceback(cp)
+        and "grounding verification" in combined
+    )
+
+
+def cover_letter_fail_closed(cp: subprocess.CompletedProcess[str]) -> bool:
+    """A requested cover letter can fail closed at either honesty layer."""
+    combined = (cp.stdout + cp.stderr).lower()
+    deterministic_guard = (
+        "generated cover letter" in combined
+        and (
+            "unearned" in combined
+            or "not in the résumé" in combined
+            or "falsely claims" in combined
+            or "placeholder text" in combined
+            or "proper sign-off" in combined
+        )
+    )
+    return grounding_fail_closed(cp) or (
+        cp.returncode != 0 and not has_traceback(cp) and deterministic_guard
+    )
+
+
 def vllm_up() -> bool:
     try:
         import urllib.request
@@ -511,8 +538,9 @@ def live_checks(fx: dict[str, Path]) -> None:
              "-d", "Async pipelines; asyncio, Pydantic, PostgreSQL, AWS.",
              "--resume", str(fx["resume"]), timeout=240)
     letter = cp.stdout.split("Generated Cover Letter:", 1)[-1]
-    record("generate-cover-letter: inline (exit 0, produced)", t,
-           cp.returncode == 0 and "Generated Cover Letter" in cp.stdout, f"exit={cp.returncode}")
+    record("generate-cover-letter: inline produces or fails closed on validation", t,
+           (cp.returncode == 0 and "Generated Cover Letter" in cp.stdout)
+           or cover_letter_fail_closed(cp), f"exit={cp.returncode}")
     # KNOWN: litellm framework noise leaks to stdout on SUCCESS (instructor tool-call path
     # always fails on this vLLM → fallback → banner), polluting a redirected letter.
     record("generate-cover-letter: output free of litellm framework noise", t,
@@ -542,7 +570,8 @@ def live_checks(fx: dict[str, Path]) -> None:
         ok_gj = bool(json.loads(cp.stdout).get("cover_letter"))
     except Exception:
         pass
-    record("generate-cover-letter: --json emits valid JSON (clean stdout)", t, ok_gj,
+    record("generate-cover-letter: --json emits JSON or fails closed on validation", t,
+           ok_gj or cover_letter_fail_closed(cp),
            f"exit={cp.returncode}")
 
     # Regression guard (#39): --yes must be non-interactive (it used to hang on the action menu).
@@ -551,8 +580,9 @@ def live_checks(fx: dict[str, Path]) -> None:
              "--resume", str(fx["resume"]), "--yes", timeout=200)
     out_dir = WORK / "output"
     wrote = out_dir.exists() and any(out_dir.glob("tailored_*.txt"))
-    record("tailor: --yes is non-interactive (exits, writes artifact)", t,
-           cp.returncode == 0 and wrote, f"exit={cp.returncode} (124=hang)")
+    record("tailor: --yes writes artifact or fails closed on grounding", t,
+           (cp.returncode == 0 and wrote) or grounding_fail_closed(cp),
+           f"exit={cp.returncode} (124=hang)")
     cp = run("tailor", "-t", "Senior Python Engineer", "-c", "Initech",
              "-d", "Async pipelines; asyncio, Pydantic.", "--resume", str(fx["resume"]),
              "--json", timeout=200)
@@ -561,7 +591,8 @@ def live_checks(fx: dict[str, Path]) -> None:
         ok_tj = bool(json.loads(cp.stdout).get("tailored_text"))
     except Exception:
         pass
-    record("tailor: --json emits valid JSON (clean stdout, implies --yes)", t, ok_tj,
+    record("tailor: --json emits JSON or fails closed on grounding", t,
+           ok_tj or grounding_fail_closed(cp),
            f"exit={cp.returncode}")
 
     cp = run("tailor", "-t", "Chef", "-c", "Restaurant", "-d", "Cook food in a kitchen.",
@@ -590,10 +621,12 @@ def live_checks(fx: dict[str, Path]) -> None:
         tc = sqlite3.connect(str(ISO_HOME / ".job-applicator" / "applications.db"))
         row = tc.execute("select funnel_status from jobs where job_url=?", (tfrom_url,)).fetchone()
         tc.close()
-        tfrom_ok = cp.returncode == 0 and row is not None and row[0] in ("tailored", "cover_letter")
+        tfrom_ok = (
+            cp.returncode == 0 and row is not None and row[0] in ("tailored", "cover_letter")
+        ) or grounding_fail_closed(cp)
     except Exception as exc:
         tfrom_exit = f"err:{exc}"
-    record("tailor: --from a stored job tailors it (marks it tailored)", t, tfrom_ok,
+    record("tailor: --from tailors or fails closed on grounding", t, tfrom_ok,
            f"exit={tfrom_exit}")
 
     # batch: clean multi-job run + artifacts

@@ -25,14 +25,26 @@ from job_applicator.documents.artifacts import (
     write_tailored,
     write_tailored_pdf,
 )
-from job_applicator.exceptions import ConfigError, CookieError, JobApplicatorError
+from job_applicator.exceptions import (
+    ConfigError,
+    CookieError,
+    JobApplicatorError,
+    SelectorHealthError,
+)
 from job_applicator.factories import (
     _make_applicator,
     _make_browser,
     _make_runtime,
     _make_scraper,
 )
-from job_applicator.models import BatchRunSpec, DoctorReport, Format, coverage_measured
+from job_applicator.models import (
+    BatchRunSpec,
+    DoctorReport,
+    Format,
+    SelectorHealthReport,
+    SelectorProbeStatus,
+    coverage_measured,
+)
 from job_applicator.utils.console import console, err_console
 from job_applicator.utils.cookies import (
     _cookies_from_browser,
@@ -50,6 +62,7 @@ from job_applicator.workflows.tailor import _tailor_workflow
 
 if TYPE_CHECKING:
     from job_applicator.batch_state import BatchState
+    from job_applicator.browser.manager import BrowserManager
     from job_applicator.jobs_store import JobStore
     from job_applicator.models import (
         ATSCompatibilityResult,
@@ -119,6 +132,13 @@ class OCRMode(StrEnum):
     AUTO = "auto"
     ON = "on"
     OFF = "off"
+
+
+class SelectorSurface(StrEnum):
+    """Selector-health surfaces supported by the CLI."""
+
+    SEARCH = "search"
+    APPLY = "apply"
 
 
 def _resolve_ocr_mode(ocr_mode: OCRMode, force_ocr: bool) -> str:
@@ -209,6 +229,108 @@ def _get_jobs_store() -> JobStore:
     return JobStore()
 
 
+async def _run_selector_health_report(
+    *,
+    site: str,
+    surface: SelectorSurface,
+    settings: AppSettings,
+    browser: BrowserManager,
+    query: str = "",
+    location: str = "",
+    job_url: str = "",
+    max_cards: int = 3,
+) -> SelectorHealthReport:
+    """Run a selector-health probe against an already-open browser manager."""
+    from job_applicator.selector_health import SelectorHealthService
+
+    service = SelectorHealthService(browser, settings)
+    if surface == SelectorSurface.SEARCH:
+        if not query:
+            raise SelectorHealthError("Search selector health requires --query.")
+        return await service.probe_search(site, query, location, max_cards=max_cards)
+    if surface == SelectorSurface.APPLY:
+        if not job_url:
+            raise SelectorHealthError("Apply selector health requires --from <id-or-url>.")
+        return await service.probe_apply(site, job_url)
+    raise SelectorHealthError(f"Unsupported selector-health surface: {surface}")
+
+
+def _selector_health_failed(report: SelectorHealthReport) -> bool:
+    return report.status == SelectorProbeStatus.FAIL
+
+
+def _status_markup(status: SelectorProbeStatus) -> str:
+    styles = {
+        SelectorProbeStatus.PASSED: "green",
+        SelectorProbeStatus.WARN: "yellow",
+        SelectorProbeStatus.FAIL: "red",
+        SelectorProbeStatus.SKIPPED: "dim",
+    }
+    return f"[{styles[status]}]{status.value}[/{styles[status]}]"
+
+
+def _render_selector_health(
+    report: SelectorHealthReport, target_console: Console = console
+) -> None:
+    """Render a compact selector-health table."""
+    table = Table(title=f"Selector health: {report.status.value}")
+    table.add_column("Board")
+    table.add_column("Surface")
+    table.add_column("Group", style="cyan")
+    table.add_column("Req")
+    table.add_column("Matches", justify="right")
+    table.add_column("Status")
+    table.add_column("Details", overflow="fold")
+
+    for board in report.boards:
+        for result in board.results:
+            table.add_row(
+                board.board.display_name,
+                board.surface,
+                result.name,
+                "yes" if result.required else "no",
+                str(result.matched_count),
+                _status_markup(result.status),
+                result.details,
+            )
+    target_console.print(table)
+    if report.artifacts:
+        target_console.print(
+            "[yellow]Diagnostics:[/yellow] " + ", ".join(escape(path) for path in report.artifacts)
+        )
+
+
+def _enforce_selector_health_preflight(
+    report: SelectorHealthReport, *, ignore_failure: bool
+) -> None:
+    if not _selector_health_failed(report):
+        return
+    if ignore_failure:
+        err_console.print(
+            "[yellow]Selector health failed; continuing because "
+            "--ignore-selector-health was provided.[/yellow]"
+        )
+        return
+    raise SelectorHealthError(
+        "Selector health preflight failed. Re-run with --ignore-selector-health to continue anyway."
+    )
+
+
+def _resolve_selector_health_job(from_ref: str, default_site: str) -> tuple[str, str]:
+    """Resolve a selector-health --from value to (site, url)."""
+    if from_ref.startswith(("http://", "https://")):
+        return default_site, from_ref
+    stored = _get_jobs_store().get(from_ref)
+    if stored is None:
+        from job_applicator.exceptions import DocumentError
+
+        raise DocumentError(
+            f"No stored job matches --from {from_ref!r}. Run `job-applicator status` to list "
+            "saved jobs."
+        )
+    return stored.job.board.value, str(stored.job.url)
+
+
 async def _write_tailored_artifacts(
     output_dir: Path,
     tailored: TailoredResume,
@@ -226,9 +348,7 @@ async def _write_tailored_artifacts(
     the generated PDF.
     """
     if output_format == Format.TXT:
-        resume_path, _meta_path = await asyncio.to_thread(
-            write_tailored, output_dir, tailored, when=when
-        )
+        resume_path, _meta_path = write_tailored(output_dir, tailored, when=when)
         return resume_path, None
 
     if output_format == Format.PDF:
@@ -239,9 +359,7 @@ async def _write_tailored_artifacts(
 
     # BOTH: write text first, then PDF (no PDF-only meta), then update the text
     # sidecar with pdf_path so only one .meta.json is produced.
-    resume_path, meta_path = await asyncio.to_thread(
-        write_tailored, output_dir, tailored, when=when
-    )
+    resume_path, meta_path = write_tailored(output_dir, tailored, when=when)
     pdf_path = await write_tailored_pdf(
         output_dir,
         tailored,
@@ -252,8 +370,13 @@ async def _write_tailored_artifacts(
         write_meta=False,
     )
     tailored.pdf_path = str(pdf_path)
-    await asyncio.to_thread(Path(meta_path).write_text, tailored.model_dump_json(indent=2))
+    _write_text_file(meta_path, tailored.model_dump_json(indent=2))
     return resume_path, str(pdf_path)
+
+
+def _write_text_file(path: str, content: str) -> None:
+    """Write a small local text artifact from synchronous CLI code paths."""
+    Path(path).write_text(content)
 
 
 async def _write_cover_letter_artifacts(
@@ -272,9 +395,7 @@ async def _write_cover_letter_artifacts(
     :func:`_write_tailored_artifacts`.
     """
     if output_format == Format.TXT:
-        cl_path, _meta_path = await asyncio.to_thread(
-            write_cover_letter, output_dir, result, when=when
-        )
+        cl_path, _meta_path = write_cover_letter(output_dir, result, when=when)
         return cl_path, None
 
     if output_format == Format.PDF:
@@ -285,7 +406,7 @@ async def _write_cover_letter_artifacts(
 
     # BOTH: write text first, then PDF (no PDF-only meta), then update the text
     # sidecar with pdf_path so only one .meta.json is produced.
-    cl_path, meta_path = await asyncio.to_thread(write_cover_letter, output_dir, result, when=when)
+    cl_path, meta_path = write_cover_letter(output_dir, result, when=when)
     pdf_path = await write_cover_letter_pdf(
         output_dir,
         result,
@@ -296,7 +417,7 @@ async def _write_cover_letter_artifacts(
         write_meta=False,
     )
     result.pdf_path = str(pdf_path)
-    await asyncio.to_thread(Path(meta_path).write_text, result.model_dump_json(indent=2))
+    _write_text_file(meta_path, result.model_dump_json(indent=2))
     return cl_path, str(pdf_path)
 
 
@@ -466,6 +587,16 @@ def search(
     max_results: int = typer.Option(25, "--max", "-n", min=1, max=50, help="Max results (1-50)."),
     headed: bool = typer.Option(False, "--headed", help="Run browser in headed mode."),
     as_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
+    selector_health: bool = typer.Option(
+        False,
+        "--selector-health",
+        help="Run a live selector-health preflight before scraping.",
+    ),
+    ignore_selector_health: bool = typer.Option(
+        False,
+        "--ignore-selector-health",
+        help="Continue even if the selector-health preflight fails.",
+    ),
     verbose: bool = _verbose_option(),
     log_file: str | None = _log_file_option(),
 ) -> None:
@@ -537,6 +668,20 @@ def search(
 
         async with _make_browser(site, settings) as browser:
             scraper = _make_scraper(site, browser, settings)
+            if selector_health:
+                with err_console.status("Checking live selectors..."):
+                    health_report = await _run_selector_health_report(
+                        site=site,
+                        surface=SelectorSurface.SEARCH,
+                        settings=settings,
+                        browser=browser,
+                        query=query,
+                        location=location,
+                    )
+                _render_selector_health(health_report, err_console)
+                _enforce_selector_health_preflight(
+                    health_report, ignore_failure=ignore_selector_health
+                )
 
             with err_console.status(f"Searching {site} for '{query}'..."):
                 jobs = await scraper.scrape(params)
@@ -884,6 +1029,16 @@ def apply(
         "--validate",
         help="Exit non-zero if a dry run does not reach the Submit button.",
     ),
+    selector_health: bool = typer.Option(
+        False,
+        "--selector-health",
+        help="Run a live selector-health preflight before filling application forms.",
+    ),
+    ignore_selector_health: bool = typer.Option(
+        False,
+        "--ignore-selector-health",
+        help="Continue even if the selector-health preflight fails.",
+    ),
     output_format: Format | None = typer.Option(
         None,
         "--format",
@@ -1014,6 +1169,21 @@ def apply(
                     console.print("[yellow]No jobs found to apply to.[/yellow]")
                 return
 
+            if selector_health:
+                preflight_job = jobs[0]
+                with err_console.status("Checking live apply selectors..."):
+                    health_report = await _run_selector_health_report(
+                        site=effective_site,
+                        surface=SelectorSurface.APPLY,
+                        settings=settings,
+                        browser=browser,
+                        job_url=str(preflight_job.url),
+                    )
+                _render_selector_health(health_report, err_console)
+                _enforce_selector_health_preflight(
+                    health_report, ignore_failure=ignore_selector_health
+                )
+
             # Generate cover letters whenever they are requested and a résumé is
             # available. Dry runs use them as a preview; real submissions use them
             # in the form. LLM calls are local, so the preview is worth the cost.
@@ -1050,7 +1220,11 @@ def apply(
                         )
                     err_console.print(f"[green]Style loaded: {style.tone}[/green]")
                 sem = asyncio.Semaphore(3)
-                output_dir = await asyncio.to_thread(settings.ensure_output_dir)
+                output_dir = (
+                    settings.ensure_output_dir()
+                    if effective_output_format in (Format.PDF, Format.BOTH)
+                    else None
+                )
 
                 async def _gen_one(
                     job: JobListing,
@@ -1062,6 +1236,10 @@ def apply(
                             )
                             pdf_path: str | None = None
                             if effective_output_format in (Format.PDF, Format.BOTH):
+                                if output_dir is None:
+                                    raise DocumentError(
+                                        "Output directory was not initialized for PDF rendering."
+                                    )
                                 when = datetime.now()
                                 cl_result = CoverLetterResult(
                                     job_title=job.title,
@@ -1081,6 +1259,11 @@ def apply(
                                         when=when,
                                     )
                                 except Exception as exc:
+                                    if submit:
+                                        raise DocumentError(
+                                            "Requested PDF cover letter could not be generated "
+                                            f"for real submission: {exc}"
+                                        ) from exc
                                     err_console.print(
                                         f"[yellow]PDF cover letter failed for {job.title}: "
                                         f"{exc}[/yellow]"
@@ -1288,7 +1471,7 @@ def generate_cover_letter(
             job_url=str(job.url),
             cover_letter_text=letter,
         )
-        output_dir = await asyncio.to_thread(settings.ensure_output_dir)
+        output_dir = settings.ensure_output_dir()
         effective_category = category or detect_job_category(job)
         when = datetime.now()
         _text_path, pdf_path = await _write_cover_letter_artifacts(
@@ -2225,8 +2408,7 @@ def batch(
         user_profile = _load_user_profile(settings, resume_name=resume_data.name)
         sem = asyncio.Semaphore(3)
         timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = settings.output_dir
-        await asyncio.to_thread(settings.ensure_output_dir)
+        output_dir = str(settings.ensure_output_dir())
         tailoring_scores: list[tuple[float, float]] = []
         batch_reports: list[TailoringReport] = []
 
@@ -2246,9 +2428,7 @@ def batch(
                 # Mid-job resume: reuse a persisted TAILORED résumé instead of
                 # re-tailoring (a TAILORED job is re-processed on resume so its cover
                 # letter gets generated). Missing/corrupt artifact → re-tailor below.
-                reused = await asyncio.to_thread(
-                    _resume_tailored_resume, batch_state, effective_run_id, str(job.url)
-                )
+                reused = _resume_tailored_resume(batch_state, effective_run_id, str(job.url))
                 if reused is not None:
                     tailored, resume_path_out, meta_path = reused
                     result["match_score"] = round(tailored.match_score, 4)
@@ -2402,9 +2582,7 @@ def batch(
                         result["cover_letter_pdf_path"] = cl_pdf_path
                         result["cover_letter"] = True
                         # Re-write meta.json with cover_letter_path (and pdf_path if set).
-                        await asyncio.to_thread(
-                            Path(meta_path).write_text, tailored.model_dump_json(indent=2)
-                        )
+                        _write_text_file(meta_path, tailored.model_dump_json(indent=2))
                         batch_state.record_job(
                             effective_run_id,
                             job,
@@ -2460,7 +2638,7 @@ def batch(
             "results": list(batch_results),
         }
         summary_path = str(Path(output_dir) / f"batch_summary_{timestamp}.json")
-        await asyncio.to_thread(Path(summary_path).write_text, json.dumps(summary, indent=2))
+        _write_text_file(summary_path, json.dumps(summary, indent=2))
         written_paths.append(summary_path)
 
         if reporter:
@@ -2794,9 +2972,24 @@ def tailor(
                 raise typer.Exit(1 if as_json else 0)
 
         try:
+            effective_user_instructions = user_instructions
+            if yes:
+                strict_noninteractive = (
+                    "For non-interactive output, prioritize accuracy over embellishment. Use only "
+                    "facts, metrics, tools, duties, dates, employers, and outcomes explicitly "
+                    "present in the original résumé. Do not add new responsibilities, optional "
+                    "sections, aspirations, deployment claims, performance claims, collaboration "
+                    "claims, or outcomes. It is acceptable to make fewer changes if that is what "
+                    "keeps every claim source-backed."
+                )
+                effective_user_instructions = (
+                    f"{strict_noninteractive}\n\n{user_instructions}"
+                    if user_instructions
+                    else strict_noninteractive
+                )
             with err_console.status("Tailoring + verifying resume..."):
                 result = await tailor_engine.tailor_verified(
-                    resume_data, job, user_instructions, style, tone_profile
+                    resume_data, job, effective_user_instructions, style, tone_profile
                 )
             session.add_attempt(result)
 
@@ -2830,7 +3023,7 @@ def tailor(
                 reporter.record_error(str(exc))
             raise typer.Exit(1) from exc
 
-        await _tailor_workflow(
+        accepted_result = await _tailor_workflow(
             console,
             settings,
             job,
@@ -2847,6 +3040,8 @@ def tailor(
             cover_letter_template=cover_letter_template,
             category=category,
         )
+        if accepted_result is not None:
+            result = accepted_result
 
         # Reflect an accepted tailor in the funnel store so `status` shows it — only for
         # a job with a real identity (a stored --from job, or one given --url); a manual
@@ -3202,6 +3397,72 @@ cover_letter_template = "__OUTPUT_COVER_LETTER_TEMPLATE__"
             reporter.render(err_console, log_file=log_file)
 
 
+@app.command("selector-health")
+def selector_health(
+    site: str = typer.Option("linkedin", "--site", "-s", help="Job board: linkedin or indeed."),
+    surface: SelectorSurface = typer.Option(
+        SelectorSurface.SEARCH,
+        "--surface",
+        help="Board surface to probe: search or apply.",
+    ),
+    query: str = typer.Option("", "--query", "-q", help="Search query for search probes."),
+    location: str = typer.Option("", "--location", "-l", help="Location filter for search probes."),
+    from_ref: str = typer.Option(
+        "",
+        "--from",
+        help="Stored job id or URL for apply probes.",
+    ),
+    max_cards: int = typer.Option(
+        3,
+        "--max-cards",
+        min=1,
+        max=10,
+        help="Max result cards to sample for search field probes.",
+    ),
+    headed: bool = typer.Option(False, "--headed", help="Run browser in headed mode."),
+    as_json: bool = typer.Option(False, "--json", help="Output the selector report as JSON."),
+) -> None:
+    """Probe known live-board selectors without scraping listings or submitting applications."""
+    try:
+        effective_site = site
+        job_url = ""
+        if surface == SelectorSurface.SEARCH and not query:
+            err_console.print("[red]--query is required for search selector health.[/red]")
+            raise typer.Exit(1)
+        if surface == SelectorSurface.APPLY:
+            if not from_ref:
+                err_console.print("[red]--from is required for apply selector health.[/red]")
+                raise typer.Exit(1)
+            effective_site, job_url = _resolve_selector_health_job(from_ref, site)
+
+        settings = _get_settings(headed=headed)
+        setup_logging(settings.log_level)
+
+        async def _run() -> SelectorHealthReport:
+            async with _make_browser(effective_site, settings) as browser:
+                return await _run_selector_health_report(
+                    site=effective_site,
+                    surface=surface,
+                    settings=settings,
+                    browser=browser,
+                    query=query,
+                    location=location,
+                    job_url=job_url,
+                    max_cards=max_cards,
+                )
+
+        report = asyncio.run(_run())
+        if as_json:
+            sys.stdout.write(report.model_dump_json(indent=2) + "\n")
+        else:
+            _render_selector_health(report)
+        if _selector_health_failed(report):
+            raise typer.Exit(1)
+    except JobApplicatorError as exc:
+        err_console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
+        raise typer.Exit(1) from exc
+
+
 @app.command("check-session")
 def check_session(
     site: str = typer.Argument("linkedin", help="Job board to check (linkedin, indeed)."),
@@ -3324,7 +3585,10 @@ def _render_doctor(report: DoctorReport) -> None:
                 "                 → restart with: [cyan]RESTART=1 scripts/serve-vllm.sh[/cyan]"
             )
     elif "localhost" in api_base or "127.0.0.1" in api_base:
-        console.print(f"  vLLM process   {warn} no local vLLM process found on port 8000")
+        console.print(
+            f"  vLLM process   {warn} no local vLLM process found on port "
+            f"{_api_base_port(llm.api_base)}"
+        )
         console.print("                 → start one: [cyan]scripts/serve-vllm.sh[/cyan]")
 
     emb = report.embeddings
@@ -3424,6 +3688,16 @@ def _render_doctor(report: DoctorReport) -> None:
     else:
         console.print(f"  PDF rendering  {warn} {escape(pdf.message)}")
 
+    console.print("\n[bold]Capability readiness[/bold]")
+    for label, readiness in (
+        ("AI generation", report.readiness.ai_generation),
+        ("Matching", report.readiness.matching),
+        ("Browser flows", report.readiness.browser_workflows),
+        ("PDF output", report.readiness.pdf_output),
+    ):
+        marker = good if readiness.ready else warn
+        console.print(f"  {label:<14} {marker} {escape(readiness.details)}")
+
     console.print()
     if report.ok and llm.model_available:
         console.print("[green]All systems go — AI features ready.[/green]\n")
@@ -3435,6 +3709,15 @@ def _render_doctor(report: DoctorReport) -> None:
         console.print(
             "[red]LLM endpoint unreachable — AI features will fail until it is up.[/red]\n"
         )
+
+
+def _api_base_port(api_base: str) -> int:
+    try:
+        from urllib.parse import urlparse
+
+        return urlparse(api_base).port or 8000
+    except Exception:
+        return 8000
 
 
 def _get_settings(headed: bool = False) -> AppSettings:

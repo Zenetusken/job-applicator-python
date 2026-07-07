@@ -12,6 +12,7 @@ from job_applicator.config import LLMConfig
 from job_applicator.documents.cover_letter import CoverLetterGenerator, strip_thinking_process
 from job_applicator.documents.resume_tailor import ResumeDateValidator, ResumeTailor
 from job_applicator.documents.tone_detector import ToneDetector, ToneProfile
+from job_applicator.embeddings.matching import MatchResult
 from job_applicator.models import (
     JobBoard,
     JobListing,
@@ -41,6 +42,22 @@ def sample_job() -> JobListing:
         requirements=["Python", "FastAPI", "Docker", "AWS"],
         board=JobBoard.LINKEDIN,
     )
+
+
+def _mock_matcher(job: JobListing) -> MagicMock:
+    matcher = MagicMock()
+    matcher.match_resume_to_job = AsyncMock(
+        return_value=MatchResult(
+            job=job,
+            score=0.75,
+            semantic_score=0.7,
+            skill_score=0.6,
+            matched_skills=["Python"],
+            missing_skills=["AWS"],
+            summary="Good match",
+        )
+    )
+    return matcher
 
 
 @pytest.fixture
@@ -122,10 +139,70 @@ class TestResumeDateValidatorAudit:
     def test_education_age_is_not_a_staleness_signal(self):
         """Education AGE is no longer flagged (removed as noise — old education is normal for an
         experienced career-changer; the real red flag is employment gaps, which this validator does
-        not detect). The newest-entry staleness check is unaffected."""
+        not treat as staleness). The newest-entry staleness check is unaffected."""
         resume = ResumeData(raw_text="EDUCATION\nBS Computer Science\nMIT\n1998 - 2002")
         result = ResumeDateValidator(reference_date=datetime(2030, 1, 1)).audit(resume)
         assert [s for s in result.staleness_issues if "Education" in s] == []
+
+    def test_employment_gap_is_surfaced_as_advisory(self):
+        resume = ResumeData(
+            raw_text=(
+                "EXPERIENCE\n"
+                "Current Job\nCorp\nJan 2022 - Present\n"
+                "Older Job\nCorp\nJan 2018 - Dec 2020"
+            )
+        )
+        result = ResumeDateValidator(reference_date=datetime(2026, 1, 1)).audit(resume)
+        assert result.employment_gaps
+        assert "12 month gap" in result.employment_gaps[0]
+        assert any("employment gap" in w.lower() for w in result.warnings)
+
+    def test_experience_overlap_is_surfaced_as_advisory(self):
+        resume = ResumeData(
+            raw_text=(
+                "EXPERIENCE\n"
+                "Current Job\nCorp\nJan 2020 - Dec 2022\n"
+                "Older Job\nCorp\nJan 2019 - Dec 2020"
+            )
+        )
+        result = ResumeDateValidator().audit(resume)
+        assert result.overlap_issues
+        assert "overlaps" in result.overlap_issues[0]
+
+    def test_contained_experience_overlap_is_surfaced(self):
+        resume = ResumeData(
+            raw_text=(
+                "EXPERIENCE\n"
+                "Long Job\nCorp\nJan 2018 - Dec 2024\n"
+                "Contained Job\nCorp\nJan 2020 - Dec 2021"
+            )
+        )
+        result = ResumeDateValidator().audit(resume)
+        assert result.overlap_issues
+        assert "overlaps" in result.overlap_issues[0]
+
+    def test_year_only_same_year_transition_is_not_overlap(self):
+        resume = ResumeData(
+            raw_text=(
+                "EXPERIENCE\n"
+                "Staff Engineer, Acme Data (2021-Present)\n"
+                "Built async ingestion handling 2B events/day with asyncio.\n"
+                "Backend Engineer, Globex (2017-2021)\n"
+                "Designed PostgreSQL schemas for a 5M-user app."
+            )
+        )
+        result = ResumeDateValidator(reference_date=datetime(2026, 1, 1)).audit(resume)
+        assert not result.overlap_issues
+        assert [entry.label for entry in result.entries] == [
+            "Staff Engineer, Acme Data",
+            "Backend Engineer, Globex",
+        ]
+
+    def test_impossible_experience_range_is_surfaced(self):
+        resume = ResumeData(raw_text="EXPERIENCE\nBroken Job\nCorp\n2024 - 2020")
+        result = ResumeDateValidator().audit(resume)
+        assert result.overlap_issues
+        assert "impossible date range" in result.overlap_issues[0]
 
     def test_year_only_format(self):
         resume = ResumeData(raw_text="EXPERIENCE\nJob\nCorp\n2018 - 2020")
@@ -479,7 +556,11 @@ class TestResumeRefine:
             ),
         ):
             result = await tailor.refine(
-                sample_resume, current_tailored, "Add more detail", sample_job
+                sample_resume,
+                current_tailored,
+                "Add more detail",
+                sample_job,
+                matcher=_mock_matcher(sample_job),
             )
 
         assert result.attempt == 2
@@ -505,7 +586,11 @@ class TestResumeRefine:
             ),
         ):
             result = await tailor.refine(
-                sample_resume, current_tailored, "Emphasize API work", sample_job
+                sample_resume,
+                current_tailored,
+                "Emphasize API work",
+                sample_job,
+                matcher=_mock_matcher(sample_job),
             )
 
         assert result.user_modifications == "Emphasize API work"
@@ -530,7 +615,13 @@ class TestResumeRefine:
                 return_value="changes",
             ),
         ):
-            await tailor.refine(sample_resume, current_tailored, "feedback", sample_job)
+            await tailor.refine(
+                sample_resume,
+                current_tailored,
+                "feedback",
+                sample_job,
+                matcher=_mock_matcher(sample_job),
+            )
 
         prompt = mock_llm.call_args[0][0]
         assert "ONLY use these" in prompt or "actual skills" in prompt.lower()
@@ -556,7 +647,13 @@ class TestResumeRefine:
                 return_value="changes",
             ),
         ):
-            result = await tailor.refine(sample_resume, current_tailored, "feedback", sample_job)
+            result = await tailor.refine(
+                sample_resume,
+                current_tailored,
+                "feedback",
+                sample_job,
+                matcher=_mock_matcher(sample_job),
+            )
 
         assert isinstance(result.tailored_text, str)
         assert len(result.tailored_text) > 0

@@ -40,7 +40,9 @@ AI-powered job application tool using Playwright browser automation with modern 
 
 Tests are auto-marked by location in `tests/conftest.py`, so marker selection works:
 
-- `pytest -m unit` — fast, isolated unit suite (no browser/GPU/vLLM). The green gate.
+- `bash scripts/green_gate.sh` — canonical fast gate: ruff check, ruff format --check, mypy
+  strict on `src/`, then `pytest -m unit`.
+- `pytest -m unit` — fast, isolated unit suite (no browser/GPU/vLLM).
   (`pytest tests/unit/` is equivalent.)
 - `pytest -m live` — the live tests at `tests/` root that need vLLM (`localhost:8000`) + GPU;
   kept out of the gate (full suite is green when vLLM is up).
@@ -48,6 +50,11 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
   with no vLLM/GPU — board `browser_policy()` → `_make_browser` wiring (construction-only, no real
   launch), PDF rendering, and the apply/batch loops against a real SQLite state store.
 - `pytest` — everything.
+- Matcher-sensitive changes use the private companion gate:
+  `.venv/bin/python scripts/check_matcher_gate_required.py --base <base>`, then
+  `.venv/bin/python scripts/eval_matching.py --required` when required.
+- Generated document artifacts can be smoke-checked with
+  `.venv/bin/python scripts/eval_document_quality.py --resume <txt> --cover-letter <txt>`.
 
 ## Target Boards
 
@@ -59,6 +66,11 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
   **Indeed is search/match-only:** automated apply is intentionally unsupported (Cloudflare
   anti-bot + ToS risk), not a pending feature — the applicator returns a clean SKIPPED result
   directing the user to apply manually. LinkedIn Easy Apply remains the only automated apply path.
+- Selector health is explicit live-board diagnostics. `selector-health` and `search/apply
+  --selector-health` reuse the real board browser/session, so they are opt-in and separate from
+  `doctor`. Search probes validate card/field/description selectors; LinkedIn apply probes validate
+  Easy Apply entry + form controls without submitting; Indeed apply probing is intentionally out of
+  scope.
 
 ## Key Design Decisions
 
@@ -75,7 +87,8 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
   grounds it; a deterministic audit (`documents/grounding_verifier.py`) then overrides any ungrounded
   claim (token-overlap + a numeric backstop) and flags coverage gaps. The SOURCE is always the
   BASE résumé (never the JD or the tailored intermediate). Cover letters route through
-  `CoverLetterGenerator.generate_verified()` (regenerate ONCE, keep the strictly-cleaner draft);
+  `CoverLetterGenerator.generate_verified()` (regenerate ONCE, then fail closed if the best draft is
+  still unclean or verification is unavailable);
   tailored résumés through `ResumeTailor.tailor_verified()`, which SURFACES the report on
   `TailoredResume.grounding_report` for human review (a "claims to review" panel + `--json`) and
   NEVER auto-strips — the résumé is the document of record. Fail-safe: any verifier failure raises
@@ -99,6 +112,13 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
   profile / virtual display) lives on the scraper, not the CLI, so anti-bot requirements can't drift
   and any caller builds the right browser. `_make_browser` (in `factories.py`) reads it.
 - **Easy Apply is dry-run by default;** real submission requires `apply --submit`. Dry runs generate cover letters as a preview when `--cover-letter` is enabled and a résumé path is configured; the generated letter is surfaced in `--json` and the console table.
+- **LinkedIn apply surfaces are distinct.** Easy Apply is in-product and often starts with
+  Next/required fields before any Submit button. External "Apply on company website" is a separate
+  button surface; the applicator detects it and returns SKIPPED/manual follow-up without clicking.
+- **Selector-health failures are honest diagnostics.** Required misses fail and optional misses warn;
+  external LinkedIn apply jobs are `skipped` because Easy Apply form selectors are not applicable.
+  JSON goes to stdout, logs/diagnostic artifact paths go to stderr, and failure dumps live under
+  `~/.job-applicator/debug/selector-health/`.
 - **The job funnel is persisted.** `search`/`match` upsert into a SQLite `JobStore`
   (`jobs_store.py`, in `~/.job-applicator/applications.db`) so jobs flow
   search→match→tailor→cover-letter without re-typing. `ApplicationState` stays the
@@ -113,6 +133,15 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
   offline/account-safe; the account-touching actions (search/apply) run only behind an
   explicit in-app confirm, and a real apply needs a danger checkbox (dry-run default) — the
   low-friction TUI must never turn an account action into a one-keypress accident.
+- **Automated CV saves fail closed.** `tailor --yes`, `tailor --json`, and the TUI one-shot
+  `tailor_job` path refuse to save if grounding did not complete cleanly, if contact info disappears,
+  or if an ATS-compatible base résumé becomes incompatible. CLI non-interactive runs prepend strict
+  source-only instructions and retry dirty grounding drafts before refusing. Interactive review can
+  still accept a surfaced warning because the user is the document-of-record authority.
+- **Doctor reports capability readiness.** `doctor` keeps its narrow blocking `ok` verdict tied to
+  LLM `/models` HTTP 200, but also renders capability readiness for AI generation, matching,
+  browser workflows, and PDF output so first-use dependency gaps are visible without changing the
+  historical exit semantics.
 
 ## GPU Memory Layout
 
@@ -134,5 +163,9 @@ one base model at a time; a per-step bigger model (the `[cover_letter]` override
 
 - Model: `mixedbread-ai/mxbai-embed-large-v1` (1024 dimensions)
 - Cache: `~/.job-applicator/embeddings/` (numpy arrays)
+- First model load also needs the Hugging Face model cache (`~/.cache/huggingface` by default).
+  If a snapshot is cached, `EmbeddingService` loads it with `local_files_only=True` so
+  offline/sandboxed matching does not block on Hugging Face metadata probes. If no snapshot is
+  cached, first use still needs network access to download the model.
 - Matching: Cosine similarity with combined scoring
 - Skill threshold: 0.75 for semantic match (empirically tuned; 0.55 matched unrelated same-domain skills)

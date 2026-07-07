@@ -9,7 +9,6 @@ below, and the UI gates them behind an explicit confirm.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +22,7 @@ from job_applicator.documents.artifacts import (
 )
 from job_applicator.documents.job_category import detect_job_category
 from job_applicator.models import Format
+from job_applicator.workflows.tailor import assert_tailored_auto_saveable
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -41,6 +41,14 @@ if TYPE_CHECKING:
     from job_applicator.scrapers.base import SearchParams
 
 logger = logging.getLogger(__name__)
+
+
+def _read_text_file(path: str | Path) -> str:
+    return Path(path).read_text(encoding="utf-8")
+
+
+def _write_text_file(path: str | Path, content: str) -> None:
+    Path(path).write_text(content, encoding="utf-8")
 
 
 async def _load_style_guide(settings: AppSettings, style_guide_path: str) -> StyleGuide | None:
@@ -82,19 +90,20 @@ async def tailor_job(
     from job_applicator.documents.resume_tailor import ResumeTailor
     from job_applicator.factories import _make_runtime
 
-    resume_data = await asyncio.to_thread(ResumeLoader().load, settings.resume_path)
+    resume_data = ResumeLoader().load(settings.resume_path)
     style = await _load_style_guide(settings, style_guide_path)
     engine = ResumeTailor(settings.llm, runtime=_make_runtime(settings))
     tailored = await engine.tailor_verified(
         resume=resume_data, job=job, user_instructions="", style_guide=style
     )
-    output_dir = await asyncio.to_thread(settings.ensure_output_dir)
+    assert_tailored_auto_saveable(tailored, resume_data.raw_text)
+    output_dir = settings.ensure_output_dir()
     when = datetime.now()
     category = detect_job_category(job)
     effective_template = template or settings.output.resume_template
 
     if output_format == Format.TXT:
-        await asyncio.to_thread(write_tailored, output_dir, tailored, when=when)
+        write_tailored(output_dir, tailored, when=when)
     elif output_format == Format.PDF:
         await write_tailored_pdf(
             output_dir,
@@ -105,7 +114,7 @@ async def tailor_job(
             when=when,
         )
     else:  # both
-        await asyncio.to_thread(write_tailored, output_dir, tailored, when=when)
+        _text_path, meta_path = write_tailored(output_dir, tailored, when=when)
         await write_tailored_pdf(
             output_dir,
             tailored,
@@ -113,7 +122,9 @@ async def tailor_job(
             template=effective_template,
             category=category,
             when=when,
+            write_meta=False,
         )
+        _write_text_file(meta_path, tailored.model_dump_json(indent=2))
     return tailored
 
 
@@ -148,13 +159,11 @@ async def cover_letter_job(
     from job_applicator.models import CoverLetterResult
     from job_applicator.utils.profile import _detect_tone, _load_user_profile
 
-    resume_data = await asyncio.to_thread(ResumeLoader().load, settings.resume_path)
+    resume_data = ResumeLoader().load(settings.resume_path)
     tailored_text = ""
     if tailored_resume_path:
         try:
-            tailored_text = await asyncio.to_thread(
-                Path(tailored_resume_path).read_text, encoding="utf-8"
-            )
+            tailored_text = _read_text_file(tailored_resume_path)
         except OSError:  # artifact gone/unreadable → fall back to the original résumé
             logger.warning("cover letter: tailored résumé unreadable; using the original")
     tone_section = ToneDetector().format_for_prompt(_detect_tone(job))
@@ -176,22 +185,29 @@ async def cover_letter_job(
         attempt=1,
         prompt_version="1.0",
     )
-    output_dir = await asyncio.to_thread(settings.ensure_output_dir)
+    output_dir = settings.ensure_output_dir()
     when = datetime.now()
     category = detect_job_category(job)
     effective_template = template or settings.output.cover_letter_template
 
     if output_format == Format.TXT:
-        await asyncio.to_thread(write_cover_letter, output_dir, result, when=when)
+        write_cover_letter(output_dir, result, when=when)
     elif output_format == Format.PDF:
         await write_cover_letter_pdf(
             output_dir, result, settings, template=effective_template, category=category, when=when
         )
     else:  # both
-        await asyncio.to_thread(write_cover_letter, output_dir, result, when=when)
+        _text_path, meta_path = write_cover_letter(output_dir, result, when=when)
         await write_cover_letter_pdf(
-            output_dir, result, settings, template=effective_template, category=category, when=when
+            output_dir,
+            result,
+            settings,
+            template=effective_template,
+            category=category,
+            when=when,
+            write_meta=False,
         )
+        _write_text_file(meta_path, result.model_dump_json(indent=2))
     return result
 
 
@@ -271,7 +287,7 @@ async def _score_jobs(settings: AppSettings, jobs: list[JobListing]) -> list[Mat
     from job_applicator.embeddings.matching import JobMatcher
     from job_applicator.factories import _make_runtime
 
-    resume = await asyncio.to_thread(ResumeLoader().load, settings.resume_path)
+    resume = ResumeLoader().load(settings.resume_path)
     runtime = _make_runtime(settings, name="tui-score")
     matcher = JobMatcher(
         settings.embedding,
@@ -358,4 +374,4 @@ async def ats_check(
             resume = loader.load(settings.resume_path)
         return ATSChecker().check(resume)
 
-    return await asyncio.to_thread(_run)
+    return _run()

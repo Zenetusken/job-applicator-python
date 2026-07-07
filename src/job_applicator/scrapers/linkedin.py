@@ -30,6 +30,7 @@ from job_applicator.scrapers.base import BaseScraper, SearchParams
 from job_applicator.scrapers.text_repair import repair_glued_text
 from job_applicator.utils.cookies import load_cookies, save_cookies
 from job_applicator.utils.logging import get_logger
+from job_applicator.utils.path import set_owner_only
 from job_applicator.utils.retry import async_retry
 
 if TYPE_CHECKING:
@@ -40,6 +41,36 @@ logger = get_logger("scrapers.linkedin")
 LINKEDIN_BASE = "https://www.linkedin.com"
 LINKEDIN_JOBS = f"{LINKEDIN_BASE}/jobs/search"
 LINKEDIN_TYPEAHEAD = f"{LINKEDIN_BASE}/jobs-guest/api/typeaheadHits"
+_DEBUG_DIR = Path.home() / ".job-applicator" / "debug"
+LINKEDIN_SEARCH_CARD_SELECTORS = (
+    ".job-card-container",
+    "[data-job-id]",
+    ".jobs-search-results__list-item",
+    ".job-card-list__entity",
+    "li.jobs-search-results__list-item",
+)
+LINKEDIN_SEARCH_TITLE_SELECTOR = ".job-card-list__title--link"
+LINKEDIN_SEARCH_COMPANY_SELECTOR = ".artdeco-entity-lockup__subtitle"
+LINKEDIN_SEARCH_LOCATION_SELECTOR = ".artdeco-entity-lockup__caption"
+LINKEDIN_SEARCH_SALARY_SELECTOR = (
+    ".job-card-container__metadata-wrapper [class*='salary'], "
+    "[class*='job-card-container__salary'], [class*='compensation']"
+)
+LINKEDIN_DESCRIPTION_CONTENT_SELECTOR = ".jobs-description__content"
+LINKEDIN_DESCRIPTION_SHOW_MORE_SELECTORS = (
+    'button:has-text("show more")[aria-expanded="false"]',
+    'button:has-text("Show more")[aria-expanded="false"]',
+)
+LINKEDIN_DESCRIPTION_SELECTORS = (
+    ".jobs-description__content",
+    ".jobs-description",
+    "#job-details",
+    ".show-more-less-html__markup",
+)
+
+
+def _write_text_file(path: Path, content: str) -> None:
+    path.write_text(content, encoding="utf-8")
 
 
 def _is_authenticated_url(url: str) -> bool:
@@ -234,6 +265,12 @@ class LinkedInScraper(BaseScraper):
                 healthy=False,
                 details=f"Could not reach LinkedIn to verify the session: {exc}",
             )
+        except ScraperError as exc:
+            return SessionHealth(
+                board=JobBoard.LINKEDIN,
+                healthy=False,
+                details=f"LinkedIn session is blocked or rate-limited: {exc}",
+            )
 
         if healthy:
             return SessionHealth(
@@ -353,16 +390,9 @@ class LinkedInScraper(BaseScraper):
             await random_delay(2.0, 3.0)
 
             # Wait for job cards to load (multiple selector fallbacks)
-            selectors = [
-                ".job-card-container",
-                "[data-job-id]",
-                ".jobs-search-results__list-item",
-                ".job-card-list__entity",
-                "li.jobs-search-results__list-item",
-            ]
             found = False
             cards: list[ElementHandle] = []
-            for selector in selectors:
+            for selector in LINKEDIN_SEARCH_CARD_SELECTORS:
                 found = await wait_for_selector(page, selector, timeout_ms=5_000)
                 if found:
                     cards = await page.query_selector_all(selector)
@@ -374,9 +404,12 @@ class LinkedInScraper(BaseScraper):
                 # empty result that masks a probable failure. Classify a checkpoint / rate-limit
                 # first (a precise typed error the caller can act on) before the generic message.
                 await self._raise_if_blocked(page)
+                dump = await self._dump_debug(page, cards)
                 raise ScraperError(
                     "No LinkedIn job cards found on the results page — the container selectors "
                     "are stale, the session is unauthenticated, or the search was blocked."
+                    + (f" Live DOM saved to {dump}." if dump else ""),
+                    context={"url": page.url, "cards": len(cards)},
                 )
             # Two passes, because clicking a card re-renders LinkedIn's virtualized list and
             # DETACHES the other captured handles ("element not attached to the DOM" — a measured,
@@ -405,12 +438,15 @@ class LinkedInScraper(BaseScraper):
                 # raise), so a failures-keyed guard would silently return [] — the exact masking
                 # this prevents (R1). FAIL LOUDLY, consistent with the 0-cards guard above;
                 # max_results=0 leaves total=0 and is a legitimate empty, excluded here.
+                dump = await self._dump_debug(page, cards)
                 raise ScraperError(
                     f"Found {total} LinkedIn job card(s) but extracted 0 titles "
                     f"({meta_failures} threw, {total - meta_failures} returned no title/href). "
                     "The title/field selectors are likely stale against the live LinkedIn DOM — "
                     "or this search genuinely has no matches and rendered only non-card elements. "
                     "Re-run a broader, known-populated search to disambiguate."
+                    + (f" Live DOM saved to {dump}." if dump else ""),
+                    context={"url": page.url, "cards": total, "metadata_failures": meta_failures},
                 )
 
             desc_misses = 0
@@ -441,6 +477,32 @@ class LinkedInScraper(BaseScraper):
             return jobs
         finally:
             await page.close()
+
+    async def _dump_debug(self, page: Page, cards: list[ElementHandle]) -> Path | None:
+        """Save LinkedIn search DOM + selector counts for stale-selector diagnosis.
+
+        Best-effort only: diagnostics must never mask the original scrape failure. The files may
+        contain authenticated page content, so keep them under the private debug directory.
+        """
+        try:
+            _DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+            set_owner_only(_DEBUG_DIR, 0o700)
+            _write_text_file(_DEBUG_DIR / "linkedin-last-scrape.html", await page.content())
+            lines = [f"url: {page.url}", "", "container match counts:"]
+            for selector in LINKEDIN_SEARCH_CARD_SELECTORS:
+                try:
+                    count = len(await page.query_selector_all(selector))
+                except Exception:
+                    count = -1
+                lines.append(f"  {selector}: {count}")
+            if cards:
+                lines += ["", "first card inner_html:", await cards[0].inner_html()]
+            _write_text_file(_DEBUG_DIR / "linkedin-last-scrape.txt", "\n".join(lines))
+            logger.warning("LinkedIn debug dump written to %s", _DEBUG_DIR)
+            return _DEBUG_DIR
+        except Exception as exc:
+            logger.warning("Could not write LinkedIn debug dump: %s", exc)
+            return None
 
     def _build_search_url(self, params: SearchParams, geo_id: str | None = None) -> str:
         """Build LinkedIn job search URL.
@@ -522,7 +584,7 @@ class LinkedInScraper(BaseScraper):
 
     async def _extract_job(self, card: ElementHandle, board: JobBoard) -> JobListing | None:
         """Extract job data from a card element."""
-        title_el = await card.query_selector(".job-card-list__title--link")
+        title_el = await card.query_selector(LINKEDIN_SEARCH_TITLE_SELECTOR)
         if not title_el:
             return None
 
@@ -532,20 +594,17 @@ class LinkedInScraper(BaseScraper):
         if not href:
             return None
 
-        company_el = await card.query_selector(".artdeco-entity-lockup__subtitle")
+        company_el = await card.query_selector(LINKEDIN_SEARCH_COMPANY_SELECTOR)
         company = (await company_el.inner_text()).strip() if company_el else "Unknown"
 
-        location_el = await card.query_selector(".artdeco-entity-lockup__caption")
+        location_el = await card.query_selector(LINKEDIN_SEARCH_LOCATION_SELECTOR)
         location = (await location_el.inner_text()).strip() if location_el else ""
 
         # Salary on the card (best-effort; LinkedIn shows it on a minority of postings). These
         # selectors are UNVERIFIED against the live LinkedIn DOM — LinkedIn is the user's real
         # account, so it is never auto-searched to capture markup; a wrong selector just yields
         # None (no salary), never a crash. Confirm/refine on the next real LinkedIn search.
-        salary_el = await card.query_selector(
-            ".job-card-container__metadata-wrapper [class*='salary'], "
-            "[class*='job-card-container__salary'], [class*='compensation']"
-        )
+        salary_el = await card.query_selector(LINKEDIN_SEARCH_SALARY_SELECTOR)
         salary = (await salary_el.inner_text()).strip() if salary_el else None
 
         url = _canonical_job_url(href if href.startswith("http") else f"{LINKEDIN_BASE}{href}")
@@ -606,7 +665,7 @@ class LinkedInScraper(BaseScraper):
 
     async def _get_desc_text(self, page: Page) -> str:
         """Get current description text (for change detection)."""
-        el = await page.query_selector(".jobs-description__content")
+        el = await page.query_selector(LINKEDIN_DESCRIPTION_CONTENT_SELECTOR)
         return (await el.inner_text()).strip() if el else ""
 
     async def _extract_description(self, page: Page) -> str:
@@ -614,10 +673,8 @@ class LinkedInScraper(BaseScraper):
         # Click "show more" button to expand truncated description.
         # LinkedIn has multiple "show more" buttons — we need the one that
         # expands the description, not the dropdown menu.
-        for btn_text in ("show more", "Show more"):
-            buttons = await page.query_selector_all(
-                f'button:has-text("{btn_text}")[aria-expanded="false"]'
-            )
+        for selector in LINKEDIN_DESCRIPTION_SHOW_MORE_SELECTORS:
+            buttons = await page.query_selector_all(selector)
             for btn in buttons:
                 if not await btn.is_visible():
                     continue
@@ -632,13 +689,7 @@ class LinkedInScraper(BaseScraper):
                     logger.debug("Could not click show more button: %s", exc)
                 break
 
-        selectors = [
-            ".jobs-description__content",
-            ".jobs-description",
-            "#job-details",
-            ".show-more-less-html__markup",
-        ]
-        for sel in selectors:
+        for sel in LINKEDIN_DESCRIPTION_SELECTORS:
             el = await page.query_selector(sel)
             if el:
                 text = (await el.inner_text()).strip()

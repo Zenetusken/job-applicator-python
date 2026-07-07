@@ -49,10 +49,8 @@ if [[ -n "$(git status --porcelain)" ]]; then
 fi
 
 echo "==> Running quality gate (unit tests)"
-"${PYTHON}" -m ruff check src/ tests/
-"${PYTHON}" -m ruff format --check src/ tests/
-"${PYTHON}" -m mypy src/
-"${PYTHON}" -m pytest -m unit -x -q
+PY="${PYTHON}" RUFF="${PROJECT_ROOT}/.venv/bin/ruff" MYPY="${PROJECT_ROOT}/.venv/bin/mypy" \
+    bash scripts/green_gate.sh
 
 echo "==> Bumping version to ${VERSION}"
 sed -i "s/^version = \"[^\"]*\"/version = \"${VERSION}\"/" pyproject.toml

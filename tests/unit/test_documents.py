@@ -11,6 +11,7 @@ from job_applicator.config import LLMConfig
 from job_applicator.documents.cover_letter import CoverLetterGenerator
 from job_applicator.documents.resume import ResumeLoader
 from job_applicator.exceptions import (
+    CoverLetterGroundingError,
     DocumentError,
     GroundingUnavailableError,
     LLMError,
@@ -1218,7 +1219,8 @@ async def test_generate_verified_keeps_original_when_retry_not_strictly_better()
             GroundingReport(unsupported=[_flag("x")]),
         ]
     )
-    assert await gen.generate_verified(*_cl_inputs()) == "LETTER A"  # original kept
+    with pytest.raises(CoverLetterGroundingError):
+        await gen.generate_verified(*_cl_inputs())
 
 
 async def test_generate_verified_prefers_fewer_unsupported_over_fewer_gaps() -> None:
@@ -1233,7 +1235,8 @@ async def test_generate_verified_prefers_fewer_unsupported_over_fewer_gaps() -> 
             GroundingReport(coverage_gaps=["x", "y"]),  # retry: 0 unsup, 2 gaps
         ]
     )
-    assert await gen.generate_verified(*_cl_inputs()) == "LETTER B"  # honesty win kept
+    with pytest.raises(CoverLetterGroundingError):
+        await gen.generate_verified(*_cl_inputs())
 
 
 async def test_generate_verified_clean_skips_reprompt() -> None:
@@ -1244,14 +1247,15 @@ async def test_generate_verified_clean_skips_reprompt() -> None:
     assert gen.generate.await_count == 1  # no retry on a clean report
 
 
-async def test_generate_verified_failsafe_returns_letter() -> None:
-    # fail-safe (#4): a verifier failure never blocks — return the floor-validated letter.
+async def test_generate_verified_failsafe_raises_grounding_error() -> None:
+    # fail-safe (#4): a verifier failure must not return an unverified letter as success.
     gen = CoverLetterGenerator(LLMConfig(model="m"))
     gen.generate = AsyncMock(return_value="LETTER A")  # type: ignore[method-assign]
     gen._verifier.verify = AsyncMock(  # type: ignore[method-assign]
         side_effect=GroundingUnavailableError("verifier down")
     )
-    assert await gen.generate_verified(*_cl_inputs()) == "LETTER A"
+    with pytest.raises(CoverLetterGroundingError):
+        await gen.generate_verified(*_cl_inputs())
 
 
 async def test_refine_verified_returns_letter_and_report() -> None:
@@ -1280,6 +1284,22 @@ async def test_refine_verified_failsafe_returns_none_report() -> None:
     job, user, resume = _cl_inputs()
     letter, report = await gen.refine_verified(job, user, resume, "current", "make it formal")
     assert letter == "REFINED LETTER" and report is None
+
+
+async def test_refine_repairs_missing_sign_off() -> None:
+    """Refined letters get the same deterministic sign-off guarantee as first drafts."""
+    gen = CoverLetterGenerator(LLMConfig(model="m"))
+    gen._complete = AsyncMock(  # type: ignore[method-assign]
+        return_value=(
+            "I bring Python experience from practical support work and would like to discuss how "
+            "I can help this team."
+        )
+    )
+
+    job, user, resume = _cl_inputs()
+    letter = await gen.refine(job, user, resume, "current letter", "make it tighter")
+
+    assert letter.endswith("Sincerely,\nJ D")
 
 
 # --- Multi-file style-guide loader --------------------------------------------------

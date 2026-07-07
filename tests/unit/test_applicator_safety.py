@@ -48,6 +48,25 @@ def _page_with_cover(cl_field: AsyncMock, submit_btn: AsyncMock) -> AsyncMock:
     return page
 
 
+def _read_first_apply_dump(path: Path) -> str:
+    dump = next(path.glob("linkedin-apply-*.txt"))
+    return dump.read_text(encoding="utf-8")
+
+
+class _ChooserContext:
+    def __init__(self, chooser: AsyncMock) -> None:
+        async def _value() -> AsyncMock:
+            return chooser
+
+        self.value = _value()
+
+    async def __aenter__(self) -> _ChooserContext:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+
 @pytest.mark.asyncio
 async def test_easy_apply_dry_run_does_not_submit(
     app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
@@ -102,6 +121,7 @@ async def test_easy_apply_dry_run_reports_validation_details(
 
     assert result.dry_run is not None
     assert result.dry_run.reached_submit is True
+    assert result.dry_run.submit_selector == 'button:has-text("Submit application")'
     assert result.dry_run.easy_apply_button_found is True
 
 
@@ -122,6 +142,137 @@ async def test_easy_apply_missing_submit_button_reports_failed_validation(
     assert result.status == ApplicationStatus.FAILED
     assert result.dry_run is not None
     assert result.dry_run.reached_submit is False
+
+
+@pytest.mark.asyncio
+async def test_external_apply_button_detected_without_clicking(
+    app_settings: AppSettings,
+) -> None:
+    button = AsyncMock()
+    button.get_attribute = AsyncMock(
+        side_effect=lambda name: (
+            "Apply to Engineer on company website" if name == "aria-label" else None
+        )
+    )
+    page = AsyncMock()
+
+    async def query_selector(selector: str) -> object | None:
+        return button if selector == 'button[aria-label^="Apply to" i]' else None
+
+    page.query_selector = query_selector
+    applicator = LinkedInApplicator(MagicMock(), app_settings)
+
+    result = await applicator._external_apply(page, _job())
+
+    assert result.status == ApplicationStatus.SKIPPED
+    assert "External application required" in result.notes
+    button.click.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_easy_apply_advances_continue_variant_to_submit(
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LinkedIn variants label the first advance button Continue instead of Next."""
+    monkeypatch.setattr("job_applicator.applicators.linkedin.click", AsyncMock())
+    monkeypatch.setattr("job_applicator.applicators.linkedin.random_delay", AsyncMock())
+    advance = AsyncMock()
+    submit_btn = AsyncMock()
+    advanced = False
+    page = AsyncMock()
+
+    async def query_selector(selector: str) -> object | None:
+        nonlocal advanced
+        if "Continue" in selector and not advanced:
+            advanced = True
+            return advance
+        if "Submit" in selector and advanced:
+            return submit_btn
+        return None
+
+    page.query_selector = query_selector
+    applicator = LinkedInApplicator(MagicMock(), app_settings)
+
+    result = await applicator._easy_apply(page, _job(), None, submit=False)
+
+    advance.click.assert_awaited_once()
+    assert result.dry_run is not None
+    assert result.dry_run.reached_submit is True
+    assert result.dry_run.advance_steps == 1
+    assert result.dry_run.advance_selectors == ['button:has-text("Continue")']
+    assert result.dry_run.submit_selector == 'button:has-text("Submit application")'
+
+
+@pytest.mark.asyncio
+async def test_easy_apply_uploads_resume_via_upload_button(
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """LinkedIn may expose an Upload resume button instead of a visible file input."""
+    monkeypatch.setattr("job_applicator.applicators.linkedin.click", AsyncMock())
+    monkeypatch.setattr("job_applicator.applicators.linkedin.random_delay", AsyncMock())
+    resume = tmp_path / "resume.pdf"
+    resume.write_text("%PDF")
+    app_settings.resume_path = str(resume)
+    upload_button = AsyncMock()
+    chooser = AsyncMock()
+    submit_btn = AsyncMock()
+    page = AsyncMock()
+    page.expect_file_chooser = MagicMock(return_value=_ChooserContext(chooser))
+
+    async def query_selector(selector: str) -> object | None:
+        if "Upload resume" in selector:
+            return upload_button
+        if "Submit" in selector:
+            return submit_btn
+        return None
+
+    page.query_selector = query_selector
+    applicator = LinkedInApplicator(MagicMock(), app_settings)
+
+    result = await applicator._easy_apply(page, _job(), None, submit=False)
+
+    chooser.set_files.assert_awaited_once_with(str(resume))
+    assert result.dry_run is not None
+    assert result.dry_run.resume_uploaded is True
+
+
+@pytest.mark.asyncio
+async def test_easy_apply_missing_submit_writes_debug_dump(
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A live selector miss should leave button diagnostics for follow-up."""
+    import job_applicator.applicators.linkedin as li
+
+    monkeypatch.setattr(li, "_DEBUG_DIR", tmp_path)
+    monkeypatch.setattr(li, "click", AsyncMock())
+    monkeypatch.setattr(li, "random_delay", AsyncMock())
+    monkeypatch.setattr(
+        li,
+        "screenshot",
+        AsyncMock(side_effect=lambda _page, path: Path(path).write_bytes(b"png")),
+    )
+    button = AsyncMock()
+    button.inner_text = AsyncMock(return_value="Continue to next step")
+    button.get_attribute = AsyncMock(return_value="Continue to next step")
+    button.input_value = AsyncMock(return_value="")
+    page = AsyncMock()
+    page.url = "https://www.linkedin.com/jobs/view/1"
+    page.content = AsyncMock(return_value="<html>apply modal</html>")
+    page.query_selector = AsyncMock(return_value=None)
+    page.query_selector_all = AsyncMock(return_value=[button])
+    applicator = LinkedInApplicator(MagicMock(), app_settings)
+
+    result = await applicator._easy_apply(page, _job(), None, submit=False)
+
+    assert result.status == ApplicationStatus.FAILED
+    assert "debug saved" in (result.error_message or "")
+    assert "Continue to next step" in _read_first_apply_dump(tmp_path)
+    assert (tmp_path / "linkedin-apply-Y-X.html").read_text(
+        encoding="utf-8"
+    ) == "<html>apply modal</html>"
+    assert (tmp_path / "linkedin-apply-Y-X.png").read_bytes() == b"png"
+    assert result.dry_run is not None
+    assert len(result.dry_run.debug_artifacts) == 3
 
 
 @pytest.mark.asyncio
@@ -190,6 +341,58 @@ async def test_fill_form_fields_skips_already_populated_field(app_settings: AppS
 
     assert "email" in filled
     el.fill.assert_not_awaited()  # NOT overwritten with the config value
+
+
+@pytest.mark.asyncio
+async def test_fill_form_fields_uses_resume_phone_for_mobile_aria_field(
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LinkedIn phone inputs often expose only aria/id labels, not name*=phone."""
+    import job_applicator.applicators.linkedin as li
+
+    monkeypatch.setattr(
+        li, "_resume_contact", lambda _settings: ("resume@example.com", "5145550199")
+    )
+    applicator = LinkedInApplicator(MagicMock(), app_settings)
+    phone = AsyncMock()
+    phone.input_value = AsyncMock(return_value="")
+
+    async def query_selector(selector: str) -> object | None:
+        return phone if "mobile" in selector else None
+
+    page = AsyncMock()
+    page.query_selector = query_selector
+
+    filled, errors = await applicator._fill_form_fields(page)
+
+    assert errors == []
+    assert "phone" in filled
+    phone.fill.assert_awaited_once_with("5145550199")
+
+
+@pytest.mark.asyncio
+async def test_fill_form_fields_uses_resume_phone_for_unlabeled_tel_input(
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Live LinkedIn forms may expose only ``input[type=tel]`` with generated ids."""
+    import job_applicator.applicators.linkedin as li
+
+    monkeypatch.setattr(li, "_resume_contact", lambda _settings: ("", "5145550199"))
+    applicator = LinkedInApplicator(MagicMock(), app_settings)
+    phone = AsyncMock()
+    phone.input_value = AsyncMock(return_value="")
+
+    async def query_selector(selector: str) -> object | None:
+        return phone if 'type="tel"' in selector else None
+
+    page = AsyncMock()
+    page.query_selector = query_selector
+
+    filled, errors = await applicator._fill_form_fields(page)
+
+    assert errors == []
+    assert "phone" in filled
+    phone.fill.assert_awaited_once_with("5145550199")
 
 
 def test_validated_resume_upload_path_checks_existence_and_type(

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, HttpUrl, computed_field
 
@@ -55,6 +55,78 @@ class Format(StrEnum):
     TXT = "txt"
     PDF = "pdf"
     BOTH = "both"
+
+
+class SelectorProbeStatus(StrEnum):
+    """Health classification for a selector probe or aggregate report."""
+
+    PASSED = "pass"
+    WARN = "warn"
+    FAIL = "fail"
+    SKIPPED = "skipped"
+
+
+SelectorProbeScope = Literal["page", "first_card"]
+
+
+class SelectorProbe(BaseModel):
+    """A selector group to probe on a live board surface."""
+
+    board: JobBoard
+    surface: str
+    name: str
+    selector: str = Field(description="Human-readable selector expression for this probe group")
+    selectors: list[str] = Field(default_factory=list)
+    required: bool = True
+    scope: SelectorProbeScope = "page"
+
+    model_config = {"extra": "forbid"}
+
+
+class SelectorProbeResult(BaseModel):
+    """Observed result for one selector probe group."""
+
+    board: JobBoard
+    surface: str
+    name: str
+    selector: str
+    required: bool
+    matched_count: int = 0
+    status: SelectorProbeStatus
+    details: str = ""
+    url: str = ""
+    artifacts: list[str] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
+class BoardSelectorHealth(BaseModel):
+    """Selector health for one board/surface check."""
+
+    board: JobBoard
+    surface: str
+    status: SelectorProbeStatus
+    url: str = ""
+    results: list[SelectorProbeResult] = Field(default_factory=list)
+    artifacts: list[str] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
+class SelectorHealthReport(BaseModel):
+    """Top-level selector drift report for CLI JSON and preflight checks."""
+
+    status: SelectorProbeStatus
+    boards: list[BoardSelectorHealth] = Field(default_factory=list)
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    artifacts: list[str] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def ok(self) -> bool:
+        return self.status != SelectorProbeStatus.FAIL
 
 
 class JobListing(BaseModel):
@@ -319,6 +391,13 @@ class DryRunValidation(BaseModel):
     fill_errors: list[str] = Field(default_factory=list)  # fields present but could not be filled
     resume_uploaded: bool = False
     cover_letter_field_found: bool = False
+    advance_steps: int = 0
+    advance_selectors: list[str] = Field(default_factory=list)
+    submit_selector: str = ""
+    modal_title: str = ""
+    required_empty_fields: list[str] = Field(default_factory=list)
+    disabled_submit_reason: str = ""
+    debug_artifacts: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
@@ -540,6 +619,14 @@ class DateAuditResult(BaseModel):
     staleness_issues: list[str] = Field(
         default_factory=list,
         description="Entries that suggest the CV may be outdated",
+    )
+    employment_gaps: list[str] = Field(
+        default_factory=list,
+        description="Likely employment gaps detected between experience entries",
+    )
+    overlap_issues: list[str] = Field(
+        default_factory=list,
+        description="Experience entries with overlapping date ranges",
     )
     is_stale: bool = Field(
         default=False,
@@ -766,6 +853,26 @@ class PDFRenderingCheck(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class CapabilityReadiness(BaseModel):
+    """Derived readiness verdict for a user-facing capability."""
+
+    ready: bool = False
+    details: str = ""
+
+    model_config = {"extra": "forbid"}
+
+
+class DoctorReadiness(BaseModel):
+    """Capability-level first-use readiness summary."""
+
+    ai_generation: CapabilityReadiness = Field(default_factory=CapabilityReadiness)
+    matching: CapabilityReadiness = Field(default_factory=CapabilityReadiness)
+    browser_workflows: CapabilityReadiness = Field(default_factory=CapabilityReadiness)
+    pdf_output: CapabilityReadiness = Field(default_factory=CapabilityReadiness)
+
+    model_config = {"extra": "forbid"}
+
+
 class DoctorReport(BaseModel):
     """Aggregate AI-backend health check rendered by `job-applicator doctor`."""
 
@@ -777,6 +884,7 @@ class DoctorReport(BaseModel):
     config: ConfigCheck
     vllm_process: VLLMProcessCheck = Field(default_factory=VLLMProcessCheck)
     pdf_rendering: PDFRenderingCheck
+    readiness: DoctorReadiness = Field(default_factory=DoctorReadiness)
 
     @property
     def ok(self) -> bool:

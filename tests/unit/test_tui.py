@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from textual.widgets import OptionList
 from typer.testing import CliRunner
 
@@ -65,6 +66,15 @@ def _mr(job: JobListing, score: float = 0.8) -> object:
         missing_skills=[],
         summary="ok",
     )
+
+
+def _open_external_inline(app: JobApplicatorApp, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import webbrowser
+
+    def _open(target: str, *, opened_msg: str, fail_msg: str) -> None:
+        webbrowser.open(target)
+
+    monkeypatch.setattr(app, "_open_external_worker", _open)
 
 
 # ----------------------------------------------------------------- Pilot tests
@@ -372,10 +382,10 @@ async def test_tui_open_url_opens_browser(tmp_path: Path, monkeypatch) -> None: 
     app = JobApplicatorApp(
         settings=AppSettings(), store=store, app_state=MagicMock(list_recent=lambda **k: [])
     )
+    _open_external_inline(app, monkeypatch)
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("o")
-        await app.workers.wait_for_complete()  # the browser open runs in a thread worker
         await pilot.pause()
     assert opened["url"] == "https://linkedin.com/jobs/1"
 
@@ -651,10 +661,10 @@ async def test_tui_open_tailored_artifact(tmp_path: Path, monkeypatch) -> None: 
     opened: dict[str, str] = {}
     monkeypatch.setattr(webbrowser, "open", lambda u: opened.setdefault("uri", u) or True)
     app = _tailored_app(tmp_path, tailored_resume_path=str(art))
+    _open_external_inline(app, monkeypatch)
     async with app.run_test() as pilot:
         await pilot.pause()
         app.action_open_tailored()
-        await app.workers.wait_for_complete()  # off-thread open worker
         await pilot.pause()
     assert opened["uri"].startswith("file://") and opened["uri"].endswith("tailored_Acme_Dev.txt")
 
@@ -671,10 +681,10 @@ async def test_tui_open_cover_artifact(tmp_path: Path, monkeypatch) -> None:  # 
     opened: dict[str, str] = {}
     monkeypatch.setattr(webbrowser, "open", lambda u: opened.setdefault("uri", u) or True)
     app = _tailored_app(tmp_path, tailored_resume_path=str(resume), cover_letter_path=str(cover))
+    _open_external_inline(app, monkeypatch)
     async with app.run_test() as pilot:
         await pilot.pause()
         app.action_open_cover()
-        await app.workers.wait_for_complete()
         await pilot.pause()
     assert opened["uri"].endswith("cover_letter_Acme.txt")  # the cover, not the résumé
 
@@ -691,10 +701,10 @@ async def test_tui_open_pdf_artifact(tmp_path: Path, monkeypatch) -> None:  # ty
     opened: dict[str, str] = {}
     monkeypatch.setattr(webbrowser, "open", lambda u: opened.setdefault("uri", u) or True)
     app = _tailored_app(tmp_path, tailored_resume_path=str(txt), pdf_path=str(pdf))
+    _open_external_inline(app, monkeypatch)
     async with app.run_test() as pilot:
         await pilot.pause()
         app.action_open_pdf()
-        await app.workers.wait_for_complete()
         await pilot.pause()
     assert opened["uri"].endswith("tailored_Acme_Dev_20260625_120000_000000_modern.pdf")
 
@@ -711,10 +721,10 @@ async def test_tui_open_pdf_falls_back_to_cover_letter_pdf(tmp_path: Path, monke
     opened: dict[str, str] = {}
     monkeypatch.setattr(webbrowser, "open", lambda u: opened.setdefault("uri", u) or True)
     app = _tailored_app(tmp_path, tailored_resume_path=str(txt), cover_letter_pdf_path=str(cl_pdf))
+    _open_external_inline(app, monkeypatch)
     async with app.run_test() as pilot:
         await pilot.pause()
         app.action_open_pdf()
-        await app.workers.wait_for_complete()
         await pilot.pause()
     assert opened["uri"].endswith("cover_letter_Acme_Dev_20260625_120000_000000_modern.pdf")
 
@@ -1283,6 +1293,148 @@ async def test_cover_letter_job_uses_resume_name_for_sign_off(tmp_path: Path, mo
     result = await actions.cover_letter_job(settings, _job(1))
     assert captured["resume_name"] == "Sam Sample"
     assert "Sam Sample" in result.cover_letter_text
+
+
+async def test_tailor_job_refuses_dirty_grounding_report(  # type: ignore[no-untyped-def]
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The TUI's automated tailor action must not save an ungrounded first draft."""
+    from job_applicator.exceptions import TailorIntegrityError
+    from job_applicator.models import ClaimCheck, GroundingReport, TailoredResume
+    from job_applicator.tui import actions
+
+    tailored = TailoredResume(
+        original_path="r.pdf",
+        tailored_text="Invented CISSP\njohn@example.com",
+        job_title="Engineer 1",
+        job_company="Co1",
+        match_score=0.8,
+        semantic_score=0.8,
+        skill_score=0.8,
+        changes_summary="inflated credential",
+        grounding_report=GroundingReport(
+            unsupported=[ClaimCheck(claim="Invented CISSP", grounded=False)]
+        ),
+    )
+    monkeypatch.setattr(
+        "job_applicator.documents.resume.ResumeLoader",
+        lambda: MagicMock(
+            load=lambda _p: ResumeData(raw_text="John Doe\njohn@example.com\nSkills\nPython")
+        ),
+    )
+    monkeypatch.setattr(
+        "job_applicator.documents.resume_tailor.ResumeTailor",
+        lambda *a, **k: MagicMock(tailor_verified=AsyncMock(return_value=tailored)),
+    )
+    monkeypatch.setattr("job_applicator.factories._make_runtime", lambda s: MagicMock())
+
+    settings = AppSettings(resume_path="/r.pdf", output_dir=str(tmp_path / "out"))
+    with pytest.raises(TailorIntegrityError, match="unsupported or unchecked claim"):
+        await actions.tailor_job(settings, _job(1))
+
+    assert not list((tmp_path / "out").glob("tailored_*.txt"))
+
+
+async def test_tailor_job_both_updates_text_meta_with_pdf_path(  # type: ignore[no-untyped-def]
+    tmp_path: Path, monkeypatch
+) -> None:
+    """TUI `both` résumé output keeps one authoritative text sidecar that includes pdf_path."""
+    from job_applicator.models import Format, GroundingReport, TailoredResume
+    from job_applicator.tui import actions
+
+    tailored = TailoredResume(
+        original_path="r.pdf",
+        tailored_text="John Doe\njohn@example.com\nSkills\nPython",
+        job_title="Engineer 1",
+        job_company="Co1",
+        match_score=0.8,
+        semantic_score=0.8,
+        skill_score=0.8,
+        changes_summary="focused skills",
+        grounding_report=GroundingReport(),
+    )
+    monkeypatch.setattr(actions, "assert_tailored_auto_saveable", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "job_applicator.documents.resume.ResumeLoader",
+        lambda: MagicMock(load=lambda _p: ResumeData(raw_text="John Doe\njohn@example.com")),
+    )
+    monkeypatch.setattr(
+        "job_applicator.documents.resume_tailor.ResumeTailor",
+        lambda *a, **k: MagicMock(tailor_verified=AsyncMock(return_value=tailored)),
+    )
+    monkeypatch.setattr("job_applicator.factories._make_runtime", lambda s: MagicMock())
+    captured: dict[str, object] = {}
+
+    async def _render_pdf(output_dir, result, settings, **kwargs):  # type: ignore[no-untyped-def]
+        captured["write_meta"] = kwargs["write_meta"]
+        pdf = output_dir / "tailored.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        result.pdf_path = str(pdf)
+        return pdf
+
+    monkeypatch.setattr(actions, "write_tailored_pdf", _render_pdf)
+
+    settings = AppSettings(resume_path="/r.pdf", output_dir=str(tmp_path / "out"))
+    result = await actions.tailor_job(settings, _job(1), output_format=Format.BOTH)
+
+    meta = TailoredResume.model_validate_json(
+        Path(result.output_path).with_suffix(".meta.json").read_text()
+    )
+    assert captured["write_meta"] is False
+    assert meta.pdf_path == str(tmp_path / "out" / "tailored.pdf")
+
+
+async def test_cover_letter_job_both_updates_text_meta_with_pdf_path(  # type: ignore[no-untyped-def]
+    tmp_path: Path, monkeypatch
+) -> None:
+    """TUI `both` cover-letter output keeps one authoritative text sidecar with pdf_path."""
+    from job_applicator.models import CoverLetterResult, Format
+    from job_applicator.tui import actions
+
+    async def _generate(
+        job, user, resume, style_guide=None, tone_section="", tailored_resume_text=""
+    ):  # type: ignore[no-untyped-def]
+        return "Dear hiring manager,\n\nLetter.\n\nSincerely,\nSam Sample"
+
+    monkeypatch.setattr(
+        "job_applicator.documents.cover_letter.CoverLetterGenerator",
+        lambda *a, **k: MagicMock(generate_verified=_generate),
+    )
+    monkeypatch.setattr(
+        "job_applicator.documents.resume.ResumeLoader",
+        lambda: MagicMock(load=lambda _p: ResumeData(raw_text="resume text", name="Sam Sample")),
+    )
+    monkeypatch.setattr("job_applicator.factories._make_runtime", lambda s: MagicMock())
+    monkeypatch.setattr(
+        "job_applicator.documents.tone_detector.ToneDetector",
+        lambda: MagicMock(format_for_prompt=lambda t: ""),
+    )
+    monkeypatch.setattr("job_applicator.utils.profile._detect_tone", lambda job: MagicMock())
+    monkeypatch.setattr(
+        "job_applicator.utils.profile._load_user_profile",
+        lambda s, *, resume_name="": UserProfile(
+            first_name="Sam", last_name="Sample", email="s@e.com", phone=""
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    async def _render_pdf(output_dir, result, settings, **kwargs):  # type: ignore[no-untyped-def]
+        captured["write_meta"] = kwargs["write_meta"]
+        pdf = output_dir / "cover.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        result.pdf_path = str(pdf)
+        return pdf
+
+    monkeypatch.setattr(actions, "write_cover_letter_pdf", _render_pdf)
+
+    settings = AppSettings(resume_path="/r.pdf", output_dir=str(tmp_path / "out"))
+    result = await actions.cover_letter_job(settings, _job(1), output_format=Format.BOTH)
+
+    meta = CoverLetterResult.model_validate_json(
+        Path(result.output_path).with_suffix(".meta.json").read_text()
+    )
+    assert captured["write_meta"] is False
+    assert meta.pdf_path == str(tmp_path / "out" / "cover.pdf")
 
 
 async def test_ats_check_runs_checker_on_resume(monkeypatch) -> None:  # type: ignore[no-untyped-def]

@@ -8,8 +8,8 @@ avoid a cli <-> workflow import cycle.
 
 from __future__ import annotations
 
-import asyncio
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
 from pathlib import Path
@@ -24,12 +24,33 @@ from job_applicator.documents.artifacts import (
     write_tailored_pdf,
 )
 from job_applicator.documents.job_category import detect_job_category
+from job_applicator.exceptions import TailorIntegrityError
 from job_applicator.models import Format
 from job_applicator.utils.diff import render_diff
 from job_applicator.utils.logging import get_logger
 from job_applicator.workflows.cover_letter import _cover_letter_workflow
 
 logger = get_logger("workflows.tailor")
+
+
+@dataclass(frozen=True)
+class PostTailorIntegrity:
+    """Structured version of the post-tailor integrity display."""
+
+    base_ats_compatible: bool
+    tailored_ats_compatible: bool
+    missing_contact: tuple[str, ...] = ()
+
+    @property
+    def blocks_auto_accept(self) -> bool:
+        return (self.base_ats_compatible and not self.tailored_ats_compatible) or bool(
+            self.missing_contact
+        )
+
+
+def _write_text_file(path: str | Path, content: str) -> None:
+    Path(path).write_text(content, encoding="utf-8")
+
 
 if TYPE_CHECKING:
     from rich.console import Console
@@ -75,13 +96,10 @@ def _print_grounding_report(console: Console, report: GroundingReport | None) ->
     )
 
 
-def _print_post_tailor_integrity(console: Console, original_text: str, tailored_text: str) -> None:
-    """Surface two cheap post-tailor integrity signals per version: the tailored output's ATS score
-    (before → after) and a contact-preservation green-check. Both are SURFACED for review, never
-    gates — consistent with the grounding report. Contact loss is empirically rare (the table-aware
-    parser keeps contact in the text + the grounding verifier blocks loss), so the contact check is
-    defense-in-depth against a future parser regression, not a frequent flag.
-    """
+def _compute_post_tailor_integrity(
+    original_text: str, tailored_text: str
+) -> tuple[PostTailorIntegrity, float, float] | None:
+    """Compute cheap post-tailor integrity signals without printing."""
     try:
         from job_applicator.documents.ats_checker import ATSChecker
         from job_applicator.documents.resume import ResumeLoader
@@ -89,10 +107,10 @@ def _print_post_tailor_integrity(console: Console, original_text: str, tailored_
         loader = ResumeLoader()
         base = loader.parse_text(original_text)
         tailored = loader.parse_text(tailored_text)
-        before = ATSChecker().check(base).score
-        after = ATSChecker().check(tailored).score
-        mark = "green" if after >= before else "yellow"
-        console.print(f"\n[bold]Tailored ATS:[/bold] [{mark}]{before:.0%} → {after:.0%}[/{mark}]")
+        before_result = ATSChecker().check(base)
+        after_result = ATSChecker().check(tailored)
+        before = before_result.score
+        after = after_result.score
 
         # Contact green-check: only verify fields the base actually exposes. Match leniently so a
         # faithful REFORMAT isn't flagged as a drop — compare the email without a parser-captured
@@ -107,17 +125,77 @@ def _print_post_tailor_integrity(console: Console, original_text: str, tailored_
         base_phone = re.sub(r"\D", "", base.phone)[-10:]  # national number, country-code-agnostic
         if len(base_phone) == 10 and base_phone not in tail_digits:
             missing.append("phone")
-        if missing:
-            console.print(
-                f"[yellow]⚠ Contact: your {', '.join(missing)} from the base résumé is missing "
-                "from the tailored output — verify before sending.[/yellow]"
-            )
-        elif base_email or len(base_phone) == 10:
-            console.print("[green]✓ Contact preserved in the tailored output.[/green]")
+        return (
+            PostTailorIntegrity(
+                base_ats_compatible=before_result.is_compatible,
+                tailored_ats_compatible=after_result.is_compatible,
+                missing_contact=tuple(missing),
+            ),
+            before,
+            after,
+        )
     except Exception as exc:
         # Advisory surface only — a parse/ATS hiccup (or an unparseable draft) must never abort the
         # tailor flow; skip the line with a debug note rather than crashing the review loop.
         logger.debug("Post-tailor integrity surface skipped: %s", exc)
+        return None
+
+
+def _print_post_tailor_integrity(
+    console: Console, original_text: str, tailored_text: str
+) -> PostTailorIntegrity | None:
+    """Surface two cheap post-tailor integrity signals per version.
+
+    Both are SURFACED for review, never gates for interactive review — consistent with the grounding
+    report. Non-interactive auto-accept uses the returned status to fail closed when a previously
+    ATS-compatible base résumé becomes incompatible or contact details disappear.
+    """
+    computed = _compute_post_tailor_integrity(original_text, tailored_text)
+    if computed is None:
+        return None
+    integrity, before, after = computed
+    mark = "green" if after >= before else "yellow"
+    console.print(f"\n[bold]Tailored ATS:[/bold] [{mark}]{before:.0%} → {after:.0%}[/{mark}]")
+    if integrity.missing_contact:
+        console.print(
+            f"[yellow]⚠ Contact: your {', '.join(integrity.missing_contact)} from the base résumé "
+            "is missing from the tailored output — verify before sending.[/yellow]"
+        )
+    else:
+        console.print("[green]✓ Contact preserved in the tailored output.[/green]")
+    return integrity
+
+
+def assert_tailored_auto_saveable(result: TailoredResume, original_text: str) -> None:
+    """Fail closed before an automated tailored-CV save."""
+    grounding_report = result.grounding_report
+    if grounding_report is None:
+        raise TailorIntegrityError(
+            "Automated save refused this tailored résumé because grounding verification did not "
+            "complete. Review manually, or retry after fixing the verifier."
+        )
+    if not grounding_report.clean:
+        issue_count = len(grounding_report.unsupported) + len(grounding_report.coverage_gaps)
+        raise TailorIntegrityError(
+            "Automated save refused this tailored résumé because grounding verification found "
+            f"{issue_count} unsupported or unchecked claim(s). Review manually, or adjust the "
+            "tailoring prompt."
+        )
+    computed = _compute_post_tailor_integrity(original_text, result.tailored_text)
+    if computed is None:
+        return
+    integrity, _before, _after = computed
+    if integrity.blocks_auto_accept:
+        reasons: list[str] = []
+        if integrity.base_ats_compatible and not integrity.tailored_ats_compatible:
+            reasons.append("tailored résumé became ATS-incompatible")
+        if integrity.missing_contact:
+            reasons.append(f"missing contact: {', '.join(integrity.missing_contact)}")
+        raise TailorIntegrityError(
+            "Automated save refused this tailored résumé because "
+            + "; ".join(reasons)
+            + ". Review manually, or adjust the tailoring prompt."
+        )
 
 
 async def _tailor_workflow(
@@ -137,7 +215,7 @@ async def _tailor_workflow(
     resume_template: str = "modern",
     cover_letter_template: str = "modern",
     category: str | None = None,
-) -> None:
+) -> TailoredResume | None:
     """Run the interactive tailor loop until the user accepts ([A]) or quits ([Q]).
 
     ``yes`` (the ``--yes`` flag) makes it non-interactive: auto-accept the first tailored
@@ -213,6 +291,44 @@ async def _tailor_workflow(
         console.print(action_table)
 
         if yes:
+            if (
+                result.grounding_report is not None
+                and not result.grounding_report.clean
+                and attempt < 3
+            ):
+                console.print(
+                    "\n[yellow]--yes: grounding found unsupported claims; retrying once with "
+                    "strict source-only instructions.[/yellow]"
+                )
+                feedback = (
+                    "Remove every unsupported or weakly supported claim. Use only facts, metrics, "
+                    "tools, duties, dates, employers, and outcomes explicitly present in the "
+                    "original résumé. Prefer shorter source-backed bullets over embellished "
+                    "claims. Do not add new responsibilities, optional sections, aspirations, "
+                    "deployment claims, performance claims, collaboration claims, or outcomes."
+                )
+                try:
+                    result = await partial(
+                        tailor_engine.refine_verified,
+                        resume_data,
+                        result,
+                        feedback,
+                        job,
+                        style_guide=style,
+                        tone_profile=tone_profile,
+                    )()
+                except Exception as exc:
+                    raise TailorIntegrityError(
+                        "--yes refused to auto-accept this tailored résumé because retrying "
+                        "after grounding failure did not complete."
+                    ) from exc
+                session.add_attempt(result)
+                continue
+            try:
+                assert_tailored_auto_saveable(result, session.original_text)
+            except TailorIntegrityError as exc:
+                msg = str(exc).replace("Automated save refused", "--yes refused to auto-accept")
+                raise TailorIntegrityError(msg) from exc
             console.print("\n[dim]--yes: accepting this version automatically.[/dim]")
             choice = "A"
         else:
@@ -223,14 +339,12 @@ async def _tailor_workflow(
             )
 
         if choice == "A":
-            output_dir = await asyncio.to_thread(settings.ensure_output_dir)
+            output_dir = settings.ensure_output_dir()
             when = datetime.now()
             effective_category = category or detect_job_category(job)
 
             if output_format == Format.TXT:
-                resume_path, meta_path = await asyncio.to_thread(
-                    write_tailored, output_dir, result, when=when
-                )
+                resume_path, meta_path = write_tailored(output_dir, result, when=when)
                 result.output_path = resume_path
                 files_written = [resume_path]
             elif output_format == Format.PDF:
@@ -246,9 +360,7 @@ async def _tailor_workflow(
                 result.pdf_path = str(pdf_path)
                 files_written = [str(pdf_path)]
             else:  # both
-                resume_path, meta_path = await asyncio.to_thread(
-                    write_tailored, output_dir, result, when=when
-                )
+                resume_path, meta_path = write_tailored(output_dir, result, when=when)
                 pdf_path = await write_tailored_pdf(
                     output_dir,
                     result,
@@ -261,9 +373,7 @@ async def _tailor_workflow(
                 result.output_path = resume_path
                 result.pdf_path = str(pdf_path)
                 # Update the text sidecar to reference the PDF.
-                await asyncio.to_thread(
-                    Path(meta_path).write_text, result.model_dump_json(indent=2), encoding="utf-8"
-                )
+                _write_text_file(meta_path, result.model_dump_json(indent=2))
                 files_written = [resume_path, str(pdf_path)]
 
             if reporter:
@@ -307,12 +417,10 @@ async def _tailor_workflow(
             if cover_letter_path:
                 result.cover_letter_path = str(cover_letter_path)
             final_meta_path = Path(result.output_path).with_suffix(".meta.json")
-            await asyncio.to_thread(
-                final_meta_path.write_text, result.model_dump_json(indent=2), encoding="utf-8"
-            )
+            _write_text_file(final_meta_path, result.model_dump_json(indent=2))
             console.print(f"[green]Metadata saved: {final_meta_path}[/green]")
 
-            break
+            return result
 
         elif choice == "R":
             console.print("[yellow]Regenerating...[/yellow]")
@@ -484,3 +592,5 @@ async def _tailor_workflow(
 
         else:
             console.print("[red]Invalid choice. Please enter A, R, I, D, V, S, or Q.[/red]")
+
+    return None

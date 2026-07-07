@@ -47,6 +47,15 @@ def _tokens(text: str) -> set[str]:
     return set(_WORD_RE.findall(text.lower()))
 
 
+def _normalized_text(text: str) -> str:
+    """Normalize lightweight formatting so source-verbatim headings compare reliably."""
+    normalized = text.lower()
+    normalized = normalized.replace("–", "-").replace("—", "-")
+    normalized = re.sub(r"[*_`]", "", normalized)
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized.strip()
+
+
 def _pcts(text: str) -> set[str]:
     """Percentages only (e.g. '95%')."""
     return set(_PCT_RE.findall(text))
@@ -88,10 +97,31 @@ def audit_claim(check: ClaimCheck, source: str) -> str | None:
 
 def _sentences(text: str) -> list[str]:
     """Substantive sentences/bullets (>=3 content tokens) of a generated document."""
-    return [s.strip() for s in _SENT_SPLIT_RE.split(text) if len(_tokens(s)) >= 3]
+    return [
+        s.strip()
+        for s in _SENT_SPLIT_RE.split(text)
+        if len(_tokens(s)) >= 3 and not _looks_like_contact_fragment(s)
+    ]
 
 
-def coverage_gaps(generated: str, claims: list[ClaimCheck]) -> list[str]:
+def _looks_like_contact_fragment(text: str) -> bool:
+    """Contact header fragments are identity data, not factual claims to enumerate.
+
+    Sentence splitting can chop ``name | phone | email | linkedin`` lines at ``.`` and create
+    pseudo-sentences like ``com/in/name``. The verifier may reasonably skip those, so the
+    deterministic coverage backstop should not report them as claim coverage gaps.
+    """
+    low = text.lower()
+    digits = sum(ch.isdigit() for ch in text)
+    return (
+        "@" in text
+        or "linkedin" in low
+        or "/in/" in low
+        or (digits >= 7 and ("|" in text or "+" in text or "(" in text))
+    )
+
+
+def coverage_gaps(generated: str, claims: list[ClaimCheck], source: str = "") -> list[str]:
     """Sentences of *generated* that no enumerated claim covers (token-overlap).
 
     The structural miss-direction: a fabrication the verifier never enumerated is neither grounded
@@ -101,8 +131,12 @@ def coverage_gaps(generated: str, claims: list[ClaimCheck]) -> list[str]:
     claim_tokens: set[str] = set()
     for check in claims:
         claim_tokens |= _tokens(check.claim)
+    normalized_source = _normalized_text(source)
     return [
-        s for s in _sentences(generated) if _overlap(_tokens(s), claim_tokens) < _COVERAGE_OVERLAP
+        s
+        for s in _sentences(generated)
+        if _overlap(_tokens(s), claim_tokens) < _COVERAGE_OVERLAP
+        and _normalized_text(s) not in normalized_source
     ]
 
 
@@ -120,7 +154,7 @@ def audit_report(report: VerificationReport, generated: str, source: str) -> Gro
             unsupported.append(check.model_copy(update={"grounded": False, "note": reason}))
     return GroundingReport(
         unsupported=unsupported,
-        coverage_gaps=coverage_gaps(generated, report.claims),
+        coverage_gaps=coverage_gaps(generated, report.claims, source),
     )
 
 
@@ -206,7 +240,7 @@ class GroundingVerifier:
                     messages=messages,
                     response_model=VerificationReport,
                     max_retries=1,
-                    max_tokens=2000,
+                    max_tokens=self._config.max_tokens,
                     temperature=0.1,
                     extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                 ),

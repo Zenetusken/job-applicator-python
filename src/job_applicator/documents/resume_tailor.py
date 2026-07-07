@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from itertools import pairwise
 from typing import TYPE_CHECKING
 
 from job_applicator.config import LLMConfig
@@ -167,12 +168,10 @@ class ResumeDateValidator:
     - Chronological ordering (most recent first, within each section)
     - Staleness of the newest entry (its end date > STALE_THRESHOLD_YEARS ago, unless it is
       currently "Present") — a soft "have you updated this CV?" signal.
+    - Experience gap/overlap surfacing when the heuristic parser has enough structured dates.
 
-    NOT implemented (deliberately — do not re-add to the docstring without the code): employment
-    GAP detection and overlap/"impossible range" detection. Gaps are the real HR red flag but need
-    reliable per-role date-range parsing (structured experience, currently unpopulated) — a separate
-    arc. The date parser is heuristic (regex over raw_text): it drops MM/YYYY, "Current", and French
-    formats, so treat these signals as advisory, never blocking.
+    The date parser is heuristic (regex over raw_text), so treat these signals as advisory, never
+    blocking, unless a future structured-extraction pass supplies higher-confidence role ranges.
     """
 
     STALE_THRESHOLD_YEARS = 2
@@ -190,6 +189,8 @@ class ResumeDateValidator:
         warnings: list[str] = []
         ordering_issues: list[str] = []
         staleness_issues: list[str] = []
+        employment_gaps: list[str] = []
+        overlap_issues: list[str] = []
 
         # Check chronological ordering within each section
         by_section: dict[str, list[ParsedDate]] = {}
@@ -207,6 +208,8 @@ class ResumeDateValidator:
                         f"{section}: '{curr.label}' ({self._fmt_date(curr)}) "
                         f"should come after '{nxt.label}' ({self._fmt_date(nxt)})"
                     )
+
+        employment_gaps, overlap_issues = self._employment_gap_and_overlap_issues(entries)
 
         # Check staleness
         latest_ts = 0
@@ -247,6 +250,10 @@ class ResumeDateValidator:
 
         if staleness_issues:
             warnings.append("CV may be outdated — review staleness warnings below.")
+        if employment_gaps:
+            warnings.append("Potential employment gap(s) found — review before sending.")
+        if overlap_issues:
+            warnings.append("Potential overlapping experience dates found — review before sending.")
 
         # Build result
         from job_applicator.models import DateEntry
@@ -289,11 +296,73 @@ class ResumeDateValidator:
             warnings=warnings,
             ordering_issues=ordering_issues,
             staleness_issues=staleness_issues,
+            employment_gaps=employment_gaps,
+            overlap_issues=overlap_issues,
             is_stale=bool(staleness_issues),
             is_ordered=not ordering_issues,
             latest_date=latest_str,
             earliest_date=earliest_str,
         )
+
+    def _employment_gap_and_overlap_issues(
+        self, entries: list[ParsedDate]
+    ) -> tuple[list[str], list[str]]:
+        experience_entries = [
+            e
+            for e in entries
+            if ("experience" in e.section.lower() or "expérience" in e.section.lower())
+            and e.start_year is not None
+        ]
+        ranges: list[tuple[ParsedDate, int, int]] = []
+        gaps: list[str] = []
+        overlaps: list[str] = []
+        for entry in experience_entries:
+            start = self._date_sort_key(entry, use_end=False)
+            end = self._date_sort_key(entry, use_end=True)
+            if start and end:
+                if end < start:
+                    overlaps.append(
+                        f"'{entry.label}' has an impossible date range ({self._fmt_date(entry)})"
+                    )
+                    continue
+                ranges.append((entry, start, end))
+        ranges.sort(key=lambda item: item[1])
+
+        for (prev, _prev_start, prev_end), (nxt, next_start, _next_end) in pairwise(ranges):
+            gap_months = self._months_between(prev_end, next_start)
+            if gap_months > 6:
+                gaps.append(
+                    f"{gap_months} month gap between '{prev.label}' ({self._fmt_date(prev)}) "
+                    f"and '{nxt.label}' ({self._fmt_date(nxt)})"
+                )
+            if next_start <= prev_end and not self._is_year_only_boundary(prev, nxt):
+                overlaps.append(
+                    f"'{prev.label}' ({self._fmt_date(prev)}) overlaps with "
+                    f"'{nxt.label}' ({self._fmt_date(nxt)})"
+                )
+        return gaps, overlaps
+
+    @staticmethod
+    def _is_year_only_boundary(prev: ParsedDate, nxt: ParsedDate) -> bool:
+        """Avoid false overlap warnings for adjacent year-only roles.
+
+        A résumé line like ``2017-2021`` followed by ``2021-Present`` does not tell us whether the
+        roles overlapped; treating year-only endpoints as Jan/Dec creates noisy false positives.
+        Month-specific overlaps are still surfaced.
+        """
+        return (
+            prev.end_year is not None
+            and nxt.start_year is not None
+            and prev.end_year == nxt.start_year
+            and prev.end_month is None
+            and nxt.start_month is None
+        )
+
+    @staticmethod
+    def _months_between(first_end: int, next_start: int) -> int:
+        first_year, first_month = divmod(first_end, 100)
+        next_year, next_month = divmod(next_start, 100)
+        return (next_year - first_year) * 12 + (next_month - first_month) - 1
 
     def _parse_all_dates(self, text: str) -> list[ParsedDate]:
         """Extract all date entries from resume text.
@@ -337,6 +406,19 @@ class ResumeDateValidator:
 
     def _find_label(self, lines: list[str], date_line_idx: int) -> str:
         """Find the label for a date entry by looking at preceding lines."""
+        date_line = lines[date_line_idx].strip()
+        if date_line:
+            cleaned_date_line = re.sub(
+                r"\(?\b(?:\d{1,2}/)?\d{4}\s*(?:-|–|—|to|à)\s*"
+                r"(?:present|current|présent|actuel|(?:\d{1,2}/)?\d{4})\b\)?",
+                "",
+                date_line,
+                flags=re.IGNORECASE,
+            )
+            cleaned_date_line = re.sub(r"\s+", " ", cleaned_date_line).strip(" ,-–—")
+            if cleaned_date_line and not _looks_like_section_header(cleaned_date_line):
+                return re.sub(r"\*{1,2}", "", cleaned_date_line).strip()
+
         for j in range(date_line_idx - 1, max(date_line_idx - 5, -1), -1):
             stripped = lines[j].strip()
             if not stripped:
@@ -722,8 +804,14 @@ class ResumeTailor:
             tailored_text, resume.raw_text, job.requirements
         )
         tailored_text = self._strip_hallucinated_education(tailored_text, resume.raw_text)
-        tailored_text = self._strip_empty_certifications_languages(tailored_text, resume.raw_text)
+        tailored_text = self._strip_unbacked_optional_sections(tailored_text, resume.raw_text)
         tailored_text = self._strip_unearned_credentials(tailored_text, resume.raw_text)
+        tailored_text = self._strip_unsupported_metric_claims(tailored_text, resume.raw_text)
+        tailored_text = self._strip_unverifiable_aspirations(tailored_text)
+        tailored_text = self._strip_unbacked_responsibility_bullets(tailored_text, resume.raw_text)
+        tailored_text = self._strip_low_evidence_bullets(tailored_text, resume.raw_text)
+        tailored_text = self._normalize_date_range_dashes(tailored_text)
+        tailored_text = self._strip_unbacked_references(tailored_text, resume.raw_text)
         changes = await self._summarize_changes(resume.raw_text, tailored_text)
 
         return TailoredResume(
@@ -864,10 +952,18 @@ class ResumeTailor:
             refined_text, original_resume.raw_text, job.requirements
         )
         refined_text = self._strip_hallucinated_education(refined_text, original_resume.raw_text)
-        refined_text = self._strip_empty_certifications_languages(
+        refined_text = self._strip_unbacked_optional_sections(
             refined_text, original_resume.raw_text
         )
         refined_text = self._strip_unearned_credentials(refined_text, original_resume.raw_text)
+        refined_text = self._strip_unsupported_metric_claims(refined_text, original_resume.raw_text)
+        refined_text = self._strip_unverifiable_aspirations(refined_text)
+        refined_text = self._strip_unbacked_responsibility_bullets(
+            refined_text, original_resume.raw_text
+        )
+        refined_text = self._strip_low_evidence_bullets(refined_text, original_resume.raw_text)
+        refined_text = self._normalize_date_range_dashes(refined_text)
+        refined_text = self._strip_unbacked_references(refined_text, original_resume.raw_text)
         refined_text = self._require_nonempty(refined_text)
         changes = await self._summarize_changes(current_tailored.tailored_text, refined_text)
 
@@ -1271,6 +1367,244 @@ class ResumeTailor:
         result = re.sub(r"\s+\.", ".", result)
         return result.strip()
 
+    def _strip_unsupported_metric_claims(self, tailored: str, original: str) -> str:
+        """Remove common LLM metric embellishments not present in the base résumé.
+
+        The grounding verifier catches these after generation, but unattended ``--yes`` should not
+        depend on the model obeying the prompt. This sanitizer keeps source-backed numbers, restores
+        abbreviated source metrics (``2B``/``5M``), and removes invented percentage-result clauses.
+        """
+        original_percentages = set(re.findall(r"\b\d+(?:\.\d+)?%", original))
+        result = self._restore_source_metric_abbreviations(tailored, original)
+        result = self._strip_unbacked_plus_quantifiers(result, original)
+
+        lines: list[str] = []
+        for line in result.splitlines():
+            percentages = set(re.findall(r"\b\d+(?:\.\d+)?%", line))
+            unsupported = percentages - original_percentages
+            if not unsupported:
+                lines.append(line)
+                continue
+
+            cleaned = line
+            for pct in sorted(unsupported, key=len, reverse=True):
+                pct_pattern = re.escape(pct)
+                pct_token = rf"(?<!\d){pct_pattern}(?!\d)"
+                cleaned = re.sub(
+                    rf"\s*,?\s*(?:improving|improved|reducing|reduced|increasing|increased|"
+                    rf"decreasing|decreased|boosting|boosted|cutting|cut|saving|saved|"
+                    rf"lowering|lowered|raising|raised|resulting in|leading to|achieving|"
+                    rf"achieved|delivering|delivered)[^.;\n]*?{pct_token}[^.;\n]*",
+                    "",
+                    cleaned,
+                    flags=re.IGNORECASE,
+                )
+                cleaned = re.sub(
+                    rf"\s*\([^)]*{pct_token}[^)]*\)",
+                    "",
+                    cleaned,
+                    flags=re.IGNORECASE,
+                )
+                cleaned = re.sub(
+                    rf"\s+(?:by|to|at)\s+{pct_token}",
+                    "",
+                    cleaned,
+                    flags=re.IGNORECASE,
+                )
+
+            if set(re.findall(r"\b\d+(?:\.\d+)?%", cleaned)) - original_percentages:
+                logger.info("Dropped line with unsupported metric claim: %s", line.strip())
+                continue
+            cleaned = re.sub(r"\s+([.,;:])", r"\1", cleaned)
+            cleaned = re.sub(r",\s*[.;]", ".", cleaned)
+            lines.append(cleaned.rstrip())
+
+        return "\n".join(lines).strip()
+
+    @staticmethod
+    def _restore_source_metric_abbreviations(tailored: str, original: str) -> str:
+        result = tailored
+        for num in re.findall(r"\b\d+(?=B\b)", original, flags=re.IGNORECASE):
+            result = re.sub(rf"\b{re.escape(num)}\s+billion\b", f"{num}B", result, flags=re.I)
+        for num in re.findall(r"\b\d+(?=M\b)", original, flags=re.IGNORECASE):
+            result = re.sub(rf"\b{re.escape(num)}\s+million\b", f"{num}M", result, flags=re.I)
+        return result
+
+    @staticmethod
+    def _strip_unbacked_plus_quantifiers(tailored: str, original: str) -> str:
+        result = tailored
+        for match in re.finditer(r"\b\d+\+", tailored):
+            token = match.group(0)
+            if re.search(rf"(?<![A-Za-z0-9]){re.escape(token)}(?![A-Za-z0-9])", original):
+                continue
+            result = result.replace(token, token.rstrip("+"))
+        return result
+
+    def _strip_unbacked_references(self, tailored: str, original: str) -> str:
+        """Remove a References section when the base résumé did not contain one."""
+        if re.search(r"\breferences\b", original, re.IGNORECASE):
+            return tailored
+
+        lines = tailored.split("\n")
+        result_lines: list[str] = []
+        in_references = False
+        for line in lines:
+            stripped = line.strip()
+            if re.match(r"^\*{0,2}\s*references\s*\*{0,2}\s*$", stripped, re.IGNORECASE):
+                in_references = True
+                continue
+            if in_references and _looks_like_section_header(stripped):
+                in_references = False
+                result_lines.append(line)
+                continue
+            if in_references:
+                continue
+            result_lines.append(line)
+        return "\n".join(result_lines).strip()
+
+    @staticmethod
+    def _strip_unverifiable_aspirations(tailored: str) -> str:
+        """Remove target-role aspiration sentences before grounding.
+
+        Aspirations such as "Seeking to leverage..." are not résumé-source facts, and the grounding
+        verifier correctly cannot cite them. They are useful in a cover letter, but noisy in an
+        unattended tailored CV.
+        """
+        result = re.sub(
+            r"(?:(?<=^)|(?<=[.!?])\s+)"
+            r"(?:Seeking|Looking|Aiming)\s+to\s+[^.!?]*(?:\.|$)",
+            "",
+            tailored,
+            flags=re.IGNORECASE | re.MULTILINE,
+        )
+        result = re.sub(
+            r",?\s+(?:seeking|looking|aiming)\s+to\s+[^.!?]*(?=\.|$)",
+            "",
+            result,
+            flags=re.IGNORECASE,
+        )
+        return re.sub(r" {2,}", " ", result).strip()
+
+    def _strip_unbacked_responsibility_bullets(self, tailored: str, original: str) -> str:
+        """Drop high-risk responsibility bullets whose actors/domains are absent from the source."""
+        original_lower = original.lower()
+        risky_terms = (
+            "collaborat",
+            "data scientist",
+            "stakeholder",
+            "architect",
+            "architecture",
+            "microservice",
+            "deployed",
+            "uptime",
+            "rollout",
+            "workflow",
+            "optimization",
+            "real-time",
+            "high-concurrency",
+            "high-traffic",
+            "user requests",
+            "cloud-native",
+            "fault tolerance",
+            "scaled",
+            "scalable",
+            "scalability",
+            "database load",
+            "global user growth",
+        )
+        result_lines: list[str] = []
+        for line in tailored.splitlines():
+            stripped = line.strip()
+            is_bullet = bool(re.match(r"^[•*\-]\s+", stripped))
+            if is_bullet:
+                lower = stripped.lower()
+                missing_terms = [
+                    term for term in risky_terms if term in lower and term not in original_lower
+                ]
+                if missing_terms:
+                    logger.info(
+                        "Dropped responsibility bullet with unbacked term(s) %s: %s",
+                        ", ".join(missing_terms),
+                        stripped,
+                    )
+                    continue
+                if re.search(r"\bthat\s*[.;]?$", stripped, flags=re.IGNORECASE):
+                    logger.info("Dropped incomplete responsibility bullet: %s", stripped)
+                    continue
+            result_lines.append(line)
+        return "\n".join(result_lines).strip()
+
+    def _strip_low_evidence_bullets(self, tailored: str, original: str) -> str:
+        """Drop generated bullets that are weakly supported by source résumé tokens."""
+        source_tokens = self._evidence_tokens(original)
+        if not source_tokens:
+            return tailored
+
+        result_lines: list[str] = []
+        for line in tailored.splitlines():
+            stripped = line.strip()
+            if not re.match(r"^[•*\-]\s+", stripped):
+                result_lines.append(line)
+                continue
+            bullet_tokens = self._evidence_tokens(stripped)
+            if len(bullet_tokens) < 4:
+                result_lines.append(line)
+                continue
+            overlap = len(bullet_tokens & source_tokens) / len(bullet_tokens)
+            if overlap < 0.30:
+                logger.info(
+                    "Dropped low-evidence tailored bullet (%.0f%% source overlap): %s",
+                    overlap * 100,
+                    stripped,
+                )
+                continue
+            result_lines.append(line)
+        return "\n".join(result_lines).strip()
+
+    @staticmethod
+    def _evidence_tokens(text: str) -> set[str]:
+        stop = {
+            "and",
+            "the",
+            "with",
+            "using",
+            "used",
+            "for",
+            "from",
+            "that",
+            "this",
+            "into",
+            "across",
+            "based",
+            "through",
+            "while",
+            "per",
+            "day",
+            "services",
+            "systems",
+            "application",
+            "applications",
+        }
+        aliases = {
+            "asynchronous": "async",
+            "pipelines": "pipeline",
+            "schemas": "schema",
+            "models": "model",
+            "workflows": "workflow",
+        }
+        tokens = set(re.findall(r"[a-z0-9][a-z0-9+.-]{2,}", text.lower()))
+        return {aliases.get(token, token) for token in tokens if token not in stop}
+
+    @staticmethod
+    def _normalize_date_range_dashes(tailored: str) -> str:
+        """Use plain hyphens in year ranges to match common source résumé syntax."""
+        return re.sub(
+            r"(\b\d{4})[–—](Present|Current|présent|actuel|\d{4}\b)",
+            r"\1-\2",
+            tailored,
+            flags=re.IGNORECASE,
+        )
+
     def _strip_hallucinated_education(self, tailored: str, original: str) -> str:
         """Remove Education section if it wasn't in the original resume."""
         import re
@@ -1306,15 +1640,14 @@ class ResumeTailor:
 
         return "\n".join(result_lines)
 
-    def _strip_empty_certifications_languages(self, tailored: str, original: str) -> str:
-        """Remove Certifications/Languages sections if they weren't in the original resume."""
+    def _strip_unbacked_optional_sections(self, tailored: str, original: str) -> str:
+        """Remove optional sections if they weren't in the original resume."""
         import re
 
         sections_to_strip: list[str] = []
-        if not re.search(r"\bCERTIFICATIONS\b", original, re.IGNORECASE):
-            sections_to_strip.append("CERTIFICATIONS")
-        if not re.search(r"\bLANGUAGES\b", original, re.IGNORECASE):
-            sections_to_strip.append("LANGUAGES")
+        for section in ("CERTIFICATIONS", "LANGUAGES", "VOLUNTEER", "AWARDS", "INTERESTS"):
+            if not re.search(rf"\b{section}\b", original, re.IGNORECASE):
+                sections_to_strip.append(section)
         if not sections_to_strip:
             return tailored
 
@@ -1346,6 +1679,10 @@ class ResumeTailor:
             result_lines.append(line)
 
         return "\n".join(result_lines)
+
+    def _strip_empty_certifications_languages(self, tailored: str, original: str) -> str:
+        """Backward-compatible wrapper for the broader optional-section stripper."""
+        return self._strip_unbacked_optional_sections(tailored, original)
 
     async def _call_llm(self, prompt: str, temperature: float = 0.4) -> str:
         """Call the LLM and return response text — circuit-breaker protected.

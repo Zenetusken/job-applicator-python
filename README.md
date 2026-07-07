@@ -7,16 +7,17 @@ AI-powered job application tool using Playwright browser automation with modern 
 - **Job Search**: Scrape job listings from LinkedIn (session-authenticated) and Indeed (public, Cloudflare-fronted)
 - **Session Reuse**: Sign in once in your real browser; the tool reuses the session — it never automates login (which would trip anti-bot defenses and risk your account)
 - **Region-Aware Browser**: Auto-detects the host's locale, IANA timezone, and Chrome version so geo-aware boards serve your real region
-- **Auto-Apply**: Automatically fill and submit job applications (dry-run by default; `--submit` to send)
+- **LinkedIn Easy Apply**: Fill LinkedIn Easy Apply forms in a dry run by default; real submission requires `--submit`. LinkedIn external-apply jobs and Indeed applications are reported for manual follow-up rather than guessed through
+- **Selector Health Diagnostics**: Probe live LinkedIn/Indeed selectors on demand, or as an opt-in `search` / `apply` preflight, so board DOM drift is reported before a real run
 - **AI Cover Letters**: Generate personalized cover letters using LLM (litellm - supports 100+ providers) as three connected paragraphs with deterministic honesty guards and an enforced sign-off. Dry runs generate the letter as a preview before you opt in with `--submit`
 - **Output-Language Policy**: The generated CV and cover letter always resolve the *same* language — `[llm] language = "auto"` mirrors the job posting's language, or force `"en"` / `"fr"` (a French posting yields a French packet with an in-language sign-off and localized PDF date)
-- **Grounding Verification (honesty layer)**: A language-agnostic LLM pass enumerates every claim in a generated document and cites the résumé line that grounds it; a deterministic audit then overrides any ungrounded claim. For cover letters this drives a regenerate-once-and-keep-the-cleaner-draft loop; for tailored résumés the unsupported claims are *surfaced for review* (printed as a "claims to review" panel and carried in `--json`), never silently stripped. Fail-safe: a verifier outage never passes off an unverified document as clean
+- **Grounding Verification (honesty layer)**: A language-agnostic LLM pass enumerates every claim in a generated document and cites the résumé line that grounds it; a deterministic audit then overrides any ungrounded claim. Cover letters regenerate once, then **fail closed** if the best draft is still unclean or the verifier is unavailable. Tailored résumés surface unsupported claims for human review (printed as a "claims to review" panel and carried in `--json`), never silently stripped; non-interactive saves use stricter source-only prompting, retry dirty drafts, then refuse dirty or unverified output.
 - **Resume Parsing**: Load and parse PDF/text/image resumes with intelligent skill extraction; OCR fallback for scanned PDFs
 - **Semantic Job Matching**: Match resumes to jobs using mxbai-embed-large-v1 embeddings
 - **Resume Tailoring**: LLM-powered resume rewriting for specific jobs with hallucination guards and a surfaced grounding report
-- **Date Audit**: Pre-ingestion CV validation — checks ordering, staleness, timeline coherence
+- **Date Audit**: Pre-ingestion CV validation — checks ordering, staleness, and advisory employment gap/overlap findings
 - **Style Analysis**: Mimic writing style from one or more example resumes/cover letters (comma-separated paths); example guides in `docs/style-guide-examples/`
-- **Cover-Letter Sign-Off Enforcement**: Every generated cover letter is validated for a recognized closing word and a signature matching the applicant's name
+- **Cover-Letter Sign-Off Enforcement**: Every generated or refined cover letter is validated/repaired to end with a recognized closing word and a signature matching the applicant's name
 - **ATS Compatibility Check**: Validate resumes against ATS heuristics (contact info, standard sections, length, no ASCII tables) with a score and actionable suggestions
 - **PDF Résumé & Cover Letters**: Render tailored documents to PDF with Typst (optional `[pdf]` extra). Built-in `modern`, `classic`, and `minimal` templates
 - **Structured Outputs**: Instructor for type-safe LLM responses
@@ -92,7 +93,9 @@ throughput.
 
 The first launch **auto-downloads the model** from Hugging Face Hub (~6 GB for the
 default; cached to `~/.cache/huggingface`) — no separate step. Needs network on first
-run. (Embeddings likewise fetch `mxbai-embed-large-v1`, ~640 MB, on first use.)
+run. Embeddings likewise fetch `mxbai-embed-large-v1` (~640 MB) on first use; after
+that, cached snapshots are loaded in local-only mode so offline/sandboxed `match` or
+`batch` runs do not block on Hugging Face metadata probes.
 
 The default model is **public**. A *gated* model additionally needs a Hugging Face
 token — run **`huggingface-cli login`** once (it validates the token and persists it;
@@ -102,7 +105,8 @@ Leave it running in its own terminal (or wrap it in a process manager / systemd 
 for always-on), then run job-applicator against it as usual.
 
 **Verify the connection:** `job-applicator doctor` probes the endpoint and reports
-what's ready — and exactly what to fix if it isn't. Run it any time the AI features
+capability readiness for AI generation, matching, browser workflows, and PDF output —
+plus exactly what to fix if something is not ready. Run it any time the AI features
 misbehave.
 
 ## Usage
@@ -117,6 +121,8 @@ job-applicator doctor
 # Search for jobs
 job-applicator search --site linkedin --query "python developer"
 job-applicator search --site indeed --query "python developer" --location "Montreal, QC"
+# Optional live selector preflight before scraping (extra board traffic)
+job-applicator search --site linkedin --query "python developer" --selector-health
 
 # Auto-apply with AI cover letters (dry run — fills forms, previews the cover letter, but does NOT submit)
 job-applicator apply --site linkedin --query "python" --limit 5
@@ -126,6 +132,13 @@ job-applicator apply --site linkedin --query "python" --limit 1 --resume resume.
 job-applicator apply --site linkedin --query "python" --limit 5 --submit
 # Skip cover-letter generation entirely
 job-applicator apply --site linkedin --query "python" --limit 5 --no-cover-letter
+# Optional live selector preflight before filling a stored/target job
+job-applicator apply --from <id-or-url> --selector-health
+
+# Standalone live selector diagnostics (no scraping persistence, no submission)
+job-applicator selector-health --site linkedin --surface search --query "python developer"
+job-applicator selector-health --site linkedin --surface apply --from <id-or-url>
+job-applicator selector-health --site indeed --surface search --query "python developer"
 
 # Generate a cover letter
 job-applicator generate-cover-letter --resume resume.pdf --job-title "Python Dev" --company "Acme"
@@ -214,6 +227,32 @@ job-applicator import-cookies --site indeed --file cookies.json   # a cookie-man
   and the Indeed host is derived from your timezone (e.g. `ca.indeed.com` in Canada). Pin one
   explicitly with `target.indeed_domain` (e.g. `ca.indeed.com`) if needed.
 
+### Selector Health
+
+`selector-health` is a live diagnostic surface, separate from `doctor`. It opens real
+LinkedIn/Indeed pages and checks the selector groups the scraper/applicator depends on, but it does
+not persist scraped jobs and never submits an application. Use it when a board layout looks suspect:
+
+```bash
+job-applicator selector-health --site linkedin --surface search --query "SOC" --location "Montreal, QC"
+job-applicator selector-health --site linkedin --surface apply --from <stored-id-or-url>
+job-applicator selector-health --site indeed --surface search --query "python developer" --json
+```
+
+Search/apply preflights are opt-in via `--selector-health`; failed required selector groups abort
+before scraping/filling unless `--ignore-selector-health` is also provided. JSON reports are written
+to stdout, with logs/diagnostics on stderr. Failure artifacts are saved under
+`~/.job-applicator/debug/selector-health/`.
+
+LinkedIn apply checks distinguish in-product Easy Apply from external "Apply on company website"
+postings. External apply jobs are reported as `skipped` because Easy Apply form selectors do not
+apply. Easy Apply probes require the entry button plus form controls such as Next/Continue/Review or
+Submit; Submit itself can be absent until the form has been advanced and filled.
+
+Indeed selector health covers search results and the description pane only. Indeed automated apply
+remains intentionally unsupported; live recon showed on-site apply buttons are best identified by
+`#indeedApplyButton`, but the app still directs the user to apply manually.
+
 ### Enhanced Tailor Workflow
 
 The `tailor` command runs an interactive session that lets you iteratively refine your resume:
@@ -222,6 +261,7 @@ The `tailor` command runs an interactive session that lets you iteratively refin
 - **Version History**: Press `[V]` to browse all previous attempts and select one to revert to or compare against.
 - **Section Editing**: Press `[S]` to target a specific resume section (e.g. Experience, Skills, Summary) for focused rewriting instead of regenerating the entire resume.
 - **Auto Tone Detection**: The tailor automatically detects the job posting's tone (corporate, startup, technical, or creative) and adjusts vocabulary and phrasing accordingly.
+- **Non-Interactive Integrity Gate**: `tailor --yes`, `tailor --json`, and TUI one-shot tailoring save only when grounding completed cleanly and the tailored output does not drop contact info or regress an ATS-compatible base résumé into an incompatible one. CLI non-interactive runs start with strict source-only instructions and retry dirty grounding drafts before failing closed.
 - **Error Handling**: Up to 10 retry attempts on LLM failures, with a warning at attempt 8. The session gracefully recovers from transient LLM errors.
 - **Post-Tailor Cover Letter**: After accepting a tailored resume, the CLI offers to generate a matching cover letter. The same tone, style guide, and job data are shared between both documents. The cover letter follows the same accept/retry/input/diff/history workflow as the resume, and is saved alongside it with linked metadata.
 
@@ -242,7 +282,7 @@ job-applicator batch --resume resume.pdf --jobs-file jobs.json --no-cover-letter
 
 - **Smart matching**: Jobs are ranked by semantic similarity + skill coverage, filtered by `--min-score`, then only the top `--top-k` are processed.
 - **Parallel execution**: Tailoring and cover letter generation run concurrently (up to 3 simultaneous LLM calls).
-- **Per-job output**: Each job produces `tailored_*.txt` + `.meta.json` and optionally `cover_letter_*.txt` + `.meta.json`.
+- **Per-job output**: Each job produces `tailored_*.txt` + `.meta.json` and optionally `cover_letter_*.txt` + `.meta.json`. With `--format both`, the text sidecar is the authoritative metadata file and includes the generated `pdf_path`.
 - **Batch summary**: A `batch_summary_{timestamp}.json` file contains all results with scores, paths, and errors.
 
 ## Configuration
@@ -301,17 +341,18 @@ indeed_domain = "www.indeed.com"   # e.g. "ca.indeed.com", "uk.indeed.com"
 ## Development
 
 ```bash
-# Lint
-ruff check src/ tests/
+# Fast quality gate: lint, format check, mypy, unit tests
+bash scripts/green_gate.sh
 
-# Format
-ruff format src/ tests/
+# Arc-end isolated CLI sanity check
+.venv/bin/python .agents/skills/qa-sanity/qa.py --core
 
-# Type check
-mypy src/job_applicator/
+# Matcher-sensitive changes
+.venv/bin/python scripts/check_matcher_gate_required.py --base HEAD
+.venv/bin/python scripts/eval_matching.py --required
 
-# Test (fast unit suite — the green gate; live tests need vLLM + GPU)
-pytest -m unit
+# Generated document artifact quality smoke gate
+.venv/bin/python scripts/eval_document_quality.py --resume tailored.txt --cover-letter cover.txt --keyword Python
 ```
 
 ## Architecture

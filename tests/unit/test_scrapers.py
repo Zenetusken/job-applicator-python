@@ -459,6 +459,19 @@ async def test_check_session_graceful_on_navigation_error(
 
 
 @pytest.mark.asyncio
+async def test_check_session_reports_checkpoint_as_unhealthy(app_settings: AppSettings) -> None:
+    scraper = LinkedInScraper(MagicMock(), app_settings)
+    scraper._get_context = AsyncMock(return_value=MagicMock())
+    scraper._ensure_session = AsyncMock(side_effect=ScraperError("checkpoint"))
+
+    health = await scraper.check_session()
+
+    assert not health.healthy
+    assert "blocked or rate-limited" in health.details
+    assert "checkpoint" in health.details
+
+
+@pytest.mark.asyncio
 async def test_linkedin_extract_job_captures_salary_when_present(
     app_settings: AppSettings,
 ) -> None:
@@ -526,7 +539,10 @@ async def _extract_returns_none(*_a: object, **_k: object) -> None:
     ids=["cards-raise", "cards-return-none-R1"],
 )
 async def test_scrape_listings_cards_present_but_zero_jobs_raises(
-    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch, extract_stub: object
+    app_settings: AppSettings,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    extract_stub: object,
 ) -> None:
     """LinkedIn: cards present but EVERY extraction yields no job → ScraperError, never a silent
     empty list (the honest-failure twin of the Indeed guard).
@@ -540,9 +556,15 @@ async def test_scrape_listings_cards_present_but_zero_jobs_raises(
     from job_applicator.models import JobBoard
     from job_applicator.scrapers.base import SearchParams
 
+    debug_dir = tmp_path / "debug"
+    monkeypatch.setattr(lk, "_DEBUG_DIR", debug_dir)
     scraper = LinkedInScraper(MagicMock(), app_settings)
     page = MagicMock()
-    page.query_selector_all = AsyncMock(return_value=[MagicMock(), MagicMock()])
+    cards = [MagicMock(), MagicMock()]
+    cards[0].inner_html = AsyncMock(return_value="<li>live card</li>")
+    page.query_selector_all = AsyncMock(return_value=cards)
+    page.content = AsyncMock(return_value="<html>live page</html>")
+    page.url = "https://www.linkedin.com/jobs/search"
     page.close = AsyncMock()
 
     async def _page(_ctx: object) -> object:
@@ -564,9 +586,16 @@ async def test_scrape_listings_cards_present_but_zero_jobs_raises(
     with pytest.raises(ScraperError):
         await scraper._scrape_listings(params, MagicMock())
 
+    assert (debug_dir / "linkedin-last-scrape.html").read_text(
+        encoding="utf-8"
+    ) == "<html>live page</html>"
+    summary = (debug_dir / "linkedin-last-scrape.txt").read_text(encoding="utf-8")
+    assert "container match counts" in summary
+    assert "live card" in summary
+
 
 async def test_scrape_listings_no_cards_raises_scraper_error(
-    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+    app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """LinkedIn: 0 job cards found → ScraperError (0 cards is ambiguous empty-vs-blocked; fail
     loudly), never a silent empty list."""
@@ -575,9 +604,12 @@ async def test_scrape_listings_no_cards_raises_scraper_error(
     from job_applicator.models import JobBoard
     from job_applicator.scrapers.base import SearchParams
 
+    debug_dir = tmp_path / "debug"
+    monkeypatch.setattr(lk, "_DEBUG_DIR", debug_dir)
     scraper = LinkedInScraper(MagicMock(), app_settings)
     page = MagicMock()
     page.query_selector_all = AsyncMock(return_value=[])  # no cards
+    page.content = AsyncMock(return_value="<html>empty</html>")
     page.close = AsyncMock()
     page.url = "https://www.linkedin.com/jobs/search"
     page.title = AsyncMock(return_value="Jobs | LinkedIn")  # not a block; falls to the guard
@@ -599,6 +631,12 @@ async def test_scrape_listings_no_cards_raises_scraper_error(
     params = SearchParams(query="python", max_results=5, board=JobBoard.LINKEDIN)
     with pytest.raises(ScraperError):
         await scraper._scrape_listings(params, MagicMock())
+
+    assert (debug_dir / "linkedin-last-scrape.html").read_text(
+        encoding="utf-8"
+    ) == "<html>empty</html>"
+    summary = (debug_dir / "linkedin-last-scrape.txt").read_text(encoding="utf-8")
+    assert ".job-card-container: 0" in summary
 
 
 # --------------------------------------------------- geoId resolution (#4 fix)
