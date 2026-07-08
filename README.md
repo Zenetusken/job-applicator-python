@@ -159,7 +159,9 @@ job-applicator ats-check --resume resume.pdf
 
 # Check generated CV/cover-letter quality
 job-applicator document-quality --resume tailored.txt --cover-letter cover.txt --keyword Python
-job-applicator document-quality --private-packet-set --required --json
+job-applicator document-quality --private-packet-set --required --min-cases 3 \
+  --max-artifact-age-days 14 --required-category support --required-category risk \
+  --required-language en --required-language fr --json
 
 # Match resume to jobs using embeddings
 job-applicator match --resume resume.pdf --jobs-file jobs.json --top-k 10
@@ -378,8 +380,14 @@ bash scripts/green_gate.sh
 job-applicator document-quality --resume tailored.txt --cover-letter cover.txt --keyword Python
 
 # Private generated-packet quality certification
-job-applicator document-quality --private-packet-set --required
+job-applicator document-quality --private-packet-set --required --min-cases 3 \
+  --max-artifact-age-days 14 --required-category support --required-category risk \
+  --required-language en --required-language fr
 ```
+
+The private packet-set gate is set-level certification, not just per-packet smoke scoring: required
+mode enforces a minimum number of passing cases, freshness, and requested category/language
+coverage. Missing required private evidence exits `2`; present-but-failing evidence exits `1`.
 
 ## Architecture
 

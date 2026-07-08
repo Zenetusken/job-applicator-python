@@ -187,7 +187,29 @@ _NAMED_TOOLS: frozenset[str] = frozenset(
 # them (a 4B inflates in-progress coursework into "accredited cybersecurity coursework"). Mirror of
 # the résumé tailor's `_strip_unearned_credentials` term list (PR #101); kept local because that
 # guard is on a separate unmerged branch — consolidate to one shared constant once both land.
-_CREDENTIAL_TERMS = ("accredited", "certified", "licensed", "chartered", "credentialed")
+_CREDENTIAL_TERMS = (
+    "accredited",
+    "certified",
+    "licensed",
+    "chartered",
+    "credentialed",
+    "accrédité",
+    "accréditée",
+    "accredite",
+    "accreditee",
+    "certifié",
+    "certifiée",
+    "certifie",
+    "certifiee",
+    "agréé",
+    "agréée",
+    "agree",
+    "agreee",
+    "licencié",
+    "licenciée",
+    "licencie",
+    "licenciee",
+)
 
 # Phrases that almost always describe the EMPLOYER's environment or an inflated level — never the
 # applicant's grounded experience. Rejected (→ retry) when present in the letter but NOT the
@@ -203,6 +225,7 @@ _OVERCLAIM_PHRASES = (
     "self-built home lab",
     "uniquely positioned",
     "mastered",
+    "compréhension approfondie",
 )
 _JOB_SIDE_OVERCLAIM_TERMS = (
     "workstation deployment",
@@ -217,6 +240,56 @@ _SOURCE_MERGE_OVERCLAIM_PHRASES = (
     "technical support coursework",
     "it support coursework",
 )
+_INSTITUTION_MARKERS = (
+    "college",
+    "collège",
+    "institute",
+    "institut",
+    "school",
+    "university",
+    "université",
+)
+_CYBER_EDUCATION_TERMS = (
+    "analysis & operational cybersecurity",
+    "cybersecurity",
+    "cybersécurité",
+    "operational cybersecurity",
+    "cybersécurité opérationnelle",
+)
+
+
+def _education_institution_names(raw_text: str) -> list[str]:
+    names: list[str] = []
+    for raw_line in raw_text.splitlines():
+        line = raw_line.strip(" •-\t")
+        if not line:
+            continue
+        low = line.casefold()
+        if not any(marker in low for marker in _INSTITUTION_MARKERS):
+            continue
+        parts = [part.strip() for part in re.split(r"\s+[—-]\s+", line) if part.strip()]
+        candidate = parts[-1] if parts else line
+        if len(candidate.split()) >= 2 and candidate not in names:
+            names.append(candidate)
+    return names
+
+
+def _institution_fragment_supports_cyber(raw_text: str, institution: str) -> bool:
+    lines = raw_text.splitlines()
+    institution_low = institution.casefold()
+    for index, line in enumerate(lines):
+        if institution_low not in line.casefold():
+            continue
+        current = line.strip()
+        if current.casefold().strip(".,;:") == institution_low.strip(".,;:"):
+            previous = lines[index - 1] if index > 0 else ""
+            fragment = f"{previous}\n{current}"
+        else:
+            fragment = current
+        fragment_low = fragment.casefold()
+        if any(term in fragment_low for term in _CYBER_EDUCATION_TERMS):
+            return True
+    return False
 
 
 def _word_present(term: str, haystack_lower: str) -> bool:
@@ -431,6 +504,23 @@ class CoverLetterGenerator:
         return cleaned_text
 
     @staticmethod
+    def _split_leading_salutation(text: str) -> str:
+        """Put a leading salutation on its own paragraph when the model merges it with prose."""
+        stripped = text.strip()
+        if "\n\n" not in stripped:
+            return text
+        patterns = (
+            r"^(Dear\s+[^,\n]{1,80},)\s+(\S.*)$",
+            r"^(Bonjour\s+[^,\n]{1,80},)\s+(\S.*)$",
+            r"^(Bonjour\s+[^.\n]{1,120}\.)\s+(Je\s+\S.*)$",
+        )
+        for pattern in patterns:
+            match = re.match(pattern, stripped, flags=re.IGNORECASE | re.DOTALL)
+            if match and "\n\n" not in match.group(1):
+                return f"{match.group(1)}\n\n{match.group(2).lstrip()}"
+        return text
+
+    @staticmethod
     def _reject_invented_company_employment(text: str, company: str) -> None:
         """Raise ``LLMError`` if ``text`` claims employment at ``company``.
 
@@ -523,10 +613,19 @@ class CoverLetterGenerator:
     def _reject_source_merge_overclaims(text: str, resume: ResumeData) -> None:
         """Raise when separate source facts are merged into a false credential/coursework claim."""
         resume_lower = resume.raw_text.lower()
-        text_lower = text.lower()
+        text_lower = text.casefold()
         for phrase in _SOURCE_MERGE_OVERCLAIM_PHRASES:
             if _word_present(phrase, text_lower) and not _word_present(phrase, resume_lower):
                 raise LLMError(f"Generated cover letter merges source facts into: {phrase!r}")
+        if any(term in text_lower for term in _CYBER_EDUCATION_TERMS):
+            for institution in _education_institution_names(resume.raw_text):
+                if institution.casefold() not in text_lower:
+                    continue
+                if not _institution_fragment_supports_cyber(resume.raw_text, institution):
+                    raise LLMError(
+                        "Generated cover letter merges source facts into: "
+                        f"'cybersecurity coursework at {institution}'"
+                    )
 
     @classmethod
     def _humanize(cls, text: str) -> str:
@@ -548,6 +647,25 @@ class CoverLetterGenerator:
         text = re.sub(r"(?m)^[ \t]*#{1,6}[ \t]*", "", text)  # markdown headings
         text = re.sub(r"(?m)^[ \t]*[-*+][ \t]+", "", text)  # markdown bullets (line-anchored)
         text = cls._strip_early_sign_off(text)
+        text = cls._split_leading_salutation(text)
+        text = re.sub(
+            r"\bJe suis impatient(?:e)? de discuter\b",
+            "Je serais disponible pour discuter",
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(
+            r"\bdiscuter de comment\b",
+            "discuter de la façon dont",
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(
+            r"\bcompréhension approfondie\b",
+            "compréhension pratique",
+            text,
+            flags=re.IGNORECASE,
+        )
         text = re.sub(
             r",{2,}", ",", text
         )  # collapse a doubled comma the model leaks ("Sincerely,,")
@@ -816,7 +934,8 @@ class CoverLetterGenerator:
             tone_section=tone_section,
             tailored_resume_text=tailored_resume_text,
         )
-        return await self._complete(user_message + correction)
+        raw = await self._complete(user_message + correction)
+        return self._humanize(raw) or raw
 
     async def generate(
         self,
@@ -967,18 +1086,39 @@ class CoverLetterGenerator:
                 len(kept_report.unsupported),
                 len(kept_report.coverage_gaps),
             )
-            raise CoverLetterGroundingError(
-                "Cover letter grounding verification found "
-                f"{len(kept_report.unsupported)} unsupported claim(s) and "
-                f"{len(kept_report.coverage_gaps)} unchecked claim(s) after retry"
-            )
+            raise CoverLetterGroundingError(self._grounding_failure_message(kept_report))
         return kept
 
     @staticmethod
+    def _grounding_failure_message(report: GroundingReport) -> str:
+        """Human-actionable failure summary for a non-clean grounding report."""
+        message = (
+            "Cover letter grounding verification found "
+            f"{len(report.unsupported)} unsupported claim(s) and "
+            f"{len(report.coverage_gaps)} unchecked claim(s) after retry"
+        )
+        unsupported = "; ".join(check.claim for check in report.unsupported[:3])
+        if unsupported:
+            message += f"; unsupported: {unsupported}"
+        gaps = "; ".join(report.coverage_gaps[:3])
+        if gaps:
+            message += f"; unchecked: {gaps}"
+        return message
+
+    @staticmethod
     def _grounding_correction(report: GroundingReport) -> str:
-        """A correction naming the claims the résumé does not support, for one regeneration."""
+        """A correction naming the ungrounded material, for one regeneration."""
+        details: list[str] = []
         claims = "; ".join(c.claim for c in report.unsupported[:6])
-        detail = f" Specifically remove or fix: {claims}." if claims else ""
+        if claims:
+            details.append(f"Remove or fix unsupported claims: {claims}.")
+        gaps = "; ".join(report.coverage_gaps[:6])
+        if gaps:
+            details.append(
+                "Rephrase or remove unchecked sentences that were not covered by grounded "
+                f"résumé claims: {gaps}."
+            )
+        detail = " " + " ".join(details) if details else ""
         return (
             "\n\nIMPORTANT: some statements were not supported by the résumé. Keep ONLY what the "
             "résumé supports — invent nothing, and do not inflate any number or credential."
@@ -1149,6 +1289,19 @@ class CoverLetterGenerator:
 
         if resume.skills:
             parts.extend(["", f"Key Skills: {', '.join(resume.skills)}"])
+
+        education_context = resume.raw_text.casefold()
+        if len(_education_institution_names(resume.raw_text)) >= 2 and any(
+            term in education_context for term in _CYBER_EDUCATION_TERMS
+        ):
+            parts.extend(
+                [
+                    "",
+                    "Education fact boundary: keep each program, credential, and coursework area "
+                    "attached to the exact institution shown in the résumé. Do NOT move "
+                    "cybersecurity coursework onto another degree or school.",
+                ]
+            )
 
         absent_job_side_terms = self._absent_job_side_terms(job, resume)
         if absent_job_side_terms:

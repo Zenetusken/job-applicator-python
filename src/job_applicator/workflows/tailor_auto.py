@@ -11,6 +11,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from job_applicator.workflows.tailor import assert_tailored_auto_saveable
+from job_applicator.workflows.tailor_policy import (
+    STRICT_GROUNDING_FEEDBACK,
+    STRICT_NONINTERACTIVE_INSTRUCTIONS,
+    source_only_instructions,
+)
 
 if TYPE_CHECKING:
     from job_applicator.documents.resume_tailor import ResumeTailor
@@ -18,24 +23,13 @@ if TYPE_CHECKING:
     from job_applicator.embeddings.matching import JobMatcher, MatchResult
     from job_applicator.models import JobListing, ResumeData, StyleGuide, TailoredResume
 
-
-STRICT_NONINTERACTIVE_INSTRUCTIONS = (
-    "For non-interactive output, prioritize accuracy over embellishment. Use only facts, "
-    "metrics, tools, duties, dates, employers, and outcomes explicitly present in the "
-    "original résumé. Do not add new responsibilities, optional sections, aspirations, "
-    "deployment claims, performance claims, collaboration claims, or outcomes. It is acceptable "
-    "to make fewer changes if that is what keeps every claim source-backed. Preserve the "
-    "résumé's existing name, email, phone number, and location exactly when present."
-)
-
-STRICT_GROUNDING_FEEDBACK = (
-    "Remove every unsupported or weakly supported claim. Use only facts, metrics, tools, duties, "
-    "dates, employers, and outcomes explicitly present in the original résumé. Prefer shorter "
-    "source-backed bullets over embellished claims. Do not add new responsibilities, optional "
-    "sections, aspirations, deployment claims, performance claims, collaboration claims, or "
-    "outcomes. Preserve the résumé's existing name, email, phone number, and location exactly "
-    "when present."
-)
+__all__ = [
+    "STRICT_GROUNDING_FEEDBACK",
+    "STRICT_NONINTERACTIVE_INSTRUCTIONS",
+    "AutoTailorResult",
+    "source_only_instructions",
+    "tailor_auto_verified_saveable",
+]
 
 
 @dataclass(frozen=True)
@@ -44,13 +38,6 @@ class AutoTailorResult:
 
     tailored: TailoredResume
     attempts: int
-
-
-def source_only_instructions(user_instructions: str = "") -> str:
-    """Prefix caller instructions with the shared unattended source-only policy."""
-    if user_instructions:
-        return f"{STRICT_NONINTERACTIVE_INSTRUCTIONS}\n\n{user_instructions}"
-    return STRICT_NONINTERACTIVE_INSTRUCTIONS
 
 
 async def tailor_auto_verified_saveable(

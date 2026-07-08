@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -55,6 +55,8 @@ class DocumentQualityResult:
     source: str
     keyword_source: str
     artifact_paths: list[str]
+    artifact_mtimes: dict[str, str]
+    matched_skill_count: int
     reports: list[QualityReport]
     packet: PacketQualityReport | None = None
 
@@ -449,6 +451,8 @@ async def document_quality(settings: AppSettings, stored_job: StoredJob) -> Docu
             raise DocumentError(f"{label} artifact is missing: {path}")
         if not path.is_file():
             raise DocumentError(f"{label} artifact is not a file: {path}")
+        if path.suffix.lower() != ".txt":
+            raise DocumentError(f"{label} artifact is not a text artifact: {path}")
         return path
 
     resume_path = _artifact(stored_job.tailored_resume_path, "tailored résumé")
@@ -459,6 +463,13 @@ async def document_quality(settings: AppSettings, stored_job: StoredJob) -> Docu
     applicant_name = "" if settings.profile_name == "default" else settings.profile_name
     keywords = [skill.strip() for skill in stored_job.matched_skills if skill.strip()]
     artifact_paths = [str(path) for path in (resume_path, cover_path) if path is not None]
+    artifact_mtimes = {
+        str(path): datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+        for path in (resume_path, cover_path)
+        if path is not None
+    }
 
     if resume_path is not None and cover_path is not None and keywords:
         packet = assess_packet_case(
@@ -479,6 +490,8 @@ async def document_quality(settings: AppSettings, stored_job: StoredJob) -> Docu
             source="tailored résumé + cover letter",
             keyword_source="matched skills",
             artifact_paths=artifact_paths,
+            artifact_mtimes=artifact_mtimes,
+            matched_skill_count=len(keywords),
             reports=[packet.resume, packet.cover_letter],
             packet=packet,
         )
@@ -496,5 +509,7 @@ async def document_quality(settings: AppSettings, stored_job: StoredJob) -> Docu
         source=source,
         keyword_source=keyword_source,
         artifact_paths=artifact_paths,
+        artifact_mtimes=artifact_mtimes,
+        matched_skill_count=len(keywords),
         reports=reports,
     )

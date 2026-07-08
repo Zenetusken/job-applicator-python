@@ -513,11 +513,11 @@ def test_cover_letter_ensure_sign_off_keeps_adverbial_sincerely() -> None:
 def test_cover_letter_ensure_sign_off_french_uses_cordialement() -> None:
     """A French letter gets a French canonical close, and a model-emitted inline 'Cordialement'
     is normalized to ONE (the English strip-list missed it → the double-sign-off bug in French)."""
-    user = UserProfile(first_name="Andrei", last_name="Petrov", email="a@e.com", phone="")
-    text = "Bonjour,\n\nJe suis un bon candidat.\n\nMerci. Cordialement, Andrei Petrov"
+    user = UserProfile(first_name="Alex", last_name="Morgan", email="a@e.com", phone="")
+    text = "Bonjour,\n\nJe suis un bon candidat.\n\nMerci. Cordialement, Alex Morgan"
     out = CoverLetterGenerator._ensure_sign_off(text, user, "French")
     assert out.lower().count("cordialement") == 1
-    assert out.endswith("Cordialement,\nAndrei Petrov")
+    assert out.endswith("Cordialement,\nAlex Morgan")
     assert "Sincerely" not in out
 
 
@@ -589,6 +589,14 @@ def test_cover_letter_rejects_unearned_credential() -> None:
         CoverLetterGenerator._reject_unearned_credentials(letter, resume)
 
 
+def test_cover_letter_rejects_french_unearned_credential() -> None:
+    resume = ResumeData(raw_text="Jane Roe\nCompétences\nSIEM, Linux", skills=["SIEM"])
+    letter = "Je suis une analyste certifiée en cybersécurité et j'apporte une méthode rigoureuse."
+
+    with pytest.raises(LLMError, match="unearned credential"):
+        CoverLetterGenerator._reject_unearned_credentials(letter, resume)
+
+
 def test_cover_letter_allows_credential_present_in_resume() -> None:
     """A credential the résumé genuinely holds is kept (not a false positive)."""
     resume = ResumeData(
@@ -632,6 +640,7 @@ def test_cover_letter_credential_terms_cover_key_status_words() -> None:
     from job_applicator.documents.cover_letter import _CREDENTIAL_TERMS
 
     assert {"accredited", "certified", "licensed"} <= set(_CREDENTIAL_TERMS)
+    assert {"accrédité", "certifié", "licencié"} <= set(_CREDENTIAL_TERMS)
 
 
 def test_cover_letter_prompt_forbids_unearned_credentials() -> None:
@@ -714,6 +723,77 @@ def test_cover_letter_validation_rejects_merged_coursework_overclaim() -> None:
             generator._validate_output(letter, user, job=job, resume=resume)
 
 
+def test_cover_letter_validation_rejects_french_deep_understanding_overclaim() -> None:
+    config = LLMConfig()
+    generator = CoverLetterGenerator(config)
+    user = UserProfile(first_name="Jane", last_name="Roe", email="j@e.com", phone="")
+    job = JobListing(title="Analyste", company="Acme", url="https://x/1", board=JobBoard.INDEED)
+    resume = ResumeData(raw_text="Jane Roe\nExperience\nTriaged support tickets.", skills=[])
+    letter = (
+        "Bonjour équipe de recrutement,\n\n"
+        "Cette expérience m'a permis de développer une compréhension approfondie des processus "
+        "de triage et d'analyse des incidents. Cette phrase est assez longue pour la "
+        "validation.\n\n"
+        "Cordialement,\nJane Roe"
+    )
+
+    with pytest.raises(LLMError, match="unearned/environment claim"):
+        generator._validate_output(letter, user, job=job, resume=resume)
+
+
+def test_cover_letter_validation_rejects_french_school_coursework_merge() -> None:
+    config = LLMConfig()
+    generator = CoverLetterGenerator(config)
+    user = UserProfile(first_name="Jane", last_name="Roe", email="j@e.com", phone="")
+    job = JobListing(title="Analyste", company="Acme", url="https://x/1", board=JobBoard.INDEED)
+    resume = ResumeData(
+        raw_text=(
+            "Jane Roe\n"
+            "Formation\n"
+            "Certificat universitaire — Analyse et cybersécurité opérationnelle — "
+            "Northbridge Technical Institute\n"
+            "B.A., Comptabilité — Metro City University"
+        ),
+        skills=["SIEM"],
+    )
+    letter = (
+        "Bonjour équipe de recrutement,\n\n"
+        "Je suis actuellement en cours de formation en cybersécurité opérationnelle à "
+        "Metro City University. Cette phrase est assez longue pour passer la validation minimale."
+        "\n\n"
+        "Cordialement,\nJane Roe"
+    )
+
+    with pytest.raises(LLMError, match="merges source facts"):
+        generator._validate_output(letter, user, job=job, resume=resume)
+
+
+def test_cover_letter_prompt_warns_against_cross_institution_coursework_merges() -> None:
+    generator = CoverLetterGenerator(LLMConfig(language="fr"))
+    user = UserProfile(first_name="Jane", last_name="Roe", email="j@e.com", phone="")
+    job = JobListing(
+        title="Analyste",
+        company="Acme",
+        url="https://x/1",
+        board=JobBoard.INDEED,
+        description="Poste en cybersécurité opérationnelle.",
+    )
+    resume = ResumeData(
+        raw_text=(
+            "Formation\n"
+            "Certificat universitaire — Analyse et cybersécurité opérationnelle — "
+            "Northbridge Technical Institute\n"
+            "B.A., Comptabilité — Metro City University"
+        ),
+        skills=["SIEM"],
+    )
+
+    prompt = generator._build_prompt(job, user, resume)
+
+    assert "Education fact boundary" in prompt
+    assert "Do NOT move cybersecurity coursework onto another degree or school" in prompt
+
+
 def test_cover_letter_prompt_lists_absent_job_side_terms_to_avoid() -> None:
     generator = CoverLetterGenerator(LLMConfig())
     user = UserProfile(first_name="Jane", last_name="Roe", email="j@e.com", phone="")
@@ -767,6 +847,119 @@ def test_cover_letter_humanize_collapses_doubled_signoff_comma() -> None:
     out = CoverLetterGenerator._humanize("Dear Team,\n\nA strong fit.\n\nSincerely,,\nJane Roe")
     assert "Sincerely,," not in out
     assert "Sincerely,\nJane Roe" in out
+
+
+def test_cover_letter_humanize_splits_merged_french_salutation() -> None:
+    text = (
+        "Bonjour équipe de recrutement, Je m'appelle Alex Morgan et je souhaite postuler. "
+        "Mon parcours combine support et cybersécurité.\n\n"
+        "Dans mon cours, j'ai travaillé le SIEM.\n\n"
+        "Je serais ravi de discuter."
+    )
+
+    out = CoverLetterGenerator._humanize(text)
+
+    assert out.startswith("Bonjour équipe de recrutement,\n\nJe m'appelle")
+
+
+def test_cover_letter_humanize_splits_period_french_salutation() -> None:
+    text = (
+        "Bonjour à l'équipe de recrutement d'Example Risk Lab. Je m'appelle Alex Morgan "
+        "et je souhaite postuler.\n\n"
+        "Dans mon cours, j'ai travaillé le SIEM.\n\n"
+        "Je serais ravi de discuter."
+    )
+
+    out = CoverLetterGenerator._humanize(text)
+
+    assert out.startswith("Bonjour à l'équipe de recrutement d'Example Risk Lab.\n\nJe m'appelle")
+
+
+def test_cover_letter_humanize_neutralizes_french_impatient_discussion() -> None:
+    text = (
+        "Bonjour équipe de recrutement,\n\n"
+        "Mon parcours combine support et cybersécurité.\n\n"
+        "Je suis impatiente de discuter de comment mes compétences peuvent contribuer à "
+        "votre équipe."
+    )
+
+    out = CoverLetterGenerator._humanize(text)
+
+    assert "impatiente" not in out
+    assert "Je serais disponible pour discuter" in out
+
+
+def test_cover_letter_humanize_smooths_french_de_comment() -> None:
+    text = (
+        "Bonjour équipe de recrutement,\n\n"
+        "Mon parcours combine support et cybersécurité.\n\n"
+        "Je serais disponible pour discuter de comment mes compétences peuvent contribuer à "
+        "votre équipe."
+    )
+
+    out = CoverLetterGenerator._humanize(text)
+
+    assert "discuter de comment" not in out
+    assert "discuter de la façon dont" in out
+
+
+def test_cover_letter_humanize_neutralizes_french_deep_understanding() -> None:
+    text = (
+        "Bonjour équipe de recrutement,\n\n"
+        "Cette expérience m'a permis de développer une compréhension approfondie des processus "
+        "de triage."
+    )
+
+    out = CoverLetterGenerator._humanize(text)
+
+    assert "compréhension approfondie" not in out
+    assert "compréhension pratique" in out
+
+
+def test_cover_letter_humanize_preserves_institution_names() -> None:
+    text = (
+        "Bonjour équipe de recrutement,\n\n"
+        "Je suis en cours de formation en cybersécurité opérationnelle à Northbridge "
+        "Technical Institute."
+    )
+
+    out = CoverLetterGenerator._humanize(text)
+
+    assert "Northbridge Technical Institute" in out
+
+
+def test_cover_letter_humanize_splits_merged_english_salutation() -> None:
+    text = (
+        "Dear Hiring Team, I am applying for the support analyst role. "
+        "My background combines operations and technical support.\n\n"
+        "I have handled technical escalations and customer support.\n\n"
+        "I would welcome a conversation."
+    )
+
+    out = CoverLetterGenerator._humanize(text)
+
+    assert out.startswith("Dear Hiring Team,\n\nI am applying")
+
+
+def test_cover_letter_quality_accepts_split_french_salutation_body_count() -> None:
+    from job_applicator.documents.quality_eval import assess_cover_letter
+
+    text = CoverLetterGenerator._humanize(
+        "Bonjour équipe de recrutement, Je m'appelle Alex Morgan et je souhaite postuler. "
+        "Mon parcours combine une formation en cybersécurité opérationnelle avec des "
+        "laboratoires pratiques en SIEM, SOC et réponse aux incidents.\n\n"
+        "Dans mon cours à Northbridge Technical Institute, j'ai participé à des laboratoires "
+        "pratiques sur le SIEM, les opérations SOC, la détection d'intrusion, l'EDR et la "
+        "réponse aux incidents. Mon expérience en support technique m'a appris à communiquer "
+        "clairement avec les équipes techniques.\n\n"
+        "Je suis convaincu que mon profil correspond bien au poste et je serais ravi de "
+        "discuter de ma candidature en détail.\n\n"
+        "Cordialement,\nALEX MORGAN"
+    )
+
+    report = assess_cover_letter(text, applicant_name="ALEX MORGAN")
+
+    assert "cover letter should usually have three focused body paragraphs" not in report.warnings
 
 
 def test_cover_letter_generator_template() -> None:
@@ -1309,6 +1502,35 @@ async def test_generate_verified_prefers_fewer_unsupported_over_fewer_gaps() -> 
     )
     with pytest.raises(CoverLetterGroundingError):
         await gen.generate_verified(*_cl_inputs())
+
+
+def test_grounding_correction_names_coverage_gaps() -> None:
+    correction = CoverLetterGenerator._grounding_correction(
+        GroundingReport(
+            coverage_gaps=[
+                "I can support incident response workflows",
+                "I would bring clear documentation habits",
+            ]
+        )
+    )
+
+    assert "unchecked sentences" in correction
+    assert "I can support incident response workflows" in correction
+    assert "I would bring clear documentation habits" in correction
+
+
+def test_grounding_failure_message_includes_residual_details() -> None:
+    message = CoverLetterGenerator._grounding_failure_message(
+        GroundingReport(
+            unsupported=[_flag("Invented SOC ownership")],
+            coverage_gaps=["Je serais heureux de discuter de ce poste"],
+        )
+    )
+
+    assert "1 unsupported claim(s)" in message
+    assert "1 unchecked claim(s)" in message
+    assert "Invented SOC ownership" in message
+    assert "Je serais heureux de discuter de ce poste" in message
 
 
 async def test_generate_verified_clean_skips_reprompt() -> None:

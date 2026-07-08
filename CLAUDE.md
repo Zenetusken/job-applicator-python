@@ -54,10 +54,17 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
   `.venv/bin/python scripts/check_matcher_gate_required.py --base <base>`, then
   `.venv/bin/python scripts/eval_matching.py --required` when required.
 - Generated document artifacts can be smoke-checked with
-  `.venv/bin/python scripts/eval_document_quality.py --resume <txt> --cover-letter <txt>`.
+  `job-applicator document-quality --resume <txt> --cover-letter <txt> --keyword <term>`.
   Generated packet changes can be certified against the private quality set with
-  `.venv/bin/python scripts/eval_document_quality.py --packet-set --required`; default private
-  manifest: `~/.job-applicator/document-quality-eval/packet-set.jsonl`.
+  ```bash
+  job-applicator document-quality --private-packet-set --required --min-cases 3 \
+    --max-artifact-age-days 14 --required-category support --required-category risk \
+    --required-language en --required-language fr
+  ```
+  The default private manifest is `~/.job-applicator/document-quality-eval/packet-set.jsonl`.
+  Required certification enforces breadth, freshness, and category/language coverage; missing
+  required evidence exits `2`, present failing evidence exits `1`. `scripts/eval_document_quality.py`
+  remains a compatibility wrapper.
   Private gold standards live under
   `~/.job-applicator/document-quality-eval/gold-standards/`; the cover-letter v1 bundle contains
   a full letter, a prose-only style-guide fixture, a DOCX rendering, extracted prose JSON, and a

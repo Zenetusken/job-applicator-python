@@ -547,6 +547,53 @@ class TestBatchRecovery:
         assert result.exit_code == 0, result.output
         env["tailor"].refine_verified.assert_awaited_once()
 
+    def test_batch_dirty_grounding_after_refine_reports_details(
+        self, style_guide_batch_env: dict[str, object]
+    ) -> None:
+        """If the strict retry is still dirty, surface the residual claim/gap text."""
+        from job_applicator.batch_state import BatchRunStatus
+
+        env = style_guide_batch_env
+        dirty = TailoredResume(
+            original_path=str(env["sample_resume_file"]),
+            tailored_text="John Doe\njohn@example.com\n555-0123\nDirty tailored resume text",
+            job_title="Python Developer",
+            job_company="TechCorp",
+            job_url="https://example.com/1",
+            match_score=0.9,
+            semantic_score=0.8,
+            skill_score=0.7,
+            matched_skills=["Python"],
+            missing_skills=[],
+            changes_summary="summary",
+            grounding_report=GroundingReport(
+                unsupported=[ClaimCheck(claim="Invented SOC ownership", grounded=False)],
+                coverage_gaps=["Je serais heureux de discuter du poste"],
+            ),
+        )
+        env["tailor"].tailor_verified = AsyncMock(return_value=dirty)
+        env["tailor"].refine_verified = AsyncMock(return_value=dirty)
+
+        result = env["runner"].invoke(  # type: ignore[attr-defined]
+            env["app"],
+            [
+                "batch",
+                "--resume",
+                str(env["sample_resume_file"]),
+                "--jobs-file",
+                str(env["sample_jobs_file"]),
+                "--top-k",
+                "1",
+                "--no-cover-letter",
+            ],
+        )
+
+        assert result.exit_code != 0, result.output
+        error_message = env["batch_state"].record_job.call_args.kwargs["error_message"]
+        assert "Invented SOC ownership" in error_message
+        assert "Je serais heureux de discuter du poste" in error_message
+        env["batch_state"].complete_run.assert_called_with(ANY, BatchRunStatus.FAILED)
+
     def test_batch_cover_letter_receives_tone_section(
         self, style_guide_batch_env: dict[str, object]
     ) -> None:

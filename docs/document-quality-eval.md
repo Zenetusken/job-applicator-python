@@ -37,24 +37,32 @@ job-applicator document-quality \
   --keyword SIEM
 
 # Certify the private packet set. Missing private data exits non-zero.
-job-applicator document-quality --private-packet-set --required
+job-applicator document-quality --private-packet-set --required --min-cases 3 \
+  --max-artifact-age-days 14 \
+  --required-category support --required-category risk \
+  --required-language en --required-language fr
 
 # Use an explicit manifest and machine-readable output.
 job-applicator document-quality \
   --packet-set ~/.job-applicator/document-quality-eval/packet-set.jsonl \
   --required \
+  --min-cases 3 \
+  --max-artifact-age-days 14 \
   --json
 ```
 
 In the TUI, select a job with saved generated text artifacts and press `D` to open the explicit
 document-quality panel. If both a tailored CV and a cover letter are present and the row has matched
-skills, the panel shows packet dimensions, including coherence. If matched skills are absent, it
-reports a limited structure/format certification instead of treating missing requirements as
-source-backed keywords.
+skills, the panel shows a packet quality check with packet dimensions, including coherence. If
+matched skills are absent, it reports a limited smoke check instead of treating missing requirements
+as source-backed keywords. Full private packet-set certification is only reported by the packet-set
+CLI gate.
 
 Without `--required`, a missing or empty packet set prints "not certified" and exits `0`.
 With `--required`, missing or empty private evidence exits `2`. A present packet set that scores
-below the quality bars exits `1`.
+below the quality bars exits `1`. In optional mode, a present set can have passing packet rows but
+still report `"certified": false` when it does not meet set-level certification breadth, freshness,
+or diversity thresholds.
 
 ## Manifest
 
@@ -63,14 +71,27 @@ relative to the manifest file unless they are absolute.
 
 ```json
 {
-  "id": "acme-security-analyst-2026-07",
-  "resume_path": "artifacts/acme-security-resume.txt",
-  "cover_letter_path": "artifacts/acme-security-cover-letter.txt",
-  "applicant_name": "John Doe",
-  "job_title": "Security Analyst",
-  "company": "Acme",
-  "keywords": ["Python", "Linux", "SIEM", "incident response", "IAM"],
-  "coherence_terms": ["Python", "Linux", "SIEM", "incident response"]
+  "cases": [
+    {
+      "id": "acme-security-analyst-2026-07",
+      "resume_path": "artifacts/acme-security-resume.txt",
+      "cover_letter_path": "artifacts/acme-security-cover-letter.txt",
+      "applicant_name": "John Doe",
+      "job_title": "Security Analyst",
+      "company": "Acme",
+      "keywords": ["Python", "Linux", "SIEM", "incident response", "IAM"],
+      "coherence_terms": ["Python", "Linux", "SIEM", "incident response"],
+      "category": "support",
+      "language": "en",
+      "generated_at": "2026-07-07T14:30:00Z",
+      "run_id": "doc-quality-20260707",
+      "source_job_url": "https://example.test/jobs/123",
+      "template": "modern",
+      "format": "txt",
+      "model": "Qwen/Qwen3-8B-AWQ",
+      "generator_version": "0.5.0"
+    }
+  ]
 }
 ```
 
@@ -89,15 +110,23 @@ Optional fields:
 - `coherence_terms` / `shared_terms`
 - `min_dimension_score` / `dimension_floor`
 - `min_overall_score` / `overall_floor`
+- `category` / `job_category`
+- `language`
+- `generated_at`
+- provenance fields passed through to JSON when present: `run_id`, `source_job_url`, `template`,
+  `format`, `model`, `generator_version`
 
 If `keywords` are omitted, the runner derives a small keyword set from the job description. Prefer
 explicit keywords for stable certification.
 
-Keep packet cases fresh. A private manifest should point at the latest validated generated
-artifacts, not stale scratch files under `output/`. Choose keywords that are both role-relevant and
-source-backed by the applicant's CV/tailored packet. Do not include unsupported JD-only terms such
-as tools, processes, or responsibilities the candidate cannot honestly claim unless the case is
-explicitly testing that those terms stay absent.
+Keep packet cases fresh. `generated_at` is used when present; otherwise freshness uses the oldest
+mtime of the résumé and cover-letter artifacts, so one freshly touched file cannot hide a stale
+packet half. Future `generated_at` timestamps fail required certification beyond a small clock-skew
+window. A private manifest should point at the latest validated generated artifacts, not stale
+scratch files under `output/`. Choose keywords that are both role-relevant and source-backed by
+the applicant's CV/tailored packet. Do not include
+unsupported JD-only terms such as tools, processes, or responsibilities the candidate cannot
+honestly claim unless the case is explicitly testing that those terms stay absent.
 
 Use `coherence_terms` when the packet should distinguish broad job specificity from the smaller
 set of narrative terms that must appear in both the CV and cover letter. If omitted, the coherence
@@ -122,6 +151,9 @@ Default bars:
 
 - each dimension must be at least `3.0`
 - each packet overall mean must be at least `3.0`
+- required packet-set certification needs at least `3` passing cases
+- optional packet-set scoring defaults to `1` passing case for certification metadata
+- generated packets older than `14` days are stale
 
 This gate complements grounding and human review. It catches obvious regressions in generated
 packet usefulness and polish; it does not replace judgment about whether a packet is genuinely the
@@ -131,7 +163,11 @@ When updating a private packet, run the gate in required JSON mode and inspect b
 the prose:
 
 ```bash
-job-applicator document-quality --private-packet-set --required --json
+job-applicator document-quality --private-packet-set --required --min-cases 3 \
+  --max-artifact-age-days 14 \
+  --required-category support --required-category risk \
+  --required-language en --required-language fr \
+  --json
 ```
 
 The generated cover letter should also have a clean grounding report when it was produced through

@@ -15,6 +15,7 @@ grounded by quoting the English source line, and the overlap checks are on share
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any, cast
 
 from job_applicator.config import LLMConfig
@@ -40,6 +41,45 @@ _PCT_RE = re.compile(r"(\d+)\s*%")
 # regardless of case.
 _NUM_RE = re.compile(r"(?<![a-zA-Z0-9])\d+(?![a-zA-Z0-9])")
 _SENT_SPLIT_RE = re.compile(r"[.!?\n]+")
+_RESUME_HEADING_LABELS = frozenset(
+    {
+        "summary",
+        "professional summary",
+        "profile",
+        "resume",
+        "résumé",
+        "profil",
+        "skills",
+        "technical skills",
+        "core skills",
+        "competences",
+        "compétences",
+        "experience",
+        "professional experience",
+        "work experience",
+        "experience professionnelle",
+        "expérience",
+        "expérience professionnelle",
+        "education",
+        "education & certifications",
+        "education and certifications",
+        "éducation",
+        "éducation & certifications",
+        "formation",
+        "formation et certifications",
+        "certifications",
+        "languages",
+        "langues",
+        "projects",
+        "projets",
+        "volunteer",
+        "volunteer experience",
+        "benevolat",
+        "bénévolat",
+        "references",
+        "références",
+    }
+)
 
 
 def _tokens(text: str) -> set[str]:
@@ -54,6 +94,13 @@ def _normalized_text(text: str) -> str:
     normalized = re.sub(r"[*_`]", "", normalized)
     normalized = re.sub(r"\s+", " ", normalized)
     return normalized.strip()
+
+
+def _ascii_fold(text: str) -> str:
+    """Lower-friction phrase matching across French accents."""
+    return "".join(
+        ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch)
+    )
 
 
 def _pcts(text: str) -> set[str]:
@@ -76,6 +123,40 @@ def _source_fragments(text: str) -> list[str]:
             continue
         fragments.extend(s.strip() for s in _SENT_SPLIT_RE.split(stripped) if s.strip())
     return fragments
+
+
+def _source_inventory_blocks(text: str) -> list[str]:
+    """Contiguous source blocks that are clearly list/inventory sections.
+
+    This keeps faithful multi-line skills/tool inventories from being flagged as unsupported while
+    still avoiding whole-résumé token pooling across unrelated education or employment entries.
+    """
+    blocks: list[str] = []
+    current: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            if current:
+                blocks.append("\n".join(current))
+                current = []
+            continue
+        current.append(stripped)
+    if current:
+        blocks.append("\n".join(current))
+
+    inventory_blocks: list[str] = []
+    for block in blocks:
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if len(lines) < 2:
+            continue
+        inventory_like = sum(
+            1
+            for line in lines
+            if ":" in line or "," in line or "·" in line or ";" in line or "/" in line
+        )
+        if inventory_like == len(lines):
+            inventory_blocks.append(block)
+    return inventory_blocks
 
 
 def _supplemental_percentage_evidence(check: ClaimCheck, source: str, missing: set[str]) -> str:
@@ -194,9 +275,16 @@ def _looks_like_contact_fragment(text: str) -> bool:
     )
 
 
+def _looks_like_resume_heading_fragment(text: str) -> bool:
+    """Known résumé labels are formatting, not factual claims to enumerate."""
+    cleaned = _normalized_text(text)
+    cleaned = re.sub(r"^#+\s*", "", cleaned).strip(" :")
+    return cleaned in _RESUME_HEADING_LABELS
+
+
 def _looks_like_application_framing(text: str) -> bool:
     """Cover-letter courtesy/target-role framing, not a candidate résumé fact."""
-    low = text.lower()
+    low = text.lower().replace("\u2019", "'")
     return any(
         phrase in low
         for phrase in (
@@ -207,13 +295,101 @@ def _looks_like_application_framing(text: str) -> bool:
             "i am applying for",
             "i am eager to bring",
             "i would welcome",
+            "bonjour a l'equipe de recrutement",
+            "bonjour à l'équipe de recrutement",
+            "bonjour l'equipe de recrutement",
+            "bonjour equipe de recrutement",
+            "bonjour équipe de recrutement",
+            "je vous propose ma candidature",
+            "je presente ma candidature",
+            "je présente ma candidature",
+            "je souhaite postuler",
+            "je m'appelle",
+            "je serais heureux de discuter",
+            "je serais ravi de discuter",
+            "je serais heureux d'echanger",
+            "je serais heureux d'échanger",
+            "je serais ravi d'echanger",
+            "je serais ravi d'échanger",
+            "j'aimerais en discuter",
+            "j'aimerais echanger",
+            "j'aimerais échanger",
+            "ce poste correspond bien",
+            "correspond bien a mon objectif professionnel",
+            "correspond bien à mon objectif professionnel",
+            "ce poste correspond bien a mon objectif professionnel",
+            "ce poste correspond bien à mon objectif professionnel",
+            "mon profil correspond bien au poste",
+            "je serais disponible pour discuter",
+            "je suis impatient de discuter",
+            "je suis impatiente de discuter",
+            "ces experiences m'ont prepare a contribuer",
+            "ces expériences m'ont préparé à contribuer",
+            "je suis enthousiaste a l'idee de contribuer",
+            "je suis enthousiaste à l'idée de contribuer",
+            "mettre mes competences a profit dans ce role",
+            "mettre mes compétences à profit dans ce rôle",
+            "mon objectif est de mettre a profit",
+            "mon objectif est de mettre à profit",
+            "mettre a profit ces competences",
+            "mettre à profit ces compétences",
+            "je vous remercie pour votre consideration",
+            "je vous remercie pour votre considération",
         )
     )
 
 
+_AUDITABLE_FRAMING_TERMS = frozenset(
+    {
+        "aws",
+        "azure",
+        "cissp",
+        "cloud-native",
+        "cloud native",
+        "edr",
+        "gcp",
+        "ids",
+        "incident response",
+        "kubernetes",
+        "linux",
+        "production",
+        "python",
+        "qradar",
+        "servicenow",
+        "siem",
+        "splunk",
+        "windows",
+    }
+)
+
+
+def _has_auditable_framing_content(text: str) -> bool:
+    folded = _ascii_fold(text).lower()
+    if _pcts(text) or _nums(text):
+        return True
+    credential_markers = (
+        "accredited",
+        "accredite",
+        "certified",
+        "certifie",
+        "chartered",
+        "credentialed",
+        "licensed",
+        "licencie",
+        "agree",
+    )
+    if any(marker in folded for marker in credential_markers):
+        return True
+    return any(term in folded for term in _AUDITABLE_FRAMING_TERMS)
+
+
+def _is_pure_application_framing(text: str) -> bool:
+    return _looks_like_application_framing(text) and not _has_auditable_framing_content(text)
+
+
 def _unsupported_is_application_framing(check: ClaimCheck) -> bool:
     low_note = check.note.lower()
-    if _looks_like_application_framing(check.claim):
+    if _is_pure_application_framing(check.claim):
         return True
     target_only_note = (
         "job title" in low_note or "company" in low_note
@@ -221,6 +397,59 @@ def _unsupported_is_application_framing(check: ClaimCheck) -> bool:
     return target_only_note and any(
         phrase in check.claim.lower()
         for phrase in (" role at ", " position at ", "role with", "position with")
+    )
+
+
+def _unsupported_is_source_backed_french_security_bridge(check: ClaimCheck, source: str) -> bool:
+    """Accept a measured French cover-letter bridge only when the source has the facts.
+
+    This is narrower than application framing: it still requires source support for the security
+    concepts being summarized, so a fabricated incident-response bridge cannot slip through.
+    """
+    claim = _ascii_fold(check.claim).lower()
+    if "comprehension pratique" not in claim:
+        return False
+    if not all(term in claim for term in ("triage", "escalade", "incident")):
+        return False
+
+    source_norm = _ascii_fold(source).lower()
+    has_security_evidence = (
+        "triage" in source_norm
+        and "escalat" in source_norm
+        and ("incident response" in source_norm or "reponse aux incidents" in source_norm)
+    )
+    if not has_security_evidence:
+        return False
+    if "documentation" in claim and "document" not in source_norm:
+        return False
+    if "communication" in claim and not any(
+        term in source_norm for term in ("communication", "client", "customer")
+    ):
+        return False
+    return True
+
+
+def _unsupported_is_source_verbatim(check: ClaimCheck, source: str) -> bool:
+    claim = _normalized_text(check.claim).strip(" .;:")
+    normalized_source = _normalized_text(source)
+    return bool(claim and claim in normalized_source)
+
+
+def _unsupported_is_source_token_inventory(check: ClaimCheck, source: str) -> bool:
+    """Ignore a model false-negative for a long list from one source fragment.
+
+    This deliberately does not assemble tokens across the whole résumé: that can hide cross-entry
+    source merges such as attaching cybersecurity coursework to an unrelated degree.
+    """
+    claim_tokens = _tokens(check.claim)
+    if len(claim_tokens) < 8:
+        return False
+    separator_count = sum(check.claim.count(sep) for sep in (",", ";", "·", "/"))
+    if separator_count < 4:
+        return False
+    return any(
+        claim_tokens <= _tokens(fragment)
+        for fragment in [*_source_fragments(source), *_source_inventory_blocks(source)]
     )
 
 
@@ -240,7 +469,8 @@ def coverage_gaps(generated: str, claims: list[ClaimCheck], source: str = "") ->
         for s in _sentences(generated)
         if _overlap(_tokens(s), claim_tokens) < _COVERAGE_OVERLAP
         and _normalized_text(s) not in normalized_source
-        and not _looks_like_application_framing(s)
+        and not _looks_like_resume_heading_fragment(s)
+        and not _is_pure_application_framing(s)
     ]
 
 
@@ -252,7 +482,14 @@ def audit_report(report: VerificationReport, generated: str, source: str) -> Gro
     """
     unsupported: list[ClaimCheck] = []
     for check in report.claims:
-        if not check.grounded and _unsupported_is_application_framing(check):
+        if _unsupported_is_application_framing(check):
+            continue
+        if _unsupported_is_source_backed_french_security_bridge(check, source):
+            continue
+        if not check.grounded and (
+            _unsupported_is_source_verbatim(check, source)
+            or _unsupported_is_source_token_inventory(check, source)
+        ):
             continue
         if not check.grounded:
             unsupported.append(check)

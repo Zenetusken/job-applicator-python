@@ -3112,19 +3112,9 @@ def tailor(
         try:
             effective_user_instructions = user_instructions
             if yes:
-                strict_noninteractive = (
-                    "For non-interactive output, prioritize accuracy over embellishment. Use only "
-                    "facts, metrics, tools, duties, dates, employers, and outcomes explicitly "
-                    "present in the original résumé. Do not add new responsibilities, optional "
-                    "sections, aspirations, deployment claims, performance claims, collaboration "
-                    "claims, or outcomes. It is acceptable to make fewer changes if that is what "
-                    "keeps every claim source-backed."
-                )
-                effective_user_instructions = (
-                    f"{strict_noninteractive}\n\n{user_instructions}"
-                    if user_instructions
-                    else strict_noninteractive
-                )
+                from job_applicator.workflows.tailor_policy import source_only_instructions
+
+                effective_user_instructions = source_only_instructions(user_instructions)
             with err_console.status("Tailoring + verifying resume..."):
                 result = await tailor_engine.tailor_verified(
                     resume_data,
@@ -3319,6 +3309,28 @@ def document_quality(
         max=4.0,
         help="Minimum required 0-4 overall score for each packet.",
     ),
+    min_cases: int | None = typer.Option(
+        None,
+        "--min-cases",
+        min=1,
+        help="Minimum passing packet cases required for set certification.",
+    ),
+    max_artifact_age_days: int | None = typer.Option(
+        None,
+        "--max-artifact-age-days",
+        min=0,
+        help="Maximum generated packet age in days for set certification. Defaults to 14.",
+    ),
+    required_category: list[str] | None = typer.Option(
+        None,
+        "--required-category",
+        help="Required packet category for set certification. Repeatable.",
+    ),
+    required_language: list[str] | None = typer.Option(
+        None,
+        "--required-language",
+        help="Required packet language for set certification. Repeatable.",
+    ),
     as_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
     """Evaluate generated CV and cover-letter artifact quality."""
@@ -3331,6 +3343,16 @@ def document_quality(
         raise typer.BadParameter("--private-packet-set cannot be combined with --packet-set")
     if required and not packet_mode:
         raise typer.BadParameter("--required is only valid with --packet-set/--private-packet-set")
+    if not packet_mode and (
+        min_cases is not None
+        or max_artifact_age_days is not None
+        or required_category
+        or required_language
+    ):
+        raise typer.BadParameter(
+            "--min-cases, --max-artifact-age-days, --required-category, and "
+            "--required-language are only valid with --packet-set/--private-packet-set"
+        )
 
     try:
         if packet_mode:
@@ -3340,6 +3362,12 @@ def document_quality(
                 json_output=as_json,
                 min_dimension_score=min_dimension_score,
                 min_overall_score=min_overall_score,
+                min_cases=min_cases,
+                max_artifact_age_days=(
+                    max_artifact_age_days if max_artifact_age_days is not None else 14
+                ),
+                required_categories=list(required_category or []),
+                required_languages=list(required_language or []),
             )
         else:
             exit_code = quality_eval.run_artifact_quality(
