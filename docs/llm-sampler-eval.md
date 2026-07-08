@@ -109,6 +109,11 @@ the harness writes `<output-root>/<run-id>/<variant>/packet-set.jsonl` with gene
 `resume_path` and `cover_letter_path` values, provenance, freshness timestamps, and the case
 category/language metadata.
 
+For each case, the harness also copies the referenced `jobs_file` to
+`<output-root>/<run-id>/<variant>/<case-id>/input-jobs.json` and passes that copy to `batch`. This
+keeps batch recovery state isolated between sampler variants: `batch` auto-resumes incomplete runs
+by processing spec, and sampler env values are not part of that public batch spec.
+
 ## Certification
 
 Each variant is certified with:
@@ -124,6 +129,9 @@ That means a variant must generate a passing packet for every selected case by d
 
 The JSON summary includes per-case command/log paths, generated packet counts, failed case ids,
 packet quality payloads, certification failures, and the packet manifest path for each variant.
+For non-dry runs, the same JSON is saved to
+`<output-root>/<run-id>/sampler-summary.json` so long live results are preserved even if terminal
+output is truncated.
 
 ## Baseline Comparison
 

@@ -15,7 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Private LLM sampler eval harness.** `scripts/eval_llm_sampler.py` runs controlled
   baseline-vs-Qwen sampler experiments through the public `batch` command, writes fresh private
   generated packet manifests, certifies each variant with document-quality, and reports
-  baseline-relative overall/per-dimension deltas so sampler changes can be judged by evidence.
+  baseline-relative overall/per-dimension deltas so sampler changes can be judged by evidence. The
+  harness isolates batch recovery state per variant/case and saves non-dry-run summaries under the
+  private sampler run directory.
 - **Target-role preference boosts** (`[[matching.target_roles]]`). Declared role families — a
   title regex + a boost — lift preference-important jobs the CV is lexically far from (measured:
   an AI-red-team and an IAM posting ranked below the review floor on an SOC CV; embedding

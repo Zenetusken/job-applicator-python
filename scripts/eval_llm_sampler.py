@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -366,14 +367,14 @@ def _successful_result(summary: dict[str, Any], *, summary_dir: Path) -> dict[st
     return None
 
 
-def _batch_command(case: SamplerCase, *, run_id: str) -> list[str]:
+def _batch_command(case: SamplerCase, *, run_id: str, jobs_file: Path | None = None) -> list[str]:
     command = [
         sys.executable,
         "-m",
         "job_applicator",
         "batch",
         "--jobs-file",
-        str(case.jobs_file),
+        str(jobs_file or case.jobs_file),
         "--top-k",
         str(case.top_k),
         "--min-score",
@@ -516,13 +517,16 @@ def _run_case(
     dry_run: bool,
     model: str,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    command = _batch_command(case, run_id=run_id)
+    effective_jobs_file = output_dir / "input-jobs.json"
+    command = _batch_command(case, run_id=run_id, jobs_file=effective_jobs_file)
     log_stdout = output_dir / "batch.stdout.log"
     log_stderr = output_dir / "batch.stderr.log"
     case_payload: dict[str, Any] = {
         "case_id": case.case_id,
         "run_id": run_id,
         "command": command,
+        "source_jobs_file": str(case.jobs_file),
+        "effective_jobs_file": str(effective_jobs_file),
         "output_dir": str(output_dir),
         "stdout_log": str(log_stdout),
         "stderr_log": str(log_stderr),
@@ -534,6 +538,7 @@ def _run_case(
         return case_payload, None
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(case.jobs_file, effective_jobs_file)
     started = time.monotonic()
     try:
         completed = subprocess.run(
@@ -663,6 +668,17 @@ def _run_variant(
         "cases": case_results,
         "quality": quality,
     }
+
+
+def _write_summary_file(args: argparse.Namespace, payload: dict[str, Any]) -> dict[str, Any]:
+    if args.dry_run:
+        return payload
+    summary_dir = args.output_root / args.run_id
+    summary_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = summary_dir / "sampler-summary.json"
+    payload["summary_path"] = str(summary_path)
+    summary_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return payload
 
 
 def _rank_tuple(variant: dict[str, Any]) -> tuple[int, int, float, int, int]:
@@ -931,6 +947,7 @@ def _run(args: argparse.Namespace) -> int:
         "variants": variants,
         "baseline_comparison": _baseline_comparison(variants),
     }
+    payload = _write_summary_file(args, payload)
     _emit(payload, json_output=args.json)
     return 1 if args.required and failed else 0
 

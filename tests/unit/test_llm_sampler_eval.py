@@ -170,6 +170,12 @@ def test_dry_run_plans_baseline_and_qwen_sampler_env(
     payload = json.loads(capsys.readouterr().out)
     variants = {variant["name"]: variant for variant in payload["variants"]}
     assert variants["baseline"]["cases"][0]["sampler_env"] == {}
+    baseline_case = variants["baseline"]["cases"][0]
+    assert baseline_case["source_jobs_file"].endswith("jobs.json")
+    assert baseline_case["effective_jobs_file"].endswith(
+        "runs/sample/baseline/acme-security/input-jobs.json"
+    )
+    assert baseline_case["effective_jobs_file"] in baseline_case["command"]
     assert variants["qwen-pp12"]["cases"][0]["sampler_env"] == {
         "JOB_APPLICATOR_LLM_TOP_P": "0.8",
         "JOB_APPLICATOR_LLM_TOP_K": "20",
@@ -248,6 +254,10 @@ def test_successful_fake_batch_writes_certified_packet_manifest(
     assert packet["resume_path"].endswith("tailored.txt")
     assert packet["cover_letter_path"].endswith("cover.txt")
     assert packet["source_job_url"] == "https://example.test/jobs/1"
+    assert Path(payload["summary_path"]).is_file()
+    case_payload = variant["cases"][0]
+    assert Path(case_payload["effective_jobs_file"]).is_file()
+    assert case_payload["effective_jobs_file"] in case_payload["command"]
 
 
 def test_baseline_comparison_quantifies_quality_deltas() -> None:
