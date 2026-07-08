@@ -103,10 +103,16 @@ The driver's checks, individually (all via the venv entrypoint):
 .venv/bin/job-applicator generate-cover-letter \
   --job-title "Senior Python Engineer" --company "Initech" \
   --description "Async data pipelines; asyncio, Pydantic, PostgreSQL." --resume r.docx
+.venv/bin/job-applicator document-quality --private-packet-set --required --min-cases 3 \
+  --max-artifact-age-days 14 --required-category support --required-category risk \
+  --required-language en --required-language fr --json
 ```
 
 `doctor` is the fastest "is the whole stack wired?" check — it prints a green/red
 line per subsystem and exits 0 when healthy.
+The private packet-set document-quality command is the generated-packet certification gate. It
+uses local private data under `~/.job-applicator/document-quality-eval/` and should not be used as
+a generic smoke test on a machine without that manifest.
 
 ## TUI (interactive home screen)
 
@@ -144,7 +150,7 @@ letter, but real submission requires `apply --submit`.
 ## Test
 
 ```bash
-.venv/bin/python -m pytest -m unit -q      # ~1175 passed — the fast green gate (no browser/GPU/vLLM)
+.venv/bin/python -m pytest -m unit -q      # fast green gate (no browser/GPU/vLLM)
 ```
 
 `pytest -m live` (35 tests) needs vLLM + GPU; `pytest -m integration` (9) is
@@ -176,5 +182,9 @@ browser-wiring only. Run pytest from the repo root (it needs the repo CWD).
 - **LIVE checks SKIP, or `doctor` shows LLM `✗ unreachable`** → no LLM at
   `localhost:8000`. Start one (`bash scripts/serve-vllm.sh`) or set `[llm] api_base`
   to a reachable endpoint. CORE checks still pass without it.
+- **vLLM is reachable with `curl`, but Python reports socket permission denied** → the sandbox is
+  blocking Python socket creation. Re-run the CLI/QA command outside the sandbox. If vLLM leaves
+  too little VRAM for CUDA embeddings, pin `JOB_APPLICATOR_EMBEDDING_DEVICE=cpu` for the isolated
+  QA run.
 - **`ats-check` on a PDF returns empty/garbled text** → install `poppler-utils`
   (`pdftotext`). The driver uses a `.docx` (python-docx, a core dep) to sidestep this.

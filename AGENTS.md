@@ -49,7 +49,7 @@ job-applicator tailor --resume resume.pdf --from <id-or-url> [--style-guide exam
 job-applicator generate-cover-letter --resume resume.pdf --job-title "..." --company "..." [--style-guide example.txt] [--format txt|pdf|both] [--template modern|classic|minimal] [--category <category>]
 job-applicator ats-check --resume resume.pdf [--json] [--strict]
 job-applicator document-quality --resume tailored.txt --cover-letter cover.txt --keyword Python [--json]
-job-applicator document-quality --private-packet-set --required [--json]
+job-applicator document-quality --private-packet-set --required [--min-cases 3] [--max-artifact-age-days 14] [--required-category support] [--required-language en] [--json]
 job-applicator apply --query "python" --validate [--style-guide example.txt] [--format txt|pdf|both] [--template modern|classic|minimal] [--category <category>]            # Dry-run Easy Apply and validate it reaches Submit
 job-applicator apply --query "python" --submit --limit 5 [--style-guide example.txt] [--format txt|pdf|both] [--template modern|classic|minimal] [--category <category>]    # Send real applications
 job-applicator selector-health --site linkedin --surface search --query "python developer"  # Live selector drift report
@@ -355,12 +355,20 @@ that generate cover letters. The default dry-run `apply` does not run the ATS pr
   It checks obvious quality regressions (missing contact/sections/sign-off, placeholders, markdowny
   cover letters, repetition warnings, and basic job-keyword coverage). It complements, not replaces,
   grounding and human review. Generated packet changes can also be certified against a private
-  packet set with `job-applicator document-quality --private-packet-set --required`; the default
-  private manifest is `~/.job-applicator/document-quality-eval/packet-set.jsonl` (override with
-  `DOCUMENT_QUALITY_SET`). `scripts/eval_document_quality.py` remains a compatibility wrapper for
-  script-based gates. Private gold-standard CV/cover-letter bundles live under
-  `~/.job-applicator/document-quality-eval/gold-standards/`. The TUI has an explicit `D`
-  document-quality action for the selected job's saved text artifacts. See
+  packet set with:
+  ```bash
+  job-applicator document-quality --private-packet-set --required --min-cases 3 \
+    --max-artifact-age-days 14 --required-category support --required-category risk \
+    --required-language en --required-language fr
+  ```
+  The default private manifest is `~/.job-applicator/document-quality-eval/packet-set.jsonl`
+  (override with `DOCUMENT_QUALITY_SET`).
+  Required certification enforces set breadth, freshness, and category/language coverage; missing
+  required evidence exits `2`, present failing evidence exits `1`. The TUI's `D` action is a
+  selected-job packet quality check or limited smoke check, not private packet-set certification.
+  `scripts/eval_document_quality.py` remains a compatibility wrapper for script-based gates.
+  Private gold-standard CV/cover-letter bundles live under
+  `~/.job-applicator/document-quality-eval/gold-standards/`. See
   `docs/document-quality-eval.md` for the manifest, 0-4 rubric, and gold-standard bundle layout.
 - Tests use fixtures from `tests/conftest.py`.
 - Embedding tests mock the model (CPU fallback).

@@ -29,6 +29,11 @@ tier additionally needs vLLM at `http://localhost:8000/v1` and the embedding mod
 with `GPU_MEM=0.65`, `MAX_MODEL_LEN=8192`, and `ENFORCE_EAGER=1` for the validated 12 GB
 CUDA-embedding coexistence profile).
 
+If `curl -s http://localhost:8000/v1/models` works but the harness reports the LIVE tier skipped,
+Python socket creation is likely sandbox-blocked; run the harness outside the sandbox. If vLLM is
+up but CUDA embedding preflight fails on VRAM headroom, rerun the isolated harness with
+`JOB_APPLICATOR_EMBEDDING_DEVICE=cpu` so the live CLI behavior is still exercised.
+
 ## Run (agent path)
 
 ```bash

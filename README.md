@@ -385,6 +385,10 @@ job-applicator document-quality --private-packet-set --required --min-cases 3 \
   --required-language en --required-language fr
 ```
 
+The private packet-set gate is set-level certification, not just per-packet smoke scoring: required
+mode enforces a minimum number of passing cases, freshness, and requested category/language
+coverage. Missing required private evidence exits `2`; present-but-failing evidence exits `1`.
+
 ## Architecture
 
 ```

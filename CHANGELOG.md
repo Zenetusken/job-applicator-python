@@ -37,6 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fifth 0-4 dimension that checks applicant identity, target role/company alignment, language
   consistency, and source-backed terms shared by the CV and cover letter. Manifests can set
   `coherence_terms` when the narrative bridge should be narrower than the broad keyword list.
+- **Private packet-set certification gates.** `document-quality --private-packet-set --required`
+  now distinguishes per-packet pass/fail from set-level certification. Required mode enforces a
+  minimum passing case count, max artifact age, required category/language coverage, and JSON
+  certification context. Optional packet sets can pass packet rows while still reporting
+  `certified=false`, so small or stale evidence is no longer over-trusted.
 
 - **`status` now shows which search surfaced each job.** The stored `source_query` (previously
   captured but never displayed) is surfaced as a **Found via** column in the `status` table, a
@@ -92,6 +97,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   percentage, accepts supported numeric skill names such as Microsoft 365 / 802.1X, accepts
   source-backed employment-heading years, and ignores cover-letter application framing/courtesy
   lines as non-factual claims.
+- **French packet honesty guards are stricter.** French `Profil`, `Compétences`, `Formation`, and
+  `Langues` sections now flow through the same deterministic cleanup as English sections, French
+  credential/status overclaims are rejected, mixed application-framing sentences with tools or
+  credentials stay auditable, and support-domain bullets are preserved or dropped by source
+  context instead of a hard-coded employer list.
 - **Style-analysis live diagnostics are no longer a black box.** `StyleAnalyzer` now logs which LLM
   path it is using (instructor structured output vs direct litellm JSON fallback), how long each path
   took, and the fallback reason. Direct litellm fallback failures now go through the shared

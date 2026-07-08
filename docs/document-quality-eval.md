@@ -119,10 +119,12 @@ Optional fields:
 If `keywords` are omitted, the runner derives a small keyword set from the job description. Prefer
 explicit keywords for stable certification.
 
-Keep packet cases fresh. `generated_at` is used when present; otherwise freshness uses the newest
-mtime of the résumé and cover-letter artifacts. A private manifest should point at the latest
-validated generated artifacts, not stale scratch files under `output/`. Choose keywords that are
-both role-relevant and source-backed by the applicant's CV/tailored packet. Do not include
+Keep packet cases fresh. `generated_at` is used when present; otherwise freshness uses the oldest
+mtime of the résumé and cover-letter artifacts, so one freshly touched file cannot hide a stale
+packet half. Future `generated_at` timestamps fail required certification beyond a small clock-skew
+window. A private manifest should point at the latest validated generated artifacts, not stale
+scratch files under `output/`. Choose keywords that are both role-relevant and source-backed by
+the applicant's CV/tailored packet. Do not include
 unsupported JD-only terms such as tools, processes, or responsibilities the candidate cannot
 honestly claim unless the case is explicitly testing that those terms stay absent.
 
