@@ -50,6 +50,8 @@ job-applicator generate-cover-letter --resume resume.pdf --job-title "..." --com
 job-applicator ats-check --resume resume.pdf [--json] [--strict]
 job-applicator document-quality --resume tailored.txt --cover-letter cover.txt --keyword Python [--json]
 job-applicator document-quality --private-packet-set --required [--min-cases 3] [--max-artifact-age-days 14] [--required-category support] [--required-language en] [--json]
+python scripts/eval_llm_sampler.py --dry-run --json  # Plan baseline-vs-Qwen sampler evals
+python scripts/eval_llm_sampler.py --required --json # Run sampler variants and baseline deltas
 job-applicator apply --query "python" --validate [--style-guide example.txt] [--format txt|pdf|both] [--template modern|classic|minimal] [--category <category>]            # Dry-run Easy Apply and validate it reaches Submit
 job-applicator apply --query "python" --submit --limit 5 [--style-guide example.txt] [--format txt|pdf|both] [--template modern|classic|minimal] [--category <category>]    # Send real applications
 job-applicator selector-health --site linkedin --surface search --query "python developer"  # Live selector drift report
@@ -150,7 +152,9 @@ src/job_applicator/
   `utils.llm.litellm_completion_kwargs(config, temperature=..., max_tokens=...)` instead of
   hand-rolling `max_tokens`, `temperature`, or `extra_body`. Optional sampler config (`top_p`,
   `top_k`, `min_p`, `presence_penalty`, `enable_thinking`) is for measured Qwen/vLLM tuning and
-  defaults to the previous request shape except for explicit user overrides.
+  defaults to the previous request shape except for explicit user overrides. Use
+  `scripts/eval_llm_sampler.py` to compare baseline vs Qwen-shaped variants before changing
+  defaults; its JSON reports baseline-relative overall/per-dimension deltas.
 - **StyleAnalyzer has live-path observability.** It logs instructor vs direct-litellm JSON paths,
   elapsed time, and fallback reason. Direct fallback failures route through `utils.llm.llm_call_error()`.
   If localhost vLLM is up but the error says the runtime was denied permission to open a network
@@ -376,6 +380,12 @@ that generate cover letters. The default dry-run `apply` does not run the ATS pr
   Private gold-standard CV/cover-letter bundles live under
   `~/.job-applicator/document-quality-eval/gold-standards/`. See
   `docs/document-quality-eval.md` for the manifest, 0-4 rubric, and gold-standard bundle layout.
+- LLM sampler tuning has a private-data companion harness:
+  `python scripts/eval_llm_sampler.py --required --json`. It reads local sampler cases from
+  `~/.job-applicator/document-quality-eval/sampler-cases.jsonl`, generates fresh packet manifests
+  under `~/.job-applicator/document-quality-eval/sampler-runs/`, certifies each variant through
+  document-quality, and reports how much each Qwen-shaped variant improves/regresses against
+  `baseline`. Start with `--dry-run --json` to inspect commands and env overrides.
 - Tests use fixtures from `tests/conftest.py`.
 - Embedding tests mock the model (CPU fallback).
 

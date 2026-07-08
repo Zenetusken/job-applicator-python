@@ -162,6 +162,8 @@ job-applicator document-quality --resume tailored.txt --cover-letter cover.txt -
 job-applicator document-quality --private-packet-set --required --min-cases 3 \
   --max-artifact-age-days 14 --required-category support --required-category risk \
   --required-language en --required-language fr --json
+# Compare current baseline against measured Qwen/vLLM sampler variants
+.venv/bin/python scripts/eval_llm_sampler.py --required --json
 
 # Match resume to jobs using embeddings
 job-applicator match --resume resume.pdf --jobs-file jobs.json --top-k 10
@@ -393,11 +395,18 @@ job-applicator document-quality --resume tailored.txt --cover-letter cover.txt -
 job-applicator document-quality --private-packet-set --required --min-cases 3 \
   --max-artifact-age-days 14 --required-category support --required-category risk \
   --required-language en --required-language fr
+
+# LLM sampler A/B measurement against private generated-packet cases
+.venv/bin/python scripts/eval_llm_sampler.py --dry-run --json
+.venv/bin/python scripts/eval_llm_sampler.py --required --json
 ```
 
 The private packet-set gate is set-level certification, not just per-packet smoke scoring: required
 mode enforces a minimum number of passing cases, freshness, and requested category/language
 coverage. Missing required private evidence exits `2`; present-but-failing evidence exits `1`.
+The sampler harness keeps production defaults unchanged while measuring baseline vs Qwen-shaped
+sampler variants. Its JSON includes baseline-relative overall and per-dimension deltas for each
+variant. See `docs/llm-sampler-eval.md`.
 
 ## Architecture
 

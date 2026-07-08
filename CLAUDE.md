@@ -117,7 +117,9 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
 - **LLM sampler kwargs are centralized.** Completion callers use
   `utils.llm.litellm_completion_kwargs()` for `max_tokens`, temperature overrides, Qwen thinking
   control, and optional sampler knobs (`top_p`, `top_k`, `min_p`, `presence_penalty`). The sampler
-  fields are measurement toggles by default; unset fields are omitted from requests.
+  fields are measurement toggles by default; unset fields are omitted from requests. Use
+  `scripts/eval_llm_sampler.py` to run baseline-vs-Qwen sampler variants and inspect
+  baseline-relative quality deltas before changing defaults.
 - Instructor for structured LLM outputs (Pydantic models)
 - mxbai-embed-large-v1 for semantic job matching (~1.4 GB runtime allocation,
   1.3 GB free-VRAM preflight budget)

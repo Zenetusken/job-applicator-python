@@ -8,6 +8,10 @@
 `scripts/eval_document_quality.py` remains a compatibility wrapper for script-based gates and
 supports the same scoring logic.
 
+For LLM sampler tuning, use `scripts/eval_llm_sampler.py` as the experiment harness. It generates
+fresh private packet manifests per sampler variant, then certifies them through this evaluator and
+reports baseline-relative score deltas. See `docs/llm-sampler-eval.md`.
+
 The private packet set is local data and should not be committed. The default path is:
 
 ```bash
