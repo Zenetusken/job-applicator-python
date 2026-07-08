@@ -195,10 +195,193 @@ def test_coverage_ignores_source_verbatim_role_heading() -> None:
     assert coverage_gaps(generated, [], source) == []
 
 
+def test_coverage_ignores_markdown_resume_section_heading() -> None:
+    generated = "**Expérience professionnelle**\nSingle-handedly invented a SOC program."
+
+    gaps = coverage_gaps(generated, [], SOURCE)
+
+    assert not any("Expérience professionnelle" in gap for gap in gaps)
+    assert any("SOC program" in gap for gap in gaps)
+
+
 def test_coverage_ignores_cover_letter_courtesy_sentence() -> None:
     generated = "Thank you for considering my application."
 
     assert coverage_gaps(generated, [], SOURCE) == []
+
+
+def test_coverage_ignores_french_cover_letter_courtesy_sentence() -> None:
+    generated = "Je serais heureux de discuter de ma candidature avec votre equipe."
+
+    assert coverage_gaps(generated, [], SOURCE) == []
+
+
+def test_coverage_ignores_french_cover_letter_discussion_sentence() -> None:
+    generated = "J'aimerais en discuter davantage avec vous."
+
+    assert coverage_gaps(generated, [], SOURCE) == []
+
+
+def test_audit_report_ignores_french_cover_letter_closing_with_bad_quote() -> None:
+    generated = "Je serais ravi de discuter plus en détail de mon profil et de mes motivations."
+    report = VerificationReport(
+        claims=[
+            gc(
+                generated,
+                grounded=True,
+                quote="This source quote does not appear in the resume.",
+            )
+        ]
+    )
+
+    audit = audit_report(report, generated, SOURCE)
+
+    assert audit.unsupported == []
+    assert audit.coverage_gaps == []
+
+
+def test_coverage_ignores_french_cover_letter_objective_fit_sentence() -> None:
+    generated = "Ce poste correspond bien à mon objectif professionnel."
+
+    assert coverage_gaps(generated, [], SOURCE) == []
+
+
+def test_coverage_ignores_french_cover_letter_named_role_objective_fit_sentence() -> None:
+    generated = (
+        "Le poste d'analyste junior en sécurité des opérations et risques TI correspond bien à "
+        "mon objectif professionnel."
+    )
+
+    assert coverage_gaps(generated, [], SOURCE) == []
+
+
+def test_coverage_ignores_french_cover_letter_profile_fit_sentence() -> None:
+    generated = "Ce poste correspond bien à mon profil et à mes aspirations professionnelles."
+
+    assert coverage_gaps(generated, [], SOURCE) == []
+
+
+def test_audit_report_ignores_french_cover_letter_profile_fit_with_bad_quote() -> None:
+    generated = (
+        "Je suis convaincu que mon profil correspond bien au poste d'analyste junior en "
+        "sécurité des opérations et risques TI."
+    )
+    report = VerificationReport(
+        claims=[gc(generated, grounded=True, quote="This source quote is not in the resume.")]
+    )
+
+    audit = audit_report(report, generated, SOURCE)
+
+    assert audit.unsupported == []
+    assert audit.coverage_gaps == []
+
+
+def test_coverage_ignores_french_cover_letter_prepared_to_contribute_framing() -> None:
+    generated = (
+        "Ces expériences m'ont préparé à contribuer à l'analyse et à la réponse aux incidents "
+        "dans un cadre de sécurité opérationnelle."
+    )
+
+    assert coverage_gaps(generated, [], SOURCE) == []
+
+
+def test_audit_report_ignores_source_backed_french_security_bridge() -> None:
+    source = (
+        "SOC monitoring & triage. Incident response. "
+        "Triaged and escalated complex issues to higher tiers per documented procedures. "
+        "Customer communication."
+    )
+    generated = (
+        "Cette expérience m'a permis de développer une compréhension pratique des processus de "
+        "triage, d'escalade et d'analyse des incidents, tout en renforçant mes compétences en "
+        "communication claire et en documentation."
+    )
+    report = VerificationReport(claims=[gc(generated, grounded=False, quote="", note="")])
+
+    audit = audit_report(report, generated, source)
+
+    assert audit.unsupported == []
+
+
+def test_audit_report_rejects_unbacked_french_security_bridge() -> None:
+    source = "Customer service and scheduling."
+    generated = (
+        "Cette expérience m'a permis de développer une compréhension pratique des processus de "
+        "triage, d'escalade et d'analyse des incidents."
+    )
+    report = VerificationReport(claims=[gc(generated, grounded=False, quote="", note="")])
+
+    audit = audit_report(report, generated, source)
+
+    assert audit.unsupported
+
+
+def test_coverage_ignores_french_cover_letter_neutralized_discussion_sentence() -> None:
+    generated = (
+        "Je serais disponible pour discuter de la manière dont mes compétences et mon expérience "
+        "peuvent contribuer à votre équipe."
+    )
+
+    assert coverage_gaps(generated, [], SOURCE) == []
+
+
+def test_coverage_ignores_french_cover_letter_contribution_framing() -> None:
+    generated = (
+        "Je suis enthousiaste à l'idée de contribuer à l'équipe d'Example Risk Lab et de mettre "
+        "mes compétences à profit dans ce rôle."
+    )
+
+    assert coverage_gaps(generated, [], SOURCE) == []
+
+
+def test_coverage_audits_mixed_french_framing_with_unbacked_tools() -> None:
+    generated = (
+        "Je suis enthousiaste à l'idée de contribuer à l'équipe d'Example Risk Lab en appliquant "
+        "mon expérience SIEM Splunk et Kubernetes en production."
+    )
+
+    gaps = coverage_gaps(generated, [], SOURCE)
+
+    assert any("Kubernetes" in gap for gap in gaps)
+
+
+def test_coverage_ignores_french_cover_letter_greeting() -> None:
+    generated = "Bonjour à l'équipe de recrutement d'Example Risk Lab."
+
+    assert coverage_gaps(generated, [], SOURCE) == []
+
+
+def test_coverage_ignores_french_cover_letter_application_intent_greeting() -> None:
+    generated = (
+        "Bonjour équipe de recrutement, Je m'appelle Alex Morgan et je souhaite postuler "
+        "au poste d'analyste junior en sécurité des opérations et risques TI chez Example "
+        "Risk Lab."
+    )
+
+    assert coverage_gaps(generated, [], SOURCE) == []
+
+
+def test_audit_report_rejects_cross_entry_source_token_inventory_merge() -> None:
+    source = (
+        "Northbridge Technical Institute\n"
+        "Certificate — Operational Cybersecurity\n"
+        "Completed SIEM, incident response, and Cisco CCNA networking labs.\n\n"
+        "Metro City University\n"
+        "Bachelor of Accounting\n"
+    )
+    claim = (
+        "Metro City University, Operational Cybersecurity, SIEM, incident response, Cisco CCNA, "
+        "networking labs, Bachelor of Accounting"
+    )
+    generated = claim
+    report = VerificationReport(
+        claims=[gc(claim, grounded=False, quote="", note="source terms appear separately")]
+    )
+
+    audit = audit_report(report, generated, source)
+
+    assert audit.unsupported
+    assert audit.unsupported[0].claim == claim
 
 
 # ---- audit_report: combine model flags + audit overrides + coverage ----
@@ -249,6 +432,92 @@ def test_audit_report_ignores_cover_letter_application_framing() -> None:
             gc(
                 "I would welcome the opportunity to discuss how my background and skills align "
                 "with the IT On-site Support Technician role at WSP.",
+                grounded=False,
+                note="cited quote is not in the résumé",
+            ),
+            gc("Holds a CISSP", grounded=False, note="source is silent"),
+        ]
+    )
+
+    result = audit_report(report, generated, SOURCE)
+
+    assert [claim.claim for claim in result.unsupported] == ["Holds a CISSP"]
+
+
+def test_audit_report_ignores_model_false_negative_for_source_verbatim_claim() -> None:
+    source = "Led a Pydantic v2 + mypy-strict migration across 40 services."
+    report = VerificationReport(
+        claims=[
+            gc(
+                "Led a Pydantic v2 + mypy-strict migration across 40 services.",
+                grounded=False,
+                note="model missed the source line",
+            ),
+            gc("Holds a CISSP", grounded=False, note="source is silent"),
+        ]
+    )
+
+    result = audit_report(report, source, source)
+
+    assert [claim.claim for claim in result.unsupported] == ["Holds a CISSP"]
+
+
+def test_audit_report_ignores_model_false_negative_for_source_skill_inventory() -> None:
+    source = (
+        "Security ops: SIEM · SOC monitoring · incident response.\n"
+        "Tools: Wireshark · Nmap · Zabbix · Packet Tracer · Cisco IOS.\n"
+        "Platforms: Microsoft 365 · Salesforce · SAP."
+    )
+    generated = (
+        "SIEM, SOC monitoring, incident response, Wireshark, Nmap, Zabbix, "
+        "Packet Tracer, Cisco IOS, Microsoft 365, Salesforce, SAP."
+    )
+    report = VerificationReport(
+        claims=[
+            gc(
+                generated,
+                grounded=False,
+                note="model treated a source-backed skill list as unsupported",
+            ),
+            gc("Holds a CISSP", grounded=False, note="source is silent"),
+        ]
+    )
+
+    result = audit_report(report, generated + " Holds a CISSP.", source)
+
+    assert [claim.claim for claim in result.unsupported] == ["Holds a CISSP"]
+
+
+def test_audit_report_keeps_fabricated_item_in_skill_inventory_unsupported() -> None:
+    source = "Technical Skills: SIEM, SOC monitoring, incident response, Wireshark, Nmap."
+    generated = "SIEM, SOC monitoring, incident response, Wireshark, Nmap, CISSP."
+    report = VerificationReport(
+        claims=[
+            gc(
+                generated,
+                grounded=False,
+                note="source is silent for one item",
+            ),
+        ]
+    )
+
+    result = audit_report(report, generated, source)
+
+    assert [claim.claim for claim in result.unsupported] == [generated]
+
+
+def test_audit_report_ignores_french_cover_letter_objective_framing() -> None:
+    generated = (
+        "Mon objectif est de mettre à profit ces compétences techniques et mon expérience "
+        "en gestion d'incidents pour contribuer à votre équipe de défense et de triage. "
+        "Holds a CISSP."
+    )
+    report = VerificationReport(
+        claims=[
+            gc(
+                "Mon objectif est de mettre à profit ces compétences techniques et mon "
+                "expérience en gestion d'incidents pour contribuer à votre équipe de défense "
+                "et de triage.",
                 grounded=False,
                 note="cited quote is not in the résumé",
             ),

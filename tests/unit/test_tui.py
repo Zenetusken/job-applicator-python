@@ -1584,6 +1584,8 @@ async def test_document_quality_scores_selected_generated_packet(tmp_path: Path)
     assert result.passed
     assert result.packet is not None
     assert result.keyword_source == "matched skills"
+    assert result.matched_skill_count == 1
+    assert set(result.artifact_mtimes) == {str(resume), str(cover)}
     assert result.packet.dimensions["coherence"] >= 3.0
 
 
@@ -1609,11 +1611,15 @@ async def test_document_quality_without_matched_skills_is_limited_certification(
 
     assert result.packet is None
     assert result.keyword_source == "unavailable; structure/format only"
+    assert result.matched_skill_count == 0
+    assert set(result.artifact_mtimes) == {str(resume), str(cover)}
     assert result.passed
 
 
 async def test_tui_document_quality_shows_modal(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """`D` runs the quality action for selected artifacts and opens the result modal."""
+    from textual.widgets import Static
+
     from job_applicator.documents.quality_eval import QualityReport
     from job_applicator.tui import actions
     from job_applicator.tui.screens import DocumentQualityScreen
@@ -1630,6 +1636,8 @@ async def test_tui_document_quality_shows_modal(tmp_path: Path, monkeypatch) -> 
         source="tailored résumé",
         keyword_source="unavailable; structure/format only",
         artifact_paths=[str(resume)],
+        artifact_mtimes={str(resume): "2026-07-07T12:00:00Z"},
+        matched_skill_count=0,
         reports=[QualityReport("resume", True, 100, [], [])],
     )
 
@@ -1650,7 +1658,91 @@ async def test_tui_document_quality_shows_modal(tmp_path: Path, monkeypatch) -> 
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert isinstance(app.screen, DocumentQualityScreen)
+        body = str(app.screen.query_one("#qualitybody").query_one(Static).render())
+        assert "Limited smoke check passed" in body
+        assert "Matched skills: 0" in body
+        assert "mtime=2026-07-07T12:00:00Z" in body
     assert captured["stored_job"] is not None
+
+
+async def test_tui_document_quality_packet_mode_labels_certification(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    from textual.widgets import Static
+
+    from job_applicator.documents.quality_eval import PacketQualityReport, QualityReport
+    from job_applicator.tui import actions
+    from job_applicator.tui.screens import DocumentQualityScreen
+
+    resume = tmp_path / "tailored.txt"
+    resume.write_text(_quality_resume_text(), encoding="utf-8")
+    store = JobStore(db_path=tmp_path / "applications.db")
+    job = _job(1)
+    store.upsert_job(job)
+    store.mark_tailored(job, tailored_resume_path=str(resume))
+    report = QualityReport("resume", True, 100, [], [])
+    fake = actions.DocumentQualityResult(
+        passed=True,
+        source="tailored résumé + cover letter",
+        keyword_source="matched skills",
+        artifact_paths=[str(resume)],
+        artifact_mtimes={str(resume): "2026-07-07T12:00:00Z"},
+        matched_skill_count=3,
+        reports=[report],
+        packet=PacketQualityReport(
+            packet_id="1",
+            passed=True,
+            overall=3.5,
+            dimensions={
+                "usefulness": 3.5,
+                "specificity": 3.5,
+                "coherence": 3.5,
+                "writing_quality": 3.5,
+                "formatting_polish": 3.5,
+            },
+            failures=[],
+            warnings=[],
+            resume=report,
+            cover_letter=QualityReport("cover_letter", True, 100, [], []),
+        ),
+    )
+
+    async def _fake_quality(settings: AppSettings, stored_job: object) -> object:
+        return fake
+
+    monkeypatch.setattr(actions, "document_quality", _fake_quality)
+    app = JobApplicatorApp(
+        settings=AppSettings(),
+        store=store,
+        app_state=MagicMock(list_recent=lambda **k: []),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("D")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert isinstance(app.screen, DocumentQualityScreen)
+        body = str(app.screen.query_one("#qualitybody").query_one(Static).render())
+        assert "Packet quality check passed" in body
+        assert "Matched skills: 3" in body
+        assert "Limited smoke check" not in body
+
+
+async def test_tui_document_quality_rejects_pdf_only_artifact(tmp_path: Path) -> None:
+    from job_applicator.exceptions import DocumentError
+    from job_applicator.tui.actions import document_quality
+
+    pdf = tmp_path / "tailored.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    store = JobStore(db_path=tmp_path / "applications.db")
+    job = _job(1)
+    store.upsert_job(job)
+    store.mark_tailored(job, tailored_resume_path=str(pdf))
+    stored = store.get(str(job.url))
+
+    with pytest.raises(DocumentError, match="text artifact"):
+        await document_quality(AppSettings(resume_path=""), stored)
 
 
 async def test_tui_document_quality_no_artifacts_does_not_run(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

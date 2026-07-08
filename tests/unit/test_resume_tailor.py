@@ -144,38 +144,38 @@ def test_extract_education_entries_handles_compound_source_header() -> None:
         "SUMMARY\nAnalyst.\n\n"
         "EDUCATION & CERTIFICATIONS\n"
         "Undergraduate Certificate — Analysis & Operational Cybersecurity 2024 – Present\n"
-        "Polytechnique Montréal\n"
+        "Northbridge Technical Institute\n"
         "Cisco CCNA & CompTIA Linux+ Coursework 2023 – 2024\n"
-        "Dawson College\n"
-        "B.A., Accounting — Université du Québec à Montréal (UQAM) 2012 – 2015\n\n"
-        "LANGUAGES\nFluent in French and English, plus Romanian.\n"
+        "Riverbend College\n"
+        "B.A., Accounting — Metro City University 2012 – 2015\n\n"
+        "LANGUAGES\nFluent in French and English, plus Spanish.\n"
     )
 
     extracted = tailor._extract_education_entries(original)
 
     assert "EDUCATION & CERTIFICATIONS" in extracted
-    assert "Polytechnique Montréal" in extracted
-    assert "Université du Québec à Montréal" in extracted
+    assert "Northbridge Technical Institute" in extracted
+    assert "Metro City University" in extracted
 
 
 def test_preserve_source_required_sections_restores_education_and_languages() -> None:
     tailor = ResumeTailor(LLMConfig(model="m"))
     original = (
-        "ANDREI PETROV\n\n"
+        "ALEX MORGAN\n\n"
         "EDUCATION & CERTIFICATIONS\n"
         "Undergraduate Certificate — Analysis & Operational Cybersecurity 2024 – Present\n"
-        "Polytechnique Montréal\n"
-        "B.A., Accounting — Université du Québec à Montréal (UQAM) 2012 – 2015\n\n"
+        "Northbridge Technical Institute\n"
+        "B.A., Accounting — Metro City University 2012 – 2015\n\n"
         "LANGUAGES\n"
-        "Fluent in French and English, plus Romanian.\n"
+        "Fluent in French and English, plus Spanish.\n"
     )
     tailored = (
-        "ANDREI PETROV\n\n"
+        "ALEX MORGAN\n\n"
         "**Skills**\nSIEM, Linux\n\n"
         "**Experience**\nSupport Analyst\n\n"
         "**Certifications**\n"
         "Undergraduate Certificate — Analysis & Operational Cybersecurity\n"
-        "Polytechnique Montréal\n\n"
+        "Northbridge Technical Institute\n\n"
         "**Languages**\n"
         "English (Professional), French (Conversational)"
     )
@@ -185,8 +185,98 @@ def test_preserve_source_required_sections_restores_education_and_languages() ->
     assert "**Education & Certifications**" in result
     assert "**Certifications**" not in result
     assert "B.A., Accounting" in result
-    assert "Fluent in French and English, plus Romanian." in result
+    assert "Fluent in French and English, plus Spanish." in result
     assert "English (Professional), French (Conversational)" not in result
+
+
+def test_localize_standard_labels_for_french_output() -> None:
+    tailored = (
+        "ALEX MORGAN\n\n"
+        "**RÉSUMÉ**\nOperations professional.\n\n"
+        "**COMPÉTENCES**\nSIEM, Linux\n\n"
+        "**EXPÉRIENCE PROFESSIONNELLE**\nSupport Analyst\n\n"
+        "Éducation & Certifications\nCoursework\n\n"
+        "Languages\nFluent in French and English, plus Spanish."
+    )
+
+    result = ResumeTailor._localize_standard_labels_for_language(tailored, "French")
+
+    assert "RÉSUMÉ" not in result
+    assert "Skills" not in result
+    assert "EXPÉRIENCE PROFESSIONNELLE" not in result
+    assert "Languages" not in result
+    assert "**Profil**" in result
+    assert "**Compétences**" in result
+    assert "**Expérience**" in result
+    assert "Formation et certifications" in result
+    assert "Langues" in result
+    assert "Français et anglais courants; espagnol." in result
+
+
+def test_strip_non_source_bold_entry_headings() -> None:
+    original = "Technical Support Specialist (L1) & Sales\nBeacon Satellite\n2015 - 2018"
+    tailored = (
+        "**Experience**\n"
+        "**Spécialiste de support technique (Niveau 1) & Ventes**\n"
+        "Beacon Satellite\n"
+        "2015 - 2018\n\n"
+        "**Technical Support Specialist (L1) & Sales**\n"
+        "Beacon Satellite"
+    )
+
+    result = ResumeTailor._strip_non_source_bold_entry_headings(tailored, original)
+
+    assert "**Experience**" in result
+    assert "Spécialiste de support technique" not in result
+    assert "**Technical Support Specialist (L1) & Sales**" in result
+
+
+async def test_refine_localizes_standard_labels_for_french_output() -> None:
+    job = JobListing(
+        title="Analyste",
+        company="Acme",
+        location="Montréal",
+        url="https://example.com/job",
+        description="Poste en français.",
+        requirements=["Windows"],
+        board=JobBoard.LINKEDIN,
+    )
+    resume = ResumeData(
+        raw_text=(
+            "ALEX MORGAN\n"
+            "Operations professional.\n\n"
+            "Education\nCourse\n\n"
+            "Languages\nFluent in French and English, plus Spanish."
+        ),
+        skills=["Windows"],
+    )
+    tailor = ResumeTailor(LLMConfig(model="m", language="fr"))
+    tailor._call_llm = AsyncMock(  # type: ignore[method-assign]
+        return_value=(
+            "ALEX MORGAN\n\n"
+            "SUMMARY\nOperations professional.\n\n"
+            "Skills\nWindows\n\n"
+            "Experience\nTechnical Support Specialist\n\n"
+            "Education\nCourse\n\n"
+            "Languages\nFluent in French and English, plus Spanish."
+        )
+    )
+    tailor._summarize_changes = AsyncMock(return_value="localized")  # type: ignore[method-assign]
+
+    result = await tailor.refine(
+        resume,
+        _tr("old"),
+        "Keep source-backed facts.",
+        job,
+        matcher=_mock_matcher(job),
+    )
+
+    assert "Profil" in result.tailored_text
+    assert "Compétences" in result.tailored_text
+    assert "Expérience" in result.tailored_text
+    assert "Formation" in result.tailored_text
+    assert "Langues" in result.tailored_text
+    assert "Français et anglais courants; espagnol." in result.tailored_text
 
 
 def test_validate_skills_keeps_parenthetical_skill_as_one_token(llm_config) -> None:
@@ -282,6 +372,164 @@ def test_ensure_source_backed_summary_replaces_generated_summary() -> None:
     assert "\n\n**Skills**" in result
 
 
+def test_ensure_source_backed_summary_localizes_french_fallback() -> None:
+    original = (
+        "SUMMARY\n"
+        "Career-changer with 10+ years of operations management and high-stakes "
+        "client problem-solving. University coursework spans cybersecurity and networking. "
+        "Calm under pressure, with a track record of triage, escalation, and dispute "
+        "resolution.\n\n"
+        "TECHNICAL SKILLS\nSIEM · SOC operations · incident response · threat intelligence\n\n"
+        "EXPERIENCE\nTechnical Support Specialist\n"
+        "• Delivered Tier 1 technical support by phone, chat, and email.\n"
+        "EDUCATION\nCybersecurity coursework\n"
+    )
+    tailored = (
+        "Profil\n"
+        "Candidat expérimenté en transition vers le support TI.\n\n"
+        "Compétences\nSIEM\n\nExpérience\nSupport"
+    )
+
+    result = ResumeTailor._ensure_source_backed_summary(tailored, original, "French")
+
+    assert "Professionnel des opérations avec plus de 10 ans" in result
+    assert "Operations professional with 10+ years" not in result
+    assert "transition vers le support TI" not in result
+
+
+def test_preserve_source_required_sections_localizes_french_source_body() -> None:
+    tailor = ResumeTailor(LLMConfig(model="m"))
+    original = (
+        "ALEX MORGAN\n\n"
+        "EDUCATION & CERTIFICATIONS\n"
+        "Undergraduate Certificate — Analysis & Operational Cybersecurity 2024 – Present\n"
+        "Northbridge Technical Institute\n"
+        "Completed: Intro to Cybersecurity, Attack & Defense Methods, Server Security, and "
+        "Networking & Security — incl. a hands-on SIEM lab, SOC operations & monitoring, IDS/IPS, "
+        "EDR, incident response, and threat intelligence.\n"
+        "Cisco CCNA & CompTIA Linux+ Coursework 2023 – 2024\n"
+        "Riverbend College\n"
+        "Full CCNA networking curriculum — network components, VLSM/subnetting, and routing & "
+        "switching (certification exam pending) — plus Linux administration in Fedora "
+        "(CLI, scripting).\n\n"
+        "LANGUAGES\n"
+        "Fluent in French and English, plus Spanish.\n"
+    )
+    tailored = "ALEX MORGAN\n\nCompétences\nSIEM\n\nExpérience\nSupport"
+
+    result = tailor._preserve_source_required_sections(tailored, original, "French")
+
+    assert "Cours complétés :" in result
+    assert "Programme complet de réseautique CCNA" in result
+    assert "réponse aux incidents et renseignement sur les menaces" in result
+    assert "administration Linux sous Fedora" in result
+    assert "Français et anglais courants; espagnol." in result
+    assert "Completed:" not in result
+    assert "Full CCNA networking curriculum" not in result
+    assert " and renseignement" not in result
+    assert " in Fedora" not in result
+    assert "Fluent in French and English" not in result
+
+
+def test_preserve_source_required_sections_localizes_projects_home_lab() -> None:
+    tailor = ResumeTailor(LLMConfig(model="m"))
+    original = (
+        "ALEX MORGAN\n\n"
+        "PROJECTS & HOME LAB\n"
+        "Home cybersecurity lab & pen-test sandbox — a multi-VM environment (Kali attacker "
+        "against target hosts) for hands-on attack/defense and detection practice\n"
+        "Self-hosted BIND9 DNS server — configured, secured, and administered end-to-end\n"
+        "Hands-on security tooling — packet analysis (Wireshark), network scanning (Nmap), "
+        "network monitoring (Zabbix), and Kali Linux, through coursework labs and TryHackMe\n\n"
+        "LANGUAGES\n"
+        "Fluent in French and English, plus Spanish.\n"
+    )
+    tailored = "ALEX MORGAN\n\nCompétences\nSIEM\n\nExpérience\nSupport"
+
+    result = tailor._preserve_source_required_sections(tailored, original, "French")
+
+    assert "Projets & laboratoire à domicile" in result
+    assert "Laboratoire de cybersécurité à domicile" in result
+    assert "Serveur DNS BIND9 autohébergé" in result
+    assert "Outils de sécurité en pratique" in result
+    assert "Projects & Home Lab" not in result
+    assert "Home cybersecurity lab" not in result
+    assert "Self-hosted BIND9" not in result
+
+
+def test_polish_french_output_fixes_measured_literal_phrases() -> None:
+    tailored = (
+        "Expérience\n"
+        "- Prendre en charge 100 % des demandes de service client provenant de l'équipe de vente\n"
+        "- Géré plus de 100 % des demandes de service entrantes du service commercial\n"
+        "- Réalisé les contrats et assigné les opérateurs aux plannings quotidiens\n"
+        "- Géré les relations clients VIP dans une opération rapide et à faible délai\n"
+        "- Géré les relations clients VIP dans une opération rapide et exigeante en temps\n"
+        "- Géré les relations clients VIP dans une opération rapide et à haute priorité\n"
+        "- Protéger la rétention client dans une entreprise à contrats bloqués\n"
+        "- Protéger la rétention client dans une entreprise à contrat verrouillé\n"
+        "- A été le point de contact technique du département, coordonnant avec le fournisseur "
+        "externe d'IT responsable du réseau\n"
+        "- A été le point de contact technique du département, coordonnant avec le fournisseur "
+        "externe d\u2019IT responsable du réseau\n"
+        "- Résolu les demandes de réclamation de bénéfices par téléphone et courriel en "
+        "résolution à la première tentative\n"
+        "- A résolu les demandes de bénéfices en téléphone et par e-mail pour une résolution "
+        "en première instance\n"
+        "- Résolu les demandes de prestations par téléphone et courriel en résolution en premier "
+        "appel\n"
+        "- A résolu des demandes de prestations en téléphone et par courriel pour une résolution "
+        "au premier appel\n"
+        "- Résolu les problèmes de signal en diagnosticant et en résolvant les problèmes\n"
+        "- Troublé les problèmes de site web et de CRM pour Salesforce, SAP et Microsoft 365\n"
+        "- Apporté un support technique de niveau 1 par téléphone, chat et courriel, diagnostic "
+        "et résolution à distance des problèmes de signal\n"
+        "- Trié et escalada les problèmes complexes vers les niveaux supérieurs"
+    )
+
+    result = ResumeTailor._polish_french_output(tailored, "French")
+
+    assert "Pris en charge 100 %" in result
+    assert "Géré plus de 100 %" not in result
+    assert "Planifié les contrats" in result
+    assert "environnement rapide à délais serrés" in result
+    assert "demandes de prestations" in result
+    assert "Dépanné les problèmes de site web" in result
+    assert "Fourni un support technique de niveau 1" in result
+    assert "diagnostiquant et résolvant à distance" in result
+    assert "diagnosticant" not in result
+    assert "fournisseur TI externe" in result
+    assert "contrats fixes" in result
+    assert "fidélisation des clients" in result
+    assert "haute priorité" not in result
+    assert "rétention client" not in result
+    assert "contrat verrouillé" not in result
+    assert "Trié et escaladé" in result
+    assert "première tentative" not in result
+    assert "demandes de prestations par téléphone et par courriel" in result
+    assert "première instance" not in result
+    assert "e-mail" not in result
+    assert "en téléphone" not in result
+
+
+def test_strip_duplicate_bullets_keeps_last_occurrence() -> None:
+    tailored = (
+        "Expérience\n"
+        "Canada Life\n"
+        "• Résolu les demandes de prestations.\n"
+        "• Trié et escaladé les problèmes complexes vers les niveaux supérieurs.\n\n"
+        "Beacon Satellite\n"
+        "• Fourni un support technique de niveau 1.\n"
+        "• Trié et escaladé les problèmes complexes vers les niveaux supérieurs.\n"
+    )
+
+    result = ResumeTailor._strip_duplicate_bullets(tailored)
+
+    assert result.count("Trié et escaladé") == 1
+    assert "Beacon Satellite\n• Fourni" in result
+    assert "Beacon Satellite\n• Fourni un support technique de niveau 1.\n• Trié" in result
+
+
 def test_strip_unverifiable_aspirations_and_unbacked_responsibility_bullets() -> None:
     tailor = ResumeTailor(LLMConfig(model="m"))
     original = (
@@ -302,6 +550,59 @@ def test_strip_unverifiable_aspirations_and_unbacked_responsibility_bullets() ->
     assert "Collaborated with data scientists" not in cleaned
     assert "Supported internal teams with technical guidance" not in cleaned
     assert "Built async ingestion" in cleaned
+
+
+def test_strip_unverifiable_aspirations_removes_french_target_role_sentence() -> None:
+    tailor = ResumeTailor(LLMConfig(model="m"))
+    tailored = (
+        "Professionnel des opérations. Recherche un rôle d'analyste junior en cybersécurité "
+        "opérationnelle et gestion des risques, en alignement avec ses compétences."
+    )
+
+    cleaned = tailor._strip_unverifiable_aspirations(tailored)
+
+    assert "Recherche un rôle" not in cleaned
+    assert cleaned == "Professionnel des opérations."
+
+
+def test_strip_unbacked_responsibility_bullets_removes_deployment_and_testing_claims() -> None:
+    tailor = ResumeTailor(LLMConfig(model="m"))
+    original = (
+        "Senior Python engineer. Skills: Python, Pydantic, PostgreSQL, Docker, AWS. "
+        "Built async ingestion handling 2B events/day with asyncio."
+    )
+    tailored = (
+        "• Built async ingestion handling 2B events/day with asyncio.\n"
+        "• Integrated Docker and AWS for deployment and monitoring of backend systems.\n"
+        "• Automated testing and CI/CD pipelines for Python-based services."
+    )
+
+    cleaned = tailor._strip_unbacked_responsibility_bullets(tailored, original)
+
+    assert "Built async ingestion" in cleaned
+    assert "deployment and monitoring" not in cleaned
+    assert "CI/CD pipelines" not in cleaned
+
+
+def test_strip_unbacked_responsibility_bullets_removes_french_continuity_overclaim() -> None:
+    tailor = ResumeTailor(LLMConfig(model="m"))
+    original = (
+        "Operations Coordinator\n"
+        "Booked contracts and assigned operators across daily, weekly, and monthly schedules.\n"
+        "Managed VIP client relationships in a fast-paced, time-critical operation.\n"
+        "Coordinated drivers and the mechanical department to keep the fleet operational."
+    )
+    tailored = (
+        "• Réalisé les contrats et assigné les opérateurs aux plannings quotidiens, "
+        "hebdomadaires et mensuels\n"
+        "• Participé à la gestion des urgences et des incidents techniques, en assurant la "
+        "continuité des opérations"
+    )
+
+    cleaned = tailor._strip_unbacked_responsibility_bullets(tailored, original)
+
+    assert "Réalisé les contrats" in cleaned
+    assert "continuité des opérations" not in cleaned
 
 
 def test_normalize_date_range_dashes_for_grounding() -> None:
@@ -332,12 +633,244 @@ def test_strip_low_evidence_bullets_keeps_source_backed_paraphrases() -> None:
     assert "Designed scalable Python workflows" not in cleaned
 
 
+def test_strip_low_evidence_bullets_keeps_source_backed_french_translations() -> None:
+    tailor = ResumeTailor(LLMConfig(model="m"))
+    original = (
+        "Managed daily delivery operations and drivers as the single escalation point for all "
+        "operational issues — on-site client disputes, missing-item claims, and scheduling and "
+        "driver coordination.\n"
+        "Booked contracts and assigned operators across daily, weekly, and monthly schedules.\n"
+        "Triaged and escalated complex issues to higher tiers per documented procedures."
+    )
+    tailored = (
+        "• Géré les opérations quotidiennes de livraison et les conducteurs en tant que point "
+        "d'escalade unique pour tous les problèmes opérationnels.\n"
+        "• Réalisé les contrats et assigné les opérateurs aux plannings quotidiens, "
+        "hebdomadaires et mensuels.\n"
+        "• Trié et escaladé les problèmes complexes vers les niveaux supérieurs selon les "
+        "procédures documentées.\n"
+        "• Conçu des tableaux de bord Power BI pour automatiser les rapports exécutifs."
+    )
+
+    cleaned = tailor._strip_low_evidence_bullets(tailored, original)
+
+    assert "Géré les opérations quotidiennes" in cleaned
+    assert "Réalisé les contrats" in cleaned
+    assert "Trié et escaladé" in cleaned
+    assert "Power BI" not in cleaned
+
+
+def test_strip_low_evidence_bullets_keeps_source_backed_french_home_lab() -> None:
+    tailor = ResumeTailor(LLMConfig(model="m"))
+    original = (
+        "PROJECTS & HOME LAB\n"
+        "Home cybersecurity lab & pen-test sandbox — a multi-VM environment (Kali attacker "
+        "against target hosts) for hands-on attack/defense and detection practice\n"
+        "Self-hosted BIND9 DNS server — configured, secured, and administered end-to-end\n"
+        "Hands-on security tooling — packet analysis (Wireshark), network scanning (Nmap), "
+        "network monitoring (Zabbix), and Kali Linux, through coursework labs and TryHackMe"
+    )
+    tailored = (
+        "• Laboratoire de cybersécurité à domicile et sandbox de test de pénétration — "
+        "environnement multi-VM (Kali attaquant contre des hôtes cibles) pour la pratique "
+        "attaque/défense et détection.\n"
+        "• Serveur DNS BIND9 auto-hébergé — configuré, sécurisé et administré de bout en bout.\n"
+        "• Outils de sécurité en pratique — analyse de paquets (Wireshark), scan de réseau "
+        "(Nmap), surveillance réseau (Zabbix), Kali Linux, laboratoires de cours et TryHackMe.\n"
+        "• Déployé Splunk SOAR pour automatiser les incidents en production."
+    )
+
+    cleaned = tailor._strip_low_evidence_bullets(tailored, original)
+
+    assert "Laboratoire de cybersécurité" in cleaned
+    assert "Serveur DNS BIND9" in cleaned
+    assert "Outils de sécurité" in cleaned
+    assert "Splunk SOAR" not in cleaned
+
+
+def test_strip_unbacked_responsibility_bullets_drops_french_real_time_overclaim() -> None:
+    tailor = ResumeTailor(LLMConfig(model="m"))
+    original = "Managed daily delivery operations and drivers. Booked contracts."
+    tailored = (
+        "• Participé à la planification et à la gestion des opérations en temps réel.\n"
+        "• Géré les opérations quotidiennes de livraison et les conducteurs."
+    )
+
+    cleaned = tailor._strip_unbacked_responsibility_bullets(tailored, original)
+
+    assert "temps réel" not in cleaned
+    assert "opérations quotidiennes" in cleaned
+
+
+def test_strip_unbacked_responsibility_bullets_drops_french_training_seminar_noise() -> None:
+    tailor = ResumeTailor(LLMConfig(model="m"))
+    original = "Ran technical training and learning seminars for fellow agents."
+    tailored = (
+        "• A organisé des séminaires de formation et d'apprentissage pour les agents.\n"
+        "A organisé des séminaires de formation et d'apprentissage pour les agents.\n"
+        "• A fourni un support technique de niveau 1 par téléphone."
+    )
+
+    cleaned = tailor._strip_unbacked_responsibility_bullets(tailored, original)
+
+    assert "séminaires" not in cleaned
+    assert "support technique" in cleaned
+
+
+def test_strip_unbacked_responsibility_bullets_drops_french_operations_flow_overclaim() -> None:
+    tailor = ResumeTailor(LLMConfig(model="m"))
+    original = "Booked contracts and assigned operators across schedules."
+    tailored = (
+        "• Participé à la gestion des plannings et à la coordination des équipes pour assurer "
+        "la fluidité opérationnelle.\n"
+        "• Participé à la gestion des opérations et à la coordination des équipes pour assurer "
+        "la fluidité des processus.\n"
+        "• Planifié les contrats et assigné les opérateurs aux horaires."
+    )
+
+    cleaned = tailor._strip_unbacked_responsibility_bullets(tailored, original)
+
+    assert "fluidité opérationnelle" not in cleaned
+    assert "fluidité des processus" not in cleaned
+    assert "Planifié les contrats" in cleaned
+
+
+def test_strip_misplaced_support_domain_bullets_keeps_shaw_only() -> None:
+    tailor = ResumeTailor(LLMConfig(model="m"))
+    original = (
+        "Beacon Satellite Support\n"
+        "Delivered Tier 1 technical support by phone, chat, and email, diagnosing signal, "
+        "receiver, connectivity, and website issues.\n\n"
+        "Benefits Operations\n"
+        "Resolved benefits requests by phone and email."
+    )
+    tailored = (
+        "Expérience\n"
+        "Benefits Operations, Montréal\n"
+        "• Résolu les demandes de prestations par téléphone et courriel.\n"
+        "• Résolu les problèmes techniques en première ligne par téléphone, chat et courriel, "
+        "en diagnostiquant et en résolvant les problèmes de signal, récepteur, connectivité et "
+        "site web.\n\n"
+        "Beacon Satellite Support, Montréal\n"
+        "• Fourni un support technique niveau 1 par téléphone, chat et courriel, en "
+        "diagnostiquant et en résolvant les problèmes de signal, récepteur, connectivité et "
+        "site web."
+    )
+
+    cleaned = tailor._strip_misplaced_support_domain_bullets(tailored, original)
+
+    benefits, beacon = cleaned.split("Beacon Satellite Support", maxsplit=1)
+    assert "demandes de prestations" in benefits
+    assert "signal" not in benefits
+    assert "signal" in beacon
+
+
+def test_strip_misplaced_support_domain_bullets_keeps_source_owned_context() -> None:
+    tailor = ResumeTailor(LLMConfig(model="m"))
+    original = (
+        "Northstar Field Support\n"
+        "Delivered Tier 1 technical support by phone, chat, and email for signal, receiver, "
+        "connectivity, and website issues."
+    )
+    tailored = (
+        "Expérience\n"
+        "Northstar Field Support, Montréal\n"
+        "• Fourni un support technique niveau 1 par téléphone, chat et courriel pour des "
+        "problèmes de signal, récepteur, connectivité et site web."
+    )
+
+    cleaned = tailor._strip_misplaced_support_domain_bullets(tailored, original)
+
+    assert "signal" in cleaned
+
+
+def test_validate_skills_uses_french_skills_header() -> None:
+    tailor = ResumeTailor(LLMConfig(model="m"))
+    tailored = "Profil\nAnalyste support.\n\nCompétences\nPython, Kubernetes\n\nExpérience\nSupport"
+
+    cleaned = tailor._validate_skills(tailored, ["Python"])
+
+    assert "Python" in cleaned
+    assert "Kubernetes" not in cleaned
+
+
+def test_strip_hallucinated_education_uses_french_formation_header() -> None:
+    tailor = ResumeTailor(LLMConfig(model="m"))
+    original = "ALEX MORGAN\n\nExperience\nSupport analyst."
+    tailored = (
+        "Profil\nAnalyste support.\n\nFormation\nCertificat cybersécurité\n\nExpérience\nSupport"
+    )
+
+    cleaned = tailor._strip_hallucinated_education(tailored, original)
+
+    assert "Formation" not in cleaned
+    assert "Certificat cybersécurité" not in cleaned
+    assert "Expérience" in cleaned
+
+
+def test_strip_unbacked_optional_sections_uses_french_language_header() -> None:
+    tailor = ResumeTailor(LLMConfig(model="m"))
+    original = "ALEX MORGAN\n\nExpérience\nSupport analyst."
+    tailored = "Profil\nAnalyste support.\n\nLangues\nFrançais et anglais.\n\nExpérience\nSupport"
+
+    cleaned = tailor._strip_unbacked_optional_sections(tailored, original)
+
+    assert "Langues" not in cleaned
+    assert "Français et anglais" not in cleaned
+    assert "Expérience" in cleaned
+
+
+def test_strip_unearned_credentials_handles_french_profile_terms() -> None:
+    tailor = ResumeTailor(LLMConfig(model="m"))
+    original = "ALEX MORGAN\n\nProfil\nAnalyste support.\n\nCompétences\nPython"
+    tailored = (
+        "ALEX MORGAN\n\n"
+        "Profil\n"
+        "Analyste certifié en cybersécurité avec expérience support.\n\n"
+        "Compétences\nPython"
+    )
+
+    cleaned = tailor._strip_unearned_credentials(tailored, original)
+
+    assert "certifié" not in cleaned
+    assert "Analyste en cybersécurité" in cleaned
+
+
+def test_strip_unbacked_responsibility_bullets_drops_french_client_interaction_noise() -> None:
+    tailor = ResumeTailor(LLMConfig(model="m"))
+    original = "Delivered Tier 1 technical support by phone, chat, and email."
+    tailored = (
+        "• Géré les demandes techniques et les interactions clients en tant que technicien "
+        "de niveau 1 et commercial.\n"
+        "• Fourni un support technique de niveau 1 par téléphone, chat et courriel."
+    )
+
+    cleaned = tailor._strip_unbacked_responsibility_bullets(tailored, original)
+
+    assert "interactions clients" not in cleaned
+    assert "support technique" in cleaned
+
+
+def test_strip_non_source_bold_headings_keeps_localized_home_lab_section() -> None:
+    original = (
+        "PROJECTS & HOME LAB\nHome cybersecurity lab & pen-test sandbox — a multi-VM environment."
+    )
+    tailored = (
+        "**PROJETS & LABORATOIRE À DOMICILE**\n"
+        "• Laboratoire de cybersécurité à domicile et sandbox de test de pénétration."
+    )
+
+    cleaned = ResumeTailor._strip_non_source_bold_entry_headings(tailored, original)
+
+    assert "**PROJETS & LABORATOIRE À DOMICILE**" in cleaned
+
+
 @pytest.fixture
 def sample_resume():
     return ResumeData(
-        raw_text=("ANDREI PETROV\nandre@example.com\nSkills\nWindows, Office 365, Troubleshooting"),
-        name="ANDREI PETROV",
-        email="andre@example.com",
+        raw_text=("ALEX MORGAN\nalex@example.com\nSkills\nWindows, Office 365, Troubleshooting"),
+        name="ALEX MORGAN",
+        email="alex@example.com",
         skills=["Windows", "Office 365", "Troubleshooting"],
     )
 
@@ -439,7 +972,7 @@ class TestResumeTailor:
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = (
-            "ANDREI PETROV\nandre@example.com\n"
+            "ALEX MORGAN\nalex@example.com\n"
             "Skills: Windows, Office 365, Troubleshooting, ServiceNow\n"
             "Experience: Technical Support..."
         )

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -169,6 +172,124 @@ def _quality_cover_letter() -> str:
     )
 
 
+def _write_quality_artifacts(tmp_path: Path) -> tuple[Path, Path]:
+    resume = tmp_path / "resume.txt"
+    cover = tmp_path / "cover.txt"
+    resume.write_text(_quality_resume(), encoding="utf-8")
+    cover.write_text(_quality_cover_letter(), encoding="utf-8")
+    return resume, cover
+
+
+def _french_quality_cover_letter() -> str:
+    return (
+        "Bonjour à l'équipe de recrutement d'Acme.\n\n"
+        "Je vous propose ma candidature pour le poste d'analyste sécurité. Mon parcours combine "
+        "plus de dix ans en gestion des opérations, résolution de problèmes clients, triage et "
+        "escalade, avec une formation récente en cybersécurité opérationnelle. Cette expérience "
+        "me permet de documenter les incidents avec rigueur et de communiquer clairement sous "
+        "pression.\n\n"
+        "Dans mes fonctions précédentes, j'ai coordonné des demandes urgentes, traité des "
+        "problèmes techniques de première ligne et assuré des suivis fiables entre les équipes. "
+        "Ma formation couvre le SIEM, les opérations SOC, la réponse aux incidents, Linux et les "
+        "réseaux, ce qui correspond directement aux besoins du rôle.\n\n"
+        "Je serais heureux de discuter de la façon dont cette combinaison de discipline "
+        "opérationnelle, de triage et de documentation peut aider Acme à améliorer ses enquêtes "
+        "et ses transferts d'information.\n\n"
+        "Cordialement,\n"
+        "John Doe"
+    )
+
+
+def _write_french_quality_artifacts(
+    tmp_path: Path,
+    *,
+    profile: str,
+    education_note: str,
+) -> tuple[Path, Path]:
+    resume = tmp_path / "resume.txt"
+    cover = tmp_path / "cover.txt"
+    resume.write_text(
+        (
+            "John Doe\n"
+            "Montréal, QC | 514-555-0100 | john@example.test\n\n"
+            "Profil\n"
+            f"{profile}\n\n"
+            "Compétences\n"
+            "SIEM, SOC monitoring, incident response, Linux, Python, TCP/IP, ticketing, "
+            "escalation, Microsoft 365\n\n"
+            "Expérience\n"
+            "• Géré les opérations quotidiennes, le triage des demandes et les escalades avec "
+            "des équipes internes et des clients.\n"
+            "• Fourni un support technique niveau 1 par téléphone, chat et courriel pour des "
+            "problèmes de connectivité, de signal et de site web.\n"
+            "• Documenté les incidents, coordonné les suivis et maintenu une résolution en "
+            "premier appel de 95 % lorsque les procédures le permettaient.\n\n"
+            "Formation\n"
+            "Certificat universitaire — Analyse et cybersécurité opérationnelle 2024 - Présent\n"
+            "Northbridge Technical Institute\n"
+            f"{education_note}\n\n"
+            "Langues\n"
+            "Français et anglais courants; espagnol.\n"
+        ),
+        encoding="utf-8",
+    )
+    cover.write_text(_french_quality_cover_letter(), encoding="utf-8")
+    return resume, cover
+
+
+def _quality_packet_record(
+    *,
+    packet_id: str,
+    category: str = "support",
+    language: str = "en",
+    generated_at: str | None = None,
+    min_dimension_score: float | None = None,
+    min_overall_score: float | None = None,
+) -> dict[str, object]:
+    record: dict[str, object] = {
+        "id": packet_id,
+        "resume_path": "resume.txt",
+        "cover_letter_path": "cover.txt",
+        "applicant_name": "John Doe",
+        "job_title": "Security Analyst",
+        "company": "Acme",
+        "keywords": ["Python", "Linux", "SIEM", "incident response", "IAM", "alert triage"],
+        "coherence_terms": ["Python", "SIEM", "incident response"],
+        "category": category,
+        "language": language,
+        "run_id": f"run-{packet_id}",
+        "source_job_url": f"https://example.test/jobs/{packet_id}",
+        "template": "modern",
+        "format": "txt",
+        "model": "test-model",
+        "generator_version": "test-version",
+    }
+    if generated_at is not None:
+        record["generated_at"] = generated_at
+    if min_dimension_score is not None:
+        record["min_dimension_score"] = min_dimension_score
+    if min_overall_score is not None:
+        record["min_overall_score"] = min_overall_score
+    return record
+
+
+def _write_packet_set(tmp_path: Path, records: list[dict[str, object]]) -> Path:
+    packet_set = tmp_path / "packet-set.jsonl"
+    packet_set.write_text(
+        "\n".join(json.dumps(record) for record in records) + "\n",
+        encoding="utf-8",
+    )
+    return packet_set
+
+
+def _french_quality_packet_record(packet_id: str = "risk-fr") -> dict[str, object]:
+    return {
+        **_quality_packet_record(packet_id=packet_id, category="risk", language="fr"),
+        "keywords": ["SIEM", "SOC", "incident", "triage", "escalade", "Linux"],
+        "coherence_terms": ["SIEM", "SOC", "incident", "triage"],
+    }
+
+
 def test_document_quality_missing_private_set_is_skip_by_default(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -190,23 +311,20 @@ def test_document_quality_missing_private_set_fails_when_required(
 def test_document_quality_private_packet_set_scores_complete_packets(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    resume = tmp_path / "resume.txt"
-    cover = tmp_path / "cover.txt"
-    packet_set = tmp_path / "packet-set.jsonl"
-    resume.write_text(_quality_resume(), encoding="utf-8")
-    cover.write_text(_quality_cover_letter(), encoding="utf-8")
-    packet_set.write_text(
-        (
-            '{"id":"acme-security","resume_path":"resume.txt","cover_letter_path":"cover.txt",'
-            '"applicant_name":"John Doe","job_title":"Security Analyst","company":"Acme",'
-            '"keywords":["Python","Linux","SIEM","incident response","IAM","alert triage"]}\n'
-        ),
-        encoding="utf-8",
-    )
+    _write_quality_artifacts(tmp_path)
+    packet_set = _write_packet_set(tmp_path, [_quality_packet_record(packet_id="acme-security")])
 
-    assert eval_document_quality._run_packet_set(packet_set=packet_set, required=True) == 0
+    assert (
+        eval_document_quality._run_packet_set(
+            packet_set=packet_set,
+            required=True,
+            min_cases=1,
+        )
+        == 0
+    )
     output = capsys.readouterr().out
 
+    assert "Document packet certification: CERTIFIED" in output
     assert "PASS document packet quality" in output
     assert "PASS acme-security" in output
 
@@ -235,31 +353,25 @@ def test_document_quality_private_packet_set_fails_weak_packets(tmp_path: Path) 
 def test_document_quality_private_packet_set_json_output(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    import json
-
-    resume = tmp_path / "resume.txt"
-    cover = tmp_path / "cover.txt"
-    packet_set = tmp_path / "packet-set.jsonl"
-    resume.write_text(_quality_resume(), encoding="utf-8")
-    cover.write_text(_quality_cover_letter(), encoding="utf-8")
-    packet_set.write_text(
-        (
-            '{"id":"acme-security","resume_path":"resume.txt","cover_letter_path":"cover.txt",'
-            '"applicant_name":"John Doe","job_title":"Security Analyst","company":"Acme",'
-            '"keywords":["Python","Linux","SIEM","incident response","IAM","alert triage"]}\n'
-        ),
-        encoding="utf-8",
-    )
+    _write_quality_artifacts(tmp_path)
+    packet_set = _write_packet_set(tmp_path, [_quality_packet_record(packet_id="acme-security")])
 
     assert (
         eval_document_quality._run_packet_set(
-            packet_set=packet_set, required=True, json_output=True
+            packet_set=packet_set,
+            required=True,
+            json_output=True,
+            min_cases=1,
         )
         == 0
     )
     payload = json.loads(capsys.readouterr().out)
 
     assert payload["passed"] is True
+    assert payload["certified"] is True
+    assert payload["mode"] == "packet_set"
+    assert payload["required"] is True
+    assert payload["thresholds"]["min_cases"] == 1
     assert payload["count"] == 1
     assert set(payload["dimension_means"]) == {
         "usefulness",
@@ -269,6 +381,455 @@ def test_document_quality_private_packet_set_json_output(
         "formatting_polish",
     }
     assert payload["packets"][0]["packet_id"] == "acme-security"
+    assert payload["packets"][0]["category"] == "support"
+    assert payload["packets"][0]["language"] == "en"
+    assert payload["packets"][0]["provenance"]["run_id"] == "run-acme-security"
+
+
+def test_document_quality_required_packet_set_needs_three_passing_cases(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_quality_artifacts(tmp_path)
+    packet_set = _write_packet_set(tmp_path, [_quality_packet_record(packet_id="single")])
+
+    assert (
+        eval_document_quality._run_packet_set(
+            packet_set=packet_set,
+            required=True,
+            json_output=True,
+        )
+        == 1
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["passed"] is True
+    assert payload["certified"] is False
+    assert payload["thresholds"]["min_cases"] == 3
+    assert "passing packet count 1 is below required 3" in payload["certification_failures"]
+
+
+def test_document_quality_optional_packet_set_reports_uncertified_without_failing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_quality_artifacts(tmp_path)
+    packet_set = _write_packet_set(tmp_path, [_quality_packet_record(packet_id="single")])
+
+    assert (
+        eval_document_quality._run_packet_set(
+            packet_set=packet_set,
+            required=False,
+            min_cases=3,
+            json_output=True,
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["passed"] is True
+    assert payload["certified"] is False
+    assert payload["thresholds"]["min_cases"] == 3
+
+
+def test_document_quality_stale_packet_fails_required_certification(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_quality_artifacts(tmp_path)
+    old_generated_at = (datetime.now(UTC) - timedelta(days=30)).isoformat()
+    packet_set = _write_packet_set(
+        tmp_path,
+        [_quality_packet_record(packet_id="old", generated_at=old_generated_at)],
+    )
+
+    assert (
+        eval_document_quality._run_packet_set(
+            packet_set=packet_set,
+            required=True,
+            min_cases=1,
+            max_artifact_age_days=14,
+            json_output=True,
+        )
+        == 1
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["certified"] is False
+    assert payload["freshness"]["stale_packet_ids"] == ["old"]
+
+
+def test_document_quality_future_generated_at_fails_required_certification(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_quality_artifacts(tmp_path)
+    future_generated_at = (datetime.now(UTC) + timedelta(days=2)).isoformat()
+    packet_set = _write_packet_set(
+        tmp_path,
+        [_quality_packet_record(packet_id="future", generated_at=future_generated_at)],
+    )
+
+    assert (
+        eval_document_quality._run_packet_set(
+            packet_set=packet_set,
+            required=True,
+            min_cases=1,
+            max_artifact_age_days=14,
+            json_output=True,
+        )
+        == 1
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["certified"] is False
+    assert "packet generated_at is in the future: future" in payload["certification_failures"]
+
+
+def test_document_quality_artifact_mtime_freshness_uses_oldest_artifact(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    resume, cover = _write_quality_artifacts(tmp_path)
+    old_mtime = (datetime.now(UTC) - timedelta(days=30)).timestamp()
+    fresh_mtime = datetime.now(UTC).timestamp()
+    os.utime(resume, (old_mtime, old_mtime))
+    os.utime(cover, (fresh_mtime, fresh_mtime))
+    packet_set = _write_packet_set(
+        tmp_path,
+        [_quality_packet_record(packet_id="mixed-mtime")],
+    )
+
+    assert (
+        eval_document_quality._run_packet_set(
+            packet_set=packet_set,
+            required=True,
+            min_cases=1,
+            max_artifact_age_days=14,
+            json_output=True,
+        )
+        == 1
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["certified"] is False
+    assert payload["freshness"]["stale_packet_ids"] == ["mixed-mtime"]
+    assert payload["packets"][0]["generated_at_source"] == "artifact_mtime"
+
+
+def test_document_quality_generated_at_overrides_artifact_mtime(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    resume, cover = _write_quality_artifacts(tmp_path)
+    old_mtime = (datetime.now(UTC) - timedelta(days=30)).timestamp()
+    os.utime(resume, (old_mtime, old_mtime))
+    os.utime(cover, (old_mtime, old_mtime))
+    fresh_generated_at = datetime.now(UTC).isoformat()
+    packet_set = _write_packet_set(
+        tmp_path,
+        [_quality_packet_record(packet_id="fresh", generated_at=fresh_generated_at)],
+    )
+
+    assert (
+        eval_document_quality._run_packet_set(
+            packet_set=packet_set,
+            required=True,
+            min_cases=1,
+            max_artifact_age_days=14,
+            json_output=True,
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["certified"] is True
+    assert payload["freshness"]["stale_packet_ids"] == []
+    assert payload["packets"][0]["generated_at_source"] == "generated_at"
+
+
+def test_document_quality_required_language_accepts_alias_labels(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_french_quality_artifacts(
+        tmp_path,
+        profile=(
+            "Professionnel des opérations avec plus de 10 ans d'expérience en gestion des "
+            "opérations, résolution de problèmes clients, triage et escalade. Apporte une "
+            "expérience de support technique et une formation en cybersécurité et réseautique."
+        ),
+        education_note=(
+            "Cours complétés : Intro to Cybersecurity, Attack & Defense Methods, Server Security "
+            "et Networking & Security, incluant des laboratoires SIEM, opérations SOC et réponse "
+            "aux incidents."
+        ),
+    )
+    record = _french_quality_packet_record(packet_id="risk-french")
+    record["language"] = "French"
+    packet_set = _write_packet_set(tmp_path, [record])
+
+    assert (
+        eval_document_quality._run_packet_set(
+            packet_set=packet_set,
+            required=True,
+            min_cases=1,
+            required_languages=["fr"],
+            json_output=True,
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["certified"] is True
+    assert payload["coverage"]["present_languages"] == ["fr"]
+    assert payload["coverage"]["missing_languages"] == []
+
+
+def test_document_quality_missing_required_category_and_language_fails_certification(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_quality_artifacts(tmp_path)
+    packet_set = _write_packet_set(tmp_path, [_quality_packet_record(packet_id="support-en")])
+
+    assert (
+        eval_document_quality._run_packet_set(
+            packet_set=packet_set,
+            required=True,
+            min_cases=1,
+            required_categories=["risk"],
+            required_languages=["fr"],
+            json_output=True,
+        )
+        == 1
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["coverage"]["missing_categories"] == ["risk"]
+    assert payload["coverage"]["missing_languages"] == ["fr"]
+
+
+def test_document_quality_represented_category_and_language_coverage_certifies(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    support_en_dir = tmp_path / "support-en"
+    risk_fr_dir = tmp_path / "risk-fr"
+    support_fr_dir = tmp_path / "support-fr"
+    support_en_dir.mkdir()
+    risk_fr_dir.mkdir()
+    support_fr_dir.mkdir()
+    _write_quality_artifacts(support_en_dir)
+    french_profile = (
+        "Professionnel des opérations avec plus de 10 ans d'expérience en gestion des "
+        "opérations, résolution de problèmes clients, triage et escalade. Apporte une "
+        "expérience de support technique et une formation en cybersécurité et réseautique."
+    )
+    french_education = (
+        "Cours complétés : Intro to Cybersecurity, Attack & Defense Methods, Server Security "
+        "et Networking & Security, incluant des laboratoires SIEM, opérations SOC et réponse "
+        "aux incidents."
+    )
+    _write_french_quality_artifacts(
+        risk_fr_dir,
+        profile=french_profile,
+        education_note=french_education,
+    )
+    _write_french_quality_artifacts(
+        support_fr_dir,
+        profile=french_profile,
+        education_note=french_education,
+    )
+    support_en = _quality_packet_record(
+        packet_id="support-en",
+        category="support",
+        language="en",
+    )
+    support_en.update(
+        {"resume_path": "support-en/resume.txt", "cover_letter_path": "support-en/cover.txt"}
+    )
+    risk_fr = _french_quality_packet_record(packet_id="risk-fr")
+    risk_fr.update({"resume_path": "risk-fr/resume.txt", "cover_letter_path": "risk-fr/cover.txt"})
+    support_fr = {**_french_quality_packet_record(packet_id="support-fr"), "category": "support"}
+    support_fr.update(
+        {"resume_path": "support-fr/resume.txt", "cover_letter_path": "support-fr/cover.txt"}
+    )
+    packet_set = _write_packet_set(
+        tmp_path,
+        [support_en, risk_fr, support_fr],
+    )
+
+    assert (
+        eval_document_quality._run_packet_set(
+            packet_set=packet_set,
+            required=True,
+            required_categories=["support", "risk"],
+            required_languages=["en", "fr"],
+            json_output=True,
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["certified"] is True
+    assert payload["coverage"]["missing_categories"] == []
+    assert payload["coverage"]["missing_languages"] == []
+    assert payload["coverage"]["present_categories"] == ["risk", "support"]
+    assert payload["coverage"]["present_languages"] == ["en", "fr"]
+
+
+def test_document_quality_declared_french_packet_rejects_english_resume_prose(
+    tmp_path: Path,
+) -> None:
+    _write_french_quality_artifacts(
+        tmp_path,
+        profile=(
+            "Operations professional with 10+ years of operations management, high-stakes client "
+            "problem-solving, triage, and escalation experience. Brings front-line technical "
+            "support experience plus cybersecurity and networking coursework."
+        ),
+        education_note=(
+            "Completed: Intro to Cybersecurity, Attack & Defense Methods, Server Security, and "
+            "Networking & Security, including SIEM labs, SOC operations, and incident response."
+        ),
+    )
+    packet_set = _write_packet_set(
+        tmp_path,
+        [_french_quality_packet_record()],
+    )
+
+    report = eval_document_quality.assess_packet_set(packet_set)[0]
+
+    assert report.passed is False
+    assert any("declared fr packet" in item for item in report.failures)
+    assert report.language_quality is not None
+    assert "resume:profile" in report.language_quality.mismatched_sections
+
+
+def test_document_quality_declared_french_packet_allows_english_technical_terms(
+    tmp_path: Path,
+) -> None:
+    _write_french_quality_artifacts(
+        tmp_path,
+        profile=(
+            "Professionnel des opérations avec plus de 10 ans d'expérience en gestion des "
+            "opérations, résolution de problèmes clients, triage et escalade. Apporte une "
+            "expérience de support technique et une formation en cybersécurité et réseautique."
+        ),
+        education_note=(
+            "Cours complétés : Intro to Cybersecurity, Attack & Defense Methods, Server Security "
+            "et Networking & Security, incluant des laboratoires SIEM, opérations SOC et réponse "
+            "aux incidents."
+        ),
+    )
+    packet_set = _write_packet_set(
+        tmp_path,
+        [_french_quality_packet_record()],
+    )
+
+    report = eval_document_quality.assess_packet_set(packet_set)[0]
+
+    assert report.passed is True
+    assert report.language_quality is not None
+    assert report.language_quality.mismatched_sections == []
+
+
+def test_document_quality_declared_french_packet_rejects_english_connector_leakage(
+    tmp_path: Path,
+) -> None:
+    _write_french_quality_artifacts(
+        tmp_path,
+        profile=(
+            "Professionnel des opérations avec plus de 10 ans d'expérience en gestion des "
+            "opérations, résolution de problèmes clients, triage et escalade. Apporte une "
+            "expérience de support technique et une formation en cybersécurité et réseautique."
+        ),
+        education_note=(
+            "Cours complétés : Intro to Cybersecurity, Attack & Defense Methods, Server Security "
+            "et Networking & Security, incluant des laboratoires SIEM, opérations SOC, réponse "
+            "aux incidents, and threat intelligence."
+        ),
+    )
+    packet_set = _write_packet_set(
+        tmp_path,
+        [_french_quality_packet_record()],
+    )
+
+    report = eval_document_quality.assess_packet_set(packet_set)[0]
+
+    assert report.passed is False
+    assert report.language_quality is not None
+    assert "resume:education" in report.language_quality.mismatched_sections
+
+
+def test_document_quality_packet_rejects_duplicate_resume_bullets(tmp_path: Path) -> None:
+    _write_french_quality_artifacts(
+        tmp_path,
+        profile=(
+            "Professionnel des opérations avec plus de 10 ans d'expérience en gestion des "
+            "opérations, résolution de problèmes clients, triage et escalade. Apporte une "
+            "expérience de support technique et une formation en cybersécurité et réseautique."
+        ),
+        education_note=(
+            "Cours complétés : Intro to Cybersecurity, Attack & Defense Methods, Server Security "
+            "et Networking & Security, incluant des laboratoires SIEM, opérations SOC et réponse "
+            "aux incidents."
+        ),
+    )
+    resume = tmp_path / "resume.txt"
+    resume.write_text(
+        resume.read_text(encoding="utf-8")
+        + "\n• Trié et escaladé les problèmes complexes vers les niveaux supérieurs.\n"
+        "• Trié et escaladé les problèmes complexes vers les niveaux supérieurs.\n",
+        encoding="utf-8",
+    )
+    packet_set = _write_packet_set(tmp_path, [_french_quality_packet_record()])
+
+    report = eval_document_quality.assess_packet_set(packet_set)[0]
+
+    assert report.passed is False
+    assert any("duplicate resume bullet" in item for item in report.failures)
+
+
+def test_document_quality_case_floors_cannot_lower_global_floors(tmp_path: Path) -> None:
+    resume = tmp_path / "resume.txt"
+    cover = tmp_path / "cover.txt"
+    packet_set = tmp_path / "packet-set.jsonl"
+    resume.write_text("Jane\nNo sections yet", encoding="utf-8")
+    cover.write_text("- TODO: write letter\n\nRegards,\nYour Name", encoding="utf-8")
+    packet_set.write_text(
+        json.dumps(
+            {
+                "id": "weak",
+                "resume_path": "resume.txt",
+                "cover_letter_path": "cover.txt",
+                "applicant_name": "Jane Doe",
+                "keywords": ["Python", "SIEM"],
+                "min_dimension_score": 0.0,
+                "min_overall_score": 0.0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = eval_document_quality.assess_packet_set(
+        packet_set,
+        min_dimension_score=3.5,
+        min_overall_score=3.5,
+    )[0]
+
+    assert any("below required 3.50" in item for item in report.failures)
+
+
+def test_document_quality_unbacked_coherence_terms_reduce_coherence(tmp_path: Path) -> None:
+    _write_quality_artifacts(tmp_path)
+    packet_set = _write_packet_set(
+        tmp_path,
+        [
+            {
+                **_quality_packet_record(packet_id="unbacked"),
+                "coherence_terms": ["Kubernetes"],
+            }
+        ],
+    )
+
+    report = eval_document_quality.assess_packet_set(packet_set)[0]
+
+    assert report.dimensions["coherence"] < 3.0
+    assert any("coherence terms are not source-backed" in item for item in report.warnings)
 
 
 def test_document_quality_private_packet_set_fails_incoherent_packet(tmp_path: Path) -> None:
@@ -318,8 +879,6 @@ def test_document_quality_company_alias_counts_for_target_mention() -> None:
 
 
 def test_document_quality_cli_single_artifact_json(tmp_path: Path) -> None:
-    import json
-
     from job_applicator import cli
 
     resume = tmp_path / "resume.txt"
@@ -351,6 +910,32 @@ def test_document_quality_cli_single_artifact_json(tmp_path: Path) -> None:
     assert all(report["passed"] for report in payload)
 
 
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "--min-cases",
+        "--max-artifact-age-days",
+        "--required-category",
+        "--required-language",
+    ],
+)
+def test_document_quality_cli_rejects_packet_only_flags_for_single_artifact(
+    tmp_path: Path,
+    flag: str,
+) -> None:
+    from job_applicator import cli
+
+    resume = tmp_path / "resume.txt"
+    resume.write_text(_quality_resume(), encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["document-quality", "--resume", str(resume), flag, "1"],
+    )
+
+    assert result.exit_code == 2
+
+
 def test_document_quality_cli_missing_optional_packet_set_skips(tmp_path: Path) -> None:
     from job_applicator import cli
 
@@ -360,6 +945,23 @@ def test_document_quality_cli_missing_optional_packet_set_skips(tmp_path: Path) 
 
     assert result.exit_code == 0
     assert "not certified" in result.output
+
+
+def test_document_quality_cli_missing_optional_packet_set_json_is_valid(tmp_path: Path) -> None:
+    from job_applicator import cli
+
+    missing = tmp_path / "missing.jsonl"
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["document-quality", "--packet-set", str(missing), "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["passed"] is False
+    assert payload["certified"] is False
+    assert payload["reason"] == "missing_packet_set"
 
 
 def test_document_quality_cli_missing_required_packet_set_fails(tmp_path: Path) -> None:
@@ -375,25 +977,13 @@ def test_document_quality_cli_missing_required_packet_set_fails(tmp_path: Path) 
     assert "not certified" in result.output
 
 
-def test_document_quality_cli_private_packet_set_json_output(tmp_path: Path) -> None:
-    import json
-
+def test_document_quality_cli_packet_certification_flags_are_reflected_in_json(
+    tmp_path: Path,
+) -> None:
     from job_applicator import cli
 
-    resume = tmp_path / "resume.txt"
-    cover = tmp_path / "cover.txt"
-    packet_set = tmp_path / "packet-set.jsonl"
-    resume.write_text(_quality_resume(), encoding="utf-8")
-    cover.write_text(_quality_cover_letter(), encoding="utf-8")
-    packet_set.write_text(
-        (
-            '{"id":"acme-security","resume_path":"resume.txt","cover_letter_path":"cover.txt",'
-            '"applicant_name":"John Doe","job_title":"Security Analyst","company":"Acme",'
-            '"keywords":["Python","Linux","SIEM","incident response","IAM","alert triage"],'
-            '"coherence_terms":["Python","SIEM","incident response"]}\n'
-        ),
-        encoding="utf-8",
-    )
+    _write_quality_artifacts(tmp_path)
+    packet_set = _write_packet_set(tmp_path, [_quality_packet_record(packet_id="support-en")])
 
     result = CliRunner().invoke(
         cli.app,
@@ -402,6 +992,70 @@ def test_document_quality_cli_private_packet_set_json_output(tmp_path: Path) -> 
             "--packet-set",
             str(packet_set),
             "--required",
+            "--min-cases",
+            "1",
+            "--max-artifact-age-days",
+            "14",
+            "--required-category",
+            "support",
+            "--required-language",
+            "en",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["thresholds"] == {
+        "min_dimension_score": 3.0,
+        "min_overall_score": 3.0,
+        "min_cases": 1,
+        "max_artifact_age_days": 14,
+    }
+    assert payload["coverage"]["present_categories"] == ["support"]
+    assert payload["coverage"]["present_languages"] == ["en"]
+
+
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [
+        ("--min-dimension-score", "4.1"),
+        ("--min-cases", "0"),
+        ("--max-artifact-age-days", "-1"),
+    ],
+)
+def test_document_quality_cli_rejects_invalid_certification_values(
+    tmp_path: Path,
+    flag: str,
+    value: str,
+) -> None:
+    from job_applicator import cli
+
+    missing = tmp_path / "missing.jsonl"
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["document-quality", "--packet-set", str(missing), flag, value],
+    )
+
+    assert result.exit_code != 0
+
+
+def test_document_quality_cli_private_packet_set_json_output(tmp_path: Path) -> None:
+    from job_applicator import cli
+
+    _write_quality_artifacts(tmp_path)
+    packet_set = _write_packet_set(tmp_path, [_quality_packet_record(packet_id="acme-security")])
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "document-quality",
+            "--packet-set",
+            str(packet_set),
+            "--required",
+            "--min-cases",
+            "1",
             "--json",
         ],
     )
@@ -409,34 +1063,23 @@ def test_document_quality_cli_private_packet_set_json_output(tmp_path: Path) -> 
     assert result.exit_code == 0
     payload = json.loads(result.output)
     assert payload["passed"] is True
+    assert payload["certified"] is True
+    assert payload["thresholds"]["min_cases"] == 1
     assert payload["packets"][0]["dimensions"]["coherence"] >= 3.0
 
 
 def test_document_quality_cli_private_packet_set_uses_env_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import json
-
     from job_applicator import cli
 
-    resume = tmp_path / "resume.txt"
-    cover = tmp_path / "cover.txt"
-    packet_set = tmp_path / "packet-set.jsonl"
-    resume.write_text(_quality_resume(), encoding="utf-8")
-    cover.write_text(_quality_cover_letter(), encoding="utf-8")
-    packet_set.write_text(
-        (
-            '{"id":"acme-security","resume_path":"resume.txt","cover_letter_path":"cover.txt",'
-            '"applicant_name":"John Doe","job_title":"Security Analyst","company":"Acme",'
-            '"keywords":["Python","Linux","SIEM","incident response","IAM","alert triage"]}\n'
-        ),
-        encoding="utf-8",
-    )
+    _write_quality_artifacts(tmp_path)
+    packet_set = _write_packet_set(tmp_path, [_quality_packet_record(packet_id="acme-security")])
     monkeypatch.setenv("DOCUMENT_QUALITY_SET", str(packet_set))
 
     result = CliRunner().invoke(
         cli.app,
-        ["document-quality", "--private-packet-set", "--required", "--json"],
+        ["document-quality", "--private-packet-set", "--required", "--min-cases", "1", "--json"],
     )
 
     assert result.exit_code == 0

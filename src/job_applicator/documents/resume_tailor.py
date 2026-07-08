@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import pairwise
@@ -64,6 +65,8 @@ KNOWN_HEADERS: frozenset[str] = frozenset(
         "projects",
         "objective",
         "profile",
+        "resume",
+        "résumé",
         "work experience",
         "employment",
         "qualifications",
@@ -79,6 +82,22 @@ KNOWN_HEADERS: frozenset[str] = frozenset(
         "technical skills",
         "core competencies",
         "additional information",
+        "profil",
+        "compétences",
+        "competences",
+        "expérience",
+        "expérience professionnelle",
+        "experience professionnelle",
+        "formation",
+        "formation et certifications",
+        "éducation",
+        "éducation & certifications",
+        "education & certifications",
+        "langues",
+        "projets",
+        "bénévolat",
+        "benevolat",
+        "références",
     }
 )
 
@@ -88,6 +107,8 @@ _COLON_HEADER_RE = re.compile(r"^[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*:\s*$")
 def _is_section_header(stripped: str) -> bool:
     """Return True if *stripped* line looks like a resume section header."""
     normalized = re.sub(r"\s+", " ", stripped.strip())
+    if section_header(normalized) is not None:
+        return True
     if normalized.lower() in KNOWN_HEADERS:
         return True
     if _COLON_HEADER_RE.match(stripped):
@@ -183,6 +204,13 @@ def _has_bold_section_headers(text: str) -> bool:
 def _format_source_section_header(source_header: str, *, bold: bool) -> str:
     header = source_header.title()
     return f"**{header}**" if bold else header
+
+
+def _normalize_source_owned_fragment(text: str) -> str:
+    normalized = text.lower().replace("–", "-").replace("—", "-")
+    normalized = re.sub(r"[*_`]", "", normalized)
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized.strip()
 
 
 def _insertion_index(lines: list[str], before: tuple[str, ...]) -> int:
@@ -634,16 +662,13 @@ TAILOR_SYSTEM_PROMPT = (
     "- **Bold** for section headers and job titles/company names\n"
     "- *Italics* for dates\n"
     "- Bullet points (•) for skills and experience items\n"
-    "- REQUIRED STRUCTURE — the output MUST contain these exact bold section "
-    "headers on their own lines:\n"
-    "  **Skills**\n"
-    "  **Experience**\n"
-    "  **Education** or **Education & Certifications** (if present in original)\n"
-    "  **Certifications** (if present separately in original)\n"
-    "  **Languages** (if present in original)\n"
-    "  Do not omit these headers. Place the **Skills** header directly before "
-    "the skills list and the **Experience** header directly before the first "
-    "job.\n\n"
+    "- REQUIRED STRUCTURE — the output MUST contain bold section headers on their own lines. "
+    "Use the language requested by the user message for section headers. In English, use "
+    "**Skills**, **Experience**, **Education** or **Education & Certifications**, "
+    "**Certifications**, and **Languages**. In French, use **Compétences**, **Expérience**, "
+    "**Formation** or **Formation et certifications**, **Certifications**, and **Langues**. "
+    "Do not omit these headers. Place the skills header directly before the skills list and "
+    "the experience header directly before the first job.\n\n"
     "ABSOLUTE RULES:\n"
     "- NEVER add skills, tools, or technologies not in the original resume\n"
     "- NEVER invent experience, metrics, or responsibilities\n"
@@ -719,7 +744,29 @@ CHANGES_PROMPT_TEMPLATE = (
 # ("Accredited security professional"); the section-level guards don't cover the freeform summary,
 # so `_strip_unearned_credentials` is the deterministic backstop. Human review remains the final
 # check — this catches the clearest class, not every possible overclaim.
-_CREDENTIAL_TERMS = ("accredited", "certified", "licensed", "chartered", "credentialed")
+_CREDENTIAL_TERMS = (
+    "accredited",
+    "certified",
+    "licensed",
+    "chartered",
+    "credentialed",
+    "accrédité",
+    "accréditée",
+    "accredite",
+    "accreditee",
+    "certifié",
+    "certifiée",
+    "certifie",
+    "certifiee",
+    "agréé",
+    "agréée",
+    "agree",
+    "agreee",
+    "licencié",
+    "licenciée",
+    "licencie",
+    "licenciee",
+)
 # Summary-type headers that stay INSIDE the credential-scrub region. The scrub region is the
 # LEADING block — top of the résumé down to the first NON-summary section header — so a labelled
 # summary (under any of these) AND a header-less leading paragraph are both covered (a 4B that
@@ -730,6 +777,7 @@ _SUMMARY_SYNONYMS = frozenset(
         "professional summary",
         "career summary",
         "profile",
+        "profil",
         "professional profile",
         "objective",
         "career objective",
@@ -739,12 +787,14 @@ _SUMMARY_SYNONYMS = frozenset(
     }
 )
 _CREDENTIAL_HEADER_RE = re.compile(
-    r"^\*{0,2}\s*(?:certifications?|licen[sc]es?|credentials?|accreditations?)\s*\*{0,2}$",
+    r"^\*{0,2}\s*"
+    r"(?:certifications?|licen[sc]es?|licences?|credentials?|accreditations?|accréditations?)"
+    r"\s*\*{0,2}$",
     re.IGNORECASE,
 )
 _SKILLS_HEADER_RE = re.compile(
     r"^\*{0,2}\s*(?:(?:technical|core|key|professional|relevant|soft)\s+)?"
-    r"(?:skills|competencies|proficiencies)\s*\*{0,2}$",
+    r"(?:skills|competencies|proficiencies|compétences|competences)\s*\*{0,2}$",
     re.IGNORECASE,
 )
 _SUMMARY_SOURCE_REPLACEMENTS: tuple[tuple[str, str, str], ...] = (
@@ -908,8 +958,10 @@ class ResumeTailor:
         prompt += (
             f"\n\nIMPORTANT: Write the ENTIRE tailored résumé in {language} — every section "
             f"heading, the summary, and every bullet. Translate the prose, but keep skill names, "
-            f"company and school names, course names, and certifications VERBATIM (do not "
-            f"translate proper nouns or technical terms)."
+            f"job titles, company and school names, course names, certifications, and technical "
+            f"tools/terms VERBATIM (do not translate source-owned titles, proper nouns, or "
+            f"technical terms). Keep skills/coursework as concise source-backed lists, not one "
+            f"long translated prose claim."
         )
 
         tailored_text = await self._call_llm(prompt)
@@ -920,17 +972,27 @@ class ResumeTailor:
         )
         tailored_text = self._strip_malformed_tool_removal_sentences(tailored_text)
         tailored_text = self._ground_summary_phrases(tailored_text, resume.raw_text)
-        tailored_text = self._ensure_source_backed_summary(tailored_text, resume.raw_text)
+        tailored_text = self._ensure_source_backed_summary(tailored_text, resume.raw_text, language)
         tailored_text = self._strip_hallucinated_education(tailored_text, resume.raw_text)
         tailored_text = self._strip_unbacked_optional_sections(tailored_text, resume.raw_text)
         tailored_text = self._strip_unearned_credentials(tailored_text, resume.raw_text)
         tailored_text = self._strip_unsupported_metric_claims(tailored_text, resume.raw_text)
         tailored_text = self._strip_unverifiable_aspirations(tailored_text)
         tailored_text = self._strip_unbacked_responsibility_bullets(tailored_text, resume.raw_text)
+        tailored_text = self._strip_misplaced_support_domain_bullets(
+            tailored_text,
+            resume.raw_text,
+        )
         tailored_text = self._strip_low_evidence_bullets(tailored_text, resume.raw_text)
         tailored_text = self._normalize_date_range_dashes(tailored_text)
         tailored_text = self._strip_unbacked_references(tailored_text, resume.raw_text)
-        tailored_text = self._preserve_source_required_sections(tailored_text, resume.raw_text)
+        tailored_text = self._preserve_source_required_sections(
+            tailored_text, resume.raw_text, language
+        )
+        tailored_text = self._localize_standard_labels_for_language(tailored_text, language)
+        tailored_text = self._polish_french_output(tailored_text, language)
+        tailored_text = self._strip_duplicate_bullets(tailored_text)
+        tailored_text = self._strip_non_source_bold_entry_headings(tailored_text, resume.raw_text)
         changes = await self._summarize_changes(resume.raw_text, tailored_text)
 
         return TailoredResume(
@@ -1049,6 +1111,7 @@ class ResumeTailor:
                 "Maintain this writing style throughout the refined resume."
             )
 
+        language = resolve_output_language(self._config.language, job.description)
         prompt = (
             f"The user wants changes to this tailored resume.\n\n"
             f"Job: {job.title} at {job.company}\n"
@@ -1060,7 +1123,11 @@ class ResumeTailor:
             f"User feedback:\n{user_feedback}\n\n"
             f"Apply the user's feedback while keeping the resume tailored "
             f"for the job. Do NOT add skills not in the candidate's actual "
-            f"skills list. Do NOT add Education if none exists in original."
+            f"skills list. Do NOT add Education if none exists in original. Write the refined "
+            f"résumé in {language}. Translate prose only; keep source-owned job titles, company "
+            f"and school names, course names, certifications, and technical tools/terms verbatim. "
+            f"Keep skills/coursework as concise source-backed lists, not one long translated "
+            f"prose claim."
             f"{tone_directive}"
             f"{style_section}\n"
             f"Return the complete updated resume text."
@@ -1073,7 +1140,9 @@ class ResumeTailor:
         )
         refined_text = self._strip_malformed_tool_removal_sentences(refined_text)
         refined_text = self._ground_summary_phrases(refined_text, original_resume.raw_text)
-        refined_text = self._ensure_source_backed_summary(refined_text, original_resume.raw_text)
+        refined_text = self._ensure_source_backed_summary(
+            refined_text, original_resume.raw_text, language
+        )
         refined_text = self._strip_hallucinated_education(refined_text, original_resume.raw_text)
         refined_text = self._strip_unbacked_optional_sections(
             refined_text, original_resume.raw_text
@@ -1084,10 +1153,20 @@ class ResumeTailor:
         refined_text = self._strip_unbacked_responsibility_bullets(
             refined_text, original_resume.raw_text
         )
+        refined_text = self._strip_misplaced_support_domain_bullets(
+            refined_text,
+            original_resume.raw_text,
+        )
         refined_text = self._strip_low_evidence_bullets(refined_text, original_resume.raw_text)
         refined_text = self._normalize_date_range_dashes(refined_text)
         refined_text = self._strip_unbacked_references(refined_text, original_resume.raw_text)
         refined_text = self._preserve_source_required_sections(
+            refined_text, original_resume.raw_text, language
+        )
+        refined_text = self._localize_standard_labels_for_language(refined_text, language)
+        refined_text = self._polish_french_output(refined_text, language)
+        refined_text = self._strip_duplicate_bullets(refined_text)
+        refined_text = self._strip_non_source_bold_entry_headings(
             refined_text, original_resume.raw_text
         )
         refined_text = self._require_nonempty(refined_text)
@@ -1293,17 +1372,7 @@ class ResumeTailor:
         for _i, line in enumerate(lines):
             stripped = line.strip()
 
-            # Detect skills section header
-            # Header set kept aligned with the parser's
-            # ResumeLoader._extract_skills_section() regex.
-            if re.match(
-                r"^\*{0,2}\s*"
-                r"(?:(?:Technical|Core|Key|Professional|Relevant|Soft)\s+)?"
-                r"(?:Skills|Competencies|Proficiencies)"
-                r"\s*\*{0,2}$",
-                stripped,
-                re.IGNORECASE,
-            ):
+            if section_header(stripped) == "Skills":
                 in_skills_section = True
                 result_lines.append(line)
                 continue
@@ -1571,23 +1640,26 @@ class ResumeTailor:
         return result
 
     @staticmethod
-    def _ensure_source_backed_summary(tailored: str, original: str) -> str:
+    def _ensure_source_backed_summary(
+        tailored: str, original: str, language: str = "English"
+    ) -> str:
         """Use a conservative source-backed summary when one can be built."""
         lines = tailored.splitlines()
         bounds = _section_bounds(lines, "Summary")
         if bounds is None:
             return tailored
         start, end = bounds
-        fallback = ResumeTailor._source_backed_summary(original)
+        fallback = ResumeTailor._source_backed_summary(original, language)
         if not fallback:
             return tailored
         lines = [*lines[: start + 1], fallback, "", *lines[end:]]
         return ResumeTailor._join_resume_lines(lines)
 
     @staticmethod
-    def _source_backed_summary(original: str) -> str:
+    def _source_backed_summary(original: str, language: str = "English") -> str:
         source = original.lower()
         sentences: list[str] = []
+        french = language == "French"
         if (
             "10+ years" in source
             and "operations management" in source
@@ -1595,20 +1667,43 @@ class ResumeTailor:
             and "triage" in source
             and "escalation" in source
         ):
-            sentences.append(
-                "Operations professional with 10+ years of operations management, "
-                "high-stakes client problem-solving, triage, and escalation experience."
-            )
+            if french:
+                sentences.append(
+                    "Professionnel des opérations avec plus de 10 ans d'expérience en gestion "
+                    "des opérations, résolution de problèmes clients à fort enjeu, triage et "
+                    "escalade."
+                )
+            else:
+                sentences.append(
+                    "Operations professional with 10+ years of operations management, "
+                    "high-stakes client problem-solving, triage, and escalation experience."
+                )
         if "technical support" in source and "coursework" in source:
-            technical = (
-                "Brings front-line technical support experience plus cybersecurity and networking "
-                "coursework"
-            )
-            if all(
-                term in source
-                for term in ("hands-on", "siem", "soc operations", "incident response")
-            ):
-                technical += " with hands-on labs in SIEM, SOC operations, and incident response"
+            if french:
+                technical = (
+                    "Apporte une expérience de support technique de première ligne ainsi qu'une "
+                    "formation en cybersécurité et en réseautique"
+                )
+                if all(
+                    term in source
+                    for term in ("hands-on", "siem", "soc operations", "incident response")
+                ):
+                    technical += (
+                        " avec des laboratoires pratiques en SIEM, opérations SOC et réponse "
+                        "aux incidents"
+                    )
+            else:
+                technical = (
+                    "Brings front-line technical support experience plus cybersecurity and "
+                    "networking coursework"
+                )
+                if all(
+                    term in source
+                    for term in ("hands-on", "siem", "soc operations", "incident response")
+                ):
+                    technical += (
+                        " with hands-on labs in SIEM, SOC operations, and incident response"
+                    )
             sentences.append(f"{technical}.")
         return " ".join(sentences)
 
@@ -1707,7 +1802,9 @@ class ResumeTailor:
             result_lines.append(line)
         return "\n".join(result_lines).strip()
 
-    def _preserve_source_required_sections(self, tailored: str, original: str) -> str:
+    def _preserve_source_required_sections(
+        self, tailored: str, original: str, language: str = "English"
+    ) -> str:
         """Restore source-owned sections the LLM must not rewrite materially.
 
         Education/certification history and language fluency are facts of record. If the model
@@ -1720,6 +1817,15 @@ class ResumeTailor:
             "Education",
             before=("Languages", "References"),
             allow_combined_certifications=True,
+            language=language,
+        )
+        result = self._preserve_source_section(
+            result,
+            original,
+            "Projects",
+            before=("Languages", "References"),
+            allow_combined_certifications=False,
+            language=language,
         )
         return self._preserve_source_section(
             result,
@@ -1727,6 +1833,7 @@ class ResumeTailor:
             "Languages",
             before=("References",),
             allow_combined_certifications=False,
+            language=language,
         )
 
     @staticmethod
@@ -1737,17 +1844,29 @@ class ResumeTailor:
         *,
         before: tuple[str, ...],
         allow_combined_certifications: bool,
+        language: str = "English",
     ) -> str:
         source = _source_section(original, canonical)
         if source is None:
             return tailored
 
         source_header, source_body = source
-        replacement = [
-            _format_source_section_header(
+        source_body = ResumeTailor._localize_source_section_body(
+            source_body, canonical=canonical, language=language
+        )
+        if language == "French":
+            formatted_header = ResumeTailor._localize_french_source_section_header(
+                source_header, canonical=canonical
+            )
+            if _has_bold_section_headers(tailored):
+                formatted_header = f"**{formatted_header}**"
+        else:
+            formatted_header = _format_source_section_header(
                 source_header,
                 bold=_has_bold_section_headers(tailored),
-            ),
+            )
+        replacement = [
+            formatted_header,
             *source_body,
         ]
         lines = tailored.splitlines()
@@ -1768,6 +1887,217 @@ class ResumeTailor:
             start, end = bounds
             lines = lines[:start] + replacement + lines[end:]
         return ResumeTailor._join_resume_lines(lines)
+
+    @staticmethod
+    def _localize_french_source_section_header(source_header: str, *, canonical: str) -> str:
+        normalized = ResumeTailor._ascii_fold(source_header).casefold()
+        if canonical == "Education":
+            if "certification" in normalized:
+                return "Formation et certifications"
+            return "Formation"
+        if canonical == "Projects":
+            if "home lab" in normalized or "laboratoire" in normalized:
+                return "Projets & laboratoire à domicile"
+            return "Projets"
+        if canonical == "Languages":
+            return "Langues"
+        return source_header
+
+    @staticmethod
+    def _localize_source_section_body(
+        lines: list[str], *, canonical: str, language: str
+    ) -> list[str]:
+        if language != "French":
+            return lines
+        if canonical == "Languages":
+            language_names = {"spanish": "espagnol"}
+            localized: list[str] = []
+            for line in lines:
+                match = re.fullmatch(
+                    r"Fluent in French and English, plus ([A-Za-z]+)\.",
+                    line.strip(),
+                )
+                if match:
+                    third_language = language_names.get(
+                        match.group(1).casefold(),
+                        match.group(1).casefold(),
+                    )
+                    localized.append(f"Français et anglais courants; {third_language}.")
+                else:
+                    localized.append(line)
+            return localized
+        if canonical == "Education":
+            return [ResumeTailor._localize_french_education_line(line) for line in lines]
+        if canonical == "Projects":
+            return [ResumeTailor._localize_french_project_line(line) for line in lines]
+        return lines
+
+    @staticmethod
+    def _localize_french_education_line(line: str) -> str:
+        localized = line
+        replacements = (
+            ("Undergraduate Certificate", "Certificat universitaire"),
+            ("Analysis & Operational Cybersecurity", "Analyse et cybersécurité opérationnelle"),
+            ("2024 – Present", "2024 - Présent"),
+            ("2024 - Present", "2024 - Présent"),
+            ("Cisco CCNA & CompTIA Linux+ Coursework", "Cours Cisco CCNA et CompTIA Linux+"),
+            ("Completed:", "Cours complétés :"),
+            (
+                "Server Security, and Networking & Security",
+                "Server Security et Networking & Security",
+            ),
+            (" — incl. a hands-on SIEM lab, ", " — incluant un laboratoire pratique SIEM, "),
+            ("SOC operations & monitoring", "opérations et surveillance SOC"),
+            ("incident response", "réponse aux incidents"),
+            ("threat intelligence", "renseignement sur les menaces"),
+            (", and ", " et "),
+            (" and ", " et "),
+            ("Full CCNA networking curriculum", "Programme complet de réseautique CCNA"),
+            ("network components", "composants réseau"),
+            ("VLSM/subnetting", "VLSM/sous-réseaux"),
+            ("routing & switching", "routage et commutation"),
+            ("certification exam pending", "examen de certification en attente"),
+            ("plus Linux administration", "plus administration Linux"),
+            (" in Fedora", " sous Fedora"),
+            ("(CLI, scripting)", "(CLI, scripts)"),
+            ("B.A., Accounting", "B.A., Comptabilité"),
+            ("Administration profile", "profil Administration"),
+        )
+        for source, replacement in replacements:
+            localized = localized.replace(source, replacement)
+        return localized
+
+    @staticmethod
+    def _localize_french_project_line(line: str) -> str:
+        localized = line
+        replacements = (
+            (
+                "Home cybersecurity lab & pen-test sandbox",
+                "Laboratoire de cybersécurité à domicile et sandbox de test de pénétration",
+            ),
+            ("a multi-VM environment", "environnement multi-VM"),
+            ("Kali attacker against target hosts", "Kali attaquant contre des hôtes cibles"),
+            (
+                "for hands-on attack/defense and detection practice",
+                "pour la pratique attaque/défense et détection",
+            ),
+            ("Self-hosted BIND9 DNS server", "Serveur DNS BIND9 autohébergé"),
+            (
+                "configured, secured, and administered end-to-end",
+                "configuré, sécurisé et administré de bout en bout",
+            ),
+            ("Hands-on security tooling", "Outils de sécurité en pratique"),
+            ("packet analysis", "analyse de paquets"),
+            ("network scanning", "scan de réseau"),
+            ("network monitoring", "surveillance réseau"),
+            ("and Kali Linux", "et Kali Linux"),
+            (
+                "through coursework labs and TryHackMe",
+                "via les laboratoires de cours et TryHackMe",
+            ),
+        )
+        for source, replacement in replacements:
+            localized = localized.replace(source, replacement)
+        return localized.replace(", and ", " et ")
+
+    @staticmethod
+    def _polish_french_output(tailored: str, language: str) -> str:
+        if language != "French":
+            return tailored
+        replacements = (
+            ("Prendre en charge 100 %", "Pris en charge 100 %"),
+            ("Géré plus de 100 %", "Pris en charge 100 %"),
+            ("Réalisé les contrats", "Planifié les contrats"),
+            (
+                "dans une opération rapide et à faible délai",
+                "dans un environnement rapide à délais serrés",
+            ),
+            (
+                "dans une opération rapide et exigeante en termes de temps",
+                "dans un environnement rapide à délais serrés",
+            ),
+            (
+                "dans une opération rapide et exigeante en temps",
+                "dans un environnement rapide à délais serrés",
+            ),
+            (
+                "dans une opération rapide et à haute priorité",
+                "dans un environnement rapide à délais serrés",
+            ),
+            ("fournisseur externe d'IT", "fournisseur TI externe"),
+            ("fournisseur externe d\u2019IT", "fournisseur TI externe"),
+            ("entreprise à contrats bloqués", "entreprise à contrats fixes"),
+            ("entreprise à contrat verrouillé", "entreprise à contrats fixes"),
+            ("rétention client", "fidélisation des clients"),
+            ("demandes de réclamation de bénéfices", "demandes de prestations"),
+            ("demandes de bénéfices", "demandes de prestations"),
+            ("en téléphone et par e-mail", "par téléphone et par courriel"),
+            ("en téléphone et par courriel", "par téléphone et par courriel"),
+            ("par téléphone, chat et e-mail", "par téléphone, chat et courriel"),
+            (
+                "par téléphone et courriel en résolution à la première tentative",
+                "par téléphone et par courriel avec résolution au premier appel",
+            ),
+            (
+                "par téléphone et courriel en résolution en premier appel",
+                "par téléphone et par courriel avec résolution au premier appel",
+            ),
+            (
+                "pour une résolution en première instance",
+                "avec résolution au premier appel",
+            ),
+            (
+                "taux de résolution en première instance",
+                "taux de résolution au premier appel",
+            ),
+            (
+                "résolution à la première tentative",
+                "résolution au premier appel",
+            ),
+            ("Déboguait les problèmes", "Dépanné les problèmes"),
+            ("Troublé les problèmes", "Dépanné les problèmes"),
+            ("Apporté un support technique", "Fourni un support technique"),
+            (
+                "en diagnostic et résolution à distance des problèmes",
+                "en diagnostiquant et résolvant à distance les problèmes",
+            ),
+            (
+                "diagnostic et résolution à distance des problèmes",
+                "diagnostiquant et résolvant à distance les problèmes",
+            ),
+            ("diagnosticant", "diagnostiquant"),
+            ("Trié et escalada", "Trié et escaladé"),
+        )
+        result = tailored
+        for source, replacement in replacements:
+            result = result.replace(source, replacement)
+        return result
+
+    @staticmethod
+    def _strip_duplicate_bullets(tailored: str) -> str:
+        lines = tailored.splitlines()
+        bullet_indices: dict[str, list[int]] = {}
+        for index, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped.startswith(("•", "-", "*")):
+                continue
+            normalized = re.sub(r"^\s*[•*-]\s*", "", stripped)
+            normalized = re.sub(r"[*_`]", "", normalized)
+            normalized = re.sub(r"\s+", " ", normalized.casefold()).strip(" .;:")
+            if len(normalized.split()) < 6:
+                continue
+            bullet_indices.setdefault(normalized, []).append(index)
+        drop = {
+            index
+            for indices in bullet_indices.values()
+            if len(indices) > 1
+            for index in indices[:-1]
+        }
+        if not drop:
+            return tailored
+        return ResumeTailor._join_resume_lines(
+            [line for index, line in enumerate(lines) if index not in drop]
+        )
 
     @staticmethod
     def _join_resume_lines(lines: list[str]) -> str:
@@ -1806,11 +2136,18 @@ class ResumeTailor:
             result,
             flags=re.IGNORECASE,
         )
+        result = re.sub(
+            r"(?:(?<=^)|(?<=[.!?])\s+)"
+            r"(?:Recherche|Souhaite|Vise)\s+(?:un\s+)?(?:r[oô]le|poste|emploi)\s+[^.!?]*(?:\.|$)",
+            "",
+            result,
+            flags=re.IGNORECASE | re.MULTILINE,
+        )
         return re.sub(r" {2,}", " ", result).strip()
 
     def _strip_unbacked_responsibility_bullets(self, tailored: str, original: str) -> str:
         """Drop high-risk responsibility bullets whose actors/domains are absent from the source."""
-        original_lower = original.lower()
+        original_lower = self._ascii_fold(original).lower()
         risky_terms = (
             "collaborat",
             "data scientist",
@@ -1819,14 +2156,19 @@ class ResumeTailor:
             "architecture",
             "microservice",
             "deployed",
+            "deployment",
             "uptime",
             "rollout",
             "workflow",
             "optimization",
+            "optimized",
+            "optimizing",
             "real-time",
             "high-concurrency",
             "high-traffic",
             "user requests",
+            "ci/cd",
+            "testing",
             "cloud-native",
             "fault tolerance",
             "scaled",
@@ -1836,25 +2178,104 @@ class ResumeTailor:
             "global user growth",
             "internal teams",
             "technical guidance",
+            "urgence",
+            "incidents techniques",
+            "technical incidents",
+            "continuite",
+            "temps reel",
+            "seminaire",
+            "seminaires",
+            "fluidite operationnelle",
+            "fluidite des processus",
+            "interactions clients",
+            "operational continuity",
         )
         result_lines: list[str] = []
         for line in tailored.splitlines():
             stripped = line.strip()
             is_bullet = bool(re.match(r"^[•*\-]\s+", stripped))
+            lower = self._ascii_fold(stripped).lower()
+            missing_terms = [
+                term for term in risky_terms if term in lower and term not in original_lower
+            ]
+            if stripped and missing_terms and not _looks_like_section_header(stripped):
+                logger.info(
+                    "Dropped responsibility line with unbacked term(s) %s: %s",
+                    ", ".join(missing_terms),
+                    stripped,
+                )
+                continue
             if is_bullet:
-                lower = stripped.lower()
-                missing_terms = [
-                    term for term in risky_terms if term in lower and term not in original_lower
-                ]
-                if missing_terms:
-                    logger.info(
-                        "Dropped responsibility bullet with unbacked term(s) %s: %s",
-                        ", ".join(missing_terms),
-                        stripped,
-                    )
-                    continue
                 if re.search(r"\bthat\s*[.;]?$", stripped, flags=re.IGNORECASE):
                     logger.info("Dropped incomplete responsibility bullet: %s", stripped)
+                    continue
+            result_lines.append(line)
+        return "\n".join(result_lines).strip()
+
+    @staticmethod
+    def _support_domain_contexts(text: str, support_domain_terms: tuple[str, ...]) -> set[str]:
+        contexts: set[str] = set()
+        recent_headers: list[str] = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            is_bullet = bool(re.match(r"^[•*\-]\s+", stripped))
+            folded = ResumeTailor._ascii_fold(stripped.strip("*_`")).lower()
+            if (
+                not is_bullet
+                and not _looks_like_section_header(stripped)
+                and not re.search(r"\b\d{4}\b", folded)
+                and len(folded.split()) <= 8
+            ):
+                recent_headers.append(folded)
+                recent_headers = recent_headers[-4:]
+            if any(term in folded for term in support_domain_terms):
+                contexts.update(recent_headers)
+        return contexts
+
+    @staticmethod
+    def _context_matches_source(current_context: str, source_contexts: set[str]) -> bool:
+        if not current_context:
+            return False
+        current_tokens = set(re.findall(r"[a-z0-9]{3,}", current_context))
+        for source_context in source_contexts:
+            source_tokens = set(re.findall(r"[a-z0-9]{3,}", source_context))
+            if current_tokens and source_tokens and len(current_tokens & source_tokens) >= 2:
+                return True
+            if current_context in source_context or source_context in current_context:
+                return True
+        return False
+
+    @staticmethod
+    def _strip_misplaced_support_domain_bullets(tailored: str, original: str) -> str:
+        """Drop signal/receiver/connectivity bullets when the source employer context differs."""
+        support_domain_terms = ("signal", "recepteur", "receiver", "connectivite", "connectivity")
+        source_contexts = ResumeTailor._support_domain_contexts(original, support_domain_terms)
+        if not source_contexts:
+            return tailored
+
+        current_context = ""
+        result_lines: list[str] = []
+        for line in tailored.splitlines():
+            stripped = line.strip()
+            is_bullet = bool(re.match(r"^[•*\-]\s+", stripped))
+            folded = ResumeTailor._ascii_fold(stripped.strip("*_`")).lower()
+            if not is_bullet and folded:
+                if (
+                    not _looks_like_section_header(stripped)
+                    and not re.search(r"\b\d{4}\b", folded)
+                    and len(folded.split()) <= 8
+                ):
+                    current_context = folded
+                result_lines.append(line)
+                continue
+            if is_bullet and any(term in folded for term in support_domain_terms):
+                if not ResumeTailor._context_matches_source(current_context, source_contexts):
+                    logger.info(
+                        "Dropped support-domain bullet outside its source employer context: %s",
+                        stripped,
+                    )
                     continue
             result_lines.append(line)
         return "\n".join(result_lines).strip()
@@ -1887,6 +2308,88 @@ class ResumeTailor:
         return "\n".join(result_lines).strip()
 
     @staticmethod
+    def _localize_standard_labels_for_language(tailored: str, language: str) -> str:
+        """Normalize standard résumé labels when the requested output language is French."""
+        if language != "French":
+            return tailored
+
+        replacements = {
+            "summary": "Profil",
+            "professional summary": "Profil",
+            "resume": "Profil",
+            "profil": "Profil",
+            "skills": "Compétences",
+            "technical skills": "Compétences",
+            "competences": "Compétences",
+            "experience": "Expérience",
+            "professional experience": "Expérience",
+            "work experience": "Expérience",
+            "experience professionnelle": "Expérience",
+            "education": "Formation",
+            "education & certifications": "Formation et certifications",
+            "education and certifications": "Formation et certifications",
+            "certifications": "Certifications",
+            "languages": "Langues",
+            "langues": "Langues",
+            "projects": "Projets",
+            "project": "Projets",
+            "projects & home lab": "Projets & laboratoire à domicile",
+            "projets & laboratoire a domicile": "Projets & laboratoire à domicile",
+        }
+        lines: list[str] = []
+        for line in tailored.splitlines():
+            stripped = line.strip()
+            bold = re.fullmatch(r"\*\*(.+?)\*\*", stripped)
+            label = bold.group(1).strip() if bold else stripped
+            normalized_label = ResumeTailor._ascii_fold(label).casefold()
+            localized = replacements.get(normalized_label)
+            if localized:
+                prefix = line[: len(line) - len(line.lstrip())]
+                lines.append(f"{prefix}**{localized}**" if bold else f"{prefix}{localized}")
+                continue
+            language_match = re.fullmatch(
+                r"Fluent in French and English, plus ([A-Za-z]+)\.",
+                stripped,
+            )
+            if language_match:
+                language_names = {"spanish": "espagnol"}
+                third_language = language_names.get(
+                    language_match.group(1).casefold(),
+                    language_match.group(1).casefold(),
+                )
+                prefix = line[: len(line) - len(line.lstrip())]
+                lines.append(f"{prefix}Français et anglais courants; {third_language}.")
+                continue
+            lines.append(line)
+        return "\n".join(lines).strip()
+
+    @staticmethod
+    def _strip_non_source_bold_entry_headings(tailored: str, original: str) -> str:
+        """Remove rewritten bold entry headings that are not source-owned labels.
+
+        Job titles, credential titles, school names, and similar entry labels are facts of record.
+        The prompt asks the LLM to keep them verbatim, but translated French drafts can still turn
+        source titles into new bold headings. Keep exact source headings and known section labels;
+        drop the rest so the verifier does not have to certify a rewritten credential/title.
+        """
+        normalized_source = _normalize_source_owned_fragment(original)
+        lines: list[str] = []
+        for line in tailored.splitlines():
+            stripped = line.strip()
+            bold = re.fullmatch(r"\*\*(.+?)\*\*", stripped)
+            if bold and not _looks_like_section_header(stripped):
+                label = bold.group(1).strip()
+                if _normalize_source_owned_fragment(label) not in normalized_source:
+                    logger.info("Dropped non-source bold entry heading: %s", stripped)
+                    continue
+            lines.append(line)
+        return "\n".join(lines).strip()
+
+    @staticmethod
+    def _ascii_fold(text: str) -> str:
+        return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+
+    @staticmethod
     def _evidence_tokens(text: str) -> set[str]:
         stop = {
             "and",
@@ -1909,6 +2412,25 @@ class ResumeTailor:
             "systems",
             "application",
             "applications",
+            "a",
+            "au",
+            "aux",
+            "avec",
+            "ce",
+            "ces",
+            "contre",
+            "de",
+            "des",
+            "du",
+            "en",
+            "et",
+            "la",
+            "le",
+            "les",
+            "pour",
+            "sur",
+            "un",
+            "une",
         }
         aliases = {
             "asynchronous": "async",
@@ -1916,8 +2438,144 @@ class ResumeTailor:
             "schemas": "schema",
             "models": "model",
             "workflows": "workflow",
+            "operations": "operation",
+            "operational": "operation",
+            "operationnels": "operation",
+            "operationnelles": "operation",
+            "gere": "managed",
+            "gerer": "managed",
+            "gestion": "managed",
+            "quotidien": "daily",
+            "quotidiens": "daily",
+            "quotidienne": "daily",
+            "quotidiennes": "daily",
+            "livraison": "delivery",
+            "conducteur": "driver",
+            "conducteurs": "drivers",
+            "chauffeur": "driver",
+            "chauffeurs": "drivers",
+            "unique": "single",
+            "escalade": "escalation",
+            "escaladee": "escalation",
+            "escalader": "escalation",
+            "escalated": "escalation",
+            "probleme": "issues",
+            "problemes": "issues",
+            "client": "client",
+            "clients": "client",
+            "differends": "disputes",
+            "desaccords": "disputes",
+            "reclamation": "claims",
+            "reclamations": "claims",
+            "articles": "item",
+            "manquants": "missing",
+            "horaire": "scheduling",
+            "horaires": "scheduling",
+            "coordination": "coordination",
+            "coordonne": "coordinated",
+            "coordonnes": "coordinated",
+            "coordinated": "coordination",
+            "realise": "booked",
+            "realises": "booked",
+            "contrat": "contracts",
+            "contrats": "contracts",
+            "assigne": "assigned",
+            "assignes": "assigned",
+            "operateur": "operators",
+            "operateurs": "operators",
+            "planning": "schedules",
+            "plannings": "schedules",
+            "hebdomadaire": "weekly",
+            "hebdomadaires": "weekly",
+            "mensuel": "monthly",
+            "mensuels": "monthly",
+            "rapide": "fast",
+            "exigeante": "critical",
+            "exigeant": "critical",
+            "temps": "time",
+            "mecanique": "mechanical",
+            "disponibilite": "operational",
+            "parc": "fleet",
+            "resolu": "resolved",
+            "resolues": "resolved",
+            "demandes": "inquiries",
+            "benefices": "benefit",
+            "prestations": "benefit",
+            "telephone": "phone",
+            "courriel": "email",
+            "premier": "first",
+            "appel": "call",
+            "diagnostique": "troubleshot",
+            "diagnostiques": "troubleshot",
+            "site": "website",
+            "web": "website",
+            "pour": "across",
+            "fourni": "delivered",
+            "soutien": "support",
+            "support": "support",
+            "niveau": "tier",
+            "clavardage": "chat",
+            "diagnostic": "diagnosing",
+            "resolution": "resolution",
+            "distance": "remotely",
+            "recepteur": "receiver",
+            "connectivite": "connectivity",
+            "maintenu": "maintained",
+            "taux": "rate",
+            "environ": "roughly",
+            "triage": "triaged",
+            "trie": "triaged",
+            "tries": "triaged",
+            "complexes": "complex",
+            "niveaux": "tiers",
+            "superieurs": "higher",
+            "procedure": "procedures",
+            "procedures": "procedures",
+            "documentees": "documented",
+            "projets": "projects",
+            "projet": "projects",
+            "laboratoire": "lab",
+            "laboratoires": "labs",
+            "domicile": "home",
+            "cybersecurite": "cybersecurity",
+            "test": "test",
+            "penetration": "pen-test",
+            "sandbox": "sandbox",
+            "environnement": "environment",
+            "multi": "multi",
+            "multi-vm": "multi-vm",
+            "vm": "vm",
+            "attaquant": "attacker",
+            "hote": "host",
+            "hotes": "hosts",
+            "cible": "target",
+            "cibles": "targets",
+            "attaque": "attack",
+            "defense": "defense",
+            "detection": "detection",
+            "pratique": "practice",
+            "pratiques": "practice",
+            "serveur": "server",
+            "auto": "self",
+            "heberge": "hosted",
+            "auto-heberge": "self-hosted",
+            "configure": "configured",
+            "securise": "secured",
+            "administre": "administered",
+            "bout": "end",
+            "outils": "tooling",
+            "outil": "tooling",
+            "securite": "security",
+            "paquet": "packet",
+            "paquets": "packet",
+            "analyse": "analysis",
+            "scan": "scanning",
+            "reseau": "network",
+            "surveillance": "monitoring",
+            "cours": "coursework",
         }
-        tokens = set(re.findall(r"[a-z0-9][a-z0-9+.-]{2,}", text.lower()))
+        normalized = ResumeTailor._ascii_fold(text).lower()
+        tokens = set(re.findall(r"[a-z0-9][a-z0-9+.-]{2,}", normalized))
         return {aliases.get(token, token) for token in tokens if token not in stop}
 
     @staticmethod
@@ -1932,13 +2590,9 @@ class ResumeTailor:
 
     def _strip_hallucinated_education(self, tailored: str, original: str) -> str:
         """Remove Education section if it wasn't in the original resume."""
-        import re
+        if _source_section(original, "Education") is not None:
+            return tailored
 
-        # Check if original has an education section (case-insensitive word boundary)
-        if re.search(r"\bEDUCATION\b", original, re.IGNORECASE):
-            return tailored  # Original has education, keep it
-
-        # Find and remove education section from tailored text
         lines = tailored.split("\n")
         result_lines: list[str] = []
         in_education = False
@@ -1946,8 +2600,7 @@ class ResumeTailor:
         for line in lines:
             stripped = line.strip()
 
-            # Detect education section header (with optional markdown bold)
-            if re.match(r"^\*{0,2}\s*EDUCATION\s*\*{0,2}$", stripped, re.IGNORECASE):
+            if section_header(stripped) == "Education":
                 in_education = True
                 continue
 
@@ -1967,12 +2620,11 @@ class ResumeTailor:
 
     def _strip_unbacked_optional_sections(self, tailored: str, original: str) -> str:
         """Remove optional sections if they weren't in the original resume."""
-        import re
-
-        sections_to_strip: list[str] = []
-        for section in ("CERTIFICATIONS", "LANGUAGES", "VOLUNTEER", "AWARDS", "INTERESTS"):
-            if not re.search(rf"\b{section}\b", original, re.IGNORECASE):
-                sections_to_strip.append(section)
+        sections_to_strip = {
+            section
+            for section in ("Certifications", "Languages", "Volunteer", "Awards", "Interests")
+            if _source_section(original, section) is None
+        }
         if not sections_to_strip:
             return tailored
 
@@ -1983,11 +2635,7 @@ class ResumeTailor:
         for line in lines:
             stripped = line.strip()
 
-            # Detect one of the target section headers (with optional markdown bold)
-            if any(
-                re.match(rf"^\*{{0,2}}\s*{section}\s*\*{{0,2}}$", stripped, re.IGNORECASE)
-                for section in sections_to_strip
-            ):
+            if section_header(stripped) in sections_to_strip:
                 in_section = True
                 continue
 

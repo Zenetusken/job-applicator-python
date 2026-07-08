@@ -29,6 +29,7 @@ from job_applicator.models import Format
 from job_applicator.utils.diff import render_diff
 from job_applicator.utils.logging import get_logger
 from job_applicator.workflows.cover_letter import _cover_letter_workflow
+from job_applicator.workflows.tailor_policy import STRICT_GROUNDING_FEEDBACK
 
 logger = get_logger("workflows.tailor")
 
@@ -166,6 +167,19 @@ def _print_post_tailor_integrity(
     return integrity
 
 
+def grounding_failure_summary(report: GroundingReport) -> str:
+    """Summarize residual grounding issues with enough text to fix the prompt/output."""
+    issue_count = len(report.unsupported) + len(report.coverage_gaps)
+    message = f"{issue_count} unsupported or unchecked claim(s)"
+    unsupported = "; ".join(check.claim for check in report.unsupported[:3])
+    if unsupported:
+        message += f"; unsupported: {unsupported}"
+    gaps = "; ".join(report.coverage_gaps[:3])
+    if gaps:
+        message += f"; unchecked: {gaps}"
+    return message
+
+
 def assert_tailored_auto_saveable(result: TailoredResume, original_text: str) -> None:
     """Fail closed before an automated tailored-CV save."""
     grounding_report = result.grounding_report
@@ -175,10 +189,9 @@ def assert_tailored_auto_saveable(result: TailoredResume, original_text: str) ->
             "complete. Review manually, or retry after fixing the verifier."
         )
     if not grounding_report.clean:
-        issue_count = len(grounding_report.unsupported) + len(grounding_report.coverage_gaps)
         raise TailorIntegrityError(
             "Automated save refused this tailored résumé because grounding verification found "
-            f"{issue_count} unsupported or unchecked claim(s). Review manually, or adjust the "
+            f"{grounding_failure_summary(grounding_report)}. Review manually, or adjust the "
             "tailoring prompt."
         )
     computed = _compute_post_tailor_integrity(original_text, result.tailored_text)
@@ -300,19 +313,12 @@ async def _tailor_workflow(
                     "\n[yellow]--yes: grounding found unsupported claims; retrying once with "
                     "strict source-only instructions.[/yellow]"
                 )
-                feedback = (
-                    "Remove every unsupported or weakly supported claim. Use only facts, metrics, "
-                    "tools, duties, dates, employers, and outcomes explicitly present in the "
-                    "original résumé. Prefer shorter source-backed bullets over embellished "
-                    "claims. Do not add new responsibilities, optional sections, aspirations, "
-                    "deployment claims, performance claims, collaboration claims, or outcomes."
-                )
                 try:
                     result = await partial(
                         tailor_engine.refine_verified,
                         resume_data,
                         result,
-                        feedback,
+                        STRICT_GROUNDING_FEEDBACK,
                         job,
                         style_guide=style,
                         tone_profile=tone_profile,

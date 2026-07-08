@@ -530,15 +530,28 @@ class DocumentQualityScreen(_FadeModalScreen[None]):
     def compose(self) -> ComposeResult:
         result = self._result
         verdict = "[green]✓ passed[/green]" if result.passed else "[red]✗ failed[/red]"
+        mode_text = (
+            "Packet quality check passed"
+            if result.packet is not None and result.passed
+            else "Packet quality check failed"
+            if result.packet is not None
+            else "Limited smoke check passed"
+            if result.passed
+            else "Limited smoke check failed"
+        )
         lines = [
             f"[bold]Document quality[/bold]   {verdict}",
+            f"[bold]{mode_text}[/bold]",
             f"[dim]Source: {escape(result.source)}[/dim]",
             f"[dim]Keywords: {escape(result.keyword_source)}[/dim]",
+            f"[dim]Matched skills: {result.matched_skill_count}[/dim]",
         ]
         if result.artifact_paths:
             lines.append("")
             lines.append("[bold]Artifacts[/bold]")
-            lines.extend(f"  {escape(path)}" for path in result.artifact_paths)
+            for path in result.artifact_paths:
+                mtime = result.artifact_mtimes.get(path, "unknown mtime")
+                lines.append(f"  {escape(path)}  [dim]mtime={escape(mtime)}[/dim]")
         if result.packet is not None:
             lines.append("")
             lines.append(f"[bold]Packet[/bold]  overall={result.packet.overall:.2f}/4")

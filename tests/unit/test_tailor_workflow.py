@@ -18,6 +18,21 @@ from typer.testing import CliRunner
 from job_applicator.models import ClaimCheck, GroundingReport, ResumeData, TailoredResume
 
 
+def test_grounding_failure_summary_includes_residual_details() -> None:
+    from job_applicator.workflows.tailor import grounding_failure_summary
+
+    summary = grounding_failure_summary(
+        GroundingReport(
+            unsupported=[ClaimCheck(claim="Invented SOC ownership", grounded=False)],
+            coverage_gaps=["Bonjour à l'équipe de recrutement d'Example Risk Lab"],
+        )
+    )
+
+    assert "2 unsupported or unchecked claim(s)" in summary
+    assert "Invented SOC ownership" in summary
+    assert "Bonjour à l'équipe de recrutement d'Example Risk Lab" in summary
+
+
 def _tailored(text: str = "TAILORED RESUME", **kw: object) -> TailoredResume:
     kw.setdefault("grounding_report", GroundingReport())
     return TailoredResume(
