@@ -45,6 +45,13 @@ language = "auto"
 # this below ~4096 can truncate tailored résumés. Matches the built-in default.
 max_tokens = 4096
 temperature = 0.7
+# Optional sampler knobs for empirical Qwen/vLLM tuning. They default to omitted request fields so
+# baseline behavior stays unchanged unless you set them after measuring.
+# top_p = 0.8
+# top_k = 20
+# min_p = 0.0
+# presence_penalty = 1.2
+enable_thinking = false
 
 # Targets
 [target]

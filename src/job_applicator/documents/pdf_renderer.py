@@ -22,7 +22,12 @@ from job_applicator.documents.sign_off import extract_sign_off
 from job_applicator.exceptions import LLMError, PDFRenderError
 from job_applicator.models import CoverLetterResult, JobListing, TailoredResume
 from job_applicator.utils.language import detect_language
-from job_applicator.utils.llm import LLMRuntime, litellm_model, quiet_litellm
+from job_applicator.utils.llm import (
+    LLMRuntime,
+    litellm_completion_kwargs,
+    litellm_model,
+    quiet_litellm,
+)
 from job_applicator.utils.path import safe_filename_slug
 
 _FR_MONTHS = (
@@ -290,9 +295,7 @@ class PDFRenderer:
                     ],
                     response_model=FormattedResume,
                     max_retries=1,
-                    max_tokens=config.max_tokens,
-                    temperature=config.temperature,
-                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                    **litellm_completion_kwargs(config),
                 ),
             )
 
@@ -329,9 +332,7 @@ class PDFRenderer:
                     ],
                     response_model=FormattedCoverLetter,
                     max_retries=1,
-                    max_tokens=config.max_tokens,
-                    temperature=config.temperature,
-                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                    **litellm_completion_kwargs(config),
                 ),
             )
 

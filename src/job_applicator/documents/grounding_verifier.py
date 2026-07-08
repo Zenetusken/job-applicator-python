@@ -21,7 +21,12 @@ from typing import Any, cast
 from job_applicator.config import LLMConfig
 from job_applicator.exceptions import GroundingUnavailableError, LLMError
 from job_applicator.models import ClaimCheck, GroundingReport, ResumeData, VerificationReport
-from job_applicator.utils.llm import LLMRuntime, litellm_model, quiet_litellm
+from job_applicator.utils.llm import (
+    LLMRuntime,
+    litellm_completion_kwargs,
+    litellm_model,
+    quiet_litellm,
+)
 from job_applicator.utils.logging import get_logger
 
 logger = get_logger("documents.grounding_verifier")
@@ -583,9 +588,7 @@ class GroundingVerifier:
                     messages=messages,
                     response_model=VerificationReport,
                     max_retries=1,
-                    max_tokens=self._config.max_tokens,
-                    temperature=0.1,
-                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                    **litellm_completion_kwargs(self._config, temperature=0.1),
                 ),
             )
 

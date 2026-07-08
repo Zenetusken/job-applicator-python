@@ -329,6 +329,14 @@ resume_path = "/path/to/your/resume.pdf"
 api_base = "http://localhost:8000/v1"  # vLLM endpoint
 api_key = "not-needed-for-local"
 model = "Qwen/Qwen3-8B-AWQ"
+max_tokens = 4096
+temperature = 0.7
+# Optional sampler knobs for measured Qwen/vLLM tuning; omitted by default to preserve baseline.
+# top_p = 0.8
+# top_k = 20
+# min_p = 0.0
+# presence_penalty = 1.2
+enable_thinking = false
 # Output language for the generated CV + cover letter: "auto" mirrors the job
 # posting's language, or force "en" / "fr". The two documents always resolve the
 # SAME language, so one application never mixes them.
@@ -338,6 +346,8 @@ language = "auto"
 The smaller, faster `cyankiwi/Qwen3.5-4B-AWQ-4bit` remains a pinnable fallback (via
 `JOB_APPLICATOR_LLM_MODEL` / `[llm] model`) — the 8B grounds stack-heavy job descriptions
 the 4B couldn't, while still fitting the 12 GB card alongside the embeddings.
+Sampler fields are configurable for A/B testing against private document-quality packets; they are
+not model fine-tuning, and unset fields are omitted from requests.
 
 ### Embedding Configuration
 

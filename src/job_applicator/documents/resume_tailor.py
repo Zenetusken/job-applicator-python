@@ -22,7 +22,13 @@ from job_applicator.models import (
     TailoredResume,
 )
 from job_applicator.utils.language import resolve_output_language
-from job_applicator.utils.llm import CircuitOpenError, LLMRuntime, litellm_model, quiet_litellm
+from job_applicator.utils.llm import (
+    CircuitOpenError,
+    LLMRuntime,
+    litellm_completion_kwargs,
+    litellm_model,
+    quiet_litellm,
+)
 from job_applicator.utils.logging import get_logger
 from job_applicator.utils.retry import async_retry
 
@@ -2679,11 +2685,7 @@ class ResumeTailor:
                         {"role": "system", "content": TAILOR_SYSTEM_PROMPT},
                         {"role": "user", "content": prompt},
                     ],
-                    max_tokens=self._config.max_tokens,
-                    temperature=temperature,
-                    extra_body={
-                        "chat_template_kwargs": {"enable_thinking": False},
-                    },
+                    **litellm_completion_kwargs(self._config, temperature=temperature),
                 )
 
                 from job_applicator.utils.llm import strip_thinking_process

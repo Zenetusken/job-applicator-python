@@ -154,16 +154,20 @@ async def _cover_letter_workflow(
             from datetime import datetime as dt
 
             output_dir = Path("output")
-            output_dir.mkdir(exist_ok=True)
+            await asyncio.to_thread(output_dir.mkdir, exist_ok=True)
             safe_company = job.company.replace(" ", "_").replace("/", "_")
             safe_title = job.title.replace(" ", "_").replace("/", "_")
             timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
             cl_filename = f"cover_letter_{safe_company}_{safe_title}_{timestamp}.txt"
             cl_path = output_dir / cl_filename
-            cl_path.write_text(result.cover_letter_text, encoding="utf-8")
+            await asyncio.to_thread(cl_path.write_text, result.cover_letter_text, encoding="utf-8")
             result.output_path = str(cl_path)
             cl_meta_path = cl_path.with_suffix(".meta.json")
-            cl_meta_path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+            await asyncio.to_thread(
+                cl_meta_path.write_text,
+                result.model_dump_json(indent=2),
+                encoding="utf-8",
+            )
             console.print(f"\n[green]Cover letter saved: {cl_path}[/green]")
             return cl_path
 
@@ -207,7 +211,7 @@ async def _cover_letter_workflow(
                     )
                     from litellm import acompletion
 
-                    from job_applicator.utils.llm import litellm_model
+                    from job_applicator.utils.llm import litellm_completion_kwargs, litellm_model
 
                     model = litellm_model(config)
                     response = await acompletion(
@@ -215,8 +219,7 @@ async def _cover_letter_workflow(
                         api_base=config.api_base,
                         api_key=config.api_key,
                         messages=[{"role": "user", "content": refine_prompt}],
-                        max_tokens=config.max_tokens,
-                        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                        **litellm_completion_kwargs(config),
                     )
                     refined = strip_thinking_process(response.choices[0].message.content)
                 new_result = CoverLetterResult(
@@ -452,16 +455,20 @@ async def main() -> bool:
             from datetime import datetime
 
             output_dir = Path("output")
-            output_dir.mkdir(exist_ok=True)
+            await asyncio.to_thread(output_dir.mkdir, exist_ok=True)
 
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             fname = f"tailored_CGI_TechSupport_{ts}.txt"
             out = output_dir / fname
-            out.write_text(result.tailored_text, encoding="utf-8")
+            await asyncio.to_thread(out.write_text, result.tailored_text, encoding="utf-8")
             result.output_path = str(out)
 
             meta_path = out.with_suffix(".meta.json")
-            meta_path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+            await asyncio.to_thread(
+                meta_path.write_text,
+                result.model_dump_json(indent=2),
+                encoding="utf-8",
+            )
 
             console.print(f"\n[green]Saved: {out}[/green]")
             console.print(f"[dim]Attempt #{attempt} | Score: {result.match_score:.0%}[/dim]")
@@ -488,7 +495,11 @@ async def main() -> bool:
 
             if cover_letter_path:
                 result.cover_letter_path = str(cover_letter_path)
-            meta_path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+            await asyncio.to_thread(
+                meta_path.write_text,
+                result.model_dump_json(indent=2),
+                encoding="utf-8",
+            )
             console.print(f"[green]Meta:  {meta_path}[/green]")
             break
 

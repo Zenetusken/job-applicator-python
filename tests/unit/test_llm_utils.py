@@ -307,6 +307,44 @@ def test_litellm_model_bare_when_no_api_base() -> None:
     assert litellm_model(cfg) == "gpt-4o-mini"
 
 
+def test_litellm_completion_kwargs_preserves_default_request_shape() -> None:
+    """Phase-1 sampler migration must not change default generation behavior."""
+    from job_applicator.config import LLMConfig
+    from job_applicator.utils.llm import litellm_completion_kwargs
+
+    assert litellm_completion_kwargs(LLMConfig()) == {
+        "max_tokens": 4096,
+        "temperature": 0.7,
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+    }
+
+
+def test_litellm_completion_kwargs_adds_configured_sampler_fields() -> None:
+    """Qwen/vLLM sampler knobs are emitted only when explicitly configured."""
+    from job_applicator.config import LLMConfig
+    from job_applicator.utils.llm import litellm_completion_kwargs
+
+    cfg = LLMConfig(
+        top_p=0.8,
+        top_k=20,
+        min_p=0.0,
+        presence_penalty=1.2,
+        enable_thinking=True,
+    )
+
+    assert litellm_completion_kwargs(cfg, temperature=0.1, max_tokens=512) == {
+        "max_tokens": 512,
+        "temperature": 0.1,
+        "top_p": 0.8,
+        "presence_penalty": 1.2,
+        "extra_body": {
+            "top_k": 20,
+            "min_p": 0.0,
+            "chat_template_kwargs": {"enable_thinking": True},
+        },
+    }
+
+
 def test_openai_prefix_rule_lives_only_in_litellm_model() -> None:
     """F5 (anti-drift): the ``openai/`` prefix is constructed in exactly one place —
     the ``litellm_model()`` helper. Guards against a new completion caller

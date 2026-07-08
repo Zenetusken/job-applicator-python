@@ -114,6 +114,10 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
   job-applicator's own `.venv/bin/vllm`, `GPU_MEM=0.65`, `MAX_MODEL_LEN=8192`, and
   `ENFORCE_EAGER=1`, which keeps enough 8K KV cache for Qwen3-8B-AWQ while leaving CUDA
   embedding headroom on the validated 12 GB RTX 4070 profile.
+- **LLM sampler kwargs are centralized.** Completion callers use
+  `utils.llm.litellm_completion_kwargs()` for `max_tokens`, temperature overrides, Qwen thinking
+  control, and optional sampler knobs (`top_p`, `top_k`, `min_p`, `presence_penalty`). The sampler
+  fields are measurement toggles by default; unset fields are omitted from requests.
 - Instructor for structured LLM outputs (Pydantic models)
 - mxbai-embed-large-v1 for semantic job matching (~1.4 GB runtime allocation,
   1.3 GB free-VRAM preflight budget)

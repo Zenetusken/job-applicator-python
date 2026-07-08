@@ -21,6 +21,7 @@ from job_applicator.utils.llm import (
     CircuitOpenError,
     LLMRuntime,
     ValidatedOutput,
+    litellm_completion_kwargs,
     litellm_model,
     llm_call_error,
     quiet_litellm,
@@ -851,9 +852,7 @@ class CoverLetterGenerator:
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user_message},
                 ],
-                max_tokens=self._config.max_tokens,
-                temperature=self._config.temperature,
-                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                **litellm_completion_kwargs(self._config),
             )
             return strip_thinking_process(response.choices[0].message.content)
 
@@ -872,9 +871,7 @@ class CoverLetterGenerator:
                         ],
                         response_model=CoverLetterDraft,
                         max_retries=1,
-                        max_tokens=self._config.max_tokens,
-                        temperature=self._config.temperature,
-                        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                        **litellm_completion_kwargs(self._config),
                     )
                     self._instructor_usable = True
                     # Assemble the three fields into paragraphs — blank lines make the 3-paragraph

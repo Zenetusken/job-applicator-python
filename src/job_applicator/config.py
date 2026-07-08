@@ -64,6 +64,13 @@ class LLMConfig(BaseSettings):
     # cover letters and style analysis stay well under this cap.
     max_tokens: int = 4096
     temperature: float = 0.7
+    # Optional sampler knobs. Defaults intentionally preserve the previous request shape; set these
+    # for measured Qwen/vLLM tuning without changing task-specific temperature overrides.
+    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    top_k: int | None = Field(default=None, ge=0)
+    min_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+    enable_thinking: bool = False
     # Output language for generated documents: "auto" (mirror the job posting's language), "en",
     # or "fr". Lives on [llm] so the cover-letter override (cover_letter_llm) inherits it — the CV
     # and the cover letter always resolve the SAME language, so one application never mixes them.

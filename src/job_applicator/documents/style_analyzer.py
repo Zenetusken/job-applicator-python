@@ -22,6 +22,7 @@ from job_applicator.exceptions import LLMError
 from job_applicator.models import StyleGuide
 from job_applicator.utils.llm import (
     LLMRuntime,
+    litellm_completion_kwargs,
     litellm_model,
     llm_call_error,
     quiet_litellm,
@@ -217,11 +218,11 @@ class StyleAnalyzer:
                             messages=messages,
                             response_model=StyleGuide,
                             max_retries=self._runtime.validation_max_retries,
-                            max_tokens=max_tokens,
-                            temperature=0.1,
-                            extra_body={
-                                "chat_template_kwargs": {"enable_thinking": False},
-                            },
+                            **litellm_completion_kwargs(
+                                self._config,
+                                max_tokens=max_tokens,
+                                temperature=0.1,
+                            ),
                         )
                         return cast(StyleGuide, response)
 
@@ -254,11 +255,11 @@ class StyleAnalyzer:
                         api_base=self._config.api_base,
                         api_key=self._config.api_key,
                         messages=messages,
-                        max_tokens=max_tokens,
-                        temperature=0.1,
-                        extra_body={
-                            "chat_template_kwargs": {"enable_thinking": False},
-                        },
+                        **litellm_completion_kwargs(
+                            self._config,
+                            max_tokens=max_tokens,
+                            temperature=0.1,
+                        ),
                     )
 
                 direct_response = await self._runtime.run(_call_direct)

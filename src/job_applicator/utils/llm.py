@@ -7,7 +7,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from job_applicator.exceptions import LLMError
 from job_applicator.utils.logging import get_logger
@@ -96,6 +96,38 @@ def litellm_model(config: LLMConfig) -> str:
     formatting) constructs the id identically rather than re-deriving the rule.
     """
     return f"openai/{config.model}" if config.api_base else config.model
+
+
+def litellm_completion_kwargs(
+    config: LLMConfig,
+    *,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+) -> dict[str, Any]:
+    """Build shared completion kwargs for litellm/instructor calls.
+
+    Defaults preserve the previous request shape: max_tokens + temperature plus Qwen thinking
+    disabled in ``extra_body``. Optional sampler fields are included only when explicitly
+    configured, which lets us A/B Qwen/vLLM settings without changing baseline behavior.
+    """
+    extra_body: dict[str, Any] = {
+        "chat_template_kwargs": {"enable_thinking": config.enable_thinking}
+    }
+    if config.top_k is not None:
+        extra_body["top_k"] = config.top_k
+    if config.min_p is not None:
+        extra_body["min_p"] = config.min_p
+
+    kwargs: dict[str, Any] = {
+        "max_tokens": config.max_tokens if max_tokens is None else max_tokens,
+        "temperature": config.temperature if temperature is None else temperature,
+        "extra_body": extra_body,
+    }
+    if config.top_p is not None:
+        kwargs["top_p"] = config.top_p
+    if config.presence_penalty is not None:
+        kwargs["presence_penalty"] = config.presence_penalty
+    return kwargs
 
 
 def strip_thinking_process(text: str | None) -> str:

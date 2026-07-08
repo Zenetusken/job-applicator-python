@@ -139,12 +139,18 @@ src/job_applicator/
 ## Gotchas
 
 - **LLM output has thinking process.** Qwen models prepend reasoning. Callers suppress it at two
-  layers: `extra_body={"chat_template_kwargs": {"enable_thinking": False}}` in litellm, and
-  post-processing with `strip_thinking_process()` in `utils/llm.py`.
+  layers: `utils.llm.litellm_completion_kwargs()` sends
+  `chat_template_kwargs.enable_thinking=false` by default, and post-processing uses
+  `strip_thinking_process()` in `utils/llm.py`.
 - **LLM calls need an `openai/` prefix for local vLLM.** All completion callers (cover-letter,
   style, tailor, skill-extraction, PDF formatting) build the model id via the single helper
   `utils.llm.litellm_model(config)`, which adds the `openai/` prefix when `llm.api_base` is set.
   Embeddings use `sentence-transformers` directly and do not use this prefix.
+- **LLM sampler kwargs are centralized.** Completion callers should use
+  `utils.llm.litellm_completion_kwargs(config, temperature=..., max_tokens=...)` instead of
+  hand-rolling `max_tokens`, `temperature`, or `extra_body`. Optional sampler config (`top_p`,
+  `top_k`, `min_p`, `presence_penalty`, `enable_thinking`) is for measured Qwen/vLLM tuning and
+  defaults to the previous request shape except for explicit user overrides.
 - **StyleAnalyzer has live-path observability.** It logs instructor vs direct-litellm JSON paths,
   elapsed time, and fallback reason. Direct fallback failures route through `utils.llm.llm_call_error()`.
   If localhost vLLM is up but the error says the runtime was denied permission to open a network
