@@ -29,7 +29,6 @@ from job_applicator.models import Format
 from job_applicator.utils.diff import render_diff
 from job_applicator.utils.logging import get_logger
 from job_applicator.workflows.cover_letter import _cover_letter_workflow
-from job_applicator.workflows.tailor_policy import STRICT_GROUNDING_FEEDBACK
 
 logger = get_logger("workflows.tailor")
 
@@ -284,9 +283,8 @@ async def _tailor_workflow(
         console.print("\n[bold]Changes Made:[/bold]")
         console.print(strip_markdown_bold(result.changes_summary))
 
-        # Every version carries its own grounding report: the first from tailor_verified, an
-        # interactively refined one from refine_verified — so a refined draft gets the SAME honesty
-        # pass as the primary (surfaced, never auto-stripped). Fail-safe leaves it "not run".
+        # Every version carries its own source-overlay integrity report. Refinement regenerates the
+        # summary from the original source and reruns the same digest/citation checks.
         _print_grounding_report(console, result.grounding_report)
         _print_post_tailor_integrity(console, session.original_text, result.tailored_text)
 
@@ -295,41 +293,15 @@ async def _tailor_workflow(
         action_table.add_column("Option", style="cyan bold")
         action_table.add_column("Description")
         action_table.add_row("[A] Accept", "Save this version as final")
-        action_table.add_row("[R] Retry", "Regenerate with same instructions")
-        action_table.add_row("[I] Input", "Give custom instructions to refine")
+        action_table.add_row("[R] Retry", "Regenerate the summary")
+        action_table.add_row("[I] Input", "Give summary focus or voice instructions")
         action_table.add_row("[D] Diff", "Show changes from original resume")
         action_table.add_row("[V] History", "Browse previous attempts")
-        action_table.add_row("[S] Section", "Edit a specific section")
+        action_table.add_row("[S] Summary", "Refine the generated summary")
         action_table.add_row("[Q] Quit", "Discard and exit")
         console.print(action_table)
 
         if yes:
-            if (
-                result.grounding_report is not None
-                and not result.grounding_report.clean
-                and attempt < 3
-            ):
-                console.print(
-                    "\n[yellow]--yes: grounding found unsupported claims; retrying once with "
-                    "strict source-only instructions.[/yellow]"
-                )
-                try:
-                    result = await partial(
-                        tailor_engine.refine_verified,
-                        resume_data,
-                        result,
-                        STRICT_GROUNDING_FEEDBACK,
-                        job,
-                        style_guide=style,
-                        tone_profile=tone_profile,
-                    )()
-                except Exception as exc:
-                    raise TailorIntegrityError(
-                        "--yes refused to auto-accept this tailored résumé because retrying "
-                        "after grounding failure did not complete."
-                    ) from exc
-                session.add_attempt(result)
-                continue
             try:
                 assert_tailored_auto_saveable(result, session.original_text)
             except TailorIntegrityError as exc:
@@ -453,8 +425,8 @@ async def _tailor_workflow(
 
         elif choice == "I":
             user_instructions = console.input(
-                "\n[bold]Enter your instructions (e.g., 'emphasize "
-                "customer service', 'add troubleshooting detail'): "
+                "\n[bold]Enter summary instructions (e.g., 'emphasize "
+                "customer service evidence', 'use a more concise voice'): "
                 "[/bold]"
             ).strip()
             if not user_instructions:
@@ -526,38 +498,23 @@ async def _tailor_workflow(
             continue
 
         elif choice == "S":
+            from job_applicator.documents.resume import section_header
             from job_applicator.documents.resume_tailor import parse_sections
 
-            sections = parse_sections(result.tailored_text)
-            if len(sections) <= 1 and sections[0].name == "Full Document":
+            sections = [
+                section
+                for section in parse_sections(result.tailored_text)
+                if section_header(section.name) == "Summary"
+            ]
+            if len(sections) != 1:
                 console.print(
-                    "[yellow]Could not detect sections. "
-                    "Use [I] for full-resume instructions.[/yellow]"
+                    "[yellow]Could not identify exactly one summary section. "
+                    "The source résumé body remains read-only.[/yellow]"
                 )
                 continue
 
-            console.print("\n[bold]Sections:[/bold]")
-            sec_table = Table(show_header=False, box=None)
-            sec_table.add_column("#", style="cyan")
-            sec_table.add_column("Section", style="bold")
-            sec_table.add_column("Lines", style="dim")
-            for i, sec in enumerate(sections, 1):
-                line_count = sec.text.count("\n") + 1
-                sec_table.add_row(str(i), sec.name, f"{line_count} lines")
-            console.print(sec_table)
-
-            sec_choice = console.input(
-                "\n[bold cyan]Section # to edit (or Enter to go back): [/bold cyan]"
-            ).strip()
-            if not sec_choice.isdigit():
-                continue
-            sec_idx = int(sec_choice) - 1
-            if sec_idx < 0 or sec_idx >= len(sections):
-                console.print("[red]Invalid section number.[/red]")
-                continue
-
-            target_section = sections[sec_idx]
-            console.print(f"\n[dim]Editing: {target_section.name}[/dim]")
+            target_section = sections[0]
+            console.print(f"\n[dim]Editing generated summary: {target_section.name}[/dim]")
             # Strip bold before slicing — the section body keeps raw `**` from parse_sections.
             console.print(f"[dim]{strip_markdown_bold(target_section.text)[:200]}...[/dim]\n")
 
@@ -566,12 +523,7 @@ async def _tailor_workflow(
                 console.print("[yellow]No instructions provided.[/yellow]")
                 continue
 
-            user_instructions = (
-                f"ONLY modify the {target_section.name} section. "
-                f"Keep all other sections unchanged.\n\n"
-                f"Current {target_section.name} content:\n{target_section.text}\n\n"
-                f"User instructions for this section: {sec_instructions}"
-            )
+            user_instructions = sec_instructions
             refined = await _llm_with_retry(
                 console,
                 partial(
@@ -583,7 +535,7 @@ async def _tailor_workflow(
                     tone_profile=tone_profile,
                     style_guide=style,
                 ),
-                "Refining section...",
+                "Refining summary...",
             )
             if refined is None:
                 break

@@ -23,6 +23,7 @@ from job_applicator.models import (
     UserProfile,
 )
 from job_applicator.utils.llm import LLMRuntime
+from tests.helpers import cover_letter_overlay
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -272,7 +273,9 @@ class TestGenerateCoverLetter:
             patch("job_applicator.workflows.cover_letter._load_user_profile") as mock_profile,
         ):
             mock_gen = mock_gen_cls.return_value
-            mock_gen.generate_verified = AsyncMock(return_value="Dear Hiring Manager")
+            mock_gen.generate_verified_with_overlay = AsyncMock(
+                return_value=("Dear Hiring Manager", cover_letter_overlay())
+            )
             mock_profile.return_value = MagicMock()
             result = await _generate_cover_letter(
                 console,
@@ -310,7 +313,9 @@ class TestGenerateCoverLetter:
             patch("job_applicator.workflows.cover_letter._load_user_profile") as mock_profile,
         ):
             mock_gen = mock_gen_cls.return_value
-            mock_gen.generate_verified = AsyncMock(side_effect=RuntimeError("LLM down"))
+            mock_gen.generate_verified_with_overlay = AsyncMock(
+                side_effect=RuntimeError("LLM down")
+            )
             mock_profile.return_value = MagicMock()
             result = await _generate_cover_letter(
                 console,
@@ -346,7 +351,9 @@ class TestGenerateCoverLetter:
             patch("job_applicator.workflows.cover_letter._load_user_profile") as mock_profile,
         ):
             mock_gen = mock_gen_cls.return_value
-            mock_gen.generate_verified = AsyncMock(return_value="letter")
+            mock_gen.generate_verified_with_overlay = AsyncMock(
+                return_value=("letter", cover_letter_overlay())
+            )
             user_profile = MagicMock()
             mock_profile.return_value = user_profile
             await _generate_cover_letter(
@@ -360,7 +367,7 @@ class TestGenerateCoverLetter:
                 session,
                 runtime=LLMRuntime.defaults(),
             )
-            mock_gen.generate_verified.assert_called_once_with(
+            mock_gen.generate_verified_with_overlay.assert_called_once_with(
                 job,
                 user_profile,
                 resume_data,
@@ -528,7 +535,9 @@ class TestRefineCoverLetter:
             ),
         ):
             mock_gen = mock_gen_cls.return_value
-            mock_gen.refine_verified = AsyncMock(return_value=("refined letter", None))
+            mock_gen.refine_verified_with_overlay = AsyncMock(
+                return_value=("refined letter", cover_letter_overlay(), None)
+            )
             await _refine_cover_letter(
                 console,
                 settings,
@@ -571,7 +580,7 @@ class TestRefineCoverLetter:
             ),
         ):
             mock_gen = mock_gen_cls.return_value
-            mock_gen.refine_verified = AsyncMock(side_effect=RuntimeError("fail"))
+            mock_gen.refine_verified_with_overlay = AsyncMock(side_effect=RuntimeError("fail"))
             await _refine_cover_letter(
                 console,
                 settings,
@@ -829,13 +838,23 @@ class TestRefineStaleScores:
     async def test_refine_preserves_score_types(self) -> None:
         """refine() should return valid float scores."""
         from job_applicator.config import LLMConfig
+        from job_applicator.documents.resume_document import ResumeDocument
         from job_applicator.documents.resume_tailor import ResumeTailor
+        from job_applicator.models import ResumeOverlay, SourceBackedStatement
 
         config = LLMConfig(api_base="http://localhost:8000/v1", model="test")
         tailor = ResumeTailor(config)
 
         original = ResumeData(
-            raw_text="Python developer with 5 years experience",
+            raw_text=(
+                "Alex Morgan\nalex@example.com | 514-555-0100\n\n"
+                "SUMMARY\nPython developer.\n\n"
+                "EXPERIENCE\nDeveloper | Acme | 2020 - Present\n"
+                "• Built Python services.\n\n"
+                "PROJECTS\n• Built a Django application.\n\n"
+                "EDUCATION\nCertificate | College | 2020\n\n"
+                "SKILLS\nPython, Django"
+            ),
             skills=["Python", "Django"],
         )
         job = JobListing(
@@ -860,25 +879,39 @@ class TestRefineStaleScores:
             attempt=1,
         )
 
-        with patch.object(tailor, "_call_llm", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = "Refined Python developer resume"
-            with patch.object(tailor, "_summarize_changes", new_callable=AsyncMock) as mock_changes:
-                mock_changes.return_value = "Refined based on feedback"
-                matcher = MagicMock()
-                matcher.match_resume_to_job = AsyncMock(
-                    return_value=MatchResult(
-                        job=job,
-                        score=0.8,
-                        semantic_score=0.75,
-                        skill_score=0.7,
-                        matched_skills=["Python"],
-                        missing_skills=["Django"],
-                        summary="Good match",
-                    )
-                )
-                result = await tailor.refine(
-                    original, current, "Add more detail", job, matcher=matcher
-                )
+        source_document = ResumeDocument.parse(original.raw_text)
+        sentences = [
+            SourceBackedStatement(
+                text=f"Source-backed sentence {index}.",
+                fact_ids=[f"SRC-00{index}"],
+            )
+            for index in range(1, 4)
+        ]
+        generated = source_document.with_summary(
+            " ".join(sentence.text for sentence in sentences),
+            language="English",
+        ).render()
+        overlay = ResumeOverlay(
+            summary_sentences=sentences,
+            source_body_sha256=source_document.non_summary_sha256(),
+            source_language="en",
+        )
+        tailor._overlay_generator.generate = AsyncMock(  # type: ignore[method-assign]
+            return_value=(generated, overlay)
+        )
+        matcher = MagicMock()
+        matcher.match_resume_to_job = AsyncMock(
+            return_value=MatchResult(
+                job=job,
+                score=0.8,
+                semantic_score=0.75,
+                skill_score=0.7,
+                matched_skills=["Python"],
+                missing_skills=["Django"],
+                summary="Good match",
+            )
+        )
+        result = await tailor.refine(original, current, "Add more detail", job, matcher=matcher)
 
         assert result.attempt == 2
         assert isinstance(result.match_score, float)
@@ -900,8 +933,12 @@ async def test_workflow_threads_one_shared_runtime_across_attempts() -> None:
     def capture_gen(config: object, runtime: object = None) -> MagicMock:
         captured.append(runtime)
         gen = MagicMock()
-        gen.generate_verified = AsyncMock(return_value="Dear Hiring Manager, a strong letter.")
-        gen.refine_verified = AsyncMock(return_value=("refined", None))
+        gen.generate_verified_with_overlay = AsyncMock(
+            return_value=("Dear Hiring Manager, a strong letter.", cover_letter_overlay())
+        )
+        gen.refine_verified_with_overlay = AsyncMock(
+            return_value=("refined", cover_letter_overlay(), None)
+        )
         return gen
 
     console = MagicMock(spec=Console)

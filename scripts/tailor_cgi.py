@@ -46,7 +46,7 @@ async def _cover_letter_workflow(
     tone_profile: object,
     tailored_resume_text: str,
 ) -> Path | None:
-    from job_applicator.documents.cover_letter import CoverLetterGenerator, strip_thinking_process
+    from job_applicator.documents.cover_letter import CoverLetterGenerator
     from job_applicator.models import CoverLetterResult, CoverLetterSession
 
     generator = CoverLetterGenerator(config)
@@ -70,7 +70,7 @@ async def _cover_letter_workflow(
 
     try:
         with console.status("Generating cover letter..."):
-            letter = await generator.generate(
+            letter, overlay = await generator.generate_verified_with_overlay(
                 job,
                 user,
                 resume,
@@ -83,6 +83,8 @@ async def _cover_letter_workflow(
             job_url=str(job.url),
             cover_letter_text=letter,
             attempt=1,
+            prompt_version=overlay.architecture_version,
+            overlay=overlay,
         )
         session.add_attempt(result)
     except Exception as exc:
@@ -91,7 +93,7 @@ async def _cover_letter_workflow(
         if retry == "R":
             try:
                 with console.status("Generating cover letter..."):
-                    letter = await generator.generate(
+                    letter, overlay = await generator.generate_verified_with_overlay(
                         job,
                         user,
                         resume,
@@ -104,6 +106,8 @@ async def _cover_letter_workflow(
                     job_url=str(job.url),
                     cover_letter_text=letter,
                     attempt=1,
+                    prompt_version=overlay.architecture_version,
+                    overlay=overlay,
                 )
                 session.add_attempt(result)
             except Exception:
@@ -175,7 +179,7 @@ async def _cover_letter_workflow(
             console.print("[yellow]Regenerating...[/yellow]")
             try:
                 with console.status("Generating cover letter..."):
-                    letter = await generator.generate(
+                    letter, overlay = await generator.generate_verified_with_overlay(
                         job,
                         user,
                         resume,
@@ -188,6 +192,8 @@ async def _cover_letter_workflow(
                     job_url=str(job.url),
                     cover_letter_text=letter,
                     attempt=attempt + 1,
+                    prompt_version=overlay.architecture_version,
+                    overlay=overlay,
                 )
                 session.add_attempt(new_result)
             except Exception as exc:
@@ -202,26 +208,14 @@ async def _cover_letter_workflow(
                 console.print("[yellow]No instructions provided.[/yellow]")
             try:
                 with console.status("Refining cover letter..."):
-                    refine_prompt = (
-                        f"User wants changes to this cover letter.\n\n"
-                        f"Job: {job.title} at {job.company}\n\n"
-                        f"Current cover letter:\n{result.cover_letter_text}\n\n"
-                        f"User feedback: {user_instructions}\n\n"
-                        f"Return the complete updated cover letter."
+                    refined, overlay, _report = await generator.refine_verified_with_overlay(
+                        job,
+                        user,
+                        resume,
+                        result.cover_letter_text,
+                        user_instructions,
+                        tone_section=tone_section,
                     )
-                    from litellm import acompletion
-
-                    from job_applicator.utils.llm import litellm_completion_kwargs, litellm_model
-
-                    model = litellm_model(config)
-                    response = await acompletion(
-                        model=model,
-                        api_base=config.api_base,
-                        api_key=config.api_key,
-                        messages=[{"role": "user", "content": refine_prompt}],
-                        **litellm_completion_kwargs(config),
-                    )
-                    refined = strip_thinking_process(response.choices[0].message.content)
                 new_result = CoverLetterResult(
                     job_title=job.title,
                     job_company=job.company,
@@ -229,6 +223,8 @@ async def _cover_letter_workflow(
                     cover_letter_text=refined,
                     user_modifications=user_instructions,
                     attempt=attempt + 1,
+                    prompt_version=overlay.architecture_version,
+                    overlay=overlay,
                 )
                 session.add_attempt(new_result)
             except Exception as exc:

@@ -282,11 +282,11 @@ def test_cover_letter_generator_runtime_is_injectable() -> None:
     from job_applicator.utils.llm import CircuitBreaker, LLMRuntime
 
     runtime = LLMRuntime(breaker=CircuitBreaker(name="test"))
-    assert CoverLetterGenerator(LLMConfig(), runtime=runtime)._breaker is runtime.breaker
+    assert CoverLetterGenerator(LLMConfig(), runtime=runtime)._runtime is runtime
     # No shared module-global; the default generator builds its own from config.
     assert not hasattr(cover_letter, "_CIRCUIT_BREAKER")
     gen = CoverLetterGenerator(LLMConfig())
-    assert gen._breaker is gen._runtime.breaker
+    assert gen._runtime.breaker is not None
 
 
 def test_litellm_model_adds_openai_prefix_when_api_base_set() -> None:

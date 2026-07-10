@@ -76,7 +76,7 @@ def test_llm_config_defaults() -> None:
     # couldn't); the 4B stays a pinnable fallback via JOB_APPLICATOR_LLM_MODEL.
     assert config.model == "Qwen/Qwen3-8B-AWQ"
     assert config.temperature == 0.7
-    # Sized for full résumé tailoring (not the old 1024 cap).
+    # General completion cap; individual analysis tasks may self-cap.
     assert config.max_tokens == 4096
     # Phase-1 sampler migration is measure-only: optional knobs default to omitted request fields.
     assert config.top_p is None

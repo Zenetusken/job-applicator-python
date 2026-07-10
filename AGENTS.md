@@ -25,7 +25,7 @@ ruff format src/ tests/
 # Release (see RELEASING.md)
 bash scripts/release.sh <version>   # bump version, update CHANGELOG.md, tag, build dist
 
-# Tests — 1487 fast unit tests (the green gate); 1546 total = 1487 unit + 24 integration + 35 live
+# Tests — 1377 fast unit tests (the green gate); 1440 total = 1377 unit + 28 integration + 35 live
 pytest -m unit -v               # or: pytest tests/unit/ -v   (auto-marked by location)
 pytest -m unit -v -k test_name  # single test
 python scripts/check_matcher_gate_required.py --base HEAD
@@ -49,9 +49,9 @@ job-applicator tailor --resume resume.pdf --from <id-or-url> [--style-guide exam
 job-applicator generate-cover-letter --resume resume.pdf --job-title "..." --company "..." [--style-guide example.txt] [--format txt|pdf|both] [--template modern|classic|minimal] [--category <category>]
 job-applicator ats-check --resume resume.pdf [--json] [--strict]
 job-applicator document-quality --resume tailored.txt --cover-letter cover.txt --keyword Python [--json]
-job-applicator document-quality --private-packet-set --required [--min-cases 3] [--max-artifact-age-days 14] [--required-category support] [--required-language en] [--json]
+job-applicator document-quality --private-packet-set --required [--min-cases 15] [--min-manual-reviews-per-category 5] [--max-artifact-age-days 14] [--required-category support] [--required-language en] [--json]
 python scripts/eval_llm_sampler.py --dry-run --json  # Plan baseline-vs-Qwen sampler evals
-python scripts/eval_llm_sampler.py --required --json # Run sampler variants and baseline deltas
+python scripts/eval_llm_sampler.py --required --integrity-only --json # Generate and integrity-check sampler variants
 job-applicator apply --query "python" --validate [--style-guide example.txt] [--format txt|pdf|both] [--template modern|classic|minimal] [--category <category>]            # Dry-run Easy Apply and validate it reaches Submit
 job-applicator apply --query "python" --submit --limit 5 [--style-guide example.txt] [--format txt|pdf|both] [--template modern|classic|minimal] [--category <category>]    # Send real applications
 job-applicator selector-health --site linkedin --surface search --query "python developer"  # Live selector drift report
@@ -100,7 +100,7 @@ src/job_applicator/
 ├── scrapers/           # base.py (BrowserPolicy) → linkedin.py, indeed.py
 ├── applicators/        # base.py → linkedin.py (Easy Apply, dry-run gated), indeed.py
 ├── documents/          # cover letter, résumé parsing/tailoring, style/tone/ATS/OCR/sign-off/artifacts
-│                       #   grounding_verifier.py (language-agnostic honesty layer)
+│                       #   grounding_verifier.py (standalone claim-audit diagnostic)
 │                       #   PDF rendering: pdf_renderer.py, formatted_models.py, job_category.py,
 │                       #   templates/ (Typst), artifacts.py
 ├── embeddings/         # embedding service + job matching
@@ -144,8 +144,8 @@ src/job_applicator/
   layers: `utils.llm.litellm_completion_kwargs()` sends
   `chat_template_kwargs.enable_thinking=false` by default, and post-processing uses
   `strip_thinking_process()` in `utils/llm.py`.
-- **LLM calls need an `openai/` prefix for local vLLM.** All completion callers (cover-letter,
-  style, tailor, skill-extraction, PDF formatting) build the model id via the single helper
+- **LLM calls need an `openai/` prefix for local vLLM.** Completion callers (style analysis,
+  skill extraction, and the standalone grounding diagnostic) build the model id via the single helper
   `utils.llm.litellm_model(config)`, which adds the `openai/` prefix when `llm.api_base` is set.
   Embeddings use `sentence-transformers` directly and do not use this prefix.
 - **LLM sampler kwargs are centralized.** Completion callers should use
@@ -154,7 +154,8 @@ src/job_applicator/
   `top_k`, `min_p`, `presence_penalty`, `enable_thinking`) is for measured Qwen/vLLM tuning and
   defaults to the previous request shape except for explicit user overrides. Use
   `scripts/eval_llm_sampler.py` to compare baseline vs Qwen-shaped variants before changing
-  defaults; its JSON reports baseline-relative overall/per-dimension deltas.
+  defaults; its JSON reports baseline-relative overall/per-dimension deltas. These settings can
+  affect criteria extraction and diagnostics, but never deterministic applicant claim realization.
 - **StyleAnalyzer has live-path observability.** It logs instructor vs direct-litellm JSON paths,
   elapsed time, and fallback reason. Direct fallback failures route through `utils.llm.llm_call_error()`.
   If localhost vLLM is up but the error says the runtime was denied permission to open a network
@@ -163,27 +164,42 @@ src/job_applicator/
   circuit breaker + content-retry runtime in `utils/llm.py` for all LLM consumers.
 - **litellm banners are suppressed.** `utils.llm.quiet_litellm()` runs before litellm calls to keep
   feedback/help banners and INFO logs off stdout/stderr.
-- **Résumé tailoring has hallucination guards.** `_validate_skills()`, `_strip_hallucinated_tools()`,
-  `_strip_hallucinated_education()`, metric/optional-section cleanup, and low-evidence bullet
-  filtering in `documents/resume_tailor.py` keep the output aligned with the original résumé.
-  Non-interactive tailoring (`--yes`/`--json`) and `batch` prepend strict source-only instructions;
-  batch also runs one strict refinement after dirty grounding before refusing to save. Skill/tool
-  matching uses fuzzy, non-greedy logic in `embeddings/matching.py`.
-- **Grounding verifier is the language-agnostic honesty layer.** `documents/grounding_verifier.py`:
-  an LLM enumerates each claim in a generated doc + cites the SOURCE line; a deterministic audit
-  (`audit_report` — token-overlap + numeric backstop + coverage check) overrides ungrounded
-  verdicts. SOURCE is ALWAYS the BASE résumé (`resume.raw_text`) — never the JD or the tailored
-  intermediate. `CoverLetterGenerator.generate_verified()` regenerates ONCE, then raises
-  `CoverLetterGroundingError` if the best draft is still unclean or verification is unavailable.
-  `ResumeTailor.tailor_verified()` SURFACES the result on `TailoredResume.grounding_report` (never
-  auto-strips — the résumé is the document of record). Non-interactive CV saves (`tailor --yes`,
-  `tailor --json`, `batch`, TUI one-shot tailoring) fail closed unless grounding completed cleanly
-  and the tailored output preserves contact/ATS integrity. Fail-safe: a verifier failure raises
-  `GroundingUnavailableError`, never a clean report. The pure audit core is unit-tested (runs on the
-  fast gate); the LLM pass is `-m live`.
+- **Résumé tailoring is a bounded source overlay, not whole-document rewriting.**
+  `documents/resume_document.py` canonicalizes the base résumé and makes every non-summary section
+  immutable. Structured job requirements, or temperature-zero evidence-span extraction from a
+  bounded job description when requirements are absent, feed deterministic ranking of three
+  primary source facts. Local realization preserves each fact's wording and adds only terminal
+  punctuation.
+  `ResumeTailor.verify_tailored()` fails closed unless the body digest, summary, citations, and
+  deterministic realization match the overlay. There
+  is no phrase replacement, tool
+  stripping, metric/grammar repair, section restoration, or context-specific bullet deletion.
+  Retry, custom input, and `[S]` regenerate the summary only.
+- **PDF formatting is deterministic.** `PDFRenderer` parses canonical résumé sections and cover
+  letter paragraphs/sign-off locally, then renders them with Typst. It never sends an artifact back
+  through an LLM, so rendering cannot omit, translate, or invent document content.
+- **Cover letters separate targeting from deterministic factual realization.** The same grounded
+  criteria path feeds deterministic ranking of exactly three relevant primary source facts. Local
+  typed realization produces exactly three body statements, one fact ID per statement and each ID used once. The
+  application opening, closing request, and sign-off are also assembled deterministically. The
+  artifact sidecar stores all statements, citations, source digest, language, and
+  architecture version.
+- **The standalone grounding verifier is a diagnostic, not a generation dependency.**
+  `documents/grounding_verifier.py` can enumerate claims and audit source quotes for non-overlay
+  documents. SOURCE is ALWAYS the BASE résumé (`resume.raw_text`) — never the JD or a generated
+  intermediate. Source-overlay generation and certification do not depend on this probabilistic
+  verifier.
+  Cover-letter generation validates each deterministically realized body sentence directly against
+  its selected fact before assembly.
+  Résumé summaries are checked directly against their three selected facts; the rest of the résumé
+  is source text protected by a digest, so the old whole-document claim-enumeration pass is not in
+  the tailoring path. Non-interactive saves (`tailor --yes`, `tailor --json`, `batch`, TUI one-shot
+  tailoring) fail closed unless overlay verification and contact/ATS integrity are clean.
 - **Output language is a packet-level policy.** `[llm] language` = `auto` (mirror the JD) | `en` |
   `fr`, resolved by `utils/language.py` (small FR/EN heuristic, logged per job). It lives on `[llm]`
   so `cover_letter_llm` inherits it — the CV and cover letter ALWAYS resolve the SAME language.
+  Résumé tailoring requires the base résumé to already be in that language; cross-language résumé
+  generation fails closed instead of relying on unverified machine translation.
   French gets an in-language sign-off ("Cordialement,"), a localized PDF date, and recognized French
   closings in `documents/sign_off.py`.
 - **Tailoring includes a date audit.** `ResumeDateValidator` checks chronological ordering,
@@ -209,8 +225,9 @@ src/job_applicator/
 - **Résumé PDF parser uses multi-parser consensus + OCR fallback.** Supports PDF
   (`pdftotext -layout`), DOCX, TXT/MD, and images. `ResumeLoader.load()` dispatches by extension and
   falls back to OCR when extracted text is short. OCR uses PaddleOCR on CPU by default.
-- **Tone detection is keyword-based**, not LLM-based. Tone profiles are injected into tailoring and
-  cover-letter prompts; see `documents/tone_detector.py`.
+- **Tone detection is keyword-based**, not LLM-based. It remains advisory; deterministic
+  source-overlay claim realization does not rewrite facts to match a tone profile. See
+  `documents/tone_detector.py`.
 - **Per-board browser requirements live in the scraper.** `BrowserPolicy` in `scrapers/base.py`
   declares `headless`, `ephemeral_profile`, and `virtual_display` needs; `factories.py` honors them.
   Indeed sets `headed=True, ephemeral_profile=True, virtual_display=True`. By default the headed
@@ -269,9 +286,10 @@ src/job_applicator/
 - **`apply` is dry-run by default.** Real applications require the explicit `--submit` flag.
   Without it the Easy Apply form is filled but never submitted.
 - **Dry-run `apply` generates cover letters as a preview.** Whenever `--cover-letter` is enabled
-  (the default) and a résumé path is available, the CLI calls the LLM, fills the cover-letter field
-  in the form, and surfaces the generated text in `--json` output and in the console table notes.
-  The application is still not submitted. Use `--no-cover-letter` to skip generation.
+  (the default) and a résumé path is available, the CLI runs the source-overlay generator, fills
+  the cover-letter field, and surfaces the generated text in `--json` output and console notes.
+  Criteria extraction may call the LLM when requirements are absent; applicant claim prose does
+  not. The application is still not submitted. Use `--no-cover-letter` to skip generation.
 - **Apply dry-run validation returns an `ApplicationResult` with a `DryRunValidation` field.** The
   nested object shows whether the Easy Apply button, form fields, résumé upload, cover-letter
   field, and final Submit step were reached. It also records matched advance/submit selectors,
@@ -280,9 +298,9 @@ src/job_applicator/
   `job-applicator apply --validate` exits non-zero if any dry run fails to reach Submit.
 - **`search` persists discovered jobs.** Discovered listings flow into `jobs_store.py` and are
   visible via `status` and the TUI.
-- **Default `llm.max_tokens` is `4096`**, matching `config.example.toml`. 4096 fits full résumé
-  tailoring; style analysis self-caps at 1024 (`STYLE_MAX_TOKENS`). Setting it below ~4096 can
-  truncate tailored résumés.
+- **Default `llm.max_tokens` is `4096`**, matching `config.example.toml`. Individual analysis tasks
+  may self-cap; style analysis caps at 1024 (`STYLE_MAX_TOKENS`). Deterministic applicant claim
+  realization consumes no completion tokens.
 - **`config.toml` is actually loaded.** `AppSettings.settings_customise_sources()` adds it as the
   lowest-priority source; env vars override it. Point at an alternate file via
   `JOB_APPLICATOR_CONFIG_FILE`; a missing file is a no-op.
@@ -323,8 +341,8 @@ preflight budget available on the validated 12 GB RTX 4070 profile. Override wit
 `serve-vllm.sh` auto-sets `--tool-call-parser qwen3_xml --enable-auto-tool-choice` for Qwen3
 (and Qwen3.5) models, and puts the vLLM venv's bin on `PATH` so flashinfer can JIT-compile a
 kernel for a fresh model (the 8B fails with `No such file or directory: 'ninja'` otherwise; `ninja`
-ships in the `serve` extra). Cover-letter, grounding-verifier, and style-guide generation use
-instructor in TOOLS mode, which needs this parser; without it they still work but fall back to
+ships in the `serve` extra). Skill extraction, the standalone grounding verifier, and style-guide
+analysis use instructor in TOOLS mode, which needs this parser; without it they still work but fall back to
 direct litellm completion. The fallback is less reliable for structured output, so keep the parser
 enabled for local vLLM.
 
@@ -343,9 +361,9 @@ that generate cover letters. The default dry-run `apply` does not run the ATS pr
 ## Testing
 
 - Tests are auto-marked by location (`tests/conftest.py`): `pytest -m unit` / `-m live` /
-  `-m integration` all work. Unit suite (`pytest -m unit`, 1487) is fast — no browser/GPU; the green
+  `-m integration` all work. Unit suite (`pytest -m unit`, 1377) is fast — no browser/GPU; the green
   gate.
-- 24 integration tests live in `tests/integration/` and exercise cross-component seams with no
+- 28 integration tests live in `tests/integration/` and exercise cross-component seams with no
   vLLM/GPU: board browser-policy wiring, PDF rendering, the apply-loop + batch-loop against a real
   SQLite state store (real daily-cap / dedup / resume persistence the mock-state unit tests can't
   reach), and the offline browser-fingerprint self-consistency gate (real Chrome, loopback only).
@@ -364,11 +382,12 @@ that generate cover letters. The default dry-run `apply` does not run the ATS pr
   `job-applicator document-quality --resume <txt> --cover-letter <txt> --keyword <job-term>`.
   It checks obvious quality regressions (missing contact/sections/sign-off, placeholders, markdowny
   cover letters, repetition warnings, and basic job-keyword coverage). It complements, not replaces,
-  grounding and human review. Generated packet changes can also be certified against a private
+  deterministic source integrity and human review. Generated packet changes can also be certified against a private
   packet set with:
   ```bash
-  job-applicator document-quality --private-packet-set --required --min-cases 3 \
-    --max-artifact-age-days 14 --required-category support --required-category risk \
+  job-applicator document-quality --private-packet-set --required --min-cases 15 \
+    --min-manual-reviews-per-category 5 --max-artifact-age-days 14 \
+    --required-category support --required-category risk --required-category network \
     --required-language en --required-language fr
   ```
   The default private manifest is `~/.job-applicator/document-quality-eval/packet-set.jsonl`
@@ -380,12 +399,13 @@ that generate cover letters. The default dry-run `apply` does not run the ATS pr
   Private gold-standard CV/cover-letter bundles live under
   `~/.job-applicator/document-quality-eval/gold-standards/`. See
   `docs/document-quality-eval.md` for the manifest, 0-4 rubric, and gold-standard bundle layout.
-- LLM sampler tuning has a private-data companion harness:
-  `python scripts/eval_llm_sampler.py --required --json`. It reads local sampler cases from
+- LLM sampler measurement has a private-data companion harness:
+  `python scripts/eval_llm_sampler.py --required --integrity-only --json`. It reads local sampler cases from
   `~/.job-applicator/document-quality-eval/sampler-cases.jsonl`, generates fresh packet manifests
   under `~/.job-applicator/document-quality-eval/sampler-runs/`, certifies each variant through
-  document-quality, and reports how much each Qwen-shaped variant improves/regresses against
-  `baseline`. Start with `--dry-run --json` to inspect commands and env overrides.
+  document-quality, and reports how much each Qwen-shaped criteria-extraction/transport variant
+  improves/regresses against `baseline`. Applicant claim prose is deterministic. Start with
+  `--dry-run --json` to inspect commands and env overrides.
 - Tests use fixtures from `tests/conftest.py`.
 - Embedding tests mock the model (CPU fallback).
 

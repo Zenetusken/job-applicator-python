@@ -10,6 +10,7 @@ import pytest
 from typer.testing import CliRunner
 
 from job_applicator.cli import app
+from tests.helpers import cover_letter_overlay
 
 runner = CliRunner()
 
@@ -112,8 +113,11 @@ def test_gcl_json_stdout_is_pure_json(monkeypatch: pytest.MonkeyPatch, tmp_path:
     loader = MagicMock()
     loader.load.return_value = ResumeData(raw_text="Jane\njane@example.com\nPython, SQL")
     gen = MagicMock()
-    gen.generate_verified = AsyncMock(
-        return_value="Dear Hiring Manager,\n\nI build async Python systems."
+    gen.generate_verified_with_overlay = AsyncMock(
+        return_value=(
+            "Dear Hiring Manager,\n\nI build async Python systems.",
+            cover_letter_overlay(),
+        )
     )
     tone = MagicMock(primary="professional", confidence=0.9)
 

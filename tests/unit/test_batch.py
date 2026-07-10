@@ -13,6 +13,7 @@ import job_applicator.cli as cli
 from job_applicator.cli import app
 from job_applicator.embeddings.matching import MatchResult
 from job_applicator.models import ClaimCheck, GroundingReport, JobBoard, JobListing, TailoredResume
+from tests.helpers import cover_letter_overlay
 
 
 @pytest.fixture
@@ -103,7 +104,9 @@ def style_guide_batch_env(
     cl_generator = MagicMock()
     cl_generator.load_style_guide = AsyncMock(return_value=style)
     cl_generator.generate = AsyncMock(return_value="cover letter")
-    cl_generator.generate_verified = AsyncMock(return_value="cover letter")
+    cl_generator.generate_verified_with_overlay = AsyncMock(
+        return_value=("cover letter", cover_letter_overlay())
+    )
 
     with (
         patch.object(cli, "_get_settings", return_value=MagicMock()) as mock_settings,
@@ -391,7 +394,7 @@ class TestBatchStyleGuide:
         )
 
         assert result.exit_code == 0, result.output
-        env["cl_generator"].generate_verified.assert_not_called()
+        env["cl_generator"].generate_verified_with_overlay.assert_not_called()
 
     def test_style_guide_load_receives_ocr_mode(
         self, style_guide_batch_env: dict[str, object]
@@ -499,11 +502,12 @@ class TestBatchRecovery:
         assert result.exit_code != 0, result.output
         bs.complete_run.assert_called_with(ANY, BatchRunStatus.FAILED)  # not wrongly COMPLETED
 
-    def test_batch_refines_dirty_grounding_before_saving(
+    def test_batch_rejects_dirty_grounding_without_refining(
         self, style_guide_batch_env: dict[str, object]
     ) -> None:
-        """Batch is unattended like tailor --yes: dirty grounding gets one strict refine before
-        artifacts are saved."""
+        """Batch fails closed on dirty grounding instead of rewriting the draft."""
+        from job_applicator.batch_state import BatchRunStatus
+
         env = style_guide_batch_env
         dirty = TailoredResume(
             original_path=str(env["sample_resume_file"]),
@@ -521,14 +525,7 @@ class TestBatchRecovery:
                 unsupported=[ClaimCheck(claim="unsupported", grounded=False)]
             ),
         )
-        clean = dirty.model_copy(
-            update={
-                "tailored_text": "John Doe\njohn@example.com\n555-0123\nClean tailored resume text",
-                "grounding_report": GroundingReport(),
-            }
-        )
         env["tailor"].tailor_verified = AsyncMock(return_value=dirty)
-        env["tailor"].refine_verified = AsyncMock(return_value=clean)
 
         result = env["runner"].invoke(  # type: ignore[attr-defined]
             env["app"],
@@ -544,13 +541,14 @@ class TestBatchRecovery:
             ],
         )
 
-        assert result.exit_code == 0, result.output
-        env["tailor"].refine_verified.assert_awaited_once()
+        assert result.exit_code != 0, result.output
+        env["tailor"].refine_verified.assert_not_called()
+        env["batch_state"].complete_run.assert_called_with(ANY, BatchRunStatus.FAILED)
 
-    def test_batch_dirty_grounding_after_refine_reports_details(
+    def test_batch_dirty_grounding_reports_details(
         self, style_guide_batch_env: dict[str, object]
     ) -> None:
-        """If the strict retry is still dirty, surface the residual claim/gap text."""
+        """A rejected draft surfaces its residual claim and coverage-gap evidence."""
         from job_applicator.batch_state import BatchRunStatus
 
         env = style_guide_batch_env
@@ -614,7 +612,7 @@ class TestBatchRecovery:
         )
 
         assert result.exit_code == 0, result.output
-        kwargs = env["cl_generator"].generate_verified.await_args.kwargs
+        kwargs = env["cl_generator"].generate_verified_with_overlay.await_args.kwargs
         assert kwargs["tone_section"]
         assert kwargs["tailored_resume_text"] == (
             "John Doe\njohn@example.com\n555-0123\nTailored resume text"
@@ -628,7 +626,9 @@ class TestBatchRecovery:
         from job_applicator.batch_state import BatchJobStatus, BatchRunStatus
 
         env = style_guide_batch_env
-        env["cl_generator"].generate_verified = AsyncMock(side_effect=RuntimeError("cl boom"))
+        env["cl_generator"].generate_verified_with_overlay = AsyncMock(
+            side_effect=RuntimeError("cl boom")
+        )
         bs = env["batch_state"]
 
         result = env["runner"].invoke(  # type: ignore[attr-defined]

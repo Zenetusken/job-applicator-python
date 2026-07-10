@@ -300,7 +300,7 @@ def test_tailor_yes_refuses_auto_accept_without_grounding(
 def test_tailor_yes_refuses_auto_accept_with_unsupported_claims(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A non-clean verifier report still blocks non-interactive save after retry."""
+    """A non-clean verifier report blocks non-interactive save without rewriting."""
     unsupported = ClaimCheck(claim="Invented CISSP", grounded=False, note="source is silent")
     result, _engine, _cl = _drive(
         monkeypatch,
@@ -308,18 +308,18 @@ def test_tailor_yes_refuses_auto_accept_with_unsupported_claims(
         [],
         yes=True,
         initial_grounding_report=GroundingReport(unsupported=[unsupported]),
-        refined_grounding_report=GroundingReport(unsupported=[unsupported]),
     )
 
     assert result.exit_code == 1
     assert "unsupported or unchecked claim" in result.output
+    _engine.refine_verified.assert_not_awaited()
     assert not list(tmp_path.glob("tailored_*.txt"))
 
 
-def test_tailor_yes_retries_dirty_grounding_once_then_saves(
+def test_tailor_yes_does_not_refine_dirty_grounding(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Non-interactive tailoring retries dirty first drafts before failing closed."""
+    """Non-interactive tailoring fails closed instead of mutating a dirty draft."""
     import job_applicator.cli as cli
 
     unsupported = ClaimCheck(claim="Invented CISSP", grounded=False, note="source is silent")
@@ -329,16 +329,13 @@ def test_tailor_yes_retries_dirty_grounding_once_then_saves(
         [],
         yes=True,
         initial_text="DIRTY",
-        refined_text="CLEAN",
         initial_grounding_report=GroundingReport(unsupported=[unsupported]),
     )
 
-    assert result.exit_code == 0, result.output
-    txts = list(tmp_path.glob("tailored_*.txt"))
-    assert len(txts) == 1 and txts[0].read_text(encoding="utf-8") == "CLEAN"
-    engine.refine_verified.assert_awaited_once()
-    assert "Remove every unsupported" in engine.refine_verified.await_args.args[2]
-    assert "explicitly present in the original résumé" in engine.refine_verified.await_args.args[2]
+    assert result.exit_code == 1
+    assert "unsupported or unchecked claim" in result.output
+    assert not list(tmp_path.glob("tailored_*.txt"))
+    engine.refine_verified.assert_not_awaited()
     cli.console.input.assert_not_called()  # type: ignore[attr-defined]
 
 
@@ -369,19 +366,19 @@ def test_tailor_interactive_can_accept_after_integrity_warning(
 def test_tailor_section_edit_refines_target_section(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """[S] parses sections, targets one, and refines it with section-scoped instructions."""
+    """[S] targets the generated summary; source-body sections are not selectable."""
     sections = [
         SimpleNamespace(name="Summary", text="summary text"),
         SimpleNamespace(name="Experience", text="experience text"),
     ]
     result, engine, _ = _drive(
-        monkeypatch, tmp_path, ["S", "1", "fix the summary", "Q"], sections=sections
+        monkeypatch, tmp_path, ["S", "fix the summary", "Q"], sections=sections
     )
     assert result.exit_code == 0, result.output
     engine.refine_verified.assert_awaited_once()
     instructions = engine.refine_verified.await_args.args[2]
     assert "fix the summary" in instructions
-    assert "Summary" in instructions  # section-scoped
+    assert instructions == "fix the summary"
 
 
 def test_tailor_diff_then_quit_changes_nothing(
@@ -537,7 +534,7 @@ def test_tailor_section_preview_strips_markdown_bold(
 ) -> None:
     """[S] section preview de-markdowns the section body (parse_sections keeps raw `**`)."""
     sections = [SimpleNamespace(name="Summary", text="Profile **BOLDSEC** summary body")]
-    result, _engine, _cl = _drive(monkeypatch, tmp_path, ["S", "1", "", "Q"], sections=sections)
+    result, _engine, _cl = _drive(monkeypatch, tmp_path, ["S", "", "Q"], sections=sections)
     assert result.exit_code == 0, result.output
     assert "**BOLDSEC**" not in result.output  # section preview no longer leaks the markers
     assert "BOLDSEC" in result.output

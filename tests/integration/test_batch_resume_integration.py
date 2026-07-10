@@ -240,7 +240,9 @@ def test_batch_resume_reuses_existing_cover_letter_from_tailored_meta(
     state.record_job(_RUN_ID, job, BatchJobStatus.TAILORED, resume_path=str(tailored_path))
 
     cl_generator = MagicMock()
-    cl_generator.generate_verified = AsyncMock(side_effect=AssertionError("should not regenerate"))
+    cl_generator.generate_verified_with_overlay = AsyncMock(
+        side_effect=AssertionError("should not regenerate")
+    )
     with patch(
         "job_applicator.documents.cover_letter.CoverLetterGenerator",
         return_value=cl_generator,
@@ -262,5 +264,5 @@ def test_batch_resume_reuses_existing_cover_letter_from_tailored_meta(
         )
 
     assert result.exit_code == 0, result.output
-    cl_generator.generate_verified.assert_not_called()
+    cl_generator.generate_verified_with_overlay.assert_not_called()
     assert BatchState().get_job_status(_RUN_ID, _JOB_URL) == BatchJobStatus.COMPLETED

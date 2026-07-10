@@ -2,7 +2,7 @@
 """Deterministic critical-paths QA / sanity harness for the job-applicator CLI.
 
 Runs the SAFE critical paths through the real CLI as a user would, asserts STABLE
-signals (exit codes, no-traceback, valid JSON, artifacts, voice-tells), and emits a
+signals (exit codes, no-traceback, valid JSON, artifacts, fail-closed validation), and emits a
 markdown PASS/FAIL/WARN report. Use at the end of an implementation arc and for
 general sanity checks. See SKILL.md.
 
@@ -26,8 +26,8 @@ THREE invariants make this trustworthy:
    (they touch the real account or launch a real browser+session). Those are probed
    for --help only. Cover letters use inline --description (no scraping/browser).
 
-LLM output is non-deterministic, so LLM checks assert stable signals (exit 0,
-no-traceback, artifact written, voice-tells count as a WARN metric) — never exact text.
+LLM output is non-deterministic, so LLM checks assert stable signals (exit 0 or an explicit
+fail-closed verdict, no traceback, and artifact presence) — never exact text.
 The isolated run uses CONFIG DEFAULTS (no real config.toml): reproducible, but it will
 not catch config-specific issues.
 """
@@ -178,6 +178,15 @@ def grounding_fail_closed(cp: subprocess.CompletedProcess[str]) -> bool:
 def cover_letter_fail_closed(cp: subprocess.CompletedProcess[str]) -> bool:
     """A requested cover letter can fail closed at either honesty layer."""
     combined = (cp.stdout + cp.stderr).lower()
+    source_contract_failure = any(
+        marker in combined
+        for marker in (
+            "not entailed by its cited source facts",
+            "cover-letter fact selection",
+            "failed source integrity",
+            "cross-language cover-letter generation",
+        )
+    )
     deterministic_guard = (
         "generated cover letter" in combined
         and (
@@ -189,7 +198,9 @@ def cover_letter_fail_closed(cp: subprocess.CompletedProcess[str]) -> bool:
         )
     )
     return grounding_fail_closed(cp) or (
-        cp.returncode != 0 and not has_traceback(cp) and deterministic_guard
+        cp.returncode != 0
+        and not has_traceback(cp)
+        and (deterministic_guard or source_contract_failure)
     )
 
 
@@ -213,11 +224,11 @@ def make_fixtures() -> dict[str, Path]:
     d.add_paragraph("jordan.sample@example.com | (555) 123-4567 | San Francisco, CA")
     for h, lines in [
         ("Summary", ["Senior Python engineer, 8 years building async data pipelines and ML services."]),
-        ("Experience", ["Staff Engineer, Acme Data (2021-Present)",
-                        "Built async ingestion handling 2B events/day with asyncio.",
-                        "Led a Pydantic v2 + mypy-strict migration across 40 services.",
-                        "Backend Engineer, Globex (2017-2021)",
-                        "Designed PostgreSQL schemas and Redis caching for a 5M-user app."]),
+        ("Experience", ["Staff Engineer | Acme Data | 2021-Present",
+                        "• Built async ingestion handling 2B events/day with asyncio.",
+                        "• Led a Pydantic v2 + mypy-strict migration across 40 services.",
+                        "Backend Engineer | Globex | 2017-2021",
+                        "• Designed PostgreSQL schemas and Redis caching for a 5M-user app."]),
         ("Education", ["B.S. Computer Science, State University (2017)"]),
         # Deliberately a comma list WRAPPED across two lines — the realistic résumé shape
         # that exposed the F-A skill-parse bug (a single line parsed fine and hid it). Keep
@@ -588,27 +599,21 @@ def live_checks(fx: dict[str, Path]) -> None:
     letter = cp.stdout.split("Generated Cover Letter:", 1)[-1]
     record("generate-cover-letter: inline produces or fails closed on validation", t,
            (cp.returncode == 0 and "Generated Cover Letter" in cp.stdout)
-           or cover_letter_fail_closed(cp), f"exit={cp.returncode}")
+           or cover_letter_fail_closed(cp), command_detail(cp))
     # KNOWN: litellm framework noise leaks to stdout on SUCCESS (instructor tool-call path
     # always fails on this vLLM → fallback → banner), polluting a redirected letter.
     record("generate-cover-letter: output free of litellm framework noise", t,
            "Give Feedback" not in cp.stdout and "BadRequestError" not in cp.stdout,
            "litellm banner on stdout" if "Give Feedback" in cp.stdout else "clean")
-    # voice-tells: a METRIC, not a hard gate (LLM output flaps); WARN if elevated.
-    try:
-        sys.path.insert(0, str(REPO / "src"))
-        from job_applicator.documents.cover_letter import CoverLetterGenerator
-
-        tells = CoverLetterGenerator._voice_tells(letter)
-        md = "`" in letter
-        if md or len(tells) > 2:
-            warn("generate-cover-letter: voice quality", t,
-                 f"voice_tells={tells}; markdown_leak={md}")
-        else:
-            record("generate-cover-letter: voice clean (markdown-free, ≤2 tells)", t, True,
-                   f"voice_tells={tells}")
-    except Exception as exc:  # pragma: no cover
-        warn("generate-cover-letter: voice quality", t, f"could not score: {exc}")
+    # Formatting is stable enough for a gate. Style and voice remain evaluation concerns rather
+    # than phrase-list heuristics embedded in this harness.
+    markdown_leak = cp.returncode == 0 and any(token in letter for token in ("`", "**"))
+    record(
+        "generate-cover-letter: successful prose is markdown-free",
+        t,
+        not markdown_leak,
+        "fail-closed before prose" if cp.returncode != 0 else "ok",
+    )
 
     cp = run("generate-cover-letter", "-t", "Senior Python Engineer", "-c", "Initech",
              "-d", "Async pipelines; asyncio, Pydantic.", "--resume", str(fx["resume"]),
@@ -620,7 +625,7 @@ def live_checks(fx: dict[str, Path]) -> None:
         pass
     record("generate-cover-letter: --json emits JSON or fails closed on validation", t,
            ok_gj or cover_letter_fail_closed(cp),
-           f"exit={cp.returncode}")
+           command_detail(cp))
 
     # Regression guard (#39): --yes must be non-interactive (it used to hang on the action menu).
     cp = run("tailor", "-t", "Senior Python Engineer", "-c", "Initech",

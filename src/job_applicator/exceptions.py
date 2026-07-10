@@ -68,10 +68,6 @@ class CoverLetterError(DocumentError):
     """Cover letter generation error."""
 
 
-class CoverLetterGroundingError(CoverLetterError):
-    """Cover letter grounding verification failed or found unsupported claims."""
-
-
 class PDFRenderError(DocumentError):
     """Raised when PDF rendering fails."""
 

@@ -8,9 +8,10 @@
 `scripts/eval_document_quality.py` remains a compatibility wrapper for script-based gates and
 supports the same scoring logic.
 
-For LLM sampler tuning, use `scripts/eval_llm_sampler.py` as the experiment harness. It generates
-fresh private packet manifests per sampler variant, then certifies them through this evaluator and
-reports baseline-relative score deltas. See `docs/llm-sampler-eval.md`.
+For criteria-extraction and transport sampler measurement, use `scripts/eval_llm_sampler.py` as the
+experiment harness. It generates fresh private packet manifests per sampler variant, then certifies
+them through this evaluator and reports baseline-relative score deltas. Applicant claim prose is
+deterministic and is not sampler-tuned. See `docs/llm-sampler-eval.md`.
 
 The private packet set is local data and should not be committed. The default path is:
 
@@ -41,9 +42,10 @@ job-applicator document-quality \
   --keyword SIEM
 
 # Certify the private packet set. Missing private data exits non-zero.
-job-applicator document-quality --private-packet-set --required --min-cases 3 \
+job-applicator document-quality --private-packet-set --required --min-cases 15 \
+  --min-manual-reviews-per-category 5 \
   --max-artifact-age-days 14 \
-  --required-category support --required-category risk \
+  --required-category support --required-category risk --required-category network \
   --required-language en --required-language fr
 
 # Use an explicit manifest and machine-readable output.
@@ -64,9 +66,17 @@ CLI gate.
 
 Without `--required`, a missing or empty packet set prints "not certified" and exits `0`.
 With `--required`, missing or empty private evidence exits `2`. A present packet set that scores
-below the quality bars exits `1`. In optional mode, a present set can have passing packet rows but
-still report `"certified": false` when it does not meet set-level certification breadth, freshness,
-or diversity thresholds.
+below a hard integrity bar or has a reviewed prose defect exits `1`. Missing source/overlay evidence
+or insufficient manual-review coverage exits `2`. In optional mode, automated packet scores remain
+available as diagnostics but do not imply final certification.
+
+Required JSON output separates the two evidence layers:
+
+- `integrity_certified`: deterministic source retention, overlay provenance, language, freshness,
+  structure, and category/language coverage all pass.
+- `prose_qualified`: sampled human reviews meet the category count and dimension floors with no
+  critical defects.
+- `certified`: both fields are true.
 
 ## Manifest
 
@@ -80,6 +90,9 @@ relative to the manifest file unless they are absolute.
       "id": "acme-security-analyst-2026-07",
       "resume_path": "artifacts/acme-security-resume.txt",
       "cover_letter_path": "artifacts/acme-security-cover-letter.txt",
+      "source_resume_path": "/path/to/base-cv.pdf",
+      "resume_meta_path": "artifacts/acme-security-resume.meta.json",
+      "protected_spans": ["UpClick", "certification exam pending"],
       "applicant_name": "John Doe",
       "job_title": "Security Analyst",
       "company": "Acme",
@@ -105,12 +118,27 @@ Required fields:
 - `cover_letter_path`
 - either `keywords` or `job_description` / `job_description_path`
 
+Required integrity certification also requires `source_resume_path` (aliases:
+`input_resume_path`, `base_resume_path`) and both document overlays. Résumé metadata may be inline as
+`resume_overlay`, supplied through `resume_meta_path`, or read from the adjacent `.meta.json`.
+Cover-letter metadata may be inline as `cover_letter_overlay`, supplied through
+`cover_letter_meta_path`, or read from its adjacent `.meta.json`.
+The evaluator independently recomputes the source and generated non-summary digests and checks the
+declared statements, citations, and deterministic realizations. It never trusts
+a manifest's precomputed retention boolean as the certification decision.
+
 Optional fields:
 
 - `id` / `packet_id` / `name`
 - `applicant_name` / `profile_name`
 - `job_title` / `title`
 - `company` / `employer`
+- `source_resume_path` / `input_resume_path` / `base_resume_path`
+- `resume_meta_path` / `resume_metadata_path`
+- `resume_overlay`
+- `cover_letter_meta_path` / `cover_metadata_path`
+- `cover_letter_overlay` / `cover_overlay`
+- `protected_spans`
 - `coherence_terms` / `shared_terms`
 - `min_dimension_score` / `dimension_floor`
 - `min_overall_score` / `overall_floor`
@@ -138,7 +166,7 @@ dimension uses `keywords`.
 
 ## Scores
 
-Each packet gets five deterministic 0-4 dimension scores:
+Each packet gets five automated 0-4 diagnostic scores:
 
 - `usefulness`: document completeness plus job keyword coverage.
 - `specificity`: packet and cover-letter job keyword coverage, title/company mentions, and generic
@@ -151,31 +179,50 @@ Each packet gets five deterministic 0-4 dimension scores:
 - `formatting_polish`: contact/section/sign-off integrity, placeholders, markdown/list leakage, and
   obvious line-formatting issues.
 
+The packet payload also includes `source_integrity`, `source_retention`, and `integrity_passed`.
+`source_retention` reports recomputed body digests, protected-span recall, and both overlay
+validations. These checks reject artifacts; they never rewrite generated prose.
+
+Automated prose dimensions are useful for regression detection, but lexical heuristics cannot
+certify factual, coherent prose. Final prose qualification therefore comes from a separate JSONL
+review set. By default it sits beside `packet-set.jsonl` as `packet-set.reviews.jsonl`; override it
+with `--manual-review-set`.
+
+```json
+{"packet_id":"support-r01","reviewer":"reviewer-id","reviewed_at":"2026-07-10T12:00:00Z","dimensions":{"usefulness":4,"specificity":3,"coherence":4,"writing_quality":3,"formatting_polish":4},"critical_defects":[]}
+```
+
+Every review must name a packet in the integrity-passing manifest, include all five dimensions on
+the 0-4 scale, and declare critical defects explicitly. Reviews are unique by packet ID and count
+toward coverage once per `source_job_url`. Required certification defaults to five independent
+source jobs per required category; repetitions of one job do not increase coverage or median
+weight.
+
 Default bars:
 
 - each dimension must be at least `3.0`
 - each packet overall mean must be at least `3.0`
-- required packet-set certification needs at least `3` passing cases
+- required packet-set integrity certification needs at least `3` passing cases
+- prose qualification needs at least `5` independent source-job reviews per required category
 - optional packet-set scoring defaults to `1` passing case for certification metadata
 - generated packets older than `14` days are stale
 
-This gate complements grounding and human review. It catches obvious regressions in generated
-packet usefulness and polish; it does not replace judgment about whether a packet is genuinely the
-best possible application for a role.
+The automated scores detect obvious regressions; the manual sidecar records the judgment needed to
+qualify prose. Neither layer is allowed to impersonate the other.
 
 When updating a private packet, run the gate in required JSON mode and inspect both the score and
 the prose:
 
 ```bash
-job-applicator document-quality --private-packet-set --required --min-cases 3 \
+job-applicator document-quality --private-packet-set --required --min-cases 15 \
+  --min-manual-reviews-per-category 5 \
   --max-artifact-age-days 14 \
-  --required-category support --required-category risk \
+  --required-category support --required-category risk --required-category network \
   --required-language en --required-language fr \
   --json
 ```
 
-The generated cover letter should also have a clean grounding report when it was produced through
-the verified generation path.
+The generated résumé and cover letter must both have valid deterministic source overlays.
 
 ## Gold Standards
 

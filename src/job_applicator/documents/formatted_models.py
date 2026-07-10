@@ -3,6 +3,25 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 
+class FormattedSourceLine(BaseModel):
+    """One verbatim source line with only its display role classified."""
+
+    model_config = {"extra": "forbid"}
+
+    text: str
+    is_bullet: bool = False
+    is_blank: bool = False
+
+
+class FormattedSourceSection(BaseModel):
+    """One source résumé section in original order."""
+
+    model_config = {"extra": "forbid"}
+
+    heading: str
+    lines: list[FormattedSourceLine]
+
+
 class FormattedExperienceEntry(BaseModel):
     model_config = {"extra": "forbid"}
 
@@ -59,6 +78,8 @@ class FormattedResume(BaseModel):
     projects: list[FormattedProjectEntry] | None = None
     job_category: str | None = None
     emphasized_skills: list[str] | None = None
+    source_preamble: list[FormattedSourceLine] | None = None
+    source_sections: list[FormattedSourceSection] | None = None
 
 
 class FormattedCoverLetter(BaseModel):

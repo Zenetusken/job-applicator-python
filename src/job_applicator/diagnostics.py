@@ -38,10 +38,9 @@ from job_applicator.config import (
     LLMConfig,
 )
 from job_applicator.documents.formatted_models import (
-    FormattedEducationEntry,
-    FormattedExperienceEntry,
     FormattedResume,
-    FormattedSkillGroup,
+    FormattedSourceLine,
+    FormattedSourceSection,
 )
 from job_applicator.documents.pdf_renderer import _typst_escape
 from job_applicator.embeddings.cache import probe_hf_model_cache
@@ -389,29 +388,28 @@ def _pdf_smoke_resume() -> FormattedResume:
     """Return a minimal ``FormattedResume`` for the PDF doctor smoke test."""
     return FormattedResume(
         name="Smoke Test",
-        title="PDF Rendering Check",
-        email="smoke@example.com",
-        phone="555-555-5555",
-        location="City",
-        summary="A minimal résumé used to verify the PDF rendering toolchain.",
-        experience=[
-            FormattedExperienceEntry(
-                title="Engineer",
-                company="Example Inc",
-                start_date="2020",
-                end_date="Present",
-                bullets=["Built things."],
-            )
+        experience=[],
+        source_preamble=[
+            FormattedSourceLine(text="Smoke Test"),
+            FormattedSourceLine(text="smoke@example.com | 555-555-5555 | City"),
         ],
-        education=[
-            FormattedEducationEntry(
-                degree="BS",
-                institution="University",
-                start_date="2015",
-                end_date="2019",
-            )
+        source_sections=[
+            FormattedSourceSection(
+                heading="SUMMARY",
+                lines=[
+                    FormattedSourceLine(
+                        text="A minimal résumé used to verify the PDF rendering toolchain."
+                    )
+                ],
+            ),
+            FormattedSourceSection(
+                heading="EXPERIENCE",
+                lines=[
+                    FormattedSourceLine(text="Engineer | Example Inc | 2020 - Present"),
+                    FormattedSourceLine(text="Built things.", is_bullet=True),
+                ],
+            ),
         ],
-        skills=[FormattedSkillGroup(category="Languages", skills=["Python"])],
     )
 
 

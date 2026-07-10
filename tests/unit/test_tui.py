@@ -19,6 +19,7 @@ from job_applicator.config import AppSettings
 from job_applicator.jobs_store import JobStore, JobStoreError
 from job_applicator.models import JobBoard, JobListing, ResumeData, UserProfile
 from job_applicator.tui.app import JobApplicatorApp
+from tests.helpers import cover_letter_overlay
 
 
 def _job(n: int, **over: object) -> JobListing:
@@ -1263,11 +1264,11 @@ async def test_cover_letter_job_uses_tailored_resume_text(tmp_path: Path, monkey
         job, user, resume, style_guide=None, tone_section="", tailored_resume_text=""
     ):  # type: ignore[no-untyped-def]
         captured["tailored"] = tailored_resume_text
-        return "Dear hiring manager,"
+        return "Dear hiring manager,", cover_letter_overlay()
 
     monkeypatch.setattr(
         "job_applicator.documents.cover_letter.CoverLetterGenerator",
-        lambda *a, **k: MagicMock(generate_verified=_generate),
+        lambda *a, **k: MagicMock(generate_verified_with_overlay=_generate),
     )
     monkeypatch.setattr(
         "job_applicator.documents.resume.ResumeLoader",
@@ -1301,11 +1302,14 @@ async def test_cover_letter_job_uses_resume_name_for_sign_off(tmp_path: Path, mo
     async def _generate(
         job, user, resume, style_guide=None, tone_section="", tailored_resume_text=""
     ):  # type: ignore[no-untyped-def]
-        return f"Dear hiring manager,\n\nLetter.\n\nSincerely,\n{user.first_name} {user.last_name}"
+        return (
+            f"Dear hiring manager,\n\nLetter.\n\nSincerely,\n{user.first_name} {user.last_name}",
+            cover_letter_overlay(),
+        )
 
     monkeypatch.setattr(
         "job_applicator.documents.cover_letter.CoverLetterGenerator",
-        lambda *a, **k: MagicMock(generate_verified=_generate),
+        lambda *a, **k: MagicMock(generate_verified_with_overlay=_generate),
     )
     monkeypatch.setattr(
         "job_applicator.documents.resume.ResumeLoader",
@@ -1434,11 +1438,14 @@ async def test_cover_letter_job_both_updates_text_meta_with_pdf_path(  # type: i
     async def _generate(
         job, user, resume, style_guide=None, tone_section="", tailored_resume_text=""
     ):  # type: ignore[no-untyped-def]
-        return "Dear hiring manager,\n\nLetter.\n\nSincerely,\nSam Sample"
+        return (
+            "Dear hiring manager,\n\nLetter.\n\nSincerely,\nSam Sample",
+            cover_letter_overlay(),
+        )
 
     monkeypatch.setattr(
         "job_applicator.documents.cover_letter.CoverLetterGenerator",
-        lambda *a, **k: MagicMock(generate_verified=_generate),
+        lambda *a, **k: MagicMock(generate_verified_with_overlay=_generate),
     )
     monkeypatch.setattr(
         "job_applicator.documents.resume.ResumeLoader",
@@ -3320,14 +3327,17 @@ async def test_tui_cover_letter_style_analysis_uses_cover_letter_llm_config(
         async def load_style_guide(self, _path: str) -> object:
             return style
 
-        async def generate_verified(
+        async def generate_verified_with_overlay(
             self,
             _job: object,
             _user: object,
             _resume: object,
             **_kwargs: object,
-        ) -> str:
-            return "Dear hiring manager,\n\nLetter.\n\nSincerely,\nSam Sample"
+        ) -> tuple[str, object]:
+            return (
+                "Dear hiring manager,\n\nLetter.\n\nSincerely,\nSam Sample",
+                cover_letter_overlay(),
+            )
 
     monkeypatch.setattr(
         "job_applicator.documents.cover_letter.CoverLetterGenerator",

@@ -1,9 +1,4 @@
-"""Shared unattended résumé-tailoring helpers.
-
-Batch and TUI tailoring both need the same fail-closed path: source-only
-instructions, one strict grounding retry, and the same auto-save integrity gate
-used by ``tailor --yes``.
-"""
+"""Shared fail-closed helpers for unattended résumé tailoring."""
 
 from __future__ import annotations
 
@@ -11,11 +6,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from job_applicator.workflows.tailor import assert_tailored_auto_saveable
-from job_applicator.workflows.tailor_policy import (
-    STRICT_GROUNDING_FEEDBACK,
-    STRICT_NONINTERACTIVE_INSTRUCTIONS,
-    source_only_instructions,
-)
 
 if TYPE_CHECKING:
     from job_applicator.documents.resume_tailor import ResumeTailor
@@ -24,10 +14,7 @@ if TYPE_CHECKING:
     from job_applicator.models import JobListing, ResumeData, StyleGuide, TailoredResume
 
 __all__ = [
-    "STRICT_GROUNDING_FEEDBACK",
-    "STRICT_NONINTERACTIVE_INSTRUCTIONS",
     "AutoTailorResult",
-    "source_only_instructions",
     "tailor_auto_verified_saveable",
 ]
 
@@ -53,30 +40,17 @@ async def tailor_auto_verified_saveable(
 ) -> AutoTailorResult:
     """Generate a verified tailored résumé that is safe for unattended saving.
 
-    The first draft uses the same strict source-only policy as ``tailor --yes``.
-    If grounding finds unsupported claims, the helper performs one strict refine
-    and then runs the same fail-closed auto-save integrity gate.
+    The overlay architecture already enforces the source boundary. The result is passed unchanged
+    to the shared auto-save integrity gate; this helper never rewrites generated prose.
     """
     tailored = await tailor_engine.tailor_verified(
         resume=resume,
         job=job,
-        user_instructions=source_only_instructions(user_instructions),
+        user_instructions=user_instructions,
         style_guide=style_guide,
         tone_profile=tone_profile,
         matcher=matcher,
         match_result=match_result,
     )
-    attempts = 1
-    if tailored.grounding_report is not None and not tailored.grounding_report.clean:
-        tailored = await tailor_engine.refine_verified(
-            resume,
-            tailored,
-            STRICT_GROUNDING_FEEDBACK,
-            job,
-            matcher=matcher,
-            style_guide=style_guide,
-            tone_profile=tone_profile,
-        )
-        attempts += 1
     assert_tailored_auto_saveable(tailored, resume.raw_text)
-    return AutoTailorResult(tailored=tailored, attempts=attempts)
+    return AutoTailorResult(tailored=tailored, attempts=1)

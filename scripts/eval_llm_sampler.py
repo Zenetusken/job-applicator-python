@@ -16,6 +16,7 @@ Default private output:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -32,11 +33,14 @@ from typing import Any
 from job_applicator import __version__
 from job_applicator.config import AppSettings
 from job_applicator.documents.quality_eval import assess_packet_set, certify_packet_set
+from job_applicator.documents.resume import ResumeLoader
+from job_applicator.documents.resume_document import ResumeDocument, protected_span_recall
 
 DEFAULT_CASES_FILE = Path("~/.job-applicator/document-quality-eval/sampler-cases.jsonl")
 DEFAULT_OUTPUT_ROOT = Path("~/.job-applicator/document-quality-eval/sampler-runs")
-GENERATOR_VERSION = f"job-applicator-{__version__}"
+GENERATOR_VERSION = f"job-applicator-{__version__}+source-overlay-v4"
 SAMPLER_ENV_KEYS = (
+    "JOB_APPLICATOR_LLM_TEMPERATURE",
     "JOB_APPLICATOR_LLM_TOP_P",
     "JOB_APPLICATOR_LLM_TOP_K",
     "JOB_APPLICATOR_LLM_MIN_P",
@@ -44,6 +48,7 @@ SAMPLER_ENV_KEYS = (
     "JOB_APPLICATOR_LLM_ENABLE_THINKING",
 )
 DIMENSIONS = ("usefulness", "specificity", "coherence", "writing_quality", "formatting_polish")
+ROTATING_TEMPLATES = ("modern", "classic", "minimal")
 
 
 @dataclass(frozen=True)
@@ -64,6 +69,7 @@ class SamplerCase:
     applicant_name: str
     keywords: list[str]
     coherence_terms: list[str]
+    protected_spans: list[str]
     top_k: int
     min_score: float
     output_format: str
@@ -90,6 +96,23 @@ VARIANTS: dict[str, SamplerVariant] = {
             "JOB_APPLICATOR_LLM_TOP_K": "20",
             "JOB_APPLICATOR_LLM_MIN_P": "0.0",
             "JOB_APPLICATOR_LLM_PRESENCE_PENALTY": "1.0",
+            "JOB_APPLICATOR_LLM_ENABLE_THINKING": "false",
+        },
+    ),
+    "qwen-grounded": SamplerVariant(
+        name="qwen-grounded",
+        sampler={
+            "top_p": 0.8,
+            "top_k": 20,
+            "min_p": 0.0,
+            "presence_penalty": 0.0,
+            "enable_thinking": False,
+        },
+        env_overrides={
+            "JOB_APPLICATOR_LLM_TOP_P": "0.8",
+            "JOB_APPLICATOR_LLM_TOP_K": "20",
+            "JOB_APPLICATOR_LLM_MIN_P": "0.0",
+            "JOB_APPLICATOR_LLM_PRESENCE_PENALTY": "0.0",
             "JOB_APPLICATOR_LLM_ENABLE_THINKING": "false",
         },
     ),
@@ -140,6 +163,30 @@ def _now_id() -> str:
 
 def _utc_timestamp() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _git_provenance() -> dict[str, Any]:
+    """Record the exact tracked and uncommitted implementation under measurement."""
+
+    try:
+        head = subprocess.check_output(
+            ["/usr/bin/git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parents[1],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        diff = subprocess.check_output(
+            ["/usr/bin/git", "diff", "--binary"],
+            cwd=Path(__file__).resolve().parents[1],
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return {"head": None, "dirty": None, "diff_sha256": None}
+    return {
+        "head": head,
+        "dirty": bool(diff),
+        "diff_sha256": hashlib.sha256(diff).hexdigest(),
+    }
 
 
 def _slug(value: str) -> str:
@@ -283,6 +330,10 @@ def load_cases(
                     _record_value(record, "coherence_terms", "shared_terms"),
                     field="coherence_terms",
                 ),
+                protected_spans=_as_text_list(
+                    _record_value(record, "protected_spans"),
+                    field="protected_spans",
+                ),
                 top_k=_to_int(
                     _record_value(record, "top_k"),
                     field="top_k",
@@ -367,7 +418,59 @@ def _successful_result(summary: dict[str, Any], *, summary_dir: Path) -> dict[st
     return None
 
 
-def _batch_command(case: SamplerCase, *, run_id: str, jobs_file: Path | None = None) -> list[str]:
+def _resume_retention(
+    *,
+    source_path: Path | None,
+    generated_path: Path,
+    protected_spans: list[str],
+) -> dict[str, Any]:
+    """Measure source-body and protected-span retention without editing an artifact."""
+
+    if source_path is None:
+        return {
+            "source_checked": False,
+            "body_digest_matches": False,
+            "protected_span_count": len(protected_spans),
+            "protected_spans_retained": 0,
+            "missing_protected_spans": protected_spans,
+            "error": "source resume unavailable",
+        }
+    try:
+        source = ResumeLoader().load(source_path)
+        source_document = ResumeDocument.parse(source.raw_text)
+        generated_text = generated_path.read_text(encoding="utf-8")
+        generated_document = ResumeDocument.parse(generated_text)
+        retained, missing = protected_span_recall(generated_text, protected_spans)
+    except Exception as exc:
+        return {
+            "source_checked": False,
+            "body_digest_matches": False,
+            "protected_span_count": len(protected_spans),
+            "protected_spans_retained": 0,
+            "missing_protected_spans": protected_spans,
+            "error": str(exc),
+        }
+    source_digest = source_document.non_summary_sha256()
+    generated_digest = generated_document.non_summary_sha256()
+    return {
+        "source_checked": True,
+        "source_body_sha256": source_digest,
+        "generated_body_sha256": generated_digest,
+        "body_digest_matches": source_digest == generated_digest,
+        "protected_span_count": len(protected_spans),
+        "protected_spans_retained": retained,
+        "missing_protected_spans": missing,
+    }
+
+
+def _batch_command(
+    case: SamplerCase,
+    *,
+    run_id: str,
+    jobs_file: Path | None = None,
+    output_format: str | None = None,
+    template: str | None = None,
+) -> list[str]:
     command = [
         sys.executable,
         "-m",
@@ -380,7 +483,7 @@ def _batch_command(case: SamplerCase, *, run_id: str, jobs_file: Path | None = N
         "--min-score",
         str(case.min_score),
         "--format",
-        case.output_format,
+        output_format or case.output_format,
         "--json",
         "--run-id",
         run_id,
@@ -389,8 +492,9 @@ def _batch_command(case: SamplerCase, *, run_id: str, jobs_file: Path | None = N
         command.extend(["--resume", str(case.resume_path)])
     if case.style_guide_path is not None:
         command.extend(["--style-guide", str(case.style_guide_path)])
-    if case.template is not None:
-        command.extend(["--template", case.template])
+    effective_template = template or case.template
+    if effective_template is not None:
+        command.extend(["--template", effective_template])
     if case.category is not None:
         command.extend(["--category", case.category])
     return command
@@ -422,6 +526,9 @@ def _packet_record(
     summary_dir: Path,
     run_id: str,
     model: str,
+    packet_id: str,
+    output_format: str,
+    template: str | None,
 ) -> dict[str, Any] | None:
     resume_path = _path_from_result(result.get("resume_path"), base_dir=summary_dir)
     cover_path = _path_from_result(result.get("cover_letter_path"), base_dir=summary_dir)
@@ -430,9 +537,10 @@ def _packet_record(
 
     job_description = _job_text(job, "description", "job_description", "summary")
     packet: dict[str, Any] = {
-        "id": case.case_id,
+        "id": packet_id,
         "resume_path": str(resume_path),
         "cover_letter_path": str(cover_path),
+        "source_resume_path": str(case.resume_path) if case.resume_path else None,
         "applicant_name": case.applicant_name,
         "job_title": _as_text(result.get("title")) or _job_text(job, "title"),
         "company": _as_text(result.get("company")) or _job_text(job, "company", "employer"),
@@ -441,8 +549,8 @@ def _packet_record(
         "generated_at": _utc_timestamp(),
         "run_id": run_id,
         "source_job_url": _as_text(result.get("url")) or _as_text(job.get("url")),
-        "template": case.template,
-        "format": case.output_format,
+        "template": template,
+        "format": output_format,
         "model": model,
         "generator_version": GENERATOR_VERSION,
     }
@@ -452,6 +560,38 @@ def _packet_record(
         packet["job_description"] = job_description
     if case.coherence_terms:
         packet["coherence_terms"] = case.coherence_terms
+    if case.protected_spans:
+        packet["protected_spans"] = case.protected_spans
+    retention = _resume_retention(
+        source_path=case.resume_path,
+        generated_path=resume_path,
+        protected_spans=case.protected_spans,
+    )
+    packet["source_retention"] = retention
+    resume_meta_path = resume_path.with_suffix(".meta.json")
+    if resume_meta_path.is_file():
+        packet["resume_meta_path"] = str(resume_meta_path)
+        try:
+            resume_meta = json.loads(resume_meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            resume_meta = None
+        if isinstance(resume_meta, dict) and isinstance(resume_meta.get("overlay"), dict):
+            packet["resume_overlay"] = resume_meta["overlay"]
+    cover_meta_path = cover_path.with_suffix(".meta.json")
+    if cover_meta_path.is_file():
+        packet["cover_letter_meta_path"] = str(cover_meta_path)
+        try:
+            cover_meta = json.loads(cover_meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            cover_meta = None
+        if isinstance(cover_meta, dict) and isinstance(cover_meta.get("overlay"), dict):
+            packet["cover_letter_overlay"] = cover_meta["overlay"]
+    pdf_path = _path_from_result(result.get("pdf_path"), base_dir=summary_dir)
+    cover_pdf_path = _path_from_result(result.get("cover_letter_pdf_path"), base_dir=summary_dir)
+    if pdf_path is not None:
+        packet["resume_pdf_path"] = str(pdf_path)
+    if cover_pdf_path is not None:
+        packet["cover_letter_pdf_path"] = str(cover_pdf_path)
     return {key: value for key, value in packet.items() if value not in (None, "", [])}
 
 
@@ -466,6 +606,8 @@ def _quality_payload(
         "packet_set": str(packet_set),
         "passed": all(report.passed for report in reports),
         "certified": certification.certified,
+        "integrity_certified": certification.integrity_certified,
+        "prose_qualified": certification.prose_qualified,
         "mode": certification.mode,
         "required": certification.required,
         "thresholds": asdict(certification.thresholds),
@@ -473,6 +615,8 @@ def _quality_payload(
         "freshness": asdict(certification.freshness),
         "certification_failures": certification.certification_failures,
         "certification_warnings": certification.certification_warnings,
+        "missing_evidence": certification.missing_evidence,
+        "manual_review_summary": certification.manual_review_summary,
         "count": len(reports),
         "overall": overall,
         "dimension_means": {
@@ -485,6 +629,28 @@ def _quality_payload(
             for dimension in DIMENSIONS
         },
         "packets": [asdict(report) for report in reports],
+    }
+
+
+def _retention_payload(packets: list[dict[str, Any]]) -> dict[str, Any]:
+    evidence = [packet.get("source_retention") or {} for packet in packets]
+    checked = [row for row in evidence if row.get("source_checked")]
+    body_matches = sum(bool(row.get("body_digest_matches")) for row in checked)
+    protected_total = sum(int(row.get("protected_span_count") or 0) for row in checked)
+    protected_retained = sum(int(row.get("protected_spans_retained") or 0) for row in checked)
+    return {
+        "packets": len(packets),
+        "source_checked": len(checked),
+        "body_digest_matches": body_matches,
+        "body_digest_match_rate": round(body_matches / len(checked), 4) if checked else 0.0,
+        "protected_spans": protected_total,
+        "protected_spans_retained": protected_retained,
+        "protected_span_recall": (
+            round(protected_retained / protected_total, 4) if protected_total else 1.0
+        ),
+        "missing_protected_spans": sorted(
+            {span for row in checked for span in row.get("missing_protected_spans", [])}
+        ),
     }
 
 
@@ -516,13 +682,23 @@ def _run_case(
     timeout_seconds: int,
     dry_run: bool,
     model: str,
+    replicate: int,
+    output_format: str,
+    template: str | None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     effective_jobs_file = output_dir / "input-jobs.json"
-    command = _batch_command(case, run_id=run_id, jobs_file=effective_jobs_file)
+    command = _batch_command(
+        case,
+        run_id=run_id,
+        jobs_file=effective_jobs_file,
+        output_format=output_format,
+        template=template,
+    )
     log_stdout = output_dir / "batch.stdout.log"
     log_stderr = output_dir / "batch.stderr.log"
     case_payload: dict[str, Any] = {
         "case_id": case.case_id,
+        "replicate": replicate,
         "run_id": run_id,
         "command": command,
         "source_jobs_file": str(case.jobs_file),
@@ -531,6 +707,8 @@ def _run_case(
         "stdout_log": str(log_stdout),
         "stderr_log": str(log_stderr),
         "sampler_env": variant.env_overrides,
+        "format": output_format,
+        "template": template,
         "dry_run": dry_run,
     }
     if dry_run:
@@ -600,6 +778,9 @@ def _run_case(
         summary_dir=summary.parent,
         run_id=run_id,
         model=model,
+        packet_id=f"{case.case_id}-r{replicate:02d}",
+        output_format=output_format,
+        template=template,
     )
     if packet is None:
         case_payload["error"] = "could not construct packet manifest row"
@@ -620,20 +801,30 @@ def _run_variant(
     packets: list[dict[str, Any]] = []
     started = time.monotonic()
     for case in cases:
-        case_run_id = f"{args.run_id}-{variant.name}-{case.case_id}"
-        case_output_dir = variant_dir / case.case_id
-        case_result, packet = _run_case(
-            case=case,
-            variant=variant,
-            run_id=case_run_id,
-            output_dir=case_output_dir,
-            timeout_seconds=args.timeout_seconds,
-            dry_run=args.dry_run,
-            model=model,
-        )
-        case_results.append(case_result)
-        if packet is not None:
-            packets.append(packet)
+        for replicate in range(1, args.repetitions + 1):
+            replicate_id = f"{case.case_id}-r{replicate:02d}"
+            case_run_id = f"{args.run_id}-{variant.name}-{replicate_id}"
+            case_output_dir = variant_dir / replicate_id
+            template = (
+                ROTATING_TEMPLATES[(replicate - 1) % len(ROTATING_TEMPLATES)]
+                if args.rotate_templates
+                else case.template
+            )
+            case_result, packet = _run_case(
+                case=case,
+                variant=variant,
+                run_id=case_run_id,
+                output_dir=case_output_dir,
+                timeout_seconds=args.timeout_seconds,
+                dry_run=args.dry_run,
+                model=model,
+                replicate=replicate,
+                output_format=args.output_format or case.output_format,
+                template=template,
+            )
+            case_results.append(case_result)
+            if packet is not None:
+                packets.append(packet)
 
     elapsed = round(time.monotonic() - started, 2)
     packet_set = variant_dir / "packet-set.jsonl"
@@ -650,7 +841,7 @@ def _run_variant(
             required=True,
             min_dimension_score=args.min_dimension_score,
             min_overall_score=args.min_overall_score,
-            min_cases=args.min_cases or len(cases),
+            min_cases=args.min_cases or len(cases) * args.repetitions,
             max_artifact_age_days=args.max_artifact_age_days,
             required_categories=args.effective_required_categories,
             required_languages=args.effective_required_languages,
@@ -664,8 +855,13 @@ def _run_variant(
         "packet_set": str(packet_set),
         "elapsed_seconds": elapsed,
         "generated_cases": len(packets),
-        "failed_cases": [item["case_id"] for item in case_results if item.get("error")],
+        "failed_cases": [
+            f"{item['case_id']}-r{item['replicate']:02d}"
+            for item in case_results
+            if item.get("error")
+        ],
         "cases": case_results,
+        "retention": _retention_payload(packets),
         "quality": quality,
     }
 
@@ -905,6 +1101,21 @@ def _run(args: argparse.Namespace) -> int:
         _emit(payload, json_output=args.json)
         return 2 if args.required else 0
 
+    missing_source_cases = [case.case_id for case in cases if case.resume_path is None]
+    if args.required and missing_source_cases:
+        payload = _unavailable_payload(
+            cases_file=args.cases_file,
+            reason="missing_source_resumes",
+            message=(
+                "required sampler cases need source resumes: " + ", ".join(missing_source_cases)
+            ),
+            required=True,
+            run_id=args.run_id,
+            output_root=args.output_root,
+        )
+        _emit(payload, json_output=args.json)
+        return 2
+
     required_categories, required_languages = _case_requirements(
         cases,
         required_categories=args.required_category,
@@ -923,27 +1134,40 @@ def _run(args: argparse.Namespace) -> int:
         failed = any(
             variant["failed_cases"]
             or not variant.get("quality")
-            or not variant["quality"].get("certified")
+            or not variant["quality"].get(
+                "integrity_certified" if args.integrity_only else "certified"
+            )
             for variant in variants
         )
+    all_integrity_certified = bool(variants) and all(
+        bool((variant.get("quality") or {}).get("integrity_certified")) for variant in variants
+    )
+    all_certified = bool(variants) and all(
+        bool((variant.get("quality") or {}).get("certified")) for variant in variants
+    )
     payload = {
         "run_id": args.run_id,
+        "provenance": _git_provenance(),
         "cases_file": str(args.cases_file),
         "output_root": str(args.output_root),
         "required": args.required,
+        "integrity_only": args.integrity_only,
         "dry_run": args.dry_run,
         "case_count": len(cases),
+        "repetitions": args.repetitions,
+        "attempted_packets": len(cases) * args.repetitions,
         "variants_requested": args.variant,
         "required_categories": required_categories,
         "required_languages": required_languages,
         "thresholds": {
             "min_dimension_score": args.min_dimension_score,
             "min_overall_score": args.min_overall_score,
-            "min_cases": args.min_cases or len(cases),
+            "min_cases": args.min_cases or len(cases) * args.repetitions,
             "max_artifact_age_days": args.max_artifact_age_days,
         },
         "passed": not failed,
-        "certified": not failed and not args.dry_run,
+        "integrity_certified": all_integrity_certified and not args.dry_run,
+        "certified": all_certified and not args.dry_run,
         "variants": variants,
         "baseline_comparison": _baseline_comparison(variants),
     }
@@ -979,6 +1203,24 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         action="append",
         default=[],
         help="Case id to run. Repeatable. Defaults to every case in the file.",
+    )
+    parser.add_argument(
+        "--repetitions",
+        type=int,
+        default=1,
+        help="Independent runs per selected case and variant.",
+    )
+    parser.add_argument(
+        "--format",
+        dest="output_format",
+        choices=("txt", "pdf", "both"),
+        default=None,
+        help="Override the artifact format declared by each case.",
+    )
+    parser.add_argument(
+        "--rotate-templates",
+        action="store_true",
+        help="Rotate repetitions through modern, classic, and minimal templates.",
     )
     parser.add_argument("--resume", type=Path, default=None, help="Override input resume path.")
     parser.add_argument(
@@ -1035,19 +1277,29 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         help="Exit non-zero when private inputs, generation, or certification fail.",
     )
     parser.add_argument(
+        "--integrity-only",
+        action="store_true",
+        help=(
+            "Use deterministic integrity certification as the required experiment gate; prose "
+            "still remains unqualified until a manual review sidecar passes."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Plan commands and output directories without running batch.",
     )
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     args = parser.parse_args(argv)
-    args.variant = args.variant or sorted(VARIANTS)
+    args.variant = args.variant or ["baseline", "qwen-grounded"]
     if args.min_dimension_score < 0 or args.min_dimension_score > 4:
         parser.error("--min-dimension-score must be between 0 and 4")
     if args.min_overall_score < 0 or args.min_overall_score > 4:
         parser.error("--min-overall-score must be between 0 and 4")
     if args.min_cases is not None and args.min_cases < 1:
         parser.error("--min-cases must be at least 1")
+    if args.repetitions < 1:
+        parser.error("--repetitions must be at least 1")
     if args.max_artifact_age_days < 1:
         parser.error("--max-artifact-age-days must be at least 1")
     if args.timeout_seconds < 1:

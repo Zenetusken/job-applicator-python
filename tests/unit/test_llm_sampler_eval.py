@@ -9,22 +9,39 @@ from types import SimpleNamespace
 import pytest
 from scripts import eval_llm_sampler
 
+from job_applicator.documents.resume import ResumeLoader
+from job_applicator.documents.resume_document import ResumeDocument
+from job_applicator.documents.source_facts import (
+    build_source_fact_catalog,
+    is_substantive_source_fact,
+)
+from job_applicator.documents.source_realization import (
+    realize_cover_statement,
+    realize_resume_statement,
+)
+
 
 def _resume_text() -> str:
     return (
         "John Doe\n"
         "john@example.com\n"
         "514-555-0199\n\n"
+        "Summary\n"
+        "Security support analyst with incident triage experience. Uses Python and Linux for "
+        "operational checks. Documents evidence and escalation handoffs.\n\n"
         "Experience\n"
-        "Security Support Analyst, Acme, 2021 - Present\n"
-        "Used Python, Linux, SIEM, and incident response workflows to triage alerts, "
+        "Security Support Analyst | Acme | 2021 - Present\n"
+        "• Used Python, Linux, SIEM, and incident response workflows to triage alerts, "
         "review authentication failures, document evidence, and coordinate escalations "
-        "across support and infrastructure teams. Improved recurring monitoring checks "
+        "across support and infrastructure teams.\n"
+        "• Improved recurring monitoring checks "
         "through scripts, runbooks, and clear handoff notes for analysts across shifts.\n\n"
-        "Technical Support Analyst, Beta, 2019 - 2021\n"
-        "Resolved workstation, account, network, and access issues for users while documenting "
-        "repeatable fixes. Partnered with infrastructure staff on monitoring alerts and "
-        "service-impacting incidents. Built Python automation helpers to reduce manual "
+        "Technical Support Analyst | Beta | 2019 - 2021\n"
+        "• Resolved workstation, account, network, and access issues for users while documenting "
+        "repeatable fixes.\n"
+        "• Partnered with infrastructure staff on monitoring alerts and service-impacting "
+        "incidents.\n"
+        "• Built Python automation helpers to reduce manual "
         "follow-up and reviewed Linux logs before escalating ambiguous security symptoms.\n\n"
         "Education\n"
         "Certificate in Cybersecurity, 2024\n\n"
@@ -55,6 +72,8 @@ def _cover_text() -> str:
 
 
 def _write_case_file(tmp_path: Path) -> Path:
+    source_resume = tmp_path / "source.txt"
+    source_resume.write_text(_resume_text(), encoding="utf-8")
     jobs_file = tmp_path / "jobs.json"
     jobs_file.write_text(
         json.dumps(
@@ -75,11 +94,13 @@ def _write_case_file(tmp_path: Path) -> Path:
             {
                 "id": "acme-security",
                 "jobs_file": str(jobs_file),
+                "resume_path": str(source_resume),
                 "applicant_name": "John Doe",
                 "category": "support",
                 "language": "en",
                 "keywords": ["Python", "Linux", "SIEM", "incident response"],
                 "coherence_terms": ["Python", "Linux", "SIEM", "incident response"],
+                "protected_spans": ["Certificate in Cybersecurity", "Technical Support Analyst"],
             }
         )
         + "\n",
@@ -173,7 +194,7 @@ def test_dry_run_plans_baseline_and_qwen_sampler_env(
     baseline_case = variants["baseline"]["cases"][0]
     assert baseline_case["source_jobs_file"].endswith("jobs.json")
     assert baseline_case["effective_jobs_file"].endswith(
-        "runs/sample/baseline/acme-security/input-jobs.json"
+        "runs/sample/baseline/acme-security-r01/input-jobs.json"
     )
     assert baseline_case["effective_jobs_file"] in baseline_case["command"]
     assert variants["qwen-pp12"]["cases"][0]["sampler_env"] == {
@@ -187,20 +208,75 @@ def test_dry_run_plans_baseline_and_qwen_sampler_env(
     assert payload["required_languages"] == ["en"]
 
 
-def test_successful_fake_batch_writes_certified_packet_manifest(
+def test_successful_fake_batch_writes_integrity_certified_packet_manifest(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _stub_settings(monkeypatch)
     cases_file = _write_case_file(tmp_path)
+    monkeypatch.setattr(
+        eval_llm_sampler,
+        "_git_provenance",
+        lambda: {"head": "abc", "dirty": True, "diff_sha256": "def"},
+    )
 
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
         output_dir = Path(kwargs["env"]["JOB_APPLICATOR_OUTPUT_DIR"])
         resume = output_dir / "tailored.txt"
         cover = output_dir / "cover.txt"
-        resume.write_text(_resume_text(), encoding="utf-8")
-        cover.write_text(_cover_text(), encoding="utf-8")
+        source = ResumeLoader().load(tmp_path / "source.txt")
+        source_document = ResumeDocument.parse(source.raw_text)
+        facts = [
+            fact
+            for fact in build_source_fact_catalog(source).facts
+            if is_substantive_source_fact(fact)
+        ]
+        summary_statements = [realize_resume_statement(fact) for fact in facts[:3]]
+        cover_statements = [realize_cover_statement(fact, language="English") for fact in facts[:4]]
+        generated_resume = source_document.with_summary(
+            " ".join(statement.text for statement in summary_statements),
+            language="English",
+        )
+        resume.write_text(generated_resume.render(), encoding="utf-8")
+        cover.write_text(
+            "Please accept my application for the Security Analyst position at Acme.\n\n"
+            + " ".join(statement.text for statement in cover_statements)
+            + "\n\nI would welcome the opportunity to discuss my application, these details "
+            "from my background, and the needs of the role with your team."
+            "\n\nSincerely,\nJohn Doe",
+            encoding="utf-8",
+        )
+        (output_dir / "tailored.meta.json").write_text(
+            json.dumps(
+                {
+                    "overlay": {
+                        "summary_sentences": [
+                            statement.model_dump() for statement in summary_statements
+                        ],
+                        "source_body_sha256": source_document.non_summary_sha256(),
+                        "source_language": "en",
+                        "architecture_version": "source-overlay-v1",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        (output_dir / "cover.meta.json").write_text(
+            json.dumps(
+                {
+                    "overlay": {
+                        "body_sentences": [
+                            statement.model_dump() for statement in cover_statements
+                        ],
+                        "source_body_sha256": source_document.non_summary_sha256(),
+                        "source_language": "en",
+                        "architecture_version": "source-overlay-v1",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
         (output_dir / "batch_summary_20260708_120000.json").write_text(
             json.dumps(
                 {
@@ -239,6 +315,7 @@ def test_successful_fake_batch_writes_certified_packet_manifest(
             "--variant",
             "qwen-pp10",
             "--required",
+            "--integrity-only",
             "--json",
         ]
     )
@@ -246,18 +323,72 @@ def test_successful_fake_batch_writes_certified_packet_manifest(
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
     variant = payload["variants"][0]
-    assert payload["certified"] is True
+    assert payload["certified"] is False
+    assert payload["integrity_certified"] is True
     assert variant["generated_cases"] == 1
-    assert variant["quality"]["certified"] is True
+    assert variant["quality"]["certified"] is False
+    assert variant["quality"]["integrity_certified"] is True
+    assert variant["quality"]["prose_qualified"] is False
     packet_set = Path(variant["packet_set"])
     packet = json.loads(packet_set.read_text(encoding="utf-8").strip())
     assert packet["resume_path"].endswith("tailored.txt")
     assert packet["cover_letter_path"].endswith("cover.txt")
+    assert packet["source_resume_path"].endswith("source.txt")
+    assert packet["id"] == "acme-security-r01"
+    assert packet["source_retention"]["body_digest_matches"] is True
+    assert packet["source_retention"]["protected_spans_retained"] == 2
+    assert packet["cover_letter_overlay"]["architecture_version"] == "source-overlay-v1"
+    assert packet["cover_letter_meta_path"].endswith("cover.meta.json")
     assert packet["source_job_url"] == "https://example.test/jobs/1"
     assert Path(payload["summary_path"]).is_file()
     case_payload = variant["cases"][0]
     assert Path(case_payload["effective_jobs_file"]).is_file()
     assert case_payload["effective_jobs_file"] in case_payload["command"]
+    assert variant["retention"]["body_digest_match_rate"] == 1.0
+    assert variant["retention"]["protected_span_recall"] == 1.0
+
+
+def test_repetitions_rotate_templates_and_expand_required_count(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _stub_settings(monkeypatch)
+    cases_file = _write_case_file(tmp_path)
+
+    code = eval_llm_sampler.main(
+        [
+            "--cases-file",
+            str(cases_file),
+            "--output-root",
+            str(tmp_path / "runs"),
+            "--run-id",
+            "replicated",
+            "--variant",
+            "qwen-grounded",
+            "--repetitions",
+            "4",
+            "--format",
+            "both",
+            "--rotate-templates",
+            "--dry-run",
+            "--json",
+        ]
+    )
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    cases = payload["variants"][0]["cases"]
+    assert payload["attempted_packets"] == 4
+    assert payload["thresholds"]["min_cases"] == 4
+    assert [case["replicate"] for case in cases] == [1, 2, 3, 4]
+    assert [case["template"] for case in cases] == [
+        "modern",
+        "classic",
+        "minimal",
+        "modern",
+    ]
+    assert all(case["format"] == "both" for case in cases)
 
 
 def test_baseline_comparison_quantifies_quality_deltas() -> None:
