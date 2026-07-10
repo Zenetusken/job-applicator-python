@@ -27,6 +27,7 @@ from job_applicator.models import (
     ResumeData,
     UserProfile,
 )
+from tests.helpers import cover_letter_overlay
 
 
 @pytest.fixture(autouse=True)
@@ -349,7 +350,9 @@ def _drive_cover_letter(
     loader.load.return_value = resume_data
 
     cl_generator = MagicMock()
-    cl_generator.generate_verified = AsyncMock(return_value=cover_letter_text)
+    cl_generator.generate_verified_with_overlay = AsyncMock(
+        return_value=(cover_letter_text, cover_letter_overlay())
+    )
 
     with (
         patch.object(cli, "_make_browser", return_value=browser_cm),
@@ -374,7 +377,7 @@ def test_apply_dry_run_generates_cover_letter() -> None:
         ["-q", "python", "-n", "1", "--resume", "/fake/resume.pdf"]
     )
     assert result.exit_code == 0, result.output
-    cl_generator.generate_verified.assert_awaited_once()
+    cl_generator.generate_verified_with_overlay.assert_awaited_once()
     applicator.apply.assert_awaited_once()
     call = applicator.apply.await_args
     assert call.kwargs.get("submit") is False
@@ -388,7 +391,7 @@ def test_apply_dry_run_no_cover_letter_flag_skips_generation() -> None:
         ["-q", "python", "-n", "1", "--resume", "/fake/resume.pdf", "--no-cover-letter"]
     )
     assert result.exit_code == 0, result.output
-    cl_generator.generate_verified.assert_not_awaited()
+    cl_generator.generate_verified_with_overlay.assert_not_awaited()
     applicator.apply.assert_awaited_once()
     call = applicator.apply.await_args
     cover_letter = call.args[1] if len(call.args) > 1 else call.kwargs.get("cover_letter")
@@ -474,7 +477,9 @@ def test_apply_style_guide_flows_to_generator() -> None:
 
     cl_generator = MagicMock()
     cl_generator.load_style_guide = AsyncMock(return_value=mock_style)
-    cl_generator.generate_verified = AsyncMock(return_value="Styled cover letter")
+    cl_generator.generate_verified_with_overlay = AsyncMock(
+        return_value=("Styled cover letter", cover_letter_overlay())
+    )
 
     with (
         patch.object(cli, "_make_browser", return_value=browser_cm),
@@ -506,8 +511,8 @@ def test_apply_style_guide_flows_to_generator() -> None:
 
     assert result.exit_code == 0, result.output
     cl_generator.load_style_guide.assert_awaited_once_with("/fake/style.txt", ocr_mode="auto")
-    cl_generator.generate_verified.assert_awaited_once()
-    call = cl_generator.generate_verified.await_args
+    cl_generator.generate_verified_with_overlay.assert_awaited_once()
+    call = cl_generator.generate_verified_with_overlay.await_args
     assert call.kwargs.get("style_guide") is mock_style
 
 
@@ -559,7 +564,9 @@ def test_apply_style_guide_messages_go_to_stderr_not_stdout() -> None:
 
     cl_generator = MagicMock()
     cl_generator.load_style_guide = AsyncMock(return_value=mock_style)
-    cl_generator.generate_verified = AsyncMock(return_value="Styled cover letter")
+    cl_generator.generate_verified_with_overlay = AsyncMock(
+        return_value=("Styled cover letter", cover_letter_overlay())
+    )
 
     with (
         patch.object(cli, "_make_browser", return_value=browser_cm),

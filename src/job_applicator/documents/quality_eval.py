@@ -11,12 +11,26 @@ import argparse
 import json
 import os
 import re
+import statistics
 import sys
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from job_applicator.documents.resume_document import ResumeDocument, protected_span_recall
+from job_applicator.documents.source_facts import build_source_fact_catalog
+from job_applicator.documents.source_integrity import (
+    SourceIntegrityReport,
+    assess_source_integrity,
+)
+from job_applicator.documents.source_realization import (
+    realize_cover_statement,
+    realize_cover_statements,
+    realize_resume_statement,
+)
+from job_applicator.exceptions import TailorIntegrityError
+from job_applicator.models import CoverLetterOverlay, ResumeData, ResumeOverlay
 from job_applicator.utils.language import detect_language
 
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
@@ -36,6 +50,7 @@ _DEFAULT_OVERALL_FLOOR = 3.0
 _DEFAULT_MAX_ARTIFACT_AGE_DAYS = 14
 _OPTIONAL_MIN_CASES = 1
 _REQUIRED_MIN_CASES = 3
+_DEFAULT_MANUAL_REVIEWS_PER_CATEGORY = 5
 _PROVENANCE_FIELDS = (
     "run_id",
     "source_job_url",
@@ -146,6 +161,35 @@ class LanguageQualityReport:
 
 
 @dataclass(frozen=True)
+class SourceRetentionQualityReport:
+    source_checked: bool
+    body_digest_matches: bool
+    source_body_sha256: str | None
+    generated_body_sha256: str | None
+    protected_span_count: int
+    protected_spans_retained: int
+    missing_protected_spans: list[str]
+    overlay_checked: bool
+    cover_overlay_checked: bool
+    failures: list[str]
+
+
+@dataclass(frozen=True)
+class ManualProseReview:
+    packet_id: str
+    reviewer: str
+    reviewed_at: str
+    dimensions: dict[str, float]
+    critical_defects: list[str]
+
+    @property
+    def passed(self) -> bool:
+        return not self.critical_defects and all(
+            self.dimensions.get(name, 0.0) >= _DEFAULT_DIMENSION_FLOOR for name in _DIMENSIONS
+        )
+
+
+@dataclass(frozen=True)
 class PacketQualityReport:
     packet_id: str
     passed: bool
@@ -161,6 +205,10 @@ class PacketQualityReport:
     generated_at_source: str = "artifact_mtime"
     provenance: dict[str, str] | None = None
     language_quality: LanguageQualityReport | None = None
+    source_integrity: SourceIntegrityReport | None = None
+    source_retention: SourceRetentionQualityReport | None = None
+    integrity_passed: bool = False
+    integrity_failures: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -191,6 +239,8 @@ class PacketSetFreshness:
 @dataclass(frozen=True)
 class PacketSetCertification:
     certified: bool
+    integrity_certified: bool
+    prose_qualified: bool
     mode: str
     required: bool
     thresholds: PacketSetThresholds
@@ -198,6 +248,8 @@ class PacketSetCertification:
     freshness: PacketSetFreshness
     certification_failures: list[str]
     certification_warnings: list[str]
+    missing_evidence: list[str]
+    manual_review_summary: dict[str, Any]
 
 
 def _words(text: str) -> list[str]:
@@ -293,6 +345,228 @@ def _read_existing_text(path: Path, *, field: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _read_source_resume(path: Path, *, field: str) -> ResumeData:
+    if not path.exists():
+        raise FileNotFoundError(f"{field} does not exist: {path}")
+    if not path.is_file():
+        raise ValueError(f"{field} is not a file: {path}")
+    from job_applicator.documents.resume import ResumeLoader
+
+    return ResumeLoader().load(path)
+
+
+def _resume_overlay_payload(
+    case: dict[str, Any],
+    *,
+    base_dir: Path,
+    resume_path: Path,
+) -> dict[str, Any] | None:
+    inline = _case_value(case, "resume_overlay", "overlay")
+    if isinstance(inline, dict):
+        return inline
+    raw_meta_path = _case_value(case, "resume_meta_path", "resume_metadata_path")
+    meta_path = (
+        _resolve_case_path(raw_meta_path, base_dir=base_dir, field="resume_meta_path")
+        if raw_meta_path is not None
+        else resume_path.with_suffix(".meta.json")
+    )
+    if not meta_path.is_file():
+        return None
+    try:
+        payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    overlay = payload.get("overlay") if isinstance(payload, dict) else None
+    return overlay if isinstance(overlay, dict) else None
+
+
+def _cover_letter_overlay_payload(
+    case: dict[str, Any],
+    *,
+    base_dir: Path,
+    cover_path: Path,
+) -> dict[str, Any] | None:
+    inline = _case_value(case, "cover_letter_overlay", "cover_overlay")
+    if isinstance(inline, dict):
+        return inline
+    raw_meta_path = _case_value(
+        case,
+        "cover_letter_meta_path",
+        "cover_metadata_path",
+    )
+    meta_path = (
+        _resolve_case_path(raw_meta_path, base_dir=base_dir, field="cover_letter_meta_path")
+        if raw_meta_path is not None
+        else cover_path.with_suffix(".meta.json")
+    )
+    if not meta_path.is_file():
+        return None
+    try:
+        payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    overlay = payload.get("overlay") if isinstance(payload, dict) else None
+    return overlay if isinstance(overlay, dict) else None
+
+
+def _assess_source_retention(
+    *,
+    source: ResumeData | None,
+    generated_resume: str,
+    generated_cover: str,
+    protected_spans: list[str],
+    overlay_payload: dict[str, Any] | None,
+    cover_overlay_payload: dict[str, Any] | None,
+    required: bool,
+) -> SourceRetentionQualityReport:
+    failures: list[str] = []
+    if source is None:
+        return SourceRetentionQualityReport(
+            source_checked=False,
+            body_digest_matches=False,
+            source_body_sha256=None,
+            generated_body_sha256=None,
+            protected_span_count=len(protected_spans),
+            protected_spans_retained=0,
+            missing_protected_spans=protected_spans,
+            overlay_checked=False,
+            cover_overlay_checked=False,
+            failures=["missing source resume evidence"] if required else [],
+        )
+
+    try:
+        source_document = ResumeDocument.parse(source.raw_text)
+        generated_document = ResumeDocument.parse(generated_resume)
+    except TailorIntegrityError as exc:
+        return SourceRetentionQualityReport(
+            source_checked=True,
+            body_digest_matches=False,
+            source_body_sha256=None,
+            generated_body_sha256=None,
+            protected_span_count=len(protected_spans),
+            protected_spans_retained=0,
+            missing_protected_spans=protected_spans,
+            overlay_checked=False,
+            cover_overlay_checked=False,
+            failures=[f"cannot compare canonical résumé sections: {exc}"],
+        )
+
+    source_digest = source_document.non_summary_sha256()
+    generated_digest = generated_document.non_summary_sha256()
+    body_matches = source_digest == generated_digest
+    if not body_matches:
+        failures.append("generated résumé changed content outside the summary")
+    retained, missing_spans = protected_span_recall(generated_resume, protected_spans)
+    if missing_spans:
+        failures.append("missing protected source spans: " + "; ".join(missing_spans))
+
+    overlay: ResumeOverlay | None = None
+    if overlay_payload is None:
+        failures.append("missing résumé overlay provenance")
+    else:
+        try:
+            overlay = ResumeOverlay.model_validate(overlay_payload)
+        except ValueError as exc:
+            failures.append(f"invalid résumé overlay provenance: {exc}")
+
+    if overlay is not None:
+        if overlay.source_body_sha256 != source_digest:
+            failures.append("résumé overlay source digest does not match source résumé")
+        cited_ids = [
+            fact_id for sentence in overlay.summary_sentences for fact_id in sentence.fact_ids
+        ]
+        if any(len(sentence.fact_ids) != 1 for sentence in overlay.summary_sentences):
+            failures.append("résumé summary sentences do not each cite exactly one fact")
+        if len(set(cited_ids)) != 3:
+            failures.append("résumé summary does not cite three distinct source facts")
+        source_facts = build_source_fact_catalog(source).facts
+        facts_by_id = {fact.fact_id: fact for fact in source_facts}
+        known_ids = set(facts_by_id)
+        if not set(cited_ids) <= known_ids:
+            failures.append("résumé summary cites a fact absent from the source résumé")
+        elif any(
+            sentence.text != realize_resume_statement(facts_by_id[sentence.fact_ids[0]]).text
+            for sentence in overlay.summary_sentences
+        ):
+            failures.append("résumé summary is not the deterministic realization of its facts")
+        summaries = generated_document.summary_sections()
+        declared = re.sub(
+            r"\s+",
+            " ",
+            " ".join(sentence.text for sentence in overlay.summary_sentences),
+        ).strip()
+        actual = (
+            re.sub(r"\s+", " ", " ".join(summaries[0].body_lines)).strip()
+            if len(summaries) == 1
+            else ""
+        )
+        if len(summaries) != 1 or actual != declared:
+            failures.append("résumé summary text does not match overlay provenance")
+
+    cover_overlay: CoverLetterOverlay | None = None
+    if cover_overlay_payload is None:
+        if required:
+            failures.append("missing cover-letter overlay provenance")
+    else:
+        try:
+            cover_overlay = CoverLetterOverlay.model_validate(cover_overlay_payload)
+        except ValueError as exc:
+            failures.append(f"invalid cover-letter overlay provenance: {exc}")
+
+    if cover_overlay is not None:
+        if cover_overlay.source_body_sha256 != source_digest:
+            failures.append("cover-letter overlay source digest does not match source résumé")
+        source_facts = build_source_fact_catalog(source).facts
+        facts_by_id = {fact.fact_id: fact for fact in source_facts}
+        cited_ids = [
+            statement.fact_ids[0]
+            for statement in cover_overlay.body_sentences
+            if len(statement.fact_ids) == 1
+        ]
+        if not set(cited_ids) <= facts_by_id.keys():
+            failures.append("cover letter cites a fact absent from the source résumé")
+        else:
+            language = "French" if cover_overlay.source_language == "fr" else "English"
+            if cover_overlay.architecture_version in {
+                "source-overlay-v2",
+                "source-overlay-v3",
+                "source-overlay-v4",
+            }:
+                expected = [
+                    statement.text
+                    for statement in realize_cover_statements(
+                        [facts_by_id[fact_id] for fact_id in cited_ids],
+                        language=language,
+                    )
+                ]
+            else:
+                expected = [
+                    realize_cover_statement(facts_by_id[fact_id], language=language).text
+                    for fact_id in cited_ids
+                ]
+            cover_declared = [statement.text for statement in cover_overlay.body_sentences]
+            if cover_declared != expected:
+                failures.append(
+                    "cover-letter claims are not the deterministic realization of their facts"
+                )
+            positions = [generated_cover.find(statement) for statement in cover_declared]
+            if any(position < 0 for position in positions) or positions != sorted(positions):
+                failures.append("cover-letter text does not match overlay provenance")
+
+    return SourceRetentionQualityReport(
+        source_checked=True,
+        body_digest_matches=body_matches,
+        source_body_sha256=source_digest,
+        generated_body_sha256=generated_digest,
+        protected_span_count=len(protected_spans),
+        protected_spans_retained=retained,
+        missing_protected_spans=missing_spans,
+        overlay_checked=overlay is not None,
+        cover_overlay_checked=cover_overlay is not None,
+        failures=failures,
+    )
+
+
 def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
@@ -357,6 +631,46 @@ def _load_packet_records(packet_set: Path) -> list[dict[str, Any]]:
             raise ValueError(f"packet case {index} must be an object")
         typed.append(record)
     return typed
+
+
+def _load_manual_reviews(review_set: Path) -> list[ManualProseReview]:
+    records = _load_packet_records(review_set)
+    reviews: list[ManualProseReview] = []
+    for index, record in enumerate(records, start=1):
+        packet_id = str(_case_value(record, "packet_id", "id") or "").strip()
+        reviewer = str(_case_value(record, "reviewer") or "").strip()
+        reviewed_at = str(_case_value(record, "reviewed_at") or "").strip()
+        dimensions_raw = record.get("dimensions")
+        critical_raw = record.get("critical_defects", [])
+        if not packet_id or not reviewer or not reviewed_at:
+            raise ValueError(f"manual review {index} requires packet_id, reviewer, and reviewed_at")
+        _parse_generated_at(reviewed_at, field=f"manual review {packet_id}.reviewed_at")
+        if not isinstance(dimensions_raw, dict):
+            raise ValueError(f"manual review {packet_id}.dimensions must be an object")
+        dimensions: dict[str, float] = {}
+        for name in _DIMENSIONS:
+            if name not in dimensions_raw:
+                raise ValueError(f"manual review {packet_id} is missing dimension {name}")
+            score = float(dimensions_raw[name])
+            if score < 0.0 or score > 4.0:
+                raise ValueError(f"manual review {packet_id}.{name} must be between 0 and 4")
+            dimensions[name] = score
+        if not isinstance(critical_raw, list):
+            raise ValueError(f"manual review {packet_id}.critical_defects must be a list")
+        reviews.append(
+            ManualProseReview(
+                packet_id=packet_id,
+                reviewer=reviewer,
+                reviewed_at=_isoformat_utc(_parse_generated_at(reviewed_at)),
+                dimensions=dimensions,
+                critical_defects=[str(item).strip() for item in critical_raw if str(item).strip()],
+            )
+        )
+    return reviews
+
+
+def _default_manual_review_set(packet_set: Path) -> Path:
+    return packet_set.with_name(f"{packet_set.stem}.reviews.jsonl")
 
 
 def _keywords_from_job_description(job_description: str, *, limit: int = 12) -> list[str]:
@@ -644,6 +958,19 @@ def _duplicate_resume_bullets(text: str) -> list[str]:
     return duplicates
 
 
+def _duplicate_cover_sentences(text: str) -> list[str]:
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
+        normalized = " ".join(_words(sentence)).casefold().strip(" .;:")
+        if len(_words(normalized)) < 8:
+            continue
+        if normalized in seen and normalized not in duplicates:
+            duplicates.append(normalized)
+        seen.add(normalized)
+    return duplicates
+
+
 def _score_usefulness(
     *,
     resume_report: QualityReport,
@@ -739,6 +1066,7 @@ def assess_packet_case(
     base_dir: Path,
     min_dimension_score: float = _DEFAULT_DIMENSION_FLOOR,
     min_overall_score: float = _DEFAULT_OVERALL_FLOOR,
+    require_source_evidence: bool = True,
 ) -> PacketQualityReport:
     packet_id = str(_case_value(case, "id", "packet_id", "name") or "packet")
     resume_path = _resolve_case_path(
@@ -753,6 +1081,44 @@ def assess_packet_case(
     )
     resume_text = _read_existing_text(resume_path, field="resume_path")
     cover_text = _read_existing_text(cover_path, field="cover_letter_path")
+    source_resume_path = _case_value(
+        case,
+        "source_resume_path",
+        "original_resume_path",
+        "base_resume_path",
+        "input_resume_path",
+    )
+    source_resume = None
+    if source_resume_path is not None:
+        source_resume = _read_source_resume(
+            _resolve_case_path(
+                source_resume_path,
+                base_dir=base_dir,
+                field="source_resume_path",
+            ),
+            field="source_resume_path",
+        )
+    protected_spans = _as_text_list(
+        _case_value(case, "protected_spans"),
+        field="protected_spans",
+    )
+    source_retention = _assess_source_retention(
+        source=source_resume,
+        generated_resume=resume_text,
+        generated_cover=cover_text,
+        protected_spans=protected_spans,
+        overlay_payload=_resume_overlay_payload(
+            case,
+            base_dir=base_dir,
+            resume_path=resume_path,
+        ),
+        cover_overlay_payload=_cover_letter_overlay_payload(
+            case,
+            base_dir=base_dir,
+            cover_path=cover_path,
+        ),
+        required=require_source_evidence,
+    )
     generated_at, generated_at_source = _case_generated_at(
         case,
         resume_path=resume_path,
@@ -813,6 +1179,7 @@ def assess_packet_case(
     rounded_dimensions = {name: round(score, 2) for name, score in dimensions.items()}
     overall = round(sum(rounded_dimensions.values()) / len(rounded_dimensions), 2)
 
+    integrity_failures: list[str] = []
     failures = [f"resume: {item}" for item in resume_report.failures]
     failures.extend(f"cover_letter: {item}" for item in cover_report.failures)
     warnings = [f"resume: {item}" for item in resume_report.warnings]
@@ -826,14 +1193,29 @@ def assess_packet_case(
     )
     if language_quality is not None and language_quality.mismatched_sections:
         sections = ", ".join(language_quality.mismatched_sections)
-        failures.append(
+        language_failure = (
             f"declared {language_quality.expected} packet contains "
             f"{language_quality.mismatched_blocks} substantial prose block(s) outside the "
             f"declared language: {sections}"
         )
+        failures.append(language_failure)
+        integrity_failures.append(language_failure)
+    source_integrity = assess_source_integrity(
+        source=source_resume,
+        generated_resume=resume_text,
+        generated_cover=cover_text,
+    )
+    source_integrity_failures = [f"source_integrity: {item}" for item in source_integrity.failures]
+    failures.extend(source_integrity_failures)
+    integrity_failures.extend(source_integrity_failures)
+    warnings.extend(f"source_integrity: {item}" for item in source_integrity.warnings)
+    source_retention_failures = [f"source_retention: {item}" for item in source_retention.failures]
+    failures.extend(source_retention_failures)
+    integrity_failures.extend(source_retention_failures)
     duplicate_bullets = _duplicate_resume_bullets(resume_text)
     if duplicate_bullets:
-        failures.append(f"duplicate resume bullet(s): {len(duplicate_bullets)}")
+        duplicate_failure = f"duplicate resume bullet(s): {len(duplicate_bullets)}"
+        failures.append(duplicate_failure)
     if not keywords:
         failures.append("packet has no keywords or job_description for usefulness/specificity")
     for name in _DIMENSIONS:
@@ -862,6 +1244,10 @@ def assess_packet_case(
         generated_at_source=generated_at_source,
         provenance=_case_provenance(case),
         language_quality=language_quality,
+        source_integrity=source_integrity,
+        source_retention=source_retention,
+        integrity_passed=not integrity_failures,
+        integrity_failures=integrity_failures,
     )
 
 
@@ -933,6 +1319,8 @@ def _missing_certification(
 ) -> PacketSetCertification:
     return PacketSetCertification(
         certified=False,
+        integrity_certified=False,
+        prose_qualified=False,
         mode="packet_set",
         required=required,
         thresholds=thresholds,
@@ -947,6 +1335,8 @@ def _missing_certification(
         ),
         certification_failures=[message],
         certification_warnings=[],
+        missing_evidence=[message],
+        manual_review_summary={},
     )
 
 
@@ -967,6 +1357,7 @@ def _sorted_unique(items: list[str | None]) -> list[str]:
 def certify_packet_set(
     reports: list[PacketQualityReport],
     *,
+    manual_reviews: list[ManualProseReview] | None = None,
     required: bool = False,
     min_dimension_score: float = _DEFAULT_DIMENSION_FLOOR,
     min_overall_score: float = _DEFAULT_OVERALL_FLOOR,
@@ -974,9 +1365,10 @@ def certify_packet_set(
     max_artifact_age_days: int = _DEFAULT_MAX_ARTIFACT_AGE_DAYS,
     required_categories: list[str] | None = None,
     required_languages: list[str] | None = None,
+    min_manual_reviews_per_category: int = _DEFAULT_MANUAL_REVIEWS_PER_CATEGORY,
     now: datetime | None = None,
 ) -> PacketSetCertification:
-    """Summarize whether a packet set is broad and fresh enough to certify."""
+    """Certify deterministic integrity and independently qualify sampled prose."""
     effective_min_cases = _effective_min_cases(required=required, min_cases=min_cases)
     thresholds = _packet_set_thresholds(
         min_dimension_score=min_dimension_score,
@@ -993,9 +1385,9 @@ def certify_packet_set(
     required_category_labels = [value for value in required_category_labels if value]
     required_language_labels = [value for value in required_language_labels if value]
 
-    passing = [report for report in reports if report.passed]
-    present_categories = _sorted_unique([report.category for report in passing])
-    present_languages = _sorted_unique([report.language for report in passing])
+    integrity_passing = [report for report in reports if report.integrity_passed]
+    present_categories = _sorted_unique([report.category for report in integrity_passing])
+    present_languages = _sorted_unique([report.language for report in integrity_passing])
     missing_categories = [
         label for label in required_category_labels if label not in present_categories
     ]
@@ -1024,40 +1416,181 @@ def certify_packet_set(
         stale_packet_ids=stale_packet_ids,
     )
 
-    failures: list[str] = []
+    integrity_failures: list[str] = []
+    prose_failures: list[str] = []
     warnings: list[str] = []
-    failed_packets = [report.packet_id for report in reports if not report.passed]
+    missing_evidence: list[str] = []
+    failed_packets = [report.packet_id for report in reports if not report.integrity_passed]
+    source_unchecked = [
+        report.packet_id
+        for report in reports
+        if report.source_integrity is None or not report.source_integrity.source_checked
+    ]
+    retention_unchecked = [
+        report.packet_id
+        for report in reports
+        if report.source_retention is None
+        or not report.source_retention.source_checked
+        or not report.source_retention.overlay_checked
+        or not report.source_retention.cover_overlay_checked
+    ]
     if failed_packets:
-        failures.append(f"packet case failures: {', '.join(failed_packets)}")
-    if len(passing) < effective_min_cases:
-        failures.append(
-            f"passing packet count {len(passing)} is below required {effective_min_cases}"
+        integrity_failures.append(f"integrity packet failures: {', '.join(failed_packets)}")
+    if len(integrity_passing) < effective_min_cases:
+        integrity_failures.append(
+            f"integrity-passing packet count {len(integrity_passing)} is below required "
+            f"{effective_min_cases}"
         )
     if stale_packet_ids:
-        failures.append(
+        integrity_failures.append(
             "stale packets exceed max artifact age "
             f"{max_artifact_age_days} days: {', '.join(stale_packet_ids)}"
         )
     if future_packet_ids:
-        failures.append(f"packet generated_at is in the future: {', '.join(future_packet_ids)}")
+        integrity_failures.append(
+            f"packet generated_at is in the future: {', '.join(future_packet_ids)}"
+        )
     if missing_categories:
-        failures.append(f"missing required categories: {', '.join(missing_categories)}")
+        integrity_failures.append(f"missing required categories: {', '.join(missing_categories)}")
     if missing_languages:
-        failures.append(f"missing required languages: {', '.join(missing_languages)}")
+        integrity_failures.append(f"missing required languages: {', '.join(missing_languages)}")
+    if source_unchecked:
+        message = f"packets missing source resume evidence: {', '.join(source_unchecked)}"
+        if required:
+            missing_evidence.append(message)
+        else:
+            warnings.append(message)
+    if retention_unchecked:
+        message = "packets missing source-retention or document-overlay evidence: " + ", ".join(
+            retention_unchecked
+        )
+        if required:
+            missing_evidence.append(message)
+        else:
+            warnings.append(message)
     if reports and not present_categories:
-        warnings.append("no passing packets declare category metadata")
+        warnings.append("no integrity-passing packets declare category metadata")
     if reports and not present_languages:
-        warnings.append("no passing packets declare language metadata")
+        warnings.append("no integrity-passing packets declare language metadata")
+
+    integrity_evidence_missing = [
+        item for item in missing_evidence if item.startswith("packets missing")
+    ]
+    should_qualify_prose = not integrity_failures and not integrity_evidence_missing
+    reviews = list(manual_reviews or [])
+    report_by_id = {report.packet_id: report for report in integrity_passing}
+    unknown_review_ids = sorted(
+        {review.packet_id for review in reviews if review.packet_id not in report_by_id}
+    )
+    if should_qualify_prose and unknown_review_ids:
+        missing_evidence.append(
+            "manual reviews do not match integrity-passing packets: "
+            + ", ".join(unknown_review_ids)
+        )
+    duplicate_review_ids = sorted(
+        packet_id
+        for packet_id in {review.packet_id for review in reviews}
+        if sum(review.packet_id == packet_id for review in reviews) > 1
+    )
+    if should_qualify_prose and duplicate_review_ids:
+        missing_evidence.append(
+            "duplicate manual review packet IDs: " + ", ".join(duplicate_review_ids)
+        )
+
+    qualification_categories = (
+        required_category_labels or present_categories if should_qualify_prose else []
+    )
+    manual_summary: dict[str, Any] = {
+        "minimum_reviews_per_category": min_manual_reviews_per_category,
+        "reviewed_packet_count": len({review.packet_id for review in reviews}),
+        "categories": {},
+    }
+    for category in qualification_categories:
+        category_reviews = [
+            review
+            for review in reviews
+            if (report := report_by_id.get(review.packet_id)) is not None
+            and report.category == category
+        ]
+        independent_by_job: dict[str, ManualProseReview] = {}
+        for review in category_reviews:
+            report = report_by_id[review.packet_id]
+            source_job = (
+                report.provenance.get("source_job_url", "") if report.provenance is not None else ""
+            ) or review.packet_id
+            independent_by_job.setdefault(source_job, review)
+        review_units = set(independent_by_job)
+        independent_reviews = list(independent_by_job.values())
+        unique_count = len(review_units)
+        medians = {
+            name: round(
+                statistics.median(review.dimensions[name] for review in independent_reviews),
+                2,
+            )
+            if independent_reviews
+            else 0.0
+            for name in _DIMENSIONS
+        }
+        critical_defects = [
+            f"{review.packet_id}: {defect}"
+            for review in category_reviews
+            for defect in review.critical_defects
+        ]
+        manual_summary["categories"][category] = {
+            "reviewed_packet_count": unique_count,
+            "independent_source_jobs": sorted(review_units),
+            "dimension_medians": medians,
+            "critical_defects": critical_defects,
+        }
+        if unique_count < min_manual_reviews_per_category:
+            missing_evidence.append(
+                f"independent manual prose reviews for {category}: {unique_count} present, "
+                f"{min_manual_reviews_per_category} required"
+            )
+        if critical_defects:
+            prose_failures.append(
+                f"manual prose review found critical defects in {category}: "
+                + "; ".join(critical_defects)
+            )
+        below_floor = [
+            f"{name}={score:.2f}" for name, score in medians.items() if score < min_dimension_score
+        ]
+        if independent_reviews and below_floor:
+            prose_failures.append(
+                f"manual prose medians below {min_dimension_score:.2f} in {category}: "
+                + ", ".join(below_floor)
+            )
+    if should_qualify_prose and not qualification_categories:
+        missing_evidence.append("no categories available for manual prose qualification")
+
+    integrity_certified = should_qualify_prose
+    prose_qualified = (
+        should_qualify_prose
+        and not prose_failures
+        and not [
+            item
+            for item in missing_evidence
+            if item.startswith("independent manual prose reviews")
+            or item.startswith("duplicate manual review")
+            or item.startswith("manual reviews do not match")
+            or item.startswith("no categories available")
+        ]
+    )
+    certification_failures = [*integrity_failures, *prose_failures, *missing_evidence]
 
     return PacketSetCertification(
-        certified=not failures,
+        certified=integrity_certified and prose_qualified,
+        integrity_certified=integrity_certified,
+        prose_qualified=prose_qualified,
         mode="packet_set",
         required=required,
         thresholds=thresholds,
         coverage=coverage,
         freshness=freshness,
-        certification_failures=failures,
+        certification_failures=certification_failures,
         certification_warnings=warnings,
+        missing_evidence=missing_evidence,
+        manual_review_summary=manual_summary,
     )
 
 
@@ -1072,6 +1605,8 @@ def _packet_payload(
         "packet_set": str(packet_set),
         "passed": not failed,
         "certified": certification.certified,
+        "integrity_certified": certification.integrity_certified,
+        "prose_qualified": certification.prose_qualified,
         "mode": certification.mode,
         "required": certification.required,
         "thresholds": asdict(certification.thresholds),
@@ -1079,6 +1614,8 @@ def _packet_payload(
         "freshness": asdict(certification.freshness),
         "certification_failures": certification.certification_failures,
         "certification_warnings": certification.certification_warnings,
+        "missing_evidence": certification.missing_evidence,
+        "manual_review_summary": certification.manual_review_summary,
         "count": len(reports),
         "overall": overall,
         "dimension_means": {
@@ -1131,6 +1668,8 @@ def _unavailable_payload(
         "packet_set": str(packet_set),
         "passed": False,
         "certified": False,
+        "integrity_certified": False,
+        "prose_qualified": False,
         "mode": "packet_set",
         "required": required,
         "reason": reason,
@@ -1140,6 +1679,8 @@ def _unavailable_payload(
         "freshness": asdict(certification.freshness),
         "certification_failures": certification.certification_failures,
         "certification_warnings": certification.certification_warnings,
+        "missing_evidence": certification.missing_evidence,
+        "manual_review_summary": certification.manual_review_summary,
         "count": 0,
         "overall": 0.0,
         "dimension_means": {name: 0.0 for name in _DIMENSIONS},
@@ -1193,6 +1734,11 @@ def _render_packet_set_payload(payload: dict[str, Any], reports: list[PacketQual
     coverage = payload["coverage"]
     print(f"Document packet certification: {certification_verdict}")
     print(
+        "  layers: "
+        f"integrity={'PASS' if payload['integrity_certified'] else 'FAIL'} "
+        f"prose={'QUALIFIED' if payload['prose_qualified'] else 'UNQUALIFIED'}"
+    )
+    print(
         f"  packets: {passed_count}/{payload['count']} passing; required={thresholds['min_cases']}"
     )
     print(
@@ -1226,6 +1772,21 @@ def _render_packet_set_payload(payload: dict[str, Any], reports: list[PacketQual
         row_verdict = "PASS" if report.passed else "FAIL"
         dimensions = ", ".join(f"{name}={report.dimensions[name]:.2f}" for name in _DIMENSIONS)
         print(f"{row_verdict} {report.packet_id}: overall={report.overall:.2f} ({dimensions})")
+        if report.source_integrity is not None:
+            print(
+                "  source integrity: "
+                f"checked={str(report.source_integrity.source_checked).lower()} "
+                f"failures={len(report.source_integrity.failures)}"
+            )
+        if report.source_retention is not None:
+            print(
+                "  source retention: "
+                f"body_match={str(report.source_retention.body_digest_matches).lower()} "
+                f"overlay_checked={str(report.source_retention.overlay_checked).lower()} "
+                "cover_overlay_checked="
+                f"{str(report.source_retention.cover_overlay_checked).lower()} "
+                f"failures={len(report.source_retention.failures)}"
+            )
         for item in report.failures:
             print(f"  failure: {item}")
         for item in report.warnings:
@@ -1235,6 +1796,7 @@ def _render_packet_set_payload(payload: dict[str, Any], reports: list[PacketQual
 def _run_packet_set(
     *,
     packet_set: Path | None = None,
+    manual_review_set: Path | None = None,
     required: bool = False,
     json_output: bool = False,
     min_dimension_score: float = _DEFAULT_DIMENSION_FLOOR,
@@ -1243,6 +1805,7 @@ def _run_packet_set(
     max_artifact_age_days: int = _DEFAULT_MAX_ARTIFACT_AGE_DAYS,
     required_categories: list[str] | None = None,
     required_languages: list[str] | None = None,
+    min_manual_reviews_per_category: int = 1,
 ) -> int:
     resolved = (packet_set or _default_packet_set_path()).expanduser()
     effective_min_cases = _effective_min_cases(required=required, min_cases=min_cases)
@@ -1319,8 +1882,34 @@ def _run_packet_set(
             exit_code=2 if required else 0,
         )
 
+    resolved_review_set = (
+        manual_review_set.expanduser()
+        if manual_review_set is not None
+        else _default_manual_review_set(resolved)
+    )
+    try:
+        manual_reviews = (
+            _load_manual_reviews(resolved_review_set) if resolved_review_set.is_file() else []
+        )
+    except (OSError, ValueError) as exc:
+        return _emit_unavailable(
+            packet_set=resolved,
+            reason="invalid_manual_review_set",
+            message=f"manual prose review set is invalid: {exc}",
+            required=required,
+            json_output=json_output,
+            min_dimension_score=min_dimension_score,
+            min_overall_score=min_overall_score,
+            min_cases=effective_min_cases,
+            max_artifact_age_days=max_artifact_age_days,
+            required_categories=required_categories,
+            required_languages=required_languages,
+            exit_code=2,
+        )
+
     certification = certify_packet_set(
         reports,
+        manual_reviews=manual_reviews,
         required=required,
         min_dimension_score=min_dimension_score,
         min_overall_score=min_overall_score,
@@ -1328,16 +1917,22 @@ def _run_packet_set(
         max_artifact_age_days=max_artifact_age_days,
         required_categories=required_categories,
         required_languages=required_languages,
+        min_manual_reviews_per_category=min_manual_reviews_per_category,
     )
     payload = _packet_payload(resolved, reports, certification)
+    payload["manual_review_set"] = str(resolved_review_set)
     if json_output:
         print(json.dumps(payload, indent=2))
     else:
         _render_packet_set_payload(payload, reports)
 
+    if required:
+        if payload["missing_evidence"]:
+            return 2
+        if not payload["certified"]:
+            return 1
+        return 0
     if not payload["passed"]:
-        return 1
-    if required and not payload["certified"]:
         return 1
     return 0
 
@@ -1345,6 +1940,7 @@ def _run_packet_set(
 def run_packet_set_quality(
     *,
     packet_set: Path | None = None,
+    manual_review_set: Path | None = None,
     required: bool = False,
     json_output: bool = False,
     min_dimension_score: float = _DEFAULT_DIMENSION_FLOOR,
@@ -1353,10 +1949,12 @@ def run_packet_set_quality(
     max_artifact_age_days: int = _DEFAULT_MAX_ARTIFACT_AGE_DAYS,
     required_categories: list[str] | None = None,
     required_languages: list[str] | None = None,
+    min_manual_reviews_per_category: int = _DEFAULT_MANUAL_REVIEWS_PER_CATEGORY,
 ) -> int:
     """Run the private packet-set quality gate and return its process-style exit code."""
     return _run_packet_set(
         packet_set=packet_set,
+        manual_review_set=manual_review_set,
         required=required,
         json_output=json_output,
         min_dimension_score=min_dimension_score,
@@ -1365,6 +1963,7 @@ def run_packet_set_quality(
         max_artifact_age_days=max_artifact_age_days,
         required_categories=required_categories,
         required_languages=required_languages,
+        min_manual_reviews_per_category=min_manual_reviews_per_category,
     )
 
 
@@ -1393,6 +1992,10 @@ def assess_cover_letter(text: str, *, applicant_name: str = "") -> QualityReport
         failures.append("cover letter is missing a recognized sign-off")
     if applicant_name and applicant_name.lower() not in low:
         failures.append("cover letter sign-off does not include the applicant name")
+
+    duplicate_sentences = _duplicate_cover_sentences(text)
+    if duplicate_sentences:
+        failures.append(f"cover letter repeats {len(duplicate_sentences)} substantive sentence(s)")
 
     starts = [_words(p)[0] for p in body_paragraphs if _words(p)]
     if len(starts) >= 3 and len(set(starts)) == 1:

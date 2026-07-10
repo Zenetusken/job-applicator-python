@@ -21,6 +21,7 @@ from job_applicator.models import (
     detect_seniority,
     parse_salary_to_annual_min,
 )
+from tests.helpers import cover_letter_overlay
 
 
 class TestATSModelConsolidation:
@@ -200,14 +201,18 @@ class TestCoverLetterResult:
         assert result.output_path == ""
 
     def test_model_serialization(self) -> None:
+        overlay = cover_letter_overlay()
         result = CoverLetterResult(
             job_title="Dev",
             job_company="Co",
             cover_letter_text="Letter text",
+            overlay=overlay,
         )
         data = result.model_dump()
         assert "cover_letter_text" in data
         assert "created_at" in data
+        assert data["overlay"]["architecture_version"] == "source-overlay-v4"
+        assert len(data["overlay"]["body_sentences"]) == 3
 
 
 class TestCoverLetterSession:

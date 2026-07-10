@@ -215,7 +215,7 @@ async def cover_letter_job(
         settings, style_guide_path, settings.cover_letter_llm(), runtime
     )
     generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=runtime)
-    letter = await generator.generate_verified(
+    letter, overlay = await generator.generate_verified_with_overlay(
         job,
         _load_user_profile(settings, resume_name=resume_data.name),
         resume_data,
@@ -229,7 +229,8 @@ async def cover_letter_job(
         job_url=str(job.url),
         cover_letter_text=letter,
         attempt=1,
-        prompt_version="1.0",
+        prompt_version=overlay.architecture_version,
+        overlay=overlay,
     )
     output_dir = settings.ensure_output_dir()
     when = datetime.now()
@@ -484,6 +485,7 @@ async def document_quality(settings: AppSettings, stored_job: StoredJob) -> Docu
                 "coherence_terms": keywords,
             },
             base_dir=Path.cwd(),
+            require_source_evidence=False,
         )
         return DocumentQualityResult(
             passed=packet.passed,

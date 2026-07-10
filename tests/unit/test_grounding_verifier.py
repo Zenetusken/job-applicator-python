@@ -12,6 +12,7 @@ import pytest
 
 from job_applicator.config import LLMConfig
 from job_applicator.documents.grounding_verifier import (
+    VERIFIER_SYSTEM_PROMPT,
     GroundingVerifier,
     audit_claim,
     audit_report,
@@ -29,6 +30,16 @@ SOURCE = (
 
 def gc(claim: str, grounded: bool = True, quote: str = "", note: str = "") -> ClaimCheck:
     return ClaimCheck(claim=claim, grounded=grounded, source_quote=quote, note=note)
+
+
+def _verifier(config: LLMConfig) -> GroundingVerifier:
+    return GroundingVerifier(config)
+
+
+def test_verifier_prompt_requires_explicit_support_for_resulting_capabilities() -> None:
+    assert "causal or capability conclusion is a claim of its own" in VERIFIER_SYSTEM_PROMPT
+    assert "does NOT by itself support" in VERIFIER_SYSTEM_PROMPT
+    assert "equally across languages" in VERIFIER_SYSTEM_PROMPT
 
 
 # ---- audit_claim: verifies the EVIDENCE, does not trust the model's grounded=True ----
@@ -204,161 +215,13 @@ def test_coverage_ignores_markdown_resume_section_heading() -> None:
     assert any("SOC program" in gap for gap in gaps)
 
 
-def test_coverage_ignores_cover_letter_courtesy_sentence() -> None:
-    generated = "Thank you for considering my application."
-
-    assert coverage_gaps(generated, [], SOURCE) == []
-
-
-def test_coverage_ignores_french_cover_letter_courtesy_sentence() -> None:
-    generated = "Je serais heureux de discuter de ma candidature avec votre equipe."
-
-    assert coverage_gaps(generated, [], SOURCE) == []
-
-
-def test_coverage_ignores_french_cover_letter_discussion_sentence() -> None:
-    generated = "J'aimerais en discuter davantage avec vous."
-
-    assert coverage_gaps(generated, [], SOURCE) == []
-
-
-def test_audit_report_ignores_french_cover_letter_closing_with_bad_quote() -> None:
-    generated = "Je serais ravi de discuter plus en détail de mon profil et de mes motivations."
-    report = VerificationReport(
-        claims=[
-            gc(
-                generated,
-                grounded=True,
-                quote="This source quote does not appear in the resume.",
-            )
-        ]
-    )
-
-    audit = audit_report(report, generated, SOURCE)
-
-    assert audit.unsupported == []
-    assert audit.coverage_gaps == []
-
-
-def test_coverage_ignores_french_cover_letter_objective_fit_sentence() -> None:
-    generated = "Ce poste correspond bien à mon objectif professionnel."
-
-    assert coverage_gaps(generated, [], SOURCE) == []
-
-
-def test_coverage_ignores_french_cover_letter_named_role_objective_fit_sentence() -> None:
-    generated = (
-        "Le poste d'analyste junior en sécurité des opérations et risques TI correspond bien à "
-        "mon objectif professionnel."
-    )
-
-    assert coverage_gaps(generated, [], SOURCE) == []
-
-
-def test_coverage_ignores_french_cover_letter_profile_fit_sentence() -> None:
-    generated = "Ce poste correspond bien à mon profil et à mes aspirations professionnelles."
-
-    assert coverage_gaps(generated, [], SOURCE) == []
-
-
-def test_audit_report_ignores_french_cover_letter_profile_fit_with_bad_quote() -> None:
-    generated = (
-        "Je suis convaincu que mon profil correspond bien au poste d'analyste junior en "
-        "sécurité des opérations et risques TI."
-    )
-    report = VerificationReport(
-        claims=[gc(generated, grounded=True, quote="This source quote is not in the resume.")]
-    )
-
-    audit = audit_report(report, generated, SOURCE)
-
-    assert audit.unsupported == []
-    assert audit.coverage_gaps == []
-
-
-def test_coverage_ignores_french_cover_letter_prepared_to_contribute_framing() -> None:
+def test_coverage_audits_french_prepared_to_contribute_claim() -> None:
     generated = (
         "Ces expériences m'ont préparé à contribuer à l'analyse et à la réponse aux incidents "
         "dans un cadre de sécurité opérationnelle."
     )
 
-    assert coverage_gaps(generated, [], SOURCE) == []
-
-
-def test_audit_report_ignores_source_backed_french_security_bridge() -> None:
-    source = (
-        "SOC monitoring & triage. Incident response. "
-        "Triaged and escalated complex issues to higher tiers per documented procedures. "
-        "Customer communication."
-    )
-    generated = (
-        "Cette expérience m'a permis de développer une compréhension pratique des processus de "
-        "triage, d'escalade et d'analyse des incidents, tout en renforçant mes compétences en "
-        "communication claire et en documentation."
-    )
-    report = VerificationReport(claims=[gc(generated, grounded=False, quote="", note="")])
-
-    audit = audit_report(report, generated, source)
-
-    assert audit.unsupported == []
-
-
-def test_audit_report_rejects_unbacked_french_security_bridge() -> None:
-    source = "Customer service and scheduling."
-    generated = (
-        "Cette expérience m'a permis de développer une compréhension pratique des processus de "
-        "triage, d'escalade et d'analyse des incidents."
-    )
-    report = VerificationReport(claims=[gc(generated, grounded=False, quote="", note="")])
-
-    audit = audit_report(report, generated, source)
-
-    assert audit.unsupported
-
-
-def test_coverage_ignores_french_cover_letter_neutralized_discussion_sentence() -> None:
-    generated = (
-        "Je serais disponible pour discuter de la manière dont mes compétences et mon expérience "
-        "peuvent contribuer à votre équipe."
-    )
-
-    assert coverage_gaps(generated, [], SOURCE) == []
-
-
-def test_coverage_ignores_french_cover_letter_contribution_framing() -> None:
-    generated = (
-        "Je suis enthousiaste à l'idée de contribuer à l'équipe d'Example Risk Lab et de mettre "
-        "mes compétences à profit dans ce rôle."
-    )
-
-    assert coverage_gaps(generated, [], SOURCE) == []
-
-
-def test_coverage_audits_mixed_french_framing_with_unbacked_tools() -> None:
-    generated = (
-        "Je suis enthousiaste à l'idée de contribuer à l'équipe d'Example Risk Lab en appliquant "
-        "mon expérience SIEM Splunk et Kubernetes en production."
-    )
-
-    gaps = coverage_gaps(generated, [], SOURCE)
-
-    assert any("Kubernetes" in gap for gap in gaps)
-
-
-def test_coverage_ignores_french_cover_letter_greeting() -> None:
-    generated = "Bonjour à l'équipe de recrutement d'Example Risk Lab."
-
-    assert coverage_gaps(generated, [], SOURCE) == []
-
-
-def test_coverage_ignores_french_cover_letter_application_intent_greeting() -> None:
-    generated = (
-        "Bonjour équipe de recrutement, Je m'appelle Alex Morgan et je souhaite postuler "
-        "au poste d'analyste junior en sécurité des opérations et risques TI chez Example "
-        "Risk Lab."
-    )
-
-    assert coverage_gaps(generated, [], SOURCE) == []
+    assert coverage_gaps(generated, [], SOURCE) == [generated.rstrip(".")]
 
 
 def test_audit_report_rejects_cross_entry_source_token_inventory_merge() -> None:
@@ -422,26 +285,18 @@ def test_grounding_report_clean_and_complete() -> None:
     assert not r.complete and not r.clean
 
 
-def test_audit_report_ignores_cover_letter_application_framing() -> None:
-    generated = (
-        "I would welcome the opportunity to discuss how my background and skills align with "
-        "the IT On-site Support Technician role at WSP. Holds a CISSP."
-    )
-    report = VerificationReport(
-        claims=[
-            gc(
-                "I would welcome the opportunity to discuss how my background and skills align "
-                "with the IT On-site Support Technician role at WSP.",
-                grounded=False,
-                note="cited quote is not in the résumé",
-            ),
-            gc("Holds a CISSP", grounded=False, note="source is silent"),
-        ]
+def test_coverage_ignores_shared_plural_resume_heading() -> None:
+    assert coverage_gaps("**Expériences professionnelles**", [], SOURCE) == []
+
+
+def test_coverage_ignores_source_backed_institution_date_header() -> None:
+    source = (
+        "EDUCATION\n"
+        "Undergraduate Certificate — Operational Cybersecurity 2024 - Present\n"
+        "Polytechnique Montréal\n"
     )
 
-    result = audit_report(report, generated, SOURCE)
-
-    assert [claim.claim for claim in result.unsupported] == ["Holds a CISSP"]
+    assert coverage_gaps("Polytechnique Montréal | 2024 - Present", [], source) == []
 
 
 def test_audit_report_ignores_model_false_negative_for_source_verbatim_claim() -> None:
@@ -506,7 +361,7 @@ def test_audit_report_keeps_fabricated_item_in_skill_inventory_unsupported() -> 
     assert [claim.claim for claim in result.unsupported] == [generated]
 
 
-def test_audit_report_ignores_french_cover_letter_objective_framing() -> None:
+def test_audit_report_audits_french_objective_with_experience_claim() -> None:
     generated = (
         "Mon objectif est de mettre à profit ces compétences techniques et mon expérience "
         "en gestion d'incidents pour contribuer à votre équipe de défense et de triage. "
@@ -527,7 +382,11 @@ def test_audit_report_ignores_french_cover_letter_objective_framing() -> None:
 
     result = audit_report(report, generated, SOURCE)
 
-    assert [claim.claim for claim in result.unsupported] == ["Holds a CISSP"]
+    assert [claim.claim for claim in result.unsupported] == [
+        "Mon objectif est de mettre à profit ces compétences techniques et mon expérience en "
+        "gestion d'incidents pour contribuer à votre équipe de défense et de triage.",
+        "Holds a CISSP",
+    ]
 
 
 # ---- GroundingVerifier (Slice 2): the LLM verify path is mocked; the audit is real ----
@@ -536,7 +395,7 @@ _RESUME = ResumeData(raw_text=SOURCE, skills=["SIEM", "Wireshark"])
 
 
 async def test_verify_applies_the_real_audit_over_the_mocked_llm() -> None:
-    verifier = GroundingVerifier(LLMConfig(model="m"))
+    verifier = _verifier(LLMConfig(model="m"))
     mocked = VerificationReport(
         claims=[
             gc(
@@ -561,7 +420,7 @@ async def test_verify_returns_clean_on_grounded_and_covered_doc() -> None:
     # I2: pin the SUCCESS path end-to-end — a fully grounded + fully covered report passes the REAL
     # audit cleanly. The other verify tests exercise overrides/failure; without this, no unit test
     # ever runs verify()->audit_report->clean, so a bug in that wiring would stay green.
-    verifier = GroundingVerifier(LLMConfig(model="m"))
+    verifier = _verifier(LLMConfig(model="m"))
     generated = "Took over 100% of inbound email. Skilled in SIEM."
     mocked = VerificationReport(
         claims=[
@@ -581,19 +440,19 @@ async def test_verify_returns_clean_on_grounded_and_covered_doc() -> None:
 
 
 async def test_verify_honors_configured_max_tokens() -> None:
-    verifier = GroundingVerifier(LLMConfig(model="m", max_tokens=4096))
+    verifier = _verifier(LLMConfig(model="m", max_tokens=4096))
     client = MagicMock()
     client.create = AsyncMock(return_value=VerificationReport(claims=[]))
 
     with patch.object(verifier, "_get_client", return_value=client):
         await verifier.verify("Generated text.", _RESUME)
 
-    assert client.create.call_args.kwargs["max_tokens"] == 4096
+    assert client.create.call_args.kwargs["max_tokens"] == 4000
 
 
 async def test_verify_failsafe_raises_never_returns_clean() -> None:
     # A verifier failure must NOT be masked as a clean document (spec §3 #4).
-    verifier = GroundingVerifier(LLMConfig(model="m"))
+    verifier = _verifier(LLMConfig(model="m"))
     client = MagicMock()
     client.create = AsyncMock(side_effect=RuntimeError("endpoint down"))
     with patch.object(verifier, "_get_client", return_value=client):
@@ -603,7 +462,7 @@ async def test_verify_failsafe_raises_never_returns_clean() -> None:
 
 async def test_verify_sources_the_base_resume_only() -> None:
     # The SOURCE handed to the model is the base résumé, never the JD or a tailored intermediate.
-    verifier = GroundingVerifier(LLMConfig(model="m"))
+    verifier = _verifier(LLMConfig(model="m"))
     client = MagicMock()
     client.create = AsyncMock(return_value=VerificationReport(claims=[]))
     with patch.object(verifier, "_get_client", return_value=client):

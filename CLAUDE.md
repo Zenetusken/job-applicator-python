@@ -89,24 +89,24 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
 ## Key Design Decisions
 
 - Headless browser by default, `--headed` flag for debugging
-- AI-powered cover letters via litellm (works with local vLLM or cloud APIs)
+- Model-assisted job-criteria extraction via litellm; résumé and cover-letter applicant claims are
+  deterministic source realizations
 - **Output language is a packet-level policy.** `[llm] language` = `auto` (mirror the job posting's
   language) | `en` | `fr` lives on `[llm]` so the cover-letter override (`cover_letter_llm`)
   inherits it — the CV and the cover letter always resolve the SAME language, so one application
-  never mixes them. French resolves an in-language sign-off ("Cordialement,"), a localized PDF date,
-  and recognized French sign-offs. Resolution (`utils/language.py`) is a deliberately small FR/EN
+  never mixes them. The source résumé must already use the resolved language; cross-language output
+  fails closed. French resolves an in-language sign-off ("Cordialement,"), a localized PDF date, and
+  recognized French sign-offs. Resolution (`utils/language.py`) is a deliberately small FR/EN
   heuristic, logged per job so a misdetect is catchable.
-- **Grounding verifier — the honesty layer (language-agnostic).** Rather than enumerate banned terms
-  per language, an LLM enumerates every claim in a generated document and cites the source line that
-  grounds it; a deterministic audit (`documents/grounding_verifier.py`) then overrides any ungrounded
-  claim (token-overlap + a numeric backstop) and flags coverage gaps. The SOURCE is always the
-  BASE résumé (never the JD or the tailored intermediate). Cover letters route through
-  `CoverLetterGenerator.generate_verified()` (regenerate ONCE, then fail closed if the best draft is
-  still unclean or verification is unavailable);
-  tailored résumés through `ResumeTailor.tailor_verified()`, which SURFACES the report on
-  `TailoredResume.grounding_report` for human review (a "claims to review" panel + `--json`) and
-  NEVER auto-strips — the résumé is the document of record. Fail-safe: any verifier failure raises
-  `GroundingUnavailableError`, so a down endpoint can never pass off an unverified document as clean.
+- **Generated applicant claims are deterministic source overlays.** Structured job requirements, or
+  temperature-zero evidence-span extraction when requirements are absent, feed local ranking of
+  three primary source facts. Résumé generation replaces only the summary; every non-summary
+  section is protected by a source-body digest. Cover letters realize the same three-fact contract
+  inside a deterministic application frame. There is no phrase replacement, tool stripping,
+  metric rewriting, language-specific repair, or context-specific bullet deletion.
+- **The grounding verifier is a standalone diagnostic.** `documents/grounding_verifier.py` may
+  enumerate claims and audit source quotes for non-overlay documents, but source-overlay generation
+  and certification do not depend on it. It never mutates an artifact.
 - **LLM endpoint is external by default.** The generation features are a *client* of an
   OpenAI-compatible endpoint (`[llm] api_base`, default `localhost:8000`); the app never starts
   one. Embeddings run in-process. Optional `[serve]` extra (vLLM 0.23.x, CUDA 13.0 wheel) +
@@ -114,6 +114,13 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
   job-applicator's own `.venv/bin/vllm`, `GPU_MEM=0.65`, `MAX_MODEL_LEN=8192`, and
   `ENFORCE_EAGER=1`, which keeps enough 8K KV cache for Qwen3-8B-AWQ while leaving CUDA
   embedding headroom on the validated 12 GB RTX 4070 profile.
+- **LLM sampler kwargs are centralized.** Completion callers use
+  `utils.llm.litellm_completion_kwargs()` for `max_tokens`, temperature overrides, Qwen thinking
+  control, and optional sampler knobs (`top_p`, `top_k`, `min_p`, `presence_penalty`). The sampler
+  fields are measurement toggles by default; unset fields are omitted from requests. Use
+  `scripts/eval_llm_sampler.py` to run baseline-vs-Qwen sampler variants and inspect
+  baseline-relative quality deltas before changing defaults. Sampler settings can affect factual
+  criteria extraction and diagnostics; they cannot tune deterministic applicant claim prose.
 - Instructor for structured LLM outputs (Pydantic models)
 - mxbai-embed-large-v1 for semantic job matching (~1.4 GB runtime allocation,
   1.3 GB free-VRAM preflight budget)
@@ -157,11 +164,9 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
   explicit in-app confirm, and a real apply needs a danger checkbox (dry-run default) — the
   low-friction TUI must never turn an account action into a one-keypress accident.
 - **Automated CV saves fail closed.** `tailor --yes`, `tailor --json`, `batch`, and the TUI one-shot
-  `tailor_job` path refuse to save if grounding did not complete cleanly, if contact info disappears,
-  or if an ATS-compatible base résumé becomes incompatible. CLI non-interactive runs prepend strict
-  source-only instructions; batch also runs one strict refinement after dirty grounding before
-  refusing. Interactive review can still accept a surfaced warning because the user is the
-  document-of-record authority.
+  `tailor_job` path refuse to save unless the immutable source-body digest, summary citations,
+  deterministic realization, contact data, and ATS integrity validate. Interactive retries
+  regenerate only the summary from the original résumé.
 - **Doctor reports capability readiness.** `doctor` keeps its narrow blocking `ok` verdict tied to
   LLM `/models` HTTP 200, but also renders capability readiness for AI generation, matching,
   browser workflows, and PDF output so first-use dependency gaps are visible without changing the

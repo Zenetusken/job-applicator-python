@@ -8,6 +8,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Source-preserving document generation.** Résumé targeting now generates only a three-sentence
+  summary overlay. Structured job requirements, or temperature-zero evidence-span extraction when
+  requirements are absent, feed deterministic ranking of three primary source facts; local typed
+  realization preserves their text. Canonical body digests keep contact, experience, education,
+  projects, skills, dates, metrics, and qualifiers unchanged. Cover letters use the same ranking
+  contract and three facts while the application opening, closing
+  request, and sign-off are assembled outside the model. Both artifact sidecars retain statement
+  citations and the source digest. Phrase replacement, tool stripping, metric
+  rewriting, language-specific sentence repair, and context-specific bullet deletion have been
+  removed. Cross-language résumé tailoring now fails closed unless the source résumé is already in
+  the requested language. Retry/input/section editing regenerate only the summary.
+- **Deterministic PDF formatting and layered certification.** PDF rendering now parses generated
+  résumé sections and cover-letter paragraphs/sign-offs locally instead of sending documents
+  through another LLM. Required private certification reports `integrity_certified` and
+  `prose_qualified` separately; final `certified` requires both source/overlay integrity and a
+  structured sampled human-review sidecar with no critical defects.
+- **Deterministic claim realization.** Generated résumé and cover-letter claims are recomputed from
+  cited source facts during verification. The standalone claim-enumeration verifier remains an
+  optional diagnostic; source-overlay generation and certification do not depend on probabilistic
+  entailment.
+- **Grounded targeting profile.** Job-criteria extraction is pinned to temperature zero and the
+  sampler harness includes a zero-presence-penalty `qwen-grounded` comparison profile. Applicant
+  claims have no temperature or token-budget setting because they are realized deterministically.
+- **Measure-only LLM sampler configuration.** `[llm]` now exposes optional sampler knobs
+  (`top_p`, `top_k`, `min_p`, `presence_penalty`, `enable_thinking`) and all completion callers use
+  a shared `utils.llm.litellm_completion_kwargs()` helper. Defaults preserve the previous request
+  shape so Qwen/vLLM sampler tuning can be A/B tested before changing generated-output behavior.
+- **Private LLM sampler eval harness.** `scripts/eval_llm_sampler.py` runs controlled
+  baseline-vs-Qwen sampler experiments through the public `batch` command, writes fresh private
+  generated packet manifests, certifies each variant with document-quality, and reports
+  baseline-relative overall/per-dimension deltas so sampler changes can be judged by evidence. The
+  harness isolates batch recovery state per variant/case and saves non-dry-run summaries under the
+  private sampler run directory.
 - **Target-role preference boosts** (`[[matching.target_roles]]`). Declared role families — a
   title regex + a boost — lift preference-important jobs the CV is lexically far from (measured:
   an AI-red-team and an IAM posting ranked below the review floor on an SOC CV; embedding
@@ -80,28 +113,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a real stale-config CV that had silently mis-scored the whole funnel.
 
 ### Fixed
-- **Generated CV/cover-letter packet honesty hardening.** The v1 PDF résumé parser now handles the
-  fixed-width skills grid without leaking row labels or splitting parenthetical skills, tailored CVs
-  preserve source-owned Education/Languages sections, and generated summaries are rebuilt from
-  source-backed phrases when the LLM draft is too dirty.
-- **Batch CV saves now share the fail-closed grounding path.** A dirty batch-tailored CV gets one
-  strict source-only refinement; if grounding/contact/ATS integrity is still not clean, the CV is
-  not saved and the job records an error instead of producing a stale-looking artifact.
-- **Cover letters reject unsupported JD-side and source-merge overclaims.** The generator now
-  pre-prompts and validates against absent job-side terms such as workstation deployment, ITIL, and
-  asset inventory, plus observed source-merge phrases such as unsupported technical-support
-  coursework or critical-systems claims. Target company/role mentions are required as application
-  context without implying prior employment.
-- **Grounding audit false positives are narrower.** The deterministic verifier can supplement an
-  incomplete model quote only with overlapping source fragments that carry the exact missing
-  percentage, accepts supported numeric skill names such as Microsoft 365 / 802.1X, accepts
-  source-backed employment-heading years, and ignores cover-letter application framing/courtesy
-  lines as non-factual claims.
-- **French packet honesty guards are stricter.** French `Profil`, `Compétences`, `Formation`, and
-  `Langues` sections now flow through the same deterministic cleanup as English sections, French
-  credential/status overclaims are rejected, mixed application-framing sentences with tools or
-  credentials stay auditable, and support-domain bullets are preserved or dropped by source
-  context instead of a hard-coded employer list.
+- **Source-aware packet integrity.** The v1 PDF résumé parser handles the fixed-width skills grid
+  without leaking row labels or splitting parenthetical skills. Batch, CLI, and TUI save paths now
+  require matching source-body digests, deterministic overlay realization, valid citations,
+  preserved contact data, and ATS integrity.
+- **Standalone grounding diagnostics use structural source evidence.** Numeric checks require the
+  same value in a source fragment about the same subject, and résumé headings/entry headers are
+  recognized structurally rather than through application-phrase or language-specific exceptions.
 - **Style-analysis live diagnostics are no longer a black box.** `StyleAnalyzer` now logs which LLM
   path it is using (instructor structured output vs direct litellm JSON fallback), how long each path
   took, and the fallback reason. Direct litellm fallback failures now go through the shared

@@ -67,7 +67,7 @@ async def _generate_cover_letter(
     generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=runtime)
     try:
         with err_console.status("Generating + verifying cover letter..."):
-            letter = await generator.generate_verified(
+            letter, overlay = await generator.generate_verified_with_overlay(
                 job,
                 _load_user_profile(settings, resume_name=resume_data.name),
                 resume_data,
@@ -81,7 +81,8 @@ async def _generate_cover_letter(
             job_url=str(job.url),
             cover_letter_text=letter,
             attempt=attempt,
-            prompt_version="1.0",
+            prompt_version=overlay.architecture_version,
+            overlay=overlay,
         )
         session.add_attempt(result)
         return result
@@ -166,7 +167,7 @@ async def _refine_cover_letter(
         generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=runtime)
         user = _load_user_profile(settings, resume_name=resume_data.name if resume_data else "")
         with err_console.status("Refining + verifying cover letter..."):
-            refined, report = await generator.refine_verified(
+            refined, overlay, report = await generator.refine_verified_with_overlay(
                 job=job,
                 user=user,
                 resume=resume_data or ResumeData(raw_text=""),
@@ -182,6 +183,8 @@ async def _refine_cover_letter(
             cover_letter_text=refined,
             user_modifications=user_instructions,
             attempt=attempt + 1,
+            prompt_version=overlay.architecture_version,
+            overlay=overlay,
         )
         session.add_attempt(new_result)
         # #4: the refined letter is re-verified — the SAME honesty pass as generate_verified —

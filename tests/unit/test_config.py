@@ -76,8 +76,36 @@ def test_llm_config_defaults() -> None:
     # couldn't); the 4B stays a pinnable fallback via JOB_APPLICATOR_LLM_MODEL.
     assert config.model == "Qwen/Qwen3-8B-AWQ"
     assert config.temperature == 0.7
-    # Sized for full résumé tailoring (not the old 1024 cap).
+    # General completion cap; individual analysis tasks may self-cap.
     assert config.max_tokens == 4096
+    # Phase-1 sampler migration is measure-only: optional knobs default to omitted request fields.
+    assert config.top_p is None
+    assert config.top_k is None
+    assert config.min_p is None
+    assert config.presence_penalty is None
+    assert config.enable_thinking is False
+
+
+def test_llm_sampler_config_from_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Sampler knobs are configurable before they become measured defaults."""
+    toml = tmp_path / "config.toml"
+    toml.write_text(
+        "[llm]\n"
+        "top_p = 0.8\n"
+        "top_k = 20\n"
+        "min_p = 0.0\n"
+        "presence_penalty = 1.2\n"
+        "enable_thinking = true\n"
+    )
+    monkeypatch.setenv("JOB_APPLICATOR_CONFIG_FILE", str(toml))
+
+    config = AppSettings().llm
+
+    assert config.top_p == 0.8
+    assert config.top_k == 20
+    assert config.min_p == 0.0
+    assert config.presence_penalty == 1.2
+    assert config.enable_thinking is True
 
 
 def test_config_toml_is_loaded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

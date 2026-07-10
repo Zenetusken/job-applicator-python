@@ -9,20 +9,21 @@ AI-powered job application tool using Playwright browser automation with modern 
 - **Region-Aware Browser**: Auto-detects the host's locale, IANA timezone, and Chrome version so geo-aware boards serve your real region
 - **LinkedIn Easy Apply**: Fill LinkedIn Easy Apply forms in a dry run by default; real submission requires `--submit`. LinkedIn external-apply jobs and Indeed applications are reported for manual follow-up rather than guessed through
 - **Selector Health Diagnostics**: Probe live LinkedIn/Indeed selectors on demand, or as an opt-in `search` / `apply` preflight, so board DOM drift is reported before a real run
-- **AI Cover Letters**: Generate personalized cover letters using LLM (litellm - supports 100+ providers) as three connected paragraphs with deterministic honesty guards and an enforced sign-off. Dry runs generate the letter as a preview before you opt in with `--submit`
-- **Output-Language Policy**: The generated CV and cover letter always resolve the *same* language — `[llm] language = "auto"` mirrors the job posting's language, or force `"en"` / `"fr"` (a French posting yields a French packet with an in-language sign-off and localized PDF date)
-- **Grounding Verification (honesty layer)**: A language-agnostic LLM pass enumerates every claim in a generated document and cites the résumé line that grounds it; a deterministic audit then overrides any ungrounded claim. Cover letters regenerate once, then **fail closed** if the best draft is still unclean or the verifier is unavailable. Tailored résumés surface unsupported claims for human review (printed as a "claims to review" panel and carried in `--json`), never silently stripped; non-interactive saves use stricter source-only prompting, retry dirty drafts, then refuse dirty or unverified output.
+- **Source-Backed Cover Letters**: Structured job requirements, or a temperature-zero evidence-span extraction when requirements are absent, feed deterministic ranking of three primary source facts. Typed local realization preserves those facts in the body; the application frame and sign-off are deterministic. Dry runs generate the letter as a preview before you opt in with `--submit`
+- **Output-Language Policy**: The generated CV and cover letter resolve the *same* language — `[llm] language = "auto"` mirrors the job posting, or force `"en"` / `"fr"`. The base résumé must already use that language; cross-language résumé generation fails closed rather than saving unverified machine translation.
+- **Grounding Verification (honesty layer)**: Résumé targeting changes only a three-statement summary; each statement is an exact deterministic realization of one selected source fact, while every non-summary source section is digest-protected. Cover-letter statements follow the same typed source contract. Both artifact sidecars retain citations, source digest, language, and architecture version.
 - **Resume Parsing**: Load and parse PDF/text/image resumes with intelligent skill extraction; OCR fallback for scanned PDFs
 - **Semantic Job Matching**: Match resumes to jobs using mxbai-embed-large-v1 embeddings
-- **Resume Tailoring**: LLM-powered resume rewriting for specific jobs with hallucination guards and a surfaced grounding report
+- **Resume Tailoring**: source-preserving summary overlay with immutable experience, education, skills, projects, dates, metrics, and contact content
 - **Date Audit**: Pre-ingestion CV validation — checks ordering, staleness, and advisory employment gap/overlap findings
-- **Style Analysis**: Mimic writing style from one or more example resumes/cover letters
+- **Style Analysis**: Analyze writing style from one or more example resumes/cover letters
   (comma-separated paths); the analyzer tries instructor structured output first, falls back to
   direct litellm JSON parsing with timing logs, and fails loudly instead of fabricating a style
-  guide. Example guides live in `docs/style-guide-examples/`.
-- **Cover-Letter Sign-Off Enforcement**: Every generated or refined cover letter is validated/repaired to end with a recognized closing word and a signature matching the applicant's name
+  guide. Source-overlay factual statements are not rewritten to mimic a style guide. Example guides
+  live in `docs/style-guide-examples/`.
+- **Cover-Letter Sign-Off Enforcement**: Every generated or refined cover letter is assembled with a recognized closing word and a signature matching the applicant's name
 - **ATS Compatibility Check**: Validate resumes against ATS heuristics (contact info, standard sections, length, no ASCII tables) with a score and actionable suggestions
-- **PDF Résumé & Cover Letters**: Render tailored documents to PDF with Typst (optional `[pdf]` extra). Built-in `modern`, `classic`, and `minimal` templates
+- **PDF Résumé & Cover Letters**: Deterministically parse and render generated text with Typst (optional `[pdf]` extra); PDF formatting makes no LLM call. Built-in `modern`, `classic`, and `minimal` templates
 - **Structured Outputs**: Instructor for type-safe LLM responses
 
 ## Tech Stack
@@ -53,12 +54,14 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-## LLM backend (required for the AI features)
+## LLM backend (required for model-assisted analysis)
 
-The AI features — cover letters, résumé tailoring, style analysis — call an
-**OpenAI-compatible chat endpoint**. job-applicator is a *client*: it does **not**
-start one. (Embeddings for job matching run in-process via `sentence-transformers`,
-so they need no separate service — just the `[embeddings]` extra.)
+Style analysis, skill extraction, fallback job-criteria extraction, and the standalone grounding
+diagnostic call an **OpenAI-compatible chat endpoint**. Résumé and cover-letter applicant claims
+are deterministic source realizations, but document generation may still need criteria extraction
+when a posting has no structured requirements. job-applicator is a *client*: it does **not** start
+an endpoint. Embeddings for job matching run in-process via `sentence-transformers`, so they need no
+separate service — just the `[embeddings]` extra.
 
 Pick one:
 
@@ -159,9 +162,12 @@ job-applicator ats-check --resume resume.pdf
 
 # Check generated CV/cover-letter quality
 job-applicator document-quality --resume tailored.txt --cover-letter cover.txt --keyword Python
-job-applicator document-quality --private-packet-set --required --min-cases 3 \
-  --max-artifact-age-days 14 --required-category support --required-category risk \
+job-applicator document-quality --private-packet-set --required --min-cases 15 \
+  --min-manual-reviews-per-category 5 --max-artifact-age-days 14 \
+  --required-category support --required-category risk --required-category network \
   --required-language en --required-language fr --json
+# Compare current baseline against measured Qwen/vLLM sampler variants
+.venv/bin/python scripts/eval_llm_sampler.py --required --integrity-only --json
 
 # Match resume to jobs using embeddings
 job-applicator match --resume resume.pdf --jobs-file jobs.json --top-k 10
@@ -278,11 +284,11 @@ The `tailor` command runs an interactive session that lets you iteratively refin
 
 - **Diff View**: After each attempt, a unified diff is shown so you can see exactly what changed. Press `[D]` at the prompt to see the full diff of any attempt.
 - **Version History**: Press `[V]` to browse all previous attempts and select one to revert to or compare against.
-- **Section Editing**: Press `[S]` to target a specific resume section (e.g. Experience, Skills, Summary) for focused rewriting instead of regenerating the entire resume.
-- **Auto Tone Detection**: The tailor automatically detects the job posting's tone (corporate, startup, technical, or creative) and adjusts vocabulary and phrasing accordingly.
-- **Non-Interactive Integrity Gate**: `tailor --yes`, `tailor --json`, batch tailoring, and TUI one-shot tailoring save only when grounding completed cleanly and the tailored output does not drop contact info or regress an ATS-compatible base résumé into an incompatible one. CLI non-interactive runs start with strict source-only instructions and retry dirty grounding drafts before failing closed.
+- **Summary Focus**: Press `[S]` to reselect evidence for the generated summary. Experience, skills, education, projects, dates, metrics, and contact content remain immutable.
+- **Targeting Context**: The job posting and optional user input affect fact selection only; they cannot rewrite source claims.
+- **Non-Interactive Integrity Gate**: `tailor --yes`, `tailor --json`, batch tailoring, and TUI one-shot tailoring save only when the source-body digest, deterministic summary realization, and citations all validate.
 - **Error Handling**: Up to 10 retry attempts on LLM failures, with a warning at attempt 8. The session gracefully recovers from transient LLM errors.
-- **Post-Tailor Cover Letter**: After accepting a tailored resume, the CLI offers to generate a matching cover letter. The same tone, style guide, and job data are shared between both documents. The cover letter follows the same accept/retry/input/diff/history workflow as the resume, and is saved alongside it with linked metadata.
+- **Post-Tailor Cover Letter**: After accepting a tailored resume, the CLI offers to generate a matching cover letter. Job and user focus affect source-fact selection; fixed local realization produces the factual body. The letter is saved alongside the résumé with linked source-overlay metadata.
 
 ### Batch Mode
 
@@ -300,8 +306,8 @@ job-applicator batch --resume resume.pdf --jobs-file jobs.json --no-cover-letter
 ```
 
 - **Smart matching**: Jobs are ranked by semantic similarity + skill coverage, filtered by `--min-score`, then only the top `--top-k` are processed.
-- **Parallel execution**: Tailoring and cover letter generation run concurrently (up to 3 simultaneous LLM calls).
-- **Fail-closed CV saves**: If a generated CV comes back with dirty grounding, batch runs one strict source-only refinement and then refuses to save the CV if grounding/contact/ATS integrity is still not clean.
+- **Parallel execution**: Up to three document tasks run concurrently. Criteria extraction may call the LLM when a posting has no structured requirements; applicant claim realization does not.
+- **Fail-closed CV saves**: Batch refuses to save a CV unless its immutable source-body digest, summary citations, deterministic realization, contact data, and ATS integrity validate.
 - **Recovery-safe identity**: Resume state is keyed by the job source, résumé, score/filter inputs, style guide, output format, templates, category, and OCR mode. `--resume-run` only resumes an incomplete run with the same output-affecting parameters.
 - **Partial failure semantics**: A verified CV is kept as a resumable `TAILORED` job if only the cover letter fails, so a later resume-run retries the cover letter without re-tailoring. Any requested document failure still writes the batch summary and exits non-zero.
 - **Unique job URLs required**: Batch rejects duplicate matched URLs before concurrent document generation because recovery state is keyed by URL.
@@ -329,15 +335,31 @@ resume_path = "/path/to/your/resume.pdf"
 api_base = "http://localhost:8000/v1"  # vLLM endpoint
 api_key = "not-needed-for-local"
 model = "Qwen/Qwen3-8B-AWQ"
+max_tokens = 4096
+temperature = 0.7
+# Optional sampler knobs for measured Qwen/vLLM tuning; omitted by default to preserve baseline.
+# top_p = 0.8
+# top_k = 20
+# min_p = 0.0
+# presence_penalty = 1.2
+enable_thinking = false
 # Output language for the generated CV + cover letter: "auto" mirrors the job
 # posting's language, or force "en" / "fr". The two documents always resolve the
-# SAME language, so one application never mixes them.
+# SAME language. The source resume must already be in that language; automatic
+# cross-language resume translation is intentionally unavailable.
 language = "auto"
 ```
 
 The smaller, faster `cyankiwi/Qwen3.5-4B-AWQ-4bit` remains a pinnable fallback (via
 `JOB_APPLICATOR_LLM_MODEL` / `[llm] model`) — the 8B grounds stack-heavy job descriptions
 the 4B couldn't, while still fitting the 12 GB card alongside the embeddings.
+Sampler fields are configurable for A/B testing of factual analysis and transport behavior against
+private document-quality packets. Applicant claim realization is deterministic, so these settings
+do not tune résumé or cover-letter prose. They are not model fine-tuning, and unset fields are
+omitted from requests.
+
+The standalone claim-enumeration verifier remains available as a diagnostic. Deterministic
+source-overlay generation and certification do not depend on it.
 
 ### Embedding Configuration
 
@@ -369,8 +391,8 @@ indeed_domain = "www.indeed.com"   # e.g. "ca.indeed.com", "uk.indeed.com"
 # Fast quality gate: lint, format check, mypy, unit tests
 bash scripts/green_gate.sh
 
-# Arc-end isolated CLI sanity check
-.venv/bin/python .agents/skills/qa-sanity/qa.py --core
+# Arc-end isolated CLI sanity check (CORE + LIVE; LIVE skips when vLLM is unavailable)
+.venv/bin/python .agents/skills/qa-sanity/qa.py
 
 # Matcher-sensitive changes
 .venv/bin/python scripts/check_matcher_gate_required.py --base HEAD
@@ -380,14 +402,23 @@ bash scripts/green_gate.sh
 job-applicator document-quality --resume tailored.txt --cover-letter cover.txt --keyword Python
 
 # Private generated-packet quality certification
-job-applicator document-quality --private-packet-set --required --min-cases 3 \
-  --max-artifact-age-days 14 --required-category support --required-category risk \
+job-applicator document-quality --private-packet-set --required --min-cases 15 \
+  --min-manual-reviews-per-category 5 --max-artifact-age-days 14 \
+  --required-category support --required-category risk --required-category network \
   --required-language en --required-language fr
+
+# LLM sampler A/B measurement against private generated-packet cases
+.venv/bin/python scripts/eval_llm_sampler.py --dry-run --json
+.venv/bin/python scripts/eval_llm_sampler.py --required --integrity-only --json
 ```
 
 The private packet-set gate is set-level certification, not just per-packet smoke scoring: required
 mode enforces a minimum number of passing cases, freshness, and requested category/language
 coverage. Missing required private evidence exits `2`; present-but-failing evidence exits `1`.
+The sampler harness keeps production defaults unchanged while measuring baseline vs Qwen-shaped
+criteria-extraction/transport variants. Applicant claim prose remains deterministic. Its JSON
+includes baseline-relative overall and per-dimension deltas for each
+variant. See `docs/llm-sampler-eval.md`.
 
 ## Architecture
 

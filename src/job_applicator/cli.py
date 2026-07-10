@@ -1250,7 +1250,7 @@ def apply(
                 ) -> tuple[str, str | None, str | None]:
                     async with sem:
                         try:
-                            letter = await generator.generate_verified(
+                            letter, overlay = await generator.generate_verified_with_overlay(
                                 job, user_profile, resume_data, style_guide=style
                             )
                             pdf_path: str | None = None
@@ -1265,6 +1265,8 @@ def apply(
                                     job_company=job.company,
                                     job_url=str(job.url),
                                     cover_letter_text=letter,
+                                    prompt_version=overlay.architecture_version,
+                                    overlay=overlay,
                                 )
                                 effective_category = category or detect_job_category(job)
                                 try:
@@ -1480,7 +1482,7 @@ def generate_cover_letter(
         tone_section = ToneDetector().format_for_prompt(tone_profile)
 
         with err_console.status("Generating + verifying cover letter..."):  # progress → stderr
-            letter = await generator.generate_verified(
+            letter, overlay = await generator.generate_verified_with_overlay(
                 job, user_profile, resume_data, style, tone_section=tone_section
             )
 
@@ -1489,6 +1491,8 @@ def generate_cover_letter(
             job_company=job.company,
             job_url=str(job.url),
             cover_letter_text=letter,
+            prompt_version=overlay.architecture_version,
+            overlay=overlay,
         )
         output_dir = settings.ensure_output_dir()
         effective_category = category or detect_job_category(job)
@@ -2652,7 +2656,7 @@ def batch(
                                 },
                             )
                         tone_section = ToneDetector().format_for_prompt(tone_profile)
-                        letter = await cl_generator.generate_verified(
+                        letter, overlay = await cl_generator.generate_verified_with_overlay(
                             job,
                             user_profile,
                             resume_data,
@@ -2665,6 +2669,8 @@ def batch(
                             job_company=job.company,
                             job_url=str(job.url),
                             cover_letter_text=letter,
+                            prompt_version=overlay.architecture_version,
+                            overlay=overlay,
                         )
                         cl_text_path, cl_pdf_path = await _write_cover_letter_artifacts(
                             Path(output_dir),
@@ -3110,16 +3116,11 @@ def tailor(
                 raise typer.Exit(1 if as_json else 0)
 
         try:
-            effective_user_instructions = user_instructions
-            if yes:
-                from job_applicator.workflows.tailor_policy import source_only_instructions
-
-                effective_user_instructions = source_only_instructions(user_instructions)
             with err_console.status("Tailoring + verifying resume..."):
                 result = await tailor_engine.tailor_verified(
                     resume_data,
                     job,
-                    effective_user_instructions,
+                    user_instructions,
                     style,
                     tone_profile,
                     matcher,
@@ -3290,6 +3291,13 @@ def document_quality(
         "--private-packet-set",
         help="Score $DOCUMENT_QUALITY_SET or the default private packet-set manifest.",
     ),
+    manual_review_set: Path | None = typer.Option(
+        None,
+        "--manual-review-set",
+        help="Structured JSONL prose reviews; defaults beside the packet manifest.",
+        file_okay=True,
+        dir_okay=False,
+    ),
     required: bool = typer.Option(
         False,
         "--required",
@@ -3314,6 +3322,12 @@ def document_quality(
         "--min-cases",
         min=1,
         help="Minimum passing packet cases required for set certification.",
+    ),
+    min_manual_reviews_per_category: int = typer.Option(
+        5,
+        "--min-manual-reviews-per-category",
+        min=1,
+        help="Minimum sampled human prose reviews required in each category.",
     ),
     max_artifact_age_days: int | None = typer.Option(
         None,
@@ -3346,18 +3360,20 @@ def document_quality(
     if not packet_mode and (
         min_cases is not None
         or max_artifact_age_days is not None
+        or manual_review_set is not None
+        or min_manual_reviews_per_category != 5
         or required_category
         or required_language
     ):
         raise typer.BadParameter(
-            "--min-cases, --max-artifact-age-days, --required-category, and "
-            "--required-language are only valid with --packet-set/--private-packet-set"
+            "Packet evidence options are only valid with --packet-set/--private-packet-set"
         )
 
     try:
         if packet_mode:
             exit_code = quality_eval.run_packet_set_quality(
                 packet_set=packet_set,
+                manual_review_set=manual_review_set,
                 required=required,
                 json_output=as_json,
                 min_dimension_score=min_dimension_score,
@@ -3368,6 +3384,7 @@ def document_quality(
                 ),
                 required_categories=list(required_category or []),
                 required_languages=list(required_language or []),
+                min_manual_reviews_per_category=min_manual_reviews_per_category,
             )
         else:
             exit_code = quality_eval.run_artifact_quality(

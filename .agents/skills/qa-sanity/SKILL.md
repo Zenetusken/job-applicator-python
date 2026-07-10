@@ -55,7 +55,7 @@ timeout); `--core` is seconds.
 | **FAIL** | expected-pass check FAILED → **regression** | investigate; exit code is 1 |
 | **XFAIL** | a known open bug, still failing (expected) | not a regression; see KNOWN_FAIL in `qa.py` |
 | **XPASS** | a known bug now PASSES → **it's fixed!** | remove its name from `KNOWN_FAIL` in `qa.py` so it becomes a guarded PASS |
-| **WARN** | non-gating signal (e.g. voice-tells elevated) | judgment call |
+| **WARN** | non-gating diagnostic signal | judgment call |
 | **SKIP** | tier/condition unavailable (vLLM down, partial state not observed) | informational |
 
 This is a **living gate**: known bugs are asserted at their *correct* behavior and tagged
@@ -70,8 +70,9 @@ bad-input clean-error), `--json --verbose` JSON validity, and that the account-t
 commands expose `--help` (without running them).
 
 LIVE (vLLM): `doctor`, `match --jobs-file` (ranking + JSON + no-scrape), `generate-cover-letter`
-(inline; voice-tells as a metric), `tailor --yes` (non-interactive + abort path), `batch`
-(multi-job + malformed-input + crash-recovery via deterministic DB-state simulation).
+(inline; success or an explicit fail-closed source-contract verdict), `tailor --yes`
+(non-interactive + abort path), and `batch` (multi-job + malformed-input + crash-recovery via
+deterministic DB-state simulation).
 
 ## Known issues (the regression baseline)
 

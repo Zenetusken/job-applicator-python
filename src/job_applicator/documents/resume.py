@@ -76,6 +76,8 @@ _SECTION_HEAD: dict[str, str] = {
     "experience": "Experience",
     "expérience": "Experience",
     "expérience professionnelle": "Experience",
+    "experiences professionnelles": "Experience",
+    "expériences professionnelles": "Experience",
     "history": "Experience",
     "employment": "Experience",
     "employment history": "Experience",

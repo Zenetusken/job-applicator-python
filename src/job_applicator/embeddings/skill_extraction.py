@@ -25,6 +25,7 @@ from job_applicator.exceptions import LLMError
 from job_applicator.skills import NORMALIZATION_MAP, is_hard_negative, normalize_skill
 from job_applicator.utils.llm import (
     LLMRuntime,
+    litellm_completion_kwargs,
     litellm_model,
     llm_call_error,
     quiet_litellm,
@@ -500,7 +501,6 @@ class LLMSkillExtractor:
             {"role": "system", "content": SKILL_SYSTEM_PROMPT},
             {"role": "user", "content": SKILL_USER_PROMPT.format(truncated)},
         ]
-        extra_body = {"chat_template_kwargs": {"enable_thinking": False}}
 
         try:
             client: Any = instructor.from_litellm(acompletion)
@@ -511,9 +511,7 @@ class LLMSkillExtractor:
                 messages=messages,
                 response_model=SkillExtractionOutput,
                 max_retries=2,
-                max_tokens=self._config.max_tokens,
-                temperature=self._config.temperature,
-                extra_body=extra_body,
+                **litellm_completion_kwargs(self._config),
             )
             logger.info("Extracted skills via instructor: %s", response.skills)
             return _ExtractionResult(
@@ -535,9 +533,7 @@ class LLMSkillExtractor:
                 api_base=self._config.api_base,
                 api_key=self._config.api_key,
                 messages=messages,
-                max_tokens=self._config.max_tokens,
-                temperature=self._config.temperature,
-                extra_body=extra_body,
+                **litellm_completion_kwargs(self._config),
             )
         except Exception as exc:
             # Transport failure on the direct fallback → raise, never return [] (a masked failure).
@@ -599,9 +595,7 @@ class LLMSkillExtractor:
             ],
             response_model=SkillExtractionOutputV2,
             max_retries=2,
-            max_tokens=self._config.max_tokens,
-            temperature=self._config.temperature,
-            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            **litellm_completion_kwargs(self._config),
         )
         grounded = self._verify_spans([(s.name, s.evidence) for s in response.skills], description)
         logger.info("Extracted skills via evidence-span: %s", grounded)

@@ -6,27 +6,71 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic import ValidationError
 
 from job_applicator.config import LLMConfig
-from job_applicator.documents.cover_letter import CoverLetterGenerator
-from job_applicator.documents.resume import ResumeLoader
-from job_applicator.exceptions import (
-    CoverLetterGroundingError,
-    DocumentError,
-    GroundingUnavailableError,
-    LLMError,
-    ResumeNotFoundError,
+from job_applicator.documents.cover_letter import (
+    CoverLetterDraft,
+    CoverLetterGenerator,
+    SourceBackedSentence,
+    _GeneratedCover,
 )
+from job_applicator.documents.resume import ResumeLoader
+from job_applicator.exceptions import DocumentError, LLMError, ResumeNotFoundError
 from job_applicator.models import (
-    ClaimCheck,
-    ExperienceEntry,
+    CoverLetterOverlay,
     GroundingReport,
     JobBoard,
     JobListing,
     ResumeData,
+    SourceFact,
+    SourceFactCatalog,
     StyleGuide,
     UserProfile,
 )
+
+
+def _cover_draft() -> CoverLetterDraft:
+    from job_applicator.documents.source_realization import realize_cover_statements
+
+    return CoverLetterDraft(
+        body_facts=realize_cover_statements(_cover_source_facts().facts, language="English")
+    )
+
+
+def _source_facts() -> SourceFactCatalog:
+    kinds = ["experience", "projects", "education", "experience"]
+    return SourceFactCatalog(
+        facts=[
+            SourceFact(fact_id=f"SRC-{index:03d}", kind=kind, text=f"Source fact {index}.")
+            for index, kind in enumerate(kinds, start=1)
+        ]
+    )
+
+
+def _cover_source_facts() -> SourceFactCatalog:
+    return SourceFactCatalog(facts=_source_facts().facts[:3])
+
+
+def _generated_cover(text: str, resume: ResumeData) -> _GeneratedCover:
+    return _GeneratedCover(
+        text=text,
+        draft=_cover_draft(),
+        source_facts=_cover_source_facts(),
+        language="English",
+    )
+
+
+def _cover_overlay() -> CoverLetterOverlay:
+    return CoverLetterOverlay(
+        body_sentences=_cover_draft().body_facts,
+        source_body_sha256="a" * 64,
+        source_language="en",
+    )
+
+
+def _structured_resume_text(label: str = "Resume text") -> str:
+    return f"ALEX MORGAN\n\nSUMMARY\n{label}\n\nEXPERIENCE\nSource experience."
 
 
 def test_resume_loader_missing_file() -> None:
@@ -430,522 +474,56 @@ def _validation_job_and_resume() -> tuple[JobListing, ResumeData]:
 def test_cover_letter_validation_rejects_empty() -> None:
     config = LLMConfig()
     generator = CoverLetterGenerator(config)
-    user = UserProfile(first_name="John", last_name="Doe", email="j@e.com", phone="")
-    job, resume = _validation_job_and_resume()
+    _job, resume = _validation_job_and_resume()
     with pytest.raises(LLMError, match="empty"):
-        generator._validate_output("   ", user, job=job, resume=resume)
+        generator._validate_output(_generated_cover("   ", resume), resume=resume)
 
 
 def test_cover_letter_validation_rejects_too_short() -> None:
     config = LLMConfig()
     generator = CoverLetterGenerator(config)
-    user = UserProfile(first_name="John", last_name="Doe", email="j@e.com", phone="")
-    job, resume = _validation_job_and_resume()
+    _job, resume = _validation_job_and_resume()
     with pytest.raises(LLMError, match="too short"):
-        generator._validate_output("Sincerely,\nJohn Doe", user, job=job, resume=resume)
+        generator._validate_output(_generated_cover("Sincerely,\nJohn Doe", resume), resume=resume)
 
 
 def test_cover_letter_validation_rejects_placeholders() -> None:
     config = LLMConfig()
     generator = CoverLetterGenerator(config)
-    user = UserProfile(first_name="John", last_name="Doe", email="j@e.com", phone="")
-    job, resume = _validation_job_and_resume()
+    _job, resume = _validation_job_and_resume()
     with pytest.raises(LLMError, match="placeholder"):
         generator._validate_output(
-            "Dear [Hiring Manager],\n\nBody text that is long enough to pass the length check. "
-            "It keeps going so the validator does not reject it for being too short.\n\n"
-            "Sincerely,\nJohn Doe",
-            user,
-            job=job,
+            _generated_cover(
+                "Dear [Hiring Manager],\n\nBody text that is long enough to pass the length check. "
+                "It keeps going so the validator does not reject it for being too short.\n\n"
+                "Sincerely,\nJohn Doe",
+                resume,
+            ),
             resume=resume,
         )
 
 
-def test_cover_letter_humanize_strips_sign_off_at_top() -> None:
-    """A stray sign-off before the body is removed, keeping the valid closing."""
-    bad_letter = (
-        "Sincerely,\nJohn Doe\n\n"
-        "I have ten years of experience with Python and FastAPI. "
-        "This body is long enough to pass the minimum length check.\n\n"
-        "Sincerely,\nJohn Doe"
-    )
-    cleaned = CoverLetterGenerator._humanize(bad_letter)
-    assert cleaned.startswith("I have ten years of experience")
-    assert cleaned.endswith("Sincerely,\nJohn Doe")
-
-
-def test_cover_letter_ensure_sign_off_appends_when_missing() -> None:
-    """A 4B forgets the closing ~1 in 4 times → append a deterministic sign-off (no fail-close),
-    rather than failing the whole generation over a forgotten FORMAT element."""
+def test_cover_letter_appends_sign_off_without_rewriting_body() -> None:
     user = UserProfile(first_name="Jane", last_name="Roe", email="j@e.com", phone="")
-    out = CoverLetterGenerator._ensure_sign_off("Dear Team,\n\nA strong fit. Let us talk.", user)
+    body = "Application opening.\n\nSource-backed body.\n\nDiscussion request."
+    out = CoverLetterGenerator._append_sign_off(body, user)
+    assert out.startswith(body)
     assert out.rstrip().endswith("Sincerely,\nJane Roe")
 
 
-def test_cover_letter_ensure_sign_off_leaves_existing_untouched() -> None:
-    """An existing valid sign-off is normalized to itself (strip-then-append is idempotent)."""
-    user = UserProfile(first_name="Jane", last_name="Roe", email="j@e.com", phone="")
-    letter = "Dear Team,\n\nA strong fit.\n\nSincerely,\nJane Roe"
-    assert CoverLetterGenerator._ensure_sign_off(letter, user) == letter
-
-
-def test_cover_letter_ensure_sign_off_no_double_when_model_signs_inline() -> None:
-    """The structured `closing` field often ends with an INLINE 'Sincerely, NAME' that
-    extract_sign_off misses; _ensure_sign_off must normalize to exactly ONE sign-off (the
-    double-sign-off bug from structured generation)."""
-    user = UserProfile(first_name="Jane", last_name="Roe", email="j@e.com", phone="")
-    text = "Dear Team,\n\nA strong fit.\n\nPlease let me know. Sincerely, Jane Roe"
-    out = CoverLetterGenerator._ensure_sign_off(text, user)
-    assert out.lower().count("sincerely") == 1
-    assert out.endswith("Sincerely,\nJane Roe")
-    assert "Please let me know." in out  # the real closing sentence survives
-
-
-def test_cover_letter_ensure_sign_off_keeps_adverbial_sincerely() -> None:
-    """An adverbial 'sincerely' mid-sentence is NOT mistaken for a sign-off (anchored to end)."""
-    user = UserProfile(first_name="Jane", last_name="Roe", email="j@e.com", phone="")
-    text = "Dear Team,\n\nI am sincerely eager to help your SOC succeed."
-    out = CoverLetterGenerator._ensure_sign_off(text, user)
-    assert "sincerely eager" in out  # untouched
-    assert out.endswith("Sincerely,\nJane Roe")
-
-
-def test_cover_letter_ensure_sign_off_french_uses_cordialement() -> None:
-    """A French letter gets a French canonical close, and a model-emitted inline 'Cordialement'
-    is normalized to ONE (the English strip-list missed it → the double-sign-off bug in French)."""
+def test_cover_letter_appends_french_sign_off() -> None:
     user = UserProfile(first_name="Alex", last_name="Morgan", email="a@e.com", phone="")
-    text = "Bonjour,\n\nJe suis un bon candidat.\n\nMerci. Cordialement, Alex Morgan"
-    out = CoverLetterGenerator._ensure_sign_off(text, user, "French")
-    assert out.lower().count("cordialement") == 1
+    text = "Ouverture.\n\nFaits.\n\nDemande de discussion."
+    out = CoverLetterGenerator._append_sign_off(text, user, "French")
     assert out.endswith("Cordialement,\nAlex Morgan")
     assert "Sincerely" not in out
 
 
-def test_cover_letter_validation_rejects_invented_employment() -> None:
-    """A letter that falsely claims employment at the target company is rejected."""
-    config = LLMConfig()
-    generator = CoverLetterGenerator(config)
-    user = UserProfile(first_name="John", last_name="Doe", email="j@e.com", phone="")
-    job, resume = _validation_job_and_resume()
-    bad_letter = (
-        "Dear Hiring Team,\n\n"
-        "I previously worked at Acme, where I led the backend team. "
-        "This body is long enough to pass the minimum length check and keep going.\n\n"
-        "Sincerely,\nJohn Doe"
-    )
-    with pytest.raises(LLMError, match="falsely claims employment"):
-        generator._validate_output(bad_letter, user, job=job, resume=resume)
-
-
-def test_cover_letter_rejects_unlisted_named_tool() -> None:
-    """A letter claiming a named security product absent from the résumé is rejected — the 4B
-    pulls JD tools (Splunk, SourceFire, ServiceNow) and attributes them to the applicant."""
-    resume = ResumeData(
-        raw_text="Jane Roe\nSkills\nSIEM, incident response, Wireshark",
-        skills=["SIEM", "incident response"],
-    )
-    letter = "I have hands-on experience with Splunk in a busy SOC, triaging real alerts daily."
-    with pytest.raises(LLMError, match="names a tool not in"):
-        CoverLetterGenerator._reject_unlisted_named_tools(letter, resume, "Acme")
-
-
-def test_cover_letter_allows_named_tool_present_in_resume() -> None:
-    """A named tool the résumé actually lists is kept (not a false positive)."""
-    resume = ResumeData(raw_text="Jane Roe\nSkills\nSplunk, incident response", skills=["Splunk"])
-    CoverLetterGenerator._reject_unlisted_named_tools(
-        "I monitored alerts in Splunk daily and escalated incidents.", resume, "Acme"
-    )  # no raise
-
-
-def test_cover_letter_tool_check_uses_full_resume_text() -> None:
-    """Presence is checked against the FULL résumé text — a tool named only in an experience
-    bullet (not the skills list) counts as listed, so it is not wrongly rejected."""
-    resume = ResumeData(
-        raw_text="Jane Roe\nExperience\nAnalyst\n• Tuned ServiceNow workflows for the SOC team.",
-        skills=["incident response"],
-    )
-    CoverLetterGenerator._reject_unlisted_named_tools(
-        "I have configured ServiceNow ticketing to streamline escalation.", resume, "Acme"
-    )  # no raise
-
-
-def test_cover_letter_allows_generic_capability_words() -> None:
-    """Generic capability terms (SIEM/EDR/IDS-IPS) are not named products — they pass; the guard
-    targets specific vendor/product names, so an honest generic claim is never rejected."""
-    resume = ResumeData(
-        raw_text="Jane Roe\nSkills\nincident response", skills=["incident response"]
-    )
-    CoverLetterGenerator._reject_unlisted_named_tools(
-        "I bring hands-on SIEM monitoring, EDR, and IDS/IPS experience to the role.", resume, "Acme"
-    )  # no raise
-
-
-def test_cover_letter_rejects_unearned_credential() -> None:
-    """A letter claiming a credential the résumé lacks (e.g. 'accredited coursework') is rejected —
-    the cover letter borrows the résumé tailor's credential guard (quantified slip: ~11%)."""
-    resume = ResumeData(raw_text="Jane Roe\nSkills\nincident response, Wireshark", skills=["SIEM"])
-    letter = "I bring accredited cybersecurity training and a strong work ethic to your team."
-    with pytest.raises(LLMError, match="unearned credential"):
-        CoverLetterGenerator._reject_unearned_credentials(letter, resume)
-
-
-def test_cover_letter_rejects_french_unearned_credential() -> None:
-    resume = ResumeData(raw_text="Jane Roe\nCompétences\nSIEM, Linux", skills=["SIEM"])
-    letter = "Je suis une analyste certifiée en cybersécurité et j'apporte une méthode rigoureuse."
-
-    with pytest.raises(LLMError, match="unearned credential"):
-        CoverLetterGenerator._reject_unearned_credentials(letter, resume)
-
-
-def test_cover_letter_allows_credential_present_in_resume() -> None:
-    """A credential the résumé genuinely holds is kept (not a false positive)."""
-    resume = ResumeData(
-        raw_text="Jane Roe\nCertifications\nCertified Ethical Hacker (CEH)", skills=["CEH"]
-    )
-    CoverLetterGenerator._reject_unearned_credentials(
-        "As a Certified Ethical Hacker, I bring hands-on skills to your SOC.", resume
-    )  # no raise
-
-
-def test_cover_letter_rejects_environment_and_level_overclaims() -> None:
-    """An employer-stack or inflated-level claim absent from the résumé is rejected — the
-    deterministic floor for the worst-case JD that leads with a stack (HyperMabs: cloud-native/
-    Mac-first persisted ~half the time on structured-gen alone)."""
-    resume = ResumeData(raw_text="Jane Roe\nSkills\nincident response, Linux", skills=["Linux"])
-    for phrase in ("cloud-native", "Mac-first", "mastered", "uniquely positioned"):
-        with pytest.raises(LLMError, match="unearned/environment claim"):
-            CoverLetterGenerator._reject_overclaim_phrases(
-                f"I bring deep {phrase} experience to your team.", resume
-            )
-
-
-def test_cover_letter_allows_overclaim_phrase_present_in_resume() -> None:
-    """If the résumé itself uses the phrase, it is grounded and kept (no false positive)."""
-    resume = ResumeData(raw_text="Jane Roe\nBuilt cloud-native microservices at Acme", skills=[])
-    CoverLetterGenerator._reject_overclaim_phrases(
-        "I built cloud-native systems at Acme.", resume
-    )  # no raise
-
-
-def test_cover_letter_rejects_home_lab_overclaim_when_absent() -> None:
-    resume = ResumeData(raw_text="Jane Roe\nEducation\nHands-on SIEM coursework.", skills=[])
-
-    with pytest.raises(LLMError, match="home lab"):
-        CoverLetterGenerator._reject_overclaim_phrases("I built a self-built home lab.", resume)
-
-
-def test_cover_letter_credential_terms_cover_key_status_words() -> None:
-    """The credential guard covers the high-precision status words (mirrors the résumé tailor's
-    list — PR #101; consolidate to one shared constant when both branches land)."""
-    from job_applicator.documents.cover_letter import _CREDENTIAL_TERMS
-
-    assert {"accredited", "certified", "licensed"} <= set(_CREDENTIAL_TERMS)
-    assert {"accrédité", "certifié", "licencié"} <= set(_CREDENTIAL_TERMS)
-
-
-def test_cover_letter_prompt_forbids_unearned_credentials() -> None:
-    """The prompt bans credential/status words not in the résumé (in-progress coursework isn't
-    'accredited' / 'certified')."""
-    from job_applicator.documents.cover_letter import SYSTEM_PROMPT
-
-    low = SYSTEM_PROMPT.lower()
-    assert "claim a credential" in low  # the credential/status prohibition
-    assert "accredited" in low  # named as a banned status word
-
-
-def test_cover_letter_allows_naming_the_target_security_vendor() -> None:
-    """Applying TO a security vendor (many products ARE companies a SOC analyst applies to) must
-    NOT be rejected for naming the employer — the target company is exempt from the tool check."""
-    resume = ResumeData(
-        raw_text="Jane Roe\nSkills\nincident response", skills=["incident response"]
-    )
-    CoverLetterGenerator._reject_unlisted_named_tools(
-        "I am eager to bring my incident-response skills to CrowdStrike.", resume, "CrowdStrike"
-    )  # no raise — CrowdStrike is the employer, not a claimed tool
-
-
-def test_cover_letter_validation_rejects_unlisted_tool_via_validate_output() -> None:
-    """Integration: the tool check is wired into _validate_output's retry loop (not only callable
-    directly), and only the EMPLOYER's name is exempt — a different named product still trips."""
-    config = LLMConfig()
-    generator = CoverLetterGenerator(config)
-    user = UserProfile(first_name="Jane", last_name="Roe", email="j@e.com", phone="")
-    job = JobListing(title="SOC Analyst", company="Acme", url="https://x/1", board=JobBoard.INDEED)
-    resume = ResumeData(raw_text="Jane Roe\nSkills\nSIEM, incident response", skills=["SIEM"])
-    letter = (
-        "Dear Hiring Team,\n\nI bring hands-on Splunk experience to your SOC. "
-        "This body is long enough to pass the minimum length check and keeps going.\n\n"
-        "Sincerely,\nJane Roe"
-    )
-    with pytest.raises(LLMError, match="names a tool not in"):
-        generator._validate_output(letter, user, job=job, resume=resume)
-
-
-def test_cover_letter_validation_rejects_unlisted_job_side_overclaim() -> None:
-    config = LLMConfig()
-    generator = CoverLetterGenerator(config)
-    user = UserProfile(first_name="Jane", last_name="Roe", email="j@e.com", phone="")
-    job = JobListing(title="IT Support", company="Acme", url="https://x/1", board=JobBoard.INDEED)
-    resume = ResumeData(raw_text="Jane Roe\nSkills\nMicrosoft 365", skills=["Microsoft 365"])
-    letter = (
-        "Dear Hiring Team,\n\n"
-        "My background has prepared me to support users with workstation deployment and IT "
-        "infrastructure maintenance. This body is long enough to pass the minimum length check.\n\n"
-        "Sincerely,\nJane Roe"
-    )
-
-    with pytest.raises(LLMError, match="job-side term"):
-        generator._validate_output(letter, user, job=job, resume=resume)
-
-
-def test_cover_letter_validation_rejects_merged_coursework_overclaim() -> None:
-    config = LLMConfig()
-    generator = CoverLetterGenerator(config)
-    user = UserProfile(first_name="Jane", last_name="Roe", email="j@e.com", phone="")
-    job = JobListing(title="IT Support", company="Acme", url="https://x/1", board=JobBoard.INDEED)
-    resume = ResumeData(
-        raw_text=(
-            "Jane Roe\nSkills\nMicrosoft 365\n"
-            "Experience\nTechnical Support Specialist\n"
-            "Education\nCybersecurity coursework"
-        ),
-        skills=["Microsoft 365"],
-    )
-    for phrase in ("technical support coursework", "listen first", "critical systems"):
-        letter = (
-            "Dear Hiring Team,\n\n"
-            f"I now apply my communication skills to {phrase}. "
-            "This body is long enough to pass the minimum length check and keeps going.\n\n"
-            "Sincerely,\nJane Roe"
-        )
-
-        with pytest.raises(LLMError, match="merges source facts"):
-            generator._validate_output(letter, user, job=job, resume=resume)
-
-
-def test_cover_letter_validation_rejects_french_deep_understanding_overclaim() -> None:
-    config = LLMConfig()
-    generator = CoverLetterGenerator(config)
-    user = UserProfile(first_name="Jane", last_name="Roe", email="j@e.com", phone="")
-    job = JobListing(title="Analyste", company="Acme", url="https://x/1", board=JobBoard.INDEED)
-    resume = ResumeData(raw_text="Jane Roe\nExperience\nTriaged support tickets.", skills=[])
-    letter = (
-        "Bonjour équipe de recrutement,\n\n"
-        "Cette expérience m'a permis de développer une compréhension approfondie des processus "
-        "de triage et d'analyse des incidents. Cette phrase est assez longue pour la "
-        "validation.\n\n"
-        "Cordialement,\nJane Roe"
-    )
-
-    with pytest.raises(LLMError, match="unearned/environment claim"):
-        generator._validate_output(letter, user, job=job, resume=resume)
-
-
-def test_cover_letter_validation_rejects_french_school_coursework_merge() -> None:
-    config = LLMConfig()
-    generator = CoverLetterGenerator(config)
-    user = UserProfile(first_name="Jane", last_name="Roe", email="j@e.com", phone="")
-    job = JobListing(title="Analyste", company="Acme", url="https://x/1", board=JobBoard.INDEED)
-    resume = ResumeData(
-        raw_text=(
-            "Jane Roe\n"
-            "Formation\n"
-            "Certificat universitaire — Analyse et cybersécurité opérationnelle — "
-            "Northbridge Technical Institute\n"
-            "B.A., Comptabilité — Metro City University"
-        ),
-        skills=["SIEM"],
-    )
-    letter = (
-        "Bonjour équipe de recrutement,\n\n"
-        "Je suis actuellement en cours de formation en cybersécurité opérationnelle à "
-        "Metro City University. Cette phrase est assez longue pour passer la validation minimale."
-        "\n\n"
-        "Cordialement,\nJane Roe"
-    )
-
-    with pytest.raises(LLMError, match="merges source facts"):
-        generator._validate_output(letter, user, job=job, resume=resume)
-
-
-def test_cover_letter_prompt_warns_against_cross_institution_coursework_merges() -> None:
-    generator = CoverLetterGenerator(LLMConfig(language="fr"))
-    user = UserProfile(first_name="Jane", last_name="Roe", email="j@e.com", phone="")
-    job = JobListing(
-        title="Analyste",
-        company="Acme",
-        url="https://x/1",
-        board=JobBoard.INDEED,
-        description="Poste en cybersécurité opérationnelle.",
-    )
-    resume = ResumeData(
-        raw_text=(
-            "Formation\n"
-            "Certificat universitaire — Analyse et cybersécurité opérationnelle — "
-            "Northbridge Technical Institute\n"
-            "B.A., Comptabilité — Metro City University"
-        ),
-        skills=["SIEM"],
-    )
-
-    prompt = generator._build_prompt(job, user, resume)
-
-    assert "Education fact boundary" in prompt
-    assert "Do NOT move cybersecurity coursework onto another degree or school" in prompt
-
-
-def test_cover_letter_prompt_lists_absent_job_side_terms_to_avoid() -> None:
-    generator = CoverLetterGenerator(LLMConfig())
-    user = UserProfile(first_name="Jane", last_name="Roe", email="j@e.com", phone="")
-    job = JobListing(
-        title="IT Support",
-        company="Acme",
-        url="https://x/1",
-        board=JobBoard.INDEED,
-        description="Workstation deployment and IT infrastructure maintenance.",
-    )
-    resume = ResumeData(raw_text="Jane Roe\nSkills\nMicrosoft 365", skills=["Microsoft 365"])
-
-    prompt = generator._build_prompt(job, user, resume)
-
-    assert "Do NOT mention these job-description terms" in prompt
-    assert "workstation deployment" in prompt
-    assert "it infrastructure maintenance" in prompt
-    assert "Do NOT use these phrases because they merge separate résumé facts" in prompt
-    assert "technical support coursework" in prompt
-    assert "critical systems" in prompt
-    assert "Name the target company and role naturally once" in prompt
-
-
-def test_cover_letter_prompt_forbids_naming_unlisted_tools() -> None:
-    """The system prompt closes the JD-sourcing loophole and bans naming unlisted products, with
-    NO concrete product example (keyfigures-hallucination: a 4B parrots example tool names)."""
-    from job_applicator.documents.cover_letter import _NAMED_TOOLS, SYSTEM_PROMPT
-
-    low = SYSTEM_PROMPT.lower()
-    assert "only source of facts" in low  # JD-sourcing loophole closed
-    assert "name a specific product or vendor" in low
-    assert "does not list; name the general capability" in low
-    # No parrotable product NAME in the prompt (the real keyfigures risk).
-    assert not any(tool in low for tool in _NAMED_TOOLS)
-
-
-def test_cover_letter_prompt_bans_self_reference_and_filler() -> None:
-    """The prompt forbids referencing the resume/posting/instructions inside the letter (the
-    'without relying on a resume...' instruction-leak) and bans the 'unique blend' filler."""
-    from job_applicator.documents.cover_letter import _CLICHES, SYSTEM_PROMPT
-
-    low = SYSTEM_PROMPT.lower()
-    assert "these instructions inside the letter" in low  # no meta-refs to résumé/posting/prompt
-    assert "coherent story" in low  # the prompt now LEADS with positive coherence guidance
-    assert "unique blend" in _CLICHES  # banned cliché (single source: prompt ban + voice-tell)
-
-
-def test_cover_letter_humanize_collapses_doubled_signoff_comma() -> None:
-    """A model artifact like 'Sincerely,,' is collapsed to a single comma (minimal cleanup in the
-    existing _humanize, so the letter is properly LLM-generated with no malformed punctuation)."""
-    out = CoverLetterGenerator._humanize("Dear Team,\n\nA strong fit.\n\nSincerely,,\nJane Roe")
-    assert "Sincerely,," not in out
-    assert "Sincerely,\nJane Roe" in out
-
-
-def test_cover_letter_humanize_splits_merged_french_salutation() -> None:
-    text = (
-        "Bonjour équipe de recrutement, Je m'appelle Alex Morgan et je souhaite postuler. "
-        "Mon parcours combine support et cybersécurité.\n\n"
-        "Dans mon cours, j'ai travaillé le SIEM.\n\n"
-        "Je serais ravi de discuter."
-    )
-
-    out = CoverLetterGenerator._humanize(text)
-
-    assert out.startswith("Bonjour équipe de recrutement,\n\nJe m'appelle")
-
-
-def test_cover_letter_humanize_splits_period_french_salutation() -> None:
-    text = (
-        "Bonjour à l'équipe de recrutement d'Example Risk Lab. Je m'appelle Alex Morgan "
-        "et je souhaite postuler.\n\n"
-        "Dans mon cours, j'ai travaillé le SIEM.\n\n"
-        "Je serais ravi de discuter."
-    )
-
-    out = CoverLetterGenerator._humanize(text)
-
-    assert out.startswith("Bonjour à l'équipe de recrutement d'Example Risk Lab.\n\nJe m'appelle")
-
-
-def test_cover_letter_humanize_neutralizes_french_impatient_discussion() -> None:
-    text = (
-        "Bonjour équipe de recrutement,\n\n"
-        "Mon parcours combine support et cybersécurité.\n\n"
-        "Je suis impatiente de discuter de comment mes compétences peuvent contribuer à "
-        "votre équipe."
-    )
-
-    out = CoverLetterGenerator._humanize(text)
-
-    assert "impatiente" not in out
-    assert "Je serais disponible pour discuter" in out
-
-
-def test_cover_letter_humanize_smooths_french_de_comment() -> None:
-    text = (
-        "Bonjour équipe de recrutement,\n\n"
-        "Mon parcours combine support et cybersécurité.\n\n"
-        "Je serais disponible pour discuter de comment mes compétences peuvent contribuer à "
-        "votre équipe."
-    )
-
-    out = CoverLetterGenerator._humanize(text)
-
-    assert "discuter de comment" not in out
-    assert "discuter de la façon dont" in out
-
-
-def test_cover_letter_humanize_neutralizes_french_deep_understanding() -> None:
-    text = (
-        "Bonjour équipe de recrutement,\n\n"
-        "Cette expérience m'a permis de développer une compréhension approfondie des processus "
-        "de triage."
-    )
-
-    out = CoverLetterGenerator._humanize(text)
-
-    assert "compréhension approfondie" not in out
-    assert "compréhension pratique" in out
-
-
-def test_cover_letter_humanize_preserves_institution_names() -> None:
-    text = (
-        "Bonjour équipe de recrutement,\n\n"
-        "Je suis en cours de formation en cybersécurité opérationnelle à Northbridge "
-        "Technical Institute."
-    )
-
-    out = CoverLetterGenerator._humanize(text)
-
-    assert "Northbridge Technical Institute" in out
-
-
-def test_cover_letter_humanize_splits_merged_english_salutation() -> None:
-    text = (
-        "Dear Hiring Team, I am applying for the support analyst role. "
-        "My background combines operations and technical support.\n\n"
-        "I have handled technical escalations and customer support.\n\n"
-        "I would welcome a conversation."
-    )
-
-    out = CoverLetterGenerator._humanize(text)
-
-    assert out.startswith("Dear Hiring Team,\n\nI am applying")
-
-
-def test_cover_letter_quality_accepts_split_french_salutation_body_count() -> None:
+def test_cover_letter_quality_accepts_three_french_body_paragraphs() -> None:
     from job_applicator.documents.quality_eval import assess_cover_letter
 
-    text = CoverLetterGenerator._humanize(
-        "Bonjour équipe de recrutement, Je m'appelle Alex Morgan et je souhaite postuler. "
+    text = (
+        "Je souhaite postuler au poste et présenter mon parcours à votre équipe. "
         "Mon parcours combine une formation en cybersécurité opérationnelle avec des "
         "laboratoires pratiques en SIEM, SOC et réponse aux incidents.\n\n"
         "Dans mon cours à Northbridge Technical Institute, j'ai participé à des laboratoires "
@@ -995,27 +573,10 @@ def test_cover_letter_output_model() -> None:
     assert len(output.key_points) == 2
 
 
-def test_cover_letter_system_prompt_enforces_human_voice() -> None:
-    """System prompt must carry anti-template voice rules and NOT parroted examples.
+def test_cover_letter_generator_has_no_applicant_prose_completion_stage() -> None:
+    generator = CoverLetterGenerator(LLMConfig())
 
-    The verbatim few-shot example paragraphs were removed deliberately: the 4B model
-    copied them into output (see the keyfigures-example-hallucination lesson). The
-    contract is now structural voice rules instead.
-    """
-    from job_applicator.documents.cover_letter import SYSTEM_PROMPT
-
-    low = SYSTEM_PROMPT.lower()
-    assert "example" not in low  # no copy-pasteable few-shot text
-    assert "vary how sentences begin and run" in low  # the de-choppified rhythm rule
-    assert "proven track record" in low  # named as a banned cliché
-    assert "plain prose" in low or "no markdown" in low
-
-
-def test_cover_letter_system_prompt_has_hallucination_guard() -> None:
-    """System prompt should warn against inventing experience."""
-    from job_applicator.documents.cover_letter import SYSTEM_PROMPT
-
-    assert "not in the resume" in SYSTEM_PROMPT.lower() or "invent" in SYSTEM_PROMPT.lower()
+    assert not hasattr(generator, "_structured_completion")
 
 
 def test_ocr_service_extracts_text_from_image(tmp_path: Path) -> None:
@@ -1043,14 +604,16 @@ def llm_config() -> LLMConfig:
 
 class TestCoverLetterWithTone:
     @pytest.mark.asyncio
-    async def test_generate_includes_tone_section(self, llm_config: LLMConfig) -> None:
+    async def test_generate_excludes_tone_power_words_from_fact_prompt(
+        self, llm_config: LLMConfig
+    ) -> None:
         generator = CoverLetterGenerator(llm_config)
-
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[
-            0
-        ].message.content = "Dear Hiring Manager,\n\nCover letter text.\n\nSincerely,\nJohn Doe"
+        generator._cover_evidence_candidates = MagicMock(  # type: ignore[method-assign]
+            return_value=_source_facts()
+        )
+        generator._select_source_facts = AsyncMock(  # type: ignore[method-assign]
+            return_value=_cover_source_facts()
+        )
 
         job = JobListing(
             title="Dev",
@@ -1059,30 +622,30 @@ class TestCoverLetterWithTone:
             board=JobBoard.INDEED,
         )
         user = UserProfile(first_name="John", last_name="Doe", email="j@e.com", phone="123")
-        resume = ResumeData(raw_text="Resume text", skills=["Python"])
+        resume = ResumeData(raw_text=_structured_resume_text(), skills=["Python"])
 
-        with patch(
-            "litellm.acompletion", new_callable=AsyncMock, return_value=mock_response
-        ) as mock_call:
-            await generator.generate(
-                job,
-                user,
-                resume,
-                tone_section="TONE: Corporate\n- Power words: leveraged",
-            )
+        await generator.generate(
+            job,
+            user,
+            resume,
+            tone_section="TONE: Corporate\n- Power words: leveraged",
+        )
 
-        call_args = mock_call.call_args
-        assert "TONE: Corporate" in str(call_args)
+        call_args = generator._select_source_facts.call_args  # type: ignore[attr-defined]
+        assert "TONE: Corporate" not in str(call_args)
+        assert "leveraged" not in str(call_args)
 
     @pytest.mark.asyncio
-    async def test_generate_uses_tailored_resume_text(self, llm_config: LLMConfig) -> None:
+    async def test_generate_does_not_use_tailored_resume_as_source(
+        self, llm_config: LLMConfig
+    ) -> None:
         generator = CoverLetterGenerator(llm_config)
-
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[
-            0
-        ].message.content = "Dear Hiring Manager,\n\nCover letter.\n\nSincerely,\nJohn Doe"
+        generator._cover_evidence_candidates = MagicMock(  # type: ignore[method-assign]
+            return_value=_source_facts()
+        )
+        generator._select_source_facts = AsyncMock(  # type: ignore[method-assign]
+            return_value=_cover_source_facts()
+        )
 
         job = JobListing(
             title="Dev",
@@ -1091,37 +654,29 @@ class TestCoverLetterWithTone:
             board=JobBoard.INDEED,
         )
         user = UserProfile(first_name="John", last_name="Doe", email="j@e.com", phone="123")
-        resume = ResumeData(raw_text="Original resume", skills=["Python"])
+        resume = ResumeData(raw_text=_structured_resume_text("Original resume"), skills=["Python"])
         tailored = "Tailored resume with optimized Python experience"
 
-        with patch(
-            "litellm.acompletion", new_callable=AsyncMock, return_value=mock_response
-        ) as mock_call:
-            await generator.generate(
-                job,
-                user,
-                resume,
-                tailored_resume_text=tailored,
-            )
+        await generator.generate(
+            job,
+            user,
+            resume,
+            tailored_resume_text=tailored,
+        )
 
-        call_args = mock_call.call_args
-        prompt = str(call_args)
-        assert "Tailored resume with optimized" in prompt
+        call_args = generator._select_source_facts.call_args  # type: ignore[attr-defined]
+        assert "Tailored resume with optimized" not in str(call_args)
 
     @pytest.mark.asyncio
-    async def test_refine_honors_configured_max_tokens(self) -> None:
-        """refine()'s instructor call must pass the configured max_tokens, not omit it."""
+    async def test_refine_routes_feedback_to_selection_only(self) -> None:
         config = LLMConfig(api_base="http://localhost:8000/v1", model="m", max_tokens=1234)
         generator = CoverLetterGenerator(config)
-
-        mock_output = MagicMock()
-        mock_output.opening = "I am moving into security after years in client support."
-        mock_output.body = (
-            "My troubleshooting at Acme maps directly to incident triage and escalation."
+        generator._cover_evidence_candidates = MagicMock(  # type: ignore[method-assign]
+            return_value=_source_facts()
         )
-        mock_output.closing = "I would welcome a brief conversation about the role."
-        mock_client = MagicMock()
-        mock_client.create = AsyncMock(return_value=mock_output)
+        generator._select_source_facts = AsyncMock(  # type: ignore[method-assign]
+            return_value=_cover_source_facts()
+        )
 
         job = JobListing(
             title="Dev",
@@ -1130,18 +685,19 @@ class TestCoverLetterWithTone:
             board=JobBoard.INDEED,
         )
         user = UserProfile(first_name="John", last_name="Doe", email="j@e.com", phone="123")
-        resume = ResumeData(raw_text="Resume text", skills=["Python"])
+        resume = ResumeData(raw_text=_structured_resume_text(), skills=["Python"])
 
-        with patch.object(generator, "_get_client", return_value=mock_client):
-            await generator.refine(
-                job,
-                user,
-                resume,
-                current_text="Old cover letter.",
-                user_feedback="Make it punchier.",
-            )
+        await generator.refine(
+            job,
+            user,
+            resume,
+            current_text="Old cover letter.",
+            user_feedback="Emphasize incident response.",
+        )
 
-        assert mock_client.create.call_args.kwargs["max_tokens"] == 1234
+        assert generator._select_source_facts.call_args.kwargs["selection_focus"] == (
+            "Emphasize incident response."
+        )
 
 
 def test_password_protected_pdf_detected_via_needs_pass(tmp_path: Path) -> None:
@@ -1200,394 +756,132 @@ def test_phone_extraction_accepts_real_phone() -> None:
     assert loader._extract_phone("Reach me: +1 (555) 123-4567").strip() != ""
 
 
-# --- Cover-letter human-voice helpers (de-AI pass) ----------------------------
-
-# A draft exhibiting the robotic tells observed in real 4B output: parroted
-# clichés, every sentence long, trailing participial clauses, and markdown leak.
-ROBOTIC_LETTER = (
-    "I am excited to apply for the Senior Backend Engineer position at Globex, "
-    "where my expertise aligns directly with your technical requirements. "
-    "At Acme Data, I architected an async ingestion system using `asyncio` that "
-    "handled two billion events daily, demonstrating my ability to design scalable systems. "
-    "I led a migration across forty services, ensuring type safety and reducing runtime errors. "
-    "I automated deployment workflows on AWS, creating a seamless environment "
-    "for high availability. "
-    "I have a proven track record of delivering resilient services, scaling rapidly "
-    "across every region, and I sincerely look forward to hearing from you and your team soon.\n\n"
-    "Sincerely,\nJ D"
-)
-
-# A human-sounding draft: varied cadence (short sentences present), no clichés,
-# no trailing participials, no markdown.
-HUMAN_LETTER = (
-    "I built Globex's billing pipeline three years ago. It still runs. "
-    "Now you want someone to scale it past two billion events a day, and I want that job. "
-    "At Acme I halved ingestion latency by rewriting the consumer in asyncio. "
-    "I know your stack. Let's talk.\n\n"
-    "Sincerely,\nJ D"
-)
-
-
-def test_humanize_strips_inline_code_backticks() -> None:
-    assert CoverLetterGenerator._humanize("I use `asyncio` and `mypy` daily.") == (
-        "I use asyncio and mypy daily."
+def test_cover_letter_source_citations_reject_unknown_ids() -> None:
+    draft = CoverLetterDraft(
+        body_facts=[
+            SourceBackedSentence(text="Body fact one.", fact_ids=["SRC-999"]),
+            SourceBackedSentence(text="Body fact two.", fact_ids=["SRC-001"]),
+            SourceBackedSentence(text="Body fact three.", fact_ids=["SRC-002"]),
+        ],
     )
+    generator = CoverLetterGenerator(LLMConfig())
+    source_facts = _cover_source_facts()
+
+    with pytest.raises(LLMError, match="unknown source fact IDs"):
+        generator._validate_source_fact_citations(draft, source_facts)
 
 
-def test_humanize_strips_markdown_bullets_at_line_start() -> None:
-    assert CoverLetterGenerator._humanize("Skills:\n- Python\n- asyncio") == (
-        "Skills:\nPython\nasyncio"
+async def test_cover_letter_fact_selection_is_deterministic_and_source_only() -> None:
+    generator = CoverLetterGenerator(LLMConfig())
+    job, _user, _resume = _cl_inputs()
+
+    selected = await generator._select_source_facts(job, _source_facts())
+
+    assert [fact.fact_id for fact in selected.facts] == [
+        "SRC-001",
+        "SRC-002",
+        "SRC-003",
+    ]
+    assert all(fact in _source_facts().facts for fact in selected.facts)
+
+
+def test_cover_letter_source_citations_reject_non_deterministic_claim() -> None:
+    from job_applicator.documents.source_realization import realize_cover_statements
+
+    generator = CoverLetterGenerator(LLMConfig())
+    source_facts = _cover_source_facts()
+    statements = realize_cover_statements(source_facts.facts, language="English")
+    statements[1] = statements[1].model_copy(
+        update={"text": statements[1].text + " Ensured success."}
     )
+    draft = CoverLetterDraft(body_facts=statements)
+
+    with pytest.raises(LLMError, match="differs from deterministic source realization"):
+        generator._validate_source_fact_citations(draft, source_facts)
 
 
-def test_humanize_leaves_inline_asterisks_untouched() -> None:
-    # Asterisks are ambiguous (multiplication, ratings, footnotes); stripping them
-    # would corrupt prose like "2*3" -> "23". Only line-anchored bullets are removed.
-    text = "I improved throughput 2*3 fold and was rated 5* by clients."
-    assert CoverLetterGenerator._humanize(text) == text
+def test_cover_letter_realization_excludes_targeting_context() -> None:
+    from job_applicator.documents.source_realization import realize_cover_statements
 
-
-def test_humanize_strips_markdown_headings() -> None:
-    assert CoverLetterGenerator._humanize("# Heading\n\nBody text.") == "Heading\n\nBody text."
-
-
-def test_humanize_collapses_excess_blank_lines() -> None:
-    assert CoverLetterGenerator._humanize("Line one.\n\n\n\nLine two.") == "Line one.\n\nLine two."
-
-
-def test_humanize_leaves_plain_prose_untouched() -> None:
-    text = "Dear Hiring Manager, I write to apply for the role."
-    assert CoverLetterGenerator._humanize(text) == text
-
-
-def test_humanize_does_not_touch_snake_case_underscores() -> None:
-    # Underscores inside identifiers must survive (no underscore-italic stripping).
-    assert CoverLetterGenerator._humanize("Call the get_user_id helper.") == (
-        "Call the get_user_id helper."
+    source_facts = _cover_source_facts()
+    source_facts.facts[0] = source_facts.facts[0].model_copy(
+        update={"context": "Certificate in Progress | Metro College"}
     )
-
-
-def test_voice_tells_flags_robotic_letter() -> None:
-    tells = CoverLetterGenerator._voice_tells(ROBOTIC_LETTER)
-    assert "markdown" in tells
-    assert any(t.startswith("cliche:") for t in tells)
-    assert "participial_tails" in tells
-    assert "no_short_sentences" in tells
-
-
-def test_voice_tells_clears_human_letter() -> None:
-    assert CoverLetterGenerator._voice_tells(HUMAN_LETTER) == []
-
-
-def test_voice_tells_ignores_trivial_text() -> None:
-    # Short/mocked text must not false-positive (keeps unit mocks from re-prompting).
-    assert CoverLetterGenerator._voice_tells("Dear Hiring Manager,\n\nCover letter text.") == []
-
-
-def test_voice_tells_excludes_trailing_sign_off_block() -> None:
-    """A valid sign-off block must not suppress the short-sentence tell."""
-    body = (
-        "Sentence one has many words to exceed the short sentence threshold. "
-        "Sentence two also has more than eight words to avoid the short tell. "
-        "Sentence three continues the pattern with plenty of words included. "
-        "Sentence four is similarly long and descriptive enough to qualify."
+    generator = CoverLetterGenerator(LLMConfig(language="en"))
+    draft = CoverLetterDraft(
+        body_facts=realize_cover_statements(source_facts.facts, language="English")
     )
-    letter = f"{body}\n\nSincerely,\nJohn Doe"
-    tells = CoverLetterGenerator._voice_tells(letter)
-    assert "no_short_sentences" in tells
+    generator._validate_source_fact_citations(draft, source_facts)
+
+    assert all("Certificate in Progress" not in sentence.text for sentence in draft.body_facts)
 
 
-def test_voice_tells_flags_verbose_letter() -> None:
-    """Only TRUE bloat (>420 words) trips the verbosity tell. Threshold raised from 350 — coherent
-    letters need room for subordinate clauses; clipping them short was what made prose choppy."""
-    text = "This sentence carries a handful of words to add up. " * 45  # ~450 words
-    assert "too_long" in CoverLetterGenerator._voice_tells(text)
-
-
-def test_voice_tells_flags_too_thin_letter() -> None:
-    """A thin letter (60-200 words) trips the thinness floor — structured generation sometimes
-    emits very short fields (a measured 93-word letter, too thin to send)."""
-    text = "This sentence has a handful of words in it here. " * 12  # ~120 words
-    assert "too_short" in CoverLetterGenerator._voice_tells(text)
-
-
-def test_voice_tells_short_varied_letter_clears_length_tells() -> None:
-    """High-precision: a short, varied letter trips no spurious length tell (no re-prompt).
-
-    (The `repeated_openings` and `ornate_verbs` detectors were dropped when the base model
-    became the 8B — they fired 0/20 in the ablation; the 8B doesn't need those 4B crutches.)
-    """
-    text = (
-        "Dear Team. I led operations for a decade. Triage is second nature to me. "
-        "My home lab runs daily. Let us talk this week. Sincerely, Jane Roe"
+def test_cover_letter_source_citations_require_each_selected_fact_once() -> None:
+    source_facts = _cover_source_facts()
+    draft = CoverLetterDraft(
+        body_facts=[
+            SourceBackedSentence(text="First fact.", fact_ids=["SRC-001"]),
+            SourceBackedSentence(text="First fact again.", fact_ids=["SRC-001"]),
+            SourceBackedSentence(text="Second fact.", fact_ids=["SRC-002"]),
+        ]
     )
-    tells = CoverLetterGenerator._voice_tells(text)
-    assert "too_long" not in tells and "too_short" not in tells
+    generator = CoverLetterGenerator(LLMConfig())
+
+    with pytest.raises(LLMError, match="use each selected source fact exactly once"):
+        generator._validate_source_fact_citations(draft, source_facts)
 
 
-def test_cover_letter_prompt_sets_length_target_and_opening_variety() -> None:
-    """The prompt targets a focused, no-padding length (the 8B self-caps at ~200 words — its
-    substance-complete sweet spot, measured) and asks for opening variety."""
-    from job_applicator.documents.cover_letter import SYSTEM_PROMPT
+def test_source_backed_sentence_requires_evidence() -> None:
+    from job_applicator.documents.cover_letter import SourceBackedSentence
 
-    low = SYSTEM_PROMPT.lower()
-    assert "200 to 300 words" in low  # realistic for the 8B; was "320 to 380" in the 4B era
-    assert "never pad to hit a number" in low  # no-padding rule (don't force length)
-    assert "should not all open with" in low  # variety, not a mandated short sentence
-
-
-def test_cover_letter_prompt_enforces_humility_and_grounding() -> None:
-    """The prompt forbids posturing/overreach + grounds coursework as learning, and the
-    overreach-driving 'single contribution' CTA clause stays gone (audit findings 1-4)."""
-    from job_applicator.documents.cover_letter import SYSTEM_PROMPT
-
-    low = SYSTEM_PROMPT.lower()
-    assert "be honest about level" in low  # the anti-posture / humility rule
-    assert "positioned to manage" in low  # bans "positioned to manage the employer's systems"
-    assert "audit, overhaul, or fix" in low  # bans offering to audit/overhaul their environment
-    assert "modest ask to talk" in low  # the modest, non-grandiose CTA
-    assert "inflate coursework or a personal home lab" in low  # grounding-of-framing
-    assert "single contribution" not in low  # the overreach-driving clause is gone
-    assert "ai-generated boilerplate" not in low  # de-meta'd (was leaking as "without robotic")
-
-
-def test_cover_letter_prompt_leads_with_coherence_guidance() -> None:
-    """The rebalance: the prompt LEADS with positive flow guidance (write one connected story with
-    transitions, no acronym dumps) — the fix for the over-restricted, choppy/disconnected output."""
-    from job_applicator.documents.cover_letter import SYSTEM_PROMPT
-
-    low = SYSTEM_PROMPT.lower()
-    assert "not a list of facts" in low  # the headline reframe
-    assert "through-line" in low  # require a narrative arc
-    assert "connect each sentence to the one before it" in low  # require connective tissue
-    assert "do not dump lists of tools or acronyms" in low  # no acronym dumping
-    assert "three distinct paragraphs" in low  # restore paragraph breaks (no wall-of-text)
-    assert "no literary metaphors" in low  # rein in the purple/over-written register
-
-
-def test_company_in_resume_matches_structured_employer() -> None:
-    resume = ResumeData(raw_text="...", experience=[ExperienceEntry(company="Globex")])
-    assert CoverLetterGenerator._company_in_resume("Globex", resume) is True
-
-
-def test_company_in_resume_normalizes_legal_suffixes() -> None:
-    resume = ResumeData(raw_text="...", experience=[ExperienceEntry(company="Globex")])
-    assert CoverLetterGenerator._company_in_resume("globex inc.", resume) is True
-
-
-def test_company_in_resume_falls_back_to_raw_text() -> None:
-    resume = ResumeData(raw_text="Backend Engineer, Globex (2017-2021)")
-    assert CoverLetterGenerator._company_in_resume("Globex", resume) is True
-
-
-def test_company_in_resume_returns_false_when_absent() -> None:
-    resume = ResumeData(raw_text="Backend Engineer, Acme (2017-2021)")
-    assert CoverLetterGenerator._company_in_resume("Globex", resume) is False
-
-
-def test_company_in_resume_rejects_email_domain_and_school_name() -> None:
-    """A company stem like 'example' must not match an email domain or school name."""
-    resume = ResumeData(raw_text="Jane Doe\njane@example.com\nB.S., Example University")
-    assert CoverLetterGenerator._company_in_resume("Example Corp", resume) is False
-
-
-def test_company_in_resume_empty_company_is_false() -> None:
-    resume = ResumeData(raw_text="Backend Engineer, Globex (2017-2021)")
-    assert CoverLetterGenerator._company_in_resume("", resume) is False
+    with pytest.raises(ValidationError):
+        SourceBackedSentence(text="Unsupported sentence.", fact_ids=[])
 
 
 def _cl_inputs() -> tuple[JobListing, UserProfile, ResumeData]:
-    job = JobListing(title="Dev", company="Co", url="https://e.com", board=JobBoard.INDEED)
+    job = JobListing(
+        title="Dev",
+        company="Co",
+        url="https://e.com",
+        requirements=["Python"],
+        board=JobBoard.INDEED,
+    )
     user = UserProfile(first_name="J", last_name="D", email="j@e.com", phone="1")
-    resume = ResumeData(raw_text="resume", skills=["Python"])
+    resume = ResumeData(raw_text=_structured_resume_text(), skills=["Python"])
     return job, user, resume
 
 
 @pytest.mark.asyncio
-async def test_generate_revoices_when_first_draft_is_robotic() -> None:
-    """A robotic first draft triggers ONE voice re-prompt; the cleaner retry wins."""
-    config = LLMConfig(api_base="http://localhost:8000/v1", model="m")
-    generator = CoverLetterGenerator(config)
-    generator._complete = AsyncMock(side_effect=[ROBOTIC_LETTER, HUMAN_LETTER])  # type: ignore[method-assign]
-    letter = await generator.generate(*_cl_inputs())
-    assert generator._complete.await_count == 2
-    assert CoverLetterGenerator._voice_tells(letter) == []  # cleaner retry kept
-
-
-# Two DISTINCT robotic drafts with EQUAL tell counts (one cliché each) — needed to
-# prove _devoice keeps the FIRST draft on a tie (its rule is strict `<`, not `<=`);
-# identical drafts would make the kept-draft assertion vacuous.
-_TIE_FIRST = "I have a proven track record. I ship fast. Hire me today.\n\nSincerely,\nJ D"
-_TIE_RETRY = "I am a perfect fit for this. I work hard. Pick me now.\n\nSincerely,\nJ D"
-
-
-@pytest.mark.asyncio
-async def test_generate_keeps_first_draft_on_tell_count_tie() -> None:
-    """On an equal tell count the FIRST draft is kept (strict `<`, never `<=`)."""
-    assert len(CoverLetterGenerator._voice_tells(_TIE_FIRST)) == 1
-    assert len(CoverLetterGenerator._voice_tells(_TIE_RETRY)) == 1
-    config = LLMConfig(api_base="http://localhost:8000/v1", model="m")
-    generator = CoverLetterGenerator(config)
-    generator._complete = AsyncMock(side_effect=[_TIE_FIRST, _TIE_RETRY])  # type: ignore[method-assign]
-    letter = await generator.generate(*_cl_inputs())
-    assert generator._complete.await_count == 2
-    assert letter == _TIE_FIRST  # the equal-tell retry must NOT replace the first draft
-
-
-@pytest.mark.asyncio
-async def test_generate_skips_revoice_when_first_draft_is_clean() -> None:
-    """A clean first draft does NOT trigger a re-prompt (no wasted LLM call)."""
-    config = LLMConfig(api_base="http://localhost:8000/v1", model="m")
-    generator = CoverLetterGenerator(config)
-    generator._complete = AsyncMock(side_effect=[HUMAN_LETTER])  # type: ignore[method-assign]
-    letter = await generator.generate(*_cl_inputs())
-    assert generator._complete.await_count == 1
-    assert letter.strip()
-
-
-@pytest.mark.asyncio
-async def test_generate_revoice_is_graceful_on_error() -> None:
-    """If the voice re-prompt errors, return the first usable draft (no raise)."""
-    config = LLMConfig(api_base="http://localhost:8000/v1", model="m")
-    generator = CoverLetterGenerator(config)
-    generator._complete = AsyncMock(  # type: ignore[method-assign]
-        side_effect=[ROBOTIC_LETTER, LLMError("transport blip")]
-    )
-    letter = await generator.generate(*_cl_inputs())
-    assert generator._complete.await_count == 2
-    assert letter == CoverLetterGenerator._humanize(ROBOTIC_LETTER)  # first usable draft preserved
-
-
-# --- generate_verified: the grounding-pass composite (Slice 4); generate() + verifier mocked ----
-
-
-def _flag(claim: str) -> ClaimCheck:
-    return ClaimCheck(claim=claim, grounded=False, note="unsupported")
-
-
-async def test_generate_verified_keeps_cleaner_retry() -> None:
+async def test_generate_verified_delegates_to_inline_validated_generation() -> None:
     gen = CoverLetterGenerator(LLMConfig(model="m"))
-    gen.generate = AsyncMock(side_effect=["LETTER A", "LETTER B"])  # type: ignore[method-assign]
-    gen._verifier.verify = AsyncMock(  # type: ignore[method-assign]
-        side_effect=[GroundingReport(unsupported=[_flag("x"), _flag("y")]), GroundingReport()]
-    )
-    assert await gen.generate_verified(*_cl_inputs()) == "LETTER B"  # the cleaner retry wins
-
-
-async def test_generate_verified_keeps_original_when_retry_not_strictly_better() -> None:
-    # a persistent flag (e.g. a verifier false positive) must NOT let the retry win — no strip.
-    gen = CoverLetterGenerator(LLMConfig(model="m"))
-    gen.generate = AsyncMock(side_effect=["LETTER A", "LETTER B"])  # type: ignore[method-assign]
-    gen._verifier.verify = AsyncMock(  # type: ignore[method-assign]
-        side_effect=[
-            GroundingReport(unsupported=[_flag("x")]),
-            GroundingReport(unsupported=[_flag("x")]),
-        ]
-    )
-    with pytest.raises(CoverLetterGroundingError):
-        await gen.generate_verified(*_cl_inputs())
-
-
-async def test_generate_verified_prefers_fewer_unsupported_over_fewer_gaps() -> None:
-    # F7: a retry that drops a real UNSUPPORTED claim but rewords into extra coverage gaps must
-    # still win — a confirmed fabrication outweighs a softer coverage gap (lexicographic compare).
-    # The old sum-equal-weighting (1 == 0+? ) would discard this honesty gain.
-    gen = CoverLetterGenerator(LLMConfig(model="m"))
-    gen.generate = AsyncMock(side_effect=["LETTER A", "LETTER B"])  # type: ignore[method-assign]
-    gen._verifier.verify = AsyncMock(  # type: ignore[method-assign]
-        side_effect=[
-            GroundingReport(unsupported=[_flag("fabricated metric")]),  # original: 1 unsup, 0 gaps
-            GroundingReport(coverage_gaps=["x", "y"]),  # retry: 0 unsup, 2 gaps
-        ]
-    )
-    with pytest.raises(CoverLetterGroundingError):
-        await gen.generate_verified(*_cl_inputs())
-
-
-def test_grounding_correction_names_coverage_gaps() -> None:
-    correction = CoverLetterGenerator._grounding_correction(
-        GroundingReport(
-            coverage_gaps=[
-                "I can support incident response workflows",
-                "I would bring clear documentation habits",
-            ]
-        )
+    gen.generate_verified_with_overlay = AsyncMock(  # type: ignore[method-assign]
+        return_value=("LETTER A", _cover_overlay())
     )
 
-    assert "unchecked sentences" in correction
-    assert "I can support incident response workflows" in correction
-    assert "I would bring clear documentation habits" in correction
-
-
-def test_grounding_failure_message_includes_residual_details() -> None:
-    message = CoverLetterGenerator._grounding_failure_message(
-        GroundingReport(
-            unsupported=[_flag("Invented SOC ownership")],
-            coverage_gaps=["Je serais heureux de discuter de ce poste"],
-        )
-    )
-
-    assert "1 unsupported claim(s)" in message
-    assert "1 unchecked claim(s)" in message
-    assert "Invented SOC ownership" in message
-    assert "Je serais heureux de discuter de ce poste" in message
-
-
-async def test_generate_verified_clean_skips_reprompt() -> None:
-    gen = CoverLetterGenerator(LLMConfig(model="m"))
-    gen.generate = AsyncMock(return_value="LETTER A")  # type: ignore[method-assign]
-    gen._verifier.verify = AsyncMock(return_value=GroundingReport())  # type: ignore[method-assign]
     assert await gen.generate_verified(*_cl_inputs()) == "LETTER A"
-    assert gen.generate.await_count == 1  # no retry on a clean report
-
-
-async def test_generate_verified_failsafe_raises_grounding_error() -> None:
-    # fail-safe (#4): a verifier failure must not return an unverified letter as success.
-    gen = CoverLetterGenerator(LLMConfig(model="m"))
-    gen.generate = AsyncMock(return_value="LETTER A")  # type: ignore[method-assign]
-    gen._verifier.verify = AsyncMock(  # type: ignore[method-assign]
-        side_effect=GroundingUnavailableError("verifier down")
-    )
-    with pytest.raises(CoverLetterGroundingError):
-        await gen.generate_verified(*_cl_inputs())
+    gen.generate_verified_with_overlay.assert_awaited_once()  # type: ignore[attr-defined]
 
 
 async def test_refine_verified_returns_letter_and_report() -> None:
-    # #4: the interactive cover-letter refine gets the SAME grounding pass — returns the refined
-    # letter AND its report (surfaced for review, never auto-retried).
     gen = CoverLetterGenerator(LLMConfig(model="m"))
-    gen.refine = AsyncMock(return_value="REFINED LETTER")  # type: ignore[method-assign]
-    gen._verifier.verify = AsyncMock(  # type: ignore[method-assign]
-        return_value=GroundingReport(unsupported=[_flag("x")])
+    gen.refine_verified_with_overlay = AsyncMock(  # type: ignore[method-assign]
+        return_value=("REFINED LETTER", _cover_overlay(), GroundingReport())
     )
     job, user, resume = _cl_inputs()
     letter, report = await gen.refine_verified(job, user, resume, "current", "make it formal")
     assert letter == "REFINED LETTER"
-    assert report is not None and len(report.unsupported) == 1
-    gen.refine.assert_awaited_once()  # type: ignore[attr-defined]
+    assert report is not None and report.clean
+    gen.refine_verified_with_overlay.assert_awaited_once()  # type: ignore[attr-defined]
 
 
-async def test_refine_verified_failsafe_returns_none_report() -> None:
-    # fail-safe (#4): a verifier failure on refine returns (letter, None) — letter still delivered,
-    # report surfaced as "not run", never blocked or falsely "clean".
-    gen = CoverLetterGenerator(LLMConfig(model="m"))
-    gen.refine = AsyncMock(return_value="REFINED LETTER")  # type: ignore[method-assign]
-    gen._verifier.verify = AsyncMock(  # type: ignore[method-assign]
-        side_effect=GroundingUnavailableError("down")
-    )
-    job, user, resume = _cl_inputs()
-    letter, report = await gen.refine_verified(job, user, resume, "current", "make it formal")
-    assert letter == "REFINED LETTER" and report is None
-
-
-async def test_refine_repairs_missing_sign_off() -> None:
+async def test_refine_appends_sign_off() -> None:
     """Refined letters get the same deterministic sign-off guarantee as first drafts."""
     gen = CoverLetterGenerator(LLMConfig(model="m"))
-    gen._complete = AsyncMock(  # type: ignore[method-assign]
-        return_value=(
-            "I bring Python experience from practical support work and would like to discuss how "
-            "I can help this team."
-        )
+    gen._cover_evidence_candidates = MagicMock(  # type: ignore[method-assign]
+        return_value=_source_facts()
+    )
+    gen._select_source_facts = AsyncMock(  # type: ignore[method-assign]
+        return_value=_cover_source_facts()
     )
 
     job, user, resume = _cl_inputs()

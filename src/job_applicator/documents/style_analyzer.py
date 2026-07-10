@@ -22,6 +22,7 @@ from job_applicator.exceptions import LLMError
 from job_applicator.models import StyleGuide
 from job_applicator.utils.llm import (
     LLMRuntime,
+    litellm_completion_kwargs,
     litellm_model,
     llm_call_error,
     quiet_litellm,
@@ -217,11 +218,11 @@ class StyleAnalyzer:
                             messages=messages,
                             response_model=StyleGuide,
                             max_retries=self._runtime.validation_max_retries,
-                            max_tokens=max_tokens,
-                            temperature=0.1,
-                            extra_body={
-                                "chat_template_kwargs": {"enable_thinking": False},
-                            },
+                            **litellm_completion_kwargs(
+                                self._config,
+                                max_tokens=max_tokens,
+                                temperature=0.1,
+                            ),
                         )
                         return cast(StyleGuide, response)
 
@@ -254,11 +255,11 @@ class StyleAnalyzer:
                         api_base=self._config.api_base,
                         api_key=self._config.api_key,
                         messages=messages,
-                        max_tokens=max_tokens,
-                        temperature=0.1,
-                        extra_body={
-                            "chat_template_kwargs": {"enable_thinking": False},
-                        },
+                        **litellm_completion_kwargs(
+                            self._config,
+                            max_tokens=max_tokens,
+                            temperature=0.1,
+                        ),
                     )
 
                 direct_response = await self._runtime.run(_call_direct)
@@ -440,40 +441,20 @@ class StyleAnalyzer:
 
     @staticmethod
     def format_style_for_prompt(style: StyleGuide) -> str:
-        """Format style guide into a prompt section for cover letter generation.
+        """Format content-free voice constraints for document generation.
 
         Pure (no instance state) — a ``@staticmethod`` so callers needn't construct a
         StyleAnalyzer (whose __init__ touches the styles cache dir) merely to format.
+
+        Examples, suggested phrases, metrics, and power words are deliberately excluded: they
+        carry factual prose from the style document and can contaminate source-grounded output.
         """
         parts = [
-            "Writing Style Guide (mimic this style):",
+            "Writing Style Constraints (voice only; never copy facts or phrases):",
             f"- Tone: {style.tone}",
             f"- Sentence structure: {style.sentence_structure}",
             f"- Vocabulary: {style.vocabulary_level}",
             f"- Paragraph style: {style.paragraph_style}",
         ]
-
-        if style.greeting_style:
-            parts.append(f"- Greeting style: {style.greeting_style}")
-        if style.closing_style:
-            parts.append(f"- Closing style: {style.closing_style}")
-        if style.use_of_metrics:
-            parts.append(f"- Metrics: {style.use_of_metrics}")
-        if style.storytelling_approach:
-            parts.append(f"- Storytelling: {style.storytelling_approach}")
-        if style.personal_touch:
-            parts.append(f"- Personal touch: {style.personal_touch}")
-
-        if style.key_phrases:
-            parts.append(f"- Use phrases like: {', '.join(style.key_phrases[:5])}")
-
-        if style.power_words:
-            parts.append(f"- Use words like: {', '.join(style.power_words[:5])}")
-
-        if style.avoid_phrases:
-            parts.append(f"- Avoid phrases like: {', '.join(style.avoid_phrases)}")
-
-        if style.sample_paragraph:
-            parts.append(f'\nSample style to emulate:\n"""{style.sample_paragraph}"""')
 
         return "\n".join(parts)

@@ -5,7 +5,8 @@
 # to derive it automatically from the parsed résumé.
 profile_name = "default"
 resume_path = "/path/to/your/resume.pdf"
-# Example résumé/cover letter(s) whose writing style the AI should mimic. Supports a single
+# Example résumé/cover letter(s) for soft style analysis. Source-backed applicant claims are not
+# rewritten to mimic these files. Supports a single
 # file or comma-separated paths (e.g. "example1.txt,example2.pdf").
 # style_guide_path = "cover_letter_example.txt"
 style_guide_path = ""
@@ -38,13 +39,19 @@ api_key = "not-needed-for-local"
 model = "Qwen/Qwen3-8B-AWQ"
 # Output language for the generated CV + cover letter: "auto" mirrors the job
 # posting's language (FR/EN heuristic), or force "en" / "fr". The two documents
-# always resolve the SAME language, so one application never mixes them.
+# always resolve the SAME language. The source resume must already use that language;
+# cross-language resume tailoring fails closed rather than machine-translating it.
 language = "auto"
-# Upper bound per completion. 4096 fits full résumé tailoring; cover letters and
-# style analysis need less (style analysis self-caps at 1024 internally). Setting
-# this below ~4096 can truncate tailored résumés. Matches the built-in default.
+# Upper bound per completion. Individual factual analysis tasks may use a lower cap.
 max_tokens = 4096
 temperature = 0.7
+# Optional sampler knobs for empirical Qwen/vLLM tuning. They default to omitted request fields so
+# baseline behavior stays unchanged unless you set them after measuring.
+# top_p = 0.8
+# top_k = 20
+# min_p = 0.0
+# presence_penalty = 1.2
+enable_thinking = false
 
 # Targets
 [target]

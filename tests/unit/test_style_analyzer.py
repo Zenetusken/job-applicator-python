@@ -189,10 +189,11 @@ class TestStyleAnalyzer:
         prompt = analyzer.format_style_for_prompt(style)
 
         assert "professional but personable" in prompt
-        assert "experience in" in prompt
-        assert "architected" in prompt
-        assert "formal" in prompt
-        assert "Test sample" in prompt
+        assert "experience in" not in prompt
+        assert "architected" not in prompt
+        assert "specific percentages" not in prompt
+        assert "Test sample" not in prompt
+        assert "never copy facts or phrases" in prompt
 
 
 class TestStyleAnalyzerInstructor:
@@ -264,5 +265,5 @@ def test_format_style_for_prompt_is_static() -> None:
         sample_paragraph="",
     )
     section = StyleAnalyzer.format_style_for_prompt(style)
-    assert "Writing Style Guide" in section
+    assert "Writing Style Constraints" in section
     assert "Tone: professional" in section

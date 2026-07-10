@@ -46,7 +46,7 @@ async def _cover_letter_workflow(
     tone_profile: object,
     tailored_resume_text: str,
 ) -> Path | None:
-    from job_applicator.documents.cover_letter import CoverLetterGenerator, strip_thinking_process
+    from job_applicator.documents.cover_letter import CoverLetterGenerator
     from job_applicator.models import CoverLetterResult, CoverLetterSession
 
     generator = CoverLetterGenerator(config)
@@ -70,7 +70,7 @@ async def _cover_letter_workflow(
 
     try:
         with console.status("Generating cover letter..."):
-            letter = await generator.generate(
+            letter, overlay = await generator.generate_verified_with_overlay(
                 job,
                 user,
                 resume,
@@ -83,6 +83,8 @@ async def _cover_letter_workflow(
             job_url=str(job.url),
             cover_letter_text=letter,
             attempt=1,
+            prompt_version=overlay.architecture_version,
+            overlay=overlay,
         )
         session.add_attempt(result)
     except Exception as exc:
@@ -91,7 +93,7 @@ async def _cover_letter_workflow(
         if retry == "R":
             try:
                 with console.status("Generating cover letter..."):
-                    letter = await generator.generate(
+                    letter, overlay = await generator.generate_verified_with_overlay(
                         job,
                         user,
                         resume,
@@ -104,6 +106,8 @@ async def _cover_letter_workflow(
                     job_url=str(job.url),
                     cover_letter_text=letter,
                     attempt=1,
+                    prompt_version=overlay.architecture_version,
+                    overlay=overlay,
                 )
                 session.add_attempt(result)
             except Exception:
@@ -154,16 +158,20 @@ async def _cover_letter_workflow(
             from datetime import datetime as dt
 
             output_dir = Path("output")
-            output_dir.mkdir(exist_ok=True)
+            await asyncio.to_thread(output_dir.mkdir, exist_ok=True)
             safe_company = job.company.replace(" ", "_").replace("/", "_")
             safe_title = job.title.replace(" ", "_").replace("/", "_")
             timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
             cl_filename = f"cover_letter_{safe_company}_{safe_title}_{timestamp}.txt"
             cl_path = output_dir / cl_filename
-            cl_path.write_text(result.cover_letter_text, encoding="utf-8")
+            await asyncio.to_thread(cl_path.write_text, result.cover_letter_text, encoding="utf-8")
             result.output_path = str(cl_path)
             cl_meta_path = cl_path.with_suffix(".meta.json")
-            cl_meta_path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+            await asyncio.to_thread(
+                cl_meta_path.write_text,
+                result.model_dump_json(indent=2),
+                encoding="utf-8",
+            )
             console.print(f"\n[green]Cover letter saved: {cl_path}[/green]")
             return cl_path
 
@@ -171,7 +179,7 @@ async def _cover_letter_workflow(
             console.print("[yellow]Regenerating...[/yellow]")
             try:
                 with console.status("Generating cover letter..."):
-                    letter = await generator.generate(
+                    letter, overlay = await generator.generate_verified_with_overlay(
                         job,
                         user,
                         resume,
@@ -184,6 +192,8 @@ async def _cover_letter_workflow(
                     job_url=str(job.url),
                     cover_letter_text=letter,
                     attempt=attempt + 1,
+                    prompt_version=overlay.architecture_version,
+                    overlay=overlay,
                 )
                 session.add_attempt(new_result)
             except Exception as exc:
@@ -198,27 +208,14 @@ async def _cover_letter_workflow(
                 console.print("[yellow]No instructions provided.[/yellow]")
             try:
                 with console.status("Refining cover letter..."):
-                    refine_prompt = (
-                        f"User wants changes to this cover letter.\n\n"
-                        f"Job: {job.title} at {job.company}\n\n"
-                        f"Current cover letter:\n{result.cover_letter_text}\n\n"
-                        f"User feedback: {user_instructions}\n\n"
-                        f"Return the complete updated cover letter."
+                    refined, overlay, _report = await generator.refine_verified_with_overlay(
+                        job,
+                        user,
+                        resume,
+                        result.cover_letter_text,
+                        user_instructions,
+                        tone_section=tone_section,
                     )
-                    from litellm import acompletion
-
-                    from job_applicator.utils.llm import litellm_model
-
-                    model = litellm_model(config)
-                    response = await acompletion(
-                        model=model,
-                        api_base=config.api_base,
-                        api_key=config.api_key,
-                        messages=[{"role": "user", "content": refine_prompt}],
-                        max_tokens=config.max_tokens,
-                        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-                    )
-                    refined = strip_thinking_process(response.choices[0].message.content)
                 new_result = CoverLetterResult(
                     job_title=job.title,
                     job_company=job.company,
@@ -226,6 +223,8 @@ async def _cover_letter_workflow(
                     cover_letter_text=refined,
                     user_modifications=user_instructions,
                     attempt=attempt + 1,
+                    prompt_version=overlay.architecture_version,
+                    overlay=overlay,
                 )
                 session.add_attempt(new_result)
             except Exception as exc:
@@ -452,16 +451,20 @@ async def main() -> bool:
             from datetime import datetime
 
             output_dir = Path("output")
-            output_dir.mkdir(exist_ok=True)
+            await asyncio.to_thread(output_dir.mkdir, exist_ok=True)
 
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             fname = f"tailored_CGI_TechSupport_{ts}.txt"
             out = output_dir / fname
-            out.write_text(result.tailored_text, encoding="utf-8")
+            await asyncio.to_thread(out.write_text, result.tailored_text, encoding="utf-8")
             result.output_path = str(out)
 
             meta_path = out.with_suffix(".meta.json")
-            meta_path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+            await asyncio.to_thread(
+                meta_path.write_text,
+                result.model_dump_json(indent=2),
+                encoding="utf-8",
+            )
 
             console.print(f"\n[green]Saved: {out}[/green]")
             console.print(f"[dim]Attempt #{attempt} | Score: {result.match_score:.0%}[/dim]")
@@ -488,7 +491,11 @@ async def main() -> bool:
 
             if cover_letter_path:
                 result.cover_letter_path = str(cover_letter_path)
-            meta_path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+            await asyncio.to_thread(
+                meta_path.write_text,
+                result.model_dump_json(indent=2),
+                encoding="utf-8",
+            )
             console.print(f"[green]Meta:  {meta_path}[/green]")
             break
 

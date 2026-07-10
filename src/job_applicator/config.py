@@ -60,10 +60,16 @@ class LLMConfig(BaseSettings):
     # employer-stack overclaim 5/6 → 0/5). The 4B (cyankiwi/Qwen3.5-4B-AWQ-4bit) stays a smaller,
     # faster fallback you can pin via JOB_APPLICATOR_LLM_MODEL / [llm] model.
     model: str = "Qwen/Qwen3-8B-AWQ"
-    # Upper bound for a single completion. Sized for full résumé tailoring;
-    # cover letters and style analysis stay well under this cap.
+    # Upper bound for a single completion. Individual factual analysis tasks may use a lower cap.
     max_tokens: int = 4096
     temperature: float = 0.7
+    # Optional sampler knobs. Defaults intentionally preserve the previous request shape; set these
+    # for measured Qwen/vLLM tuning without changing deterministic document realization.
+    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    top_k: int | None = Field(default=None, ge=0)
+    min_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+    enable_thinking: bool = False
     # Output language for generated documents: "auto" (mirror the job posting's language), "en",
     # or "fr". Lives on [llm] so the cover-letter override (cover_letter_llm) inherits it — the CV
     # and the cover letter always resolve the SAME language, so one application never mixes them.

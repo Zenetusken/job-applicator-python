@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, HttpUrl, computed_field
+from pydantic import BaseModel, Field, HttpUrl, computed_field, model_validator
 
 
 class JobBoard(StrEnum):
@@ -348,6 +348,91 @@ class ResumeData(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+SourceFactKind = Literal[
+    "identity",
+    "summary",
+    "skills",
+    "projects",
+    "experience",
+    "education",
+    "languages",
+    "other",
+]
+
+
+class SourceFact(BaseModel):
+    """One immutable, context-preserving fact extracted from the source resume."""
+
+    fact_id: str
+    kind: SourceFactKind
+    text: str
+    context: str = ""
+    claim_eligible: bool = False
+
+    model_config = {"extra": "forbid"}
+
+
+class SourceFactCatalog(BaseModel):
+    """Authoritative facts supplied to document-generation prompts."""
+
+    facts: list[SourceFact] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
+class SourceBackedStatement(BaseModel):
+    """One generated statement and the source fact IDs that entail it."""
+
+    text: str
+    fact_ids: list[str] = Field(min_length=1)
+
+    model_config = {"extra": "forbid"}
+
+
+class ResumeOverlay(BaseModel):
+    """The only model-controlled content applied to an immutable source résumé body."""
+
+    summary_sentences: list[SourceBackedStatement] = Field(min_length=3, max_length=3)
+    source_body_sha256: str
+    source_language: Literal["en", "fr"]
+    architecture_version: str = "source-overlay-v4"
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def validate_fact_contract(self) -> ResumeOverlay:
+        if any(len(sentence.fact_ids) != 1 for sentence in self.summary_sentences):
+            raise ValueError("each summary sentence must cite exactly one source fact")
+        cited = [sentence.fact_ids[0] for sentence in self.summary_sentences]
+        if len(set(cited)) != 3:
+            raise ValueError("summary sentences must cite three distinct source facts")
+        return self
+
+
+class CoverLetterOverlay(BaseModel):
+    """Deterministically realized cover-letter claims and their source provenance."""
+
+    body_sentences: list[SourceBackedStatement] = Field(min_length=3, max_length=4)
+    source_body_sha256: str
+    source_language: Literal["en", "fr"]
+    architecture_version: str = "source-overlay-v4"
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def validate_fact_contract(self) -> CoverLetterOverlay:
+        if any(len(sentence.fact_ids) != 1 for sentence in self.body_sentences):
+            raise ValueError("each cover-letter sentence must cite exactly one source fact")
+        cited = [sentence.fact_ids[0] for sentence in self.body_sentences]
+        expected = 3 if self.architecture_version == "source-overlay-v4" else 4
+        if len(cited) != expected or len(set(cited)) != expected:
+            raise ValueError(
+                f"{self.architecture_version} cover-letter sentences must cite "
+                f"{expected} distinct source facts"
+            )
+        return self
+
+
 class StyleGuide(BaseModel):
     """Writing style patterns extracted from example resumes/cover letters."""
 
@@ -516,7 +601,7 @@ class TailoredResume(BaseModel):
     skill_score: float = Field(description="Skill coverage score")
     matched_skills: list[str] = Field(default_factory=list)
     missing_skills: list[str] = Field(default_factory=list)
-    changes_summary: str = Field(description="LLM-generated summary of changes made")
+    changes_summary: str = Field(description="Deterministic description of the bounded change")
     user_modifications: str = Field(default="", description="User's custom input that was applied")
     attempt: int = Field(default=1, description="Which attempt this is (1 = first)")
     prompt_version: str = Field(default="1.0", description="Prompt version used for this attempt")
@@ -526,8 +611,11 @@ class TailoredResume(BaseModel):
     pdf_path: str = Field(default="", description="Path to generated PDF résumé, if any")
     grounding_report: GroundingReport | None = Field(
         default=None,
-        description="Honesty check of the tailored text vs the BASE résumé (None = not run or "
-        "verifier unavailable). Surfaced for human review — claims are never auto-stripped.",
+        description="Summary-overlay honesty result (None means verification did not complete).",
+    )
+    overlay: ResumeOverlay | None = Field(
+        default=None,
+        description="Bounded generated summary and source-preservation provenance.",
     )
 
     model_config = {"extra": "forbid"}
@@ -580,6 +668,10 @@ class CoverLetterResult(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     output_path: str = ""
     pdf_path: str = Field(default="", description="Path to generated PDF cover letter, if any")
+    overlay: CoverLetterOverlay | None = Field(
+        default=None,
+        description="Deterministically realized claims and source provenance.",
+    )
 
     model_config = {"extra": "forbid"}
 

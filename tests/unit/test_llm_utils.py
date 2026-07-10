@@ -282,11 +282,11 @@ def test_cover_letter_generator_runtime_is_injectable() -> None:
     from job_applicator.utils.llm import CircuitBreaker, LLMRuntime
 
     runtime = LLMRuntime(breaker=CircuitBreaker(name="test"))
-    assert CoverLetterGenerator(LLMConfig(), runtime=runtime)._breaker is runtime.breaker
+    assert CoverLetterGenerator(LLMConfig(), runtime=runtime)._runtime is runtime
     # No shared module-global; the default generator builds its own from config.
     assert not hasattr(cover_letter, "_CIRCUIT_BREAKER")
     gen = CoverLetterGenerator(LLMConfig())
-    assert gen._breaker is gen._runtime.breaker
+    assert gen._runtime.breaker is not None
 
 
 def test_litellm_model_adds_openai_prefix_when_api_base_set() -> None:
@@ -305,6 +305,44 @@ def test_litellm_model_bare_when_no_api_base() -> None:
 
     cfg = LLMConfig(api_base="", model="gpt-4o-mini")
     assert litellm_model(cfg) == "gpt-4o-mini"
+
+
+def test_litellm_completion_kwargs_preserves_default_request_shape() -> None:
+    """Phase-1 sampler migration must not change default generation behavior."""
+    from job_applicator.config import LLMConfig
+    from job_applicator.utils.llm import litellm_completion_kwargs
+
+    assert litellm_completion_kwargs(LLMConfig()) == {
+        "max_tokens": 4096,
+        "temperature": 0.7,
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+    }
+
+
+def test_litellm_completion_kwargs_adds_configured_sampler_fields() -> None:
+    """Qwen/vLLM sampler knobs are emitted only when explicitly configured."""
+    from job_applicator.config import LLMConfig
+    from job_applicator.utils.llm import litellm_completion_kwargs
+
+    cfg = LLMConfig(
+        top_p=0.8,
+        top_k=20,
+        min_p=0.0,
+        presence_penalty=1.2,
+        enable_thinking=True,
+    )
+
+    assert litellm_completion_kwargs(cfg, temperature=0.1, max_tokens=512) == {
+        "max_tokens": 512,
+        "temperature": 0.1,
+        "top_p": 0.8,
+        "presence_penalty": 1.2,
+        "extra_body": {
+            "top_k": 20,
+            "min_p": 0.0,
+            "chat_template_kwargs": {"enable_thinking": True},
+        },
+    }
 
 
 def test_openai_prefix_rule_lives_only_in_litellm_model() -> None:

@@ -13,6 +13,18 @@ from scripts import check_matcher_gate_required as matcher_gate
 from scripts import eval_document_quality, eval_matching
 from typer.testing import CliRunner
 
+from job_applicator.documents.quality_eval import _DIMENSIONS
+from job_applicator.documents.resume import ResumeLoader
+from job_applicator.documents.resume_document import ResumeDocument
+from job_applicator.documents.source_facts import (
+    build_source_fact_catalog,
+    is_substantive_source_fact,
+)
+from job_applicator.documents.source_realization import (
+    realize_cover_statement,
+    realize_resume_statement,
+)
+
 
 def test_matcher_gate_detects_sensitive_paths() -> None:
     sensitive = matcher_gate.matcher_sensitive(
@@ -134,16 +146,23 @@ def test_document_quality_rejects_bad_packet() -> None:
 def _quality_resume() -> str:
     return (
         "John Doe\njohn@example.com\n514-555-0199\n\n"
-        "Experience\nSecurity Support Analyst, Acme, 2021 - Present\n"
-        "Used Python, SQL, Linux, SIEM, incident response, alert triage, IAM, and log analysis "
+        "Summary\n"
+        "Security support analyst with practical incident triage experience. Uses Python and "
+        "Linux for evidence-focused operational checks. Documents escalations and handoffs for "
+        "technical teams.\n\n"
+        "Experience\nSecurity Support Analyst | Acme | 2021 - Present\n"
+        "• Used Python, SQL, Linux, SIEM, incident response, alert triage, IAM, and log analysis "
         "workflows to investigate authentication failures, document evidence, and coordinate "
-        "escalations across support and infrastructure teams. Improved recurring monitoring "
+        "escalations across support and infrastructure teams.\n"
+        "• Improved recurring monitoring "
         "checks through scripts, runbooks, and clear handoff notes that helped analysts compare "
         "patterns across shifts.\n\n"
-        "Technical Support Analyst, Beta, 2019 - 2021\n"
-        "Resolved workstation, account, network, and access issues for users while documenting "
-        "repeatable fixes. Partnered with infrastructure staff on monitoring alerts and "
-        "service-impacting incidents. Built small Python automation helpers to reduce manual "
+        "Technical Support Analyst | Beta | 2019 - 2021\n"
+        "• Resolved workstation, account, network, and access issues for users while documenting "
+        "repeatable fixes.\n"
+        "• Partnered with infrastructure staff on monitoring alerts and service-impacting "
+        "incidents.\n"
+        "• Built small Python automation helpers to reduce manual "
         "follow-up and reviewed Linux logs before escalating ambiguous security symptoms.\n\n"
         "Education\nCertificate in Cybersecurity, 2024\n\n"
         "Skills\nPython, SQL, Linux, SIEM, incident response, IAM, log analysis, alert triage, "
@@ -175,9 +194,51 @@ def _quality_cover_letter() -> str:
 def _write_quality_artifacts(tmp_path: Path) -> tuple[Path, Path]:
     resume = tmp_path / "resume.txt"
     cover = tmp_path / "cover.txt"
-    resume.write_text(_quality_resume(), encoding="utf-8")
-    cover.write_text(_quality_cover_letter(), encoding="utf-8")
+    (tmp_path / "source.txt").write_text(_quality_resume(), encoding="utf-8")
+    _write_deterministic_generated_artifacts(
+        tmp_path,
+        language="English",
+        job_title="Security Analyst",
+        company="Acme",
+    )
     return resume, cover
+
+
+def _write_deterministic_generated_artifacts(
+    directory: Path,
+    *,
+    language: str,
+    job_title: str,
+    company: str,
+) -> None:
+    source = ResumeLoader().load(directory / "source.txt")
+    facts = [
+        fact for fact in build_source_fact_catalog(source).facts if is_substantive_source_fact(fact)
+    ]
+    assert len(facts) >= 4
+    summary = " ".join(realize_resume_statement(fact).text for fact in facts[:3])
+    resume = ResumeDocument.parse(source.raw_text).with_summary(summary, language=language)
+    (directory / "resume.txt").write_text(resume.render(), encoding="utf-8")
+
+    body = " ".join(realize_cover_statement(fact, language=language).text for fact in facts[:4])
+    if language == "French":
+        opening = f"Veuillez accepter ma candidature au poste de {job_title} chez {company}."
+        closing = (
+            "Je serais disponible pour discuter de ma candidature, de ces éléments de mon "
+            "parcours et des besoins du poste avec votre équipe."
+        )
+        sign_off = "Cordialement"
+    else:
+        opening = f"Please accept my application for the {job_title} position at {company}."
+        closing = (
+            "I would welcome the opportunity to discuss my application, these details from my "
+            "background, and the needs of the role with your team."
+        )
+        sign_off = "Sincerely"
+    (directory / "cover.txt").write_text(
+        f"{opening}\n\n{body}\n\n{closing}\n\n{sign_off},\nJohn Doe",
+        encoding="utf-8",
+    )
 
 
 def _french_quality_cover_letter() -> str:
@@ -208,32 +269,35 @@ def _write_french_quality_artifacts(
 ) -> tuple[Path, Path]:
     resume = tmp_path / "resume.txt"
     cover = tmp_path / "cover.txt"
-    resume.write_text(
-        (
-            "John Doe\n"
-            "Montréal, QC | 514-555-0100 | john@example.test\n\n"
-            "Profil\n"
-            f"{profile}\n\n"
-            "Compétences\n"
-            "SIEM, SOC monitoring, incident response, Linux, Python, TCP/IP, ticketing, "
-            "escalation, Microsoft 365\n\n"
-            "Expérience\n"
-            "• Géré les opérations quotidiennes, le triage des demandes et les escalades avec "
-            "des équipes internes et des clients.\n"
-            "• Fourni un support technique niveau 1 par téléphone, chat et courriel pour des "
-            "problèmes de connectivité, de signal et de site web.\n"
-            "• Documenté les incidents, coordonné les suivis et maintenu une résolution en "
-            "premier appel de 95 % lorsque les procédures le permettaient.\n\n"
-            "Formation\n"
-            "Certificat universitaire — Analyse et cybersécurité opérationnelle 2024 - Présent\n"
-            "Northbridge Technical Institute\n"
-            f"{education_note}\n\n"
-            "Langues\n"
-            "Français et anglais courants; espagnol.\n"
-        ),
-        encoding="utf-8",
+    source_text = (
+        "John Doe\n"
+        "Montréal, QC | 514-555-0100 | john@example.test\n\n"
+        "Profil\n"
+        f"{profile}\n\n"
+        "Compétences\n"
+        "SIEM, SOC monitoring, incident response, Linux, Python, TCP/IP, ticketing, "
+        "escalation, Microsoft 365\n\n"
+        "Expérience\n"
+        "• Géré les opérations quotidiennes, le triage des demandes et les escalades avec "
+        "des équipes internes et des clients.\n"
+        "• Fourni un support technique niveau 1 par téléphone, chat et courriel pour des "
+        "problèmes de connectivité, de signal et de site web.\n"
+        "• Documenté les incidents, coordonné les suivis et maintenu une résolution en "
+        "premier appel de 95 % lorsque les procédures le permettaient.\n\n"
+        "Formation\n"
+        "Certificat universitaire — Analyse et cybersécurité opérationnelle 2024 - Présent\n"
+        "Northbridge Technical Institute\n"
+        f"    {education_note}\n\n"
+        "Langues\n"
+        "Français et anglais courants; espagnol.\n"
     )
-    cover.write_text(_french_quality_cover_letter(), encoding="utf-8")
+    (tmp_path / "source.txt").write_text(source_text, encoding="utf-8")
+    _write_deterministic_generated_artifacts(
+        tmp_path,
+        language="French",
+        job_title="analyste sécurité",
+        company="Acme",
+    )
     return resume, cover
 
 
@@ -250,6 +314,7 @@ def _quality_packet_record(
         "id": packet_id,
         "resume_path": "resume.txt",
         "cover_letter_path": "cover.txt",
+        "source_resume_path": "source.txt",
         "applicant_name": "John Doe",
         "job_title": "Security Analyst",
         "company": "Acme",
@@ -273,12 +338,75 @@ def _quality_packet_record(
     return record
 
 
-def _write_packet_set(tmp_path: Path, records: list[dict[str, object]]) -> Path:
+def _with_overlay_evidence(tmp_path: Path, record: dict[str, object]) -> dict[str, object]:
+    enriched = dict(record)
+    source_raw = enriched.get("source_resume_path")
+    resume_raw = enriched.get("resume_path")
+    if not isinstance(source_raw, str) or not isinstance(resume_raw, str):
+        return enriched
+    source_path = tmp_path / source_raw
+    resume_path = tmp_path / resume_raw
+    if not source_path.is_file() or not resume_path.is_file():
+        return enriched
+    source = ResumeLoader().load(source_path)
+    source_document = ResumeDocument.parse(source.raw_text)
+    facts = [
+        fact for fact in build_source_fact_catalog(source).facts if is_substantive_source_fact(fact)
+    ]
+    if len(facts) < 4:
+        return enriched
+    language = (
+        "French"
+        if str(enriched.get("language", "en")).casefold() in {"fr", "french", "français"}
+        else "English"
+    )
+    enriched["resume_overlay"] = {
+        "summary_sentences": [realize_resume_statement(fact).model_dump() for fact in facts[:3]],
+        "source_body_sha256": source_document.non_summary_sha256(),
+        "source_language": "fr" if language == "French" else "en",
+        "architecture_version": "source-overlay-v1",
+    }
+    enriched["cover_letter_overlay"] = {
+        "body_sentences": [
+            realize_cover_statement(fact, language=language).model_dump() for fact in facts[:4]
+        ],
+        "source_body_sha256": source_document.non_summary_sha256(),
+        "source_language": "fr" if language == "French" else "en",
+        "architecture_version": "source-overlay-v1",
+    }
+    return enriched
+
+
+def _write_packet_set(
+    tmp_path: Path,
+    records: list[dict[str, object]],
+    *,
+    with_reviews: bool = True,
+) -> Path:
     packet_set = tmp_path / "packet-set.jsonl"
+    enriched = [_with_overlay_evidence(tmp_path, record) for record in records]
     packet_set.write_text(
-        "\n".join(json.dumps(record) for record in records) + "\n",
+        "\n".join(json.dumps(record) for record in enriched) + "\n",
         encoding="utf-8",
     )
+    if with_reviews:
+        review_set = tmp_path / "packet-set.reviews.jsonl"
+        review_set.write_text(
+            "\n".join(
+                json.dumps(
+                    {
+                        "packet_id": record["id"],
+                        "reviewer": "test-reviewer",
+                        "reviewed_at": datetime.now(UTC).isoformat(),
+                        "dimensions": {name: 4.0 for name in _DIMENSIONS},
+                        "critical_defects": [],
+                    }
+                )
+                for record in enriched
+            )
+            + "\n",
+            encoding="utf-8",
+        )
     return packet_set
 
 
@@ -308,6 +436,59 @@ def test_document_quality_missing_private_set_fails_when_required(
     assert "not certified" in capsys.readouterr().out
 
 
+def test_document_quality_required_packet_needs_source_resume(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_quality_artifacts(tmp_path)
+    record = _quality_packet_record(packet_id="source-missing")
+    record.pop("source_resume_path")
+    packet_set = _write_packet_set(tmp_path, [record])
+
+    assert (
+        eval_document_quality._run_packet_set(
+            packet_set=packet_set,
+            required=True,
+            min_cases=1,
+            json_output=True,
+        )
+        == 2
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["certified"] is False
+    assert payload["packets"][0]["source_integrity"]["source_checked"] is False
+    assert any(
+        "missing source resume evidence" in failure for failure in payload["certification_failures"]
+    )
+
+
+def test_document_quality_source_integrity_rejects_unsupported_metric(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_quality_artifacts(tmp_path)
+    cover = tmp_path / "cover.txt"
+    cover.write_text(
+        cover.read_text(encoding="utf-8") + "\n\nResolved 40+ tickets daily.",
+        encoding="utf-8",
+    )
+    packet_set = _write_packet_set(
+        tmp_path,
+        [_quality_packet_record(packet_id="unsupported-metric")],
+    )
+
+    assert (
+        eval_document_quality._run_packet_set(
+            packet_set=packet_set,
+            required=True,
+            min_cases=1,
+            json_output=True,
+        )
+        == 1
+    )
+    payload = json.loads(capsys.readouterr().out)
+    failures = payload["packets"][0]["source_integrity"]["failures"]
+    assert any("unsupported numeric claim" in failure for failure in failures)
+
+
 def test_document_quality_private_packet_set_scores_complete_packets(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -329,6 +510,169 @@ def test_document_quality_private_packet_set_scores_complete_packets(
     assert "PASS acme-security" in output
 
 
+def test_document_quality_missing_manual_review_is_insufficient_evidence(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_quality_artifacts(tmp_path)
+    packet_set = _write_packet_set(
+        tmp_path,
+        [_quality_packet_record(packet_id="needs-review")],
+        with_reviews=False,
+    )
+
+    assert (
+        eval_document_quality._run_packet_set(
+            packet_set=packet_set,
+            required=True,
+            min_cases=1,
+            min_manual_reviews_per_category=1,
+            json_output=True,
+        )
+        == 2
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["integrity_certified"] is True
+    assert payload["prose_qualified"] is False
+    assert any("manual prose reviews" in item for item in payload["missing_evidence"])
+
+
+def test_document_quality_replicates_count_as_one_independent_prose_review(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_quality_artifacts(tmp_path)
+    records = [
+        {
+            **_quality_packet_record(packet_id=f"support-r{index:02d}"),
+            "source_job_url": "https://example.test/jobs/same-support-role",
+        }
+        for index in range(1, 6)
+    ]
+    packet_set = _write_packet_set(tmp_path, records)
+
+    assert (
+        eval_document_quality._run_packet_set(
+            packet_set=packet_set,
+            required=True,
+            min_cases=5,
+            min_manual_reviews_per_category=5,
+            json_output=True,
+        )
+        == 2
+    )
+    payload = json.loads(capsys.readouterr().out)
+    support = payload["manual_review_summary"]["categories"]["support"]
+    assert support["reviewed_packet_count"] == 1
+    assert len(support["independent_source_jobs"]) == 1
+    assert any("1 present, 5 required" in item for item in payload["missing_evidence"])
+
+
+def test_document_quality_manual_critical_defect_is_observed_failure(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_quality_artifacts(tmp_path)
+    packet_set = _write_packet_set(tmp_path, [_quality_packet_record(packet_id="bad-prose")])
+    review_set = tmp_path / "packet-set.reviews.jsonl"
+    review = json.loads(review_set.read_text(encoding="utf-8"))
+    review["critical_defects"] = ["unsupported capability conclusion"]
+    review_set.write_text(json.dumps(review) + "\n", encoding="utf-8")
+
+    assert (
+        eval_document_quality._run_packet_set(
+            packet_set=packet_set,
+            required=True,
+            min_cases=1,
+            min_manual_reviews_per_category=1,
+            json_output=True,
+        )
+        == 1
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["integrity_certified"] is True
+    assert payload["prose_qualified"] is False
+    assert payload["missing_evidence"] == []
+
+
+def test_document_quality_source_body_mutation_fails_integrity(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    resume, _cover = _write_quality_artifacts(tmp_path)
+    resume.write_text(
+        resume.read_text(encoding="utf-8").replace("Acme | 2021", "Other | 2021"),
+        encoding="utf-8",
+    )
+    packet_set = _write_packet_set(tmp_path, [_quality_packet_record(packet_id="body-drift")])
+
+    assert (
+        eval_document_quality._run_packet_set(
+            packet_set=packet_set,
+            required=True,
+            min_cases=1,
+            min_manual_reviews_per_category=1,
+            json_output=True,
+        )
+        == 1
+    )
+    payload = json.loads(capsys.readouterr().out)
+    retention = payload["packets"][0]["source_retention"]
+    assert retention["body_digest_matches"] is False
+    assert payload["integrity_certified"] is False
+
+
+def test_document_quality_required_packet_needs_cover_overlay(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_quality_artifacts(tmp_path)
+    packet_set = _write_packet_set(tmp_path, [_quality_packet_record(packet_id="cover-missing")])
+    record = json.loads(packet_set.read_text(encoding="utf-8"))
+    record.pop("cover_letter_overlay")
+    packet_set.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    assert (
+        eval_document_quality._run_packet_set(
+            packet_set=packet_set,
+            required=True,
+            min_cases=1,
+            min_manual_reviews_per_category=1,
+            json_output=True,
+        )
+        == 2
+    )
+    payload = json.loads(capsys.readouterr().out)
+    retention = payload["packets"][0]["source_retention"]
+    assert retention["cover_overlay_checked"] is False
+    assert any("document-overlay evidence" in item for item in payload["missing_evidence"])
+
+
+def test_document_quality_rejects_non_deterministic_cover_claim(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_quality_artifacts(tmp_path)
+    packet_set = _write_packet_set(tmp_path, [_quality_packet_record(packet_id="cover-drift")])
+    record = json.loads(packet_set.read_text(encoding="utf-8"))
+    record["cover_letter_overlay"]["body_sentences"][0]["text"] += " Ensured success."
+    packet_set.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    assert (
+        eval_document_quality._run_packet_set(
+            packet_set=packet_set,
+            required=True,
+            min_cases=1,
+            min_manual_reviews_per_category=1,
+            json_output=True,
+        )
+        == 1
+    )
+    payload = json.loads(capsys.readouterr().out)
+    failures = payload["packets"][0]["source_retention"]["failures"]
+    assert any("not the deterministic realization" in item for item in failures)
+
+
 def test_document_quality_private_packet_set_fails_weak_packets(tmp_path: Path) -> None:
     resume = tmp_path / "resume.txt"
     cover = tmp_path / "cover.txt"
@@ -345,7 +689,7 @@ def test_document_quality_private_packet_set_fails_weak_packets(tmp_path: Path) 
 
     reports = eval_document_quality.assess_packet_set(packet_set)
 
-    assert eval_document_quality._run_packet_set(packet_set=packet_set, required=True) == 1
+    assert eval_document_quality._run_packet_set(packet_set=packet_set, required=True) == 2
     assert reports[0].overall < 3
     assert any("usefulness score" in item for item in reports[0].failures)
 
@@ -405,7 +749,9 @@ def test_document_quality_required_packet_set_needs_three_passing_cases(
     assert payload["passed"] is True
     assert payload["certified"] is False
     assert payload["thresholds"]["min_cases"] == 3
-    assert "passing packet count 1 is below required 3" in payload["certification_failures"]
+    assert (
+        "integrity-passing packet count 1 is below required 3" in payload["certification_failures"]
+    )
 
 
 def test_document_quality_optional_packet_set_reports_uncertified_without_failing(
@@ -638,13 +984,27 @@ def test_document_quality_represented_category_and_language_coverage_certifies(
         language="en",
     )
     support_en.update(
-        {"resume_path": "support-en/resume.txt", "cover_letter_path": "support-en/cover.txt"}
+        {
+            "resume_path": "support-en/resume.txt",
+            "cover_letter_path": "support-en/cover.txt",
+            "source_resume_path": "support-en/source.txt",
+        }
     )
     risk_fr = _french_quality_packet_record(packet_id="risk-fr")
-    risk_fr.update({"resume_path": "risk-fr/resume.txt", "cover_letter_path": "risk-fr/cover.txt"})
+    risk_fr.update(
+        {
+            "resume_path": "risk-fr/resume.txt",
+            "cover_letter_path": "risk-fr/cover.txt",
+            "source_resume_path": "risk-fr/source.txt",
+        }
+    )
     support_fr = {**_french_quality_packet_record(packet_id="support-fr"), "category": "support"}
     support_fr.update(
-        {"resume_path": "support-fr/resume.txt", "cover_letter_path": "support-fr/cover.txt"}
+        {
+            "resume_path": "support-fr/resume.txt",
+            "cover_letter_path": "support-fr/cover.txt",
+            "source_resume_path": "support-fr/source.txt",
+        }
     )
     packet_set = _write_packet_set(
         tmp_path,
@@ -695,7 +1055,7 @@ def test_document_quality_declared_french_packet_rejects_english_resume_prose(
     assert report.passed is False
     assert any("declared fr packet" in item for item in report.failures)
     assert report.language_quality is not None
-    assert "resume:profile" in report.language_quality.mismatched_sections
+    assert "resume:education" in report.language_quality.mismatched_sections
 
 
 def test_document_quality_declared_french_packet_allows_english_technical_terms(
@@ -1000,6 +1360,8 @@ def test_document_quality_cli_packet_certification_flags_are_reflected_in_json(
             "support",
             "--required-language",
             "en",
+            "--min-manual-reviews-per-category",
+            "1",
             "--json",
         ],
     )
@@ -1056,6 +1418,8 @@ def test_document_quality_cli_private_packet_set_json_output(tmp_path: Path) -> 
             "--required",
             "--min-cases",
             "1",
+            "--min-manual-reviews-per-category",
+            "1",
             "--json",
         ],
     )
@@ -1079,7 +1443,16 @@ def test_document_quality_cli_private_packet_set_uses_env_default(
 
     result = CliRunner().invoke(
         cli.app,
-        ["document-quality", "--private-packet-set", "--required", "--min-cases", "1", "--json"],
+        [
+            "document-quality",
+            "--private-packet-set",
+            "--required",
+            "--min-cases",
+            "1",
+            "--min-manual-reviews-per-category",
+            "1",
+            "--json",
+        ],
     )
 
     assert result.exit_code == 0
