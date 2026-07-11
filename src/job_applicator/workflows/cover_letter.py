@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
     from job_applicator.config import AppSettings
     from job_applicator.documents.tone_detector import ToneProfile
+    from job_applicator.embeddings.matching import JobMatcher
     from job_applicator.models import (
         CoverLetterResult,
         CoverLetterSession,
@@ -55,6 +56,7 @@ async def _generate_cover_letter(
     attempt: int = 1,
     *,
     runtime: LLMRuntime,
+    matcher: JobMatcher | None = None,
 ) -> CoverLetterResult | None:
     """Generate a cover letter via LLM. Returns None on failure.
 
@@ -62,9 +64,18 @@ async def _generate_cover_letter(
     default would reset the breaker across the interactive retry loop.
     """
     from job_applicator.documents.cover_letter import CoverLetterGenerator
+    from job_applicator.embeddings.matching import JobMatcher
     from job_applicator.models import CoverLetterResult
 
-    generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=runtime)
+    if matcher is None:
+        matcher = JobMatcher(
+            settings.embedding,
+            settings.llm,
+            runtime,
+            grounding_mode=settings.skills.grounding_mode,
+            matching=settings.matching,
+        )
+    generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=runtime, matcher=matcher)
     try:
         with err_console.status("Generating + verifying cover letter..."):
             letter, overlay = await generator.generate_verified_with_overlay(
@@ -157,14 +168,26 @@ async def _refine_cover_letter(
     tone_section: str = "",
     *,
     runtime: LLMRuntime,
+    matcher: JobMatcher | None = None,
 ) -> bool:
     """Refine a cover letter via LLM (shared ``runtime`` REQUIRED; see _generate_cover_letter)."""
     from job_applicator.documents.cover_letter import CoverLetterGenerator
+    from job_applicator.embeddings.matching import JobMatcher
     from job_applicator.models import CoverLetterResult as CLResult
     from job_applicator.models import ResumeData
 
     try:
-        generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=runtime)
+        if matcher is None:
+            matcher = JobMatcher(
+                settings.embedding,
+                settings.llm,
+                runtime,
+                grounding_mode=settings.skills.grounding_mode,
+                matching=settings.matching,
+            )
+        generator = CoverLetterGenerator(
+            settings.cover_letter_llm(), runtime=runtime, matcher=matcher
+        )
         user = _load_user_profile(settings, resume_name=resume_data.name if resume_data else "")
         with err_console.status("Refining + verifying cover letter..."):
             refined, overlay, report = await generator.refine_verified_with_overlay(
@@ -218,12 +241,14 @@ async def _cover_letter_workflow(
     output_format: Format = Format.TXT,
     template: str = "modern",
     category: str | None = None,
+    matcher: JobMatcher | None = None,
 ) -> Path | None:
     """Generate and save a cover letter with accept/retry workflow.
 
     Returns the Path to the saved cover letter, or None if skipped.
     """
     from job_applicator.documents.tone_detector import ToneDetector
+    from job_applicator.embeddings.matching import JobMatcher
     from job_applicator.models import CoverLetterSession
 
     tone_section = ""
@@ -236,6 +261,14 @@ async def _cover_letter_workflow(
     # One breaker shared across every attempt of this interactive loop (a fresh
     # runtime per call would reset the failure counter and never trip the breaker).
     runtime = _make_runtime(settings)
+    if matcher is None:
+        matcher = JobMatcher(
+            settings.embedding,
+            settings.llm,
+            runtime,
+            grounding_mode=settings.skills.grounding_mode,
+            matching=settings.matching,
+        )
     attempt = 0
 
     result = await _generate_cover_letter(
@@ -248,6 +281,7 @@ async def _cover_letter_workflow(
         tailored_resume_text,
         session,
         runtime=runtime,
+        matcher=matcher,
     )
     if result is None:
         retry = console.input("[bold cyan][R] Retry or [Q] Skip? [/bold cyan]").strip().upper()
@@ -262,6 +296,7 @@ async def _cover_letter_workflow(
                 tailored_resume_text,
                 session,
                 runtime=runtime,
+                matcher=matcher,
             )
             if result is None:
                 console.print("[red]Cover letter generation failed. Skipping.[/red]")
@@ -331,6 +366,7 @@ async def _cover_letter_workflow(
                 session,
                 attempt=attempt + 1,
                 runtime=runtime,
+                matcher=matcher,
             )
             if new_result is None:
                 console.print("[red]Generation failed. Please try again.[/red]")
@@ -355,6 +391,7 @@ async def _cover_letter_workflow(
                 style,
                 tone_section,
                 runtime=runtime,
+                matcher=matcher,
             )
             if not refined_ok:
                 console.print("[red]Refinement failed. Please try again.[/red]")

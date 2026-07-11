@@ -57,8 +57,9 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
   `job-applicator document-quality --resume <txt> --cover-letter <txt> --keyword <term>`.
   Generated packet changes can be certified against the private quality set with
   ```bash
-  job-applicator document-quality --private-packet-set --required --min-cases 3 \
-    --max-artifact-age-days 14 --required-category support --required-category risk \
+  job-applicator document-quality --private-packet-set --required --min-cases 15 \
+    --min-manual-reviews-per-category 5 --max-artifact-age-days 14 \
+    --required-category support --required-category risk --required-category network \
     --required-language en --required-language fr
   ```
   The default private manifest is `~/.job-applicator/document-quality-eval/packet-set.jsonl`.
@@ -98,12 +99,14 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
   fails closed. French resolves an in-language sign-off ("Cordialement,"), a localized PDF date, and
   recognized French sign-offs. Resolution (`utils/language.py`) is a deliberately small FR/EN
   heuristic, logged per job so a misdetect is catchable.
-- **Generated applicant claims are deterministic source overlays.** Structured job requirements, or
-  temperature-zero evidence-span extraction when requirements are absent, feed local ranking of
-  three primary source facts. Résumé generation replaces only the summary; every non-summary
-  section is protected by a source-body digest. Cover letters realize the same three-fact contract
-  inside a deterministic application frame. There is no phrase replacement, tool stripping,
-  metric rewriting, language-specific repair, or context-specific bullet deletion.
+- **Generated applicant claims are deterministic source overlays.** A temperature-zero model pass
+  sees only the job and returns four to six exact responsibility/tool spans. The local mxbai
+  embedder ranks immutable résumé facts against those criteria with stable source-order tie breaks
+  and selects exactly three. Résumé and cover-letter sidecars store the same job digest, criteria,
+  fact IDs, scores, and strongest-criterion links. Résumé generation replaces only the summary;
+  every non-summary section is protected by a source-body digest. Cover letters realize the same
+  three-fact contract inside a deterministic application frame. There is no phrase replacement,
+  tool stripping, metric rewriting, language-specific repair, or context-specific bullet deletion.
 - **The grounding verifier is a standalone diagnostic.** `documents/grounding_verifier.py` may
   enumerate claims and audit source quotes for non-overlay documents, but source-overlay generation
   and certification do not depend on it. It never mutates an artifact.
@@ -119,8 +122,11 @@ Tests are auto-marked by location in `tests/conftest.py`, so marker selection wo
   control, and optional sampler knobs (`top_p`, `top_k`, `min_p`, `presence_penalty`). The sampler
   fields are measurement toggles by default; unset fields are omitted from requests. Use
   `scripts/eval_llm_sampler.py` to run baseline-vs-Qwen sampler variants and inspect
-  baseline-relative quality deltas before changing defaults. Sampler settings can affect factual
-  criteria extraction and diagnostics; they cannot tune deterministic applicant claim prose.
+  baseline-relative quality deltas before changing defaults. Repeated held-out runs also measure
+  criteria/selection stability, résumé/cover alignment, cross-template TXT identity, PDF token
+  retention, and page counts. Each packet gets an isolated criteria cache, so stability reflects
+  independent extraction across repetitions. Sampler settings can affect factual criteria
+  extraction and diagnostics; they cannot tune deterministic applicant claim prose.
 - Instructor for structured LLM outputs (Pydantic models)
 - mxbai-embed-large-v1 for semantic job matching (~1.4 GB runtime allocation,
   1.3 GB free-VRAM preflight budget)

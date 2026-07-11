@@ -1214,6 +1214,7 @@ def apply(
                 from job_applicator.documents.cover_letter import CoverLetterGenerator
                 from job_applicator.documents.job_category import detect_job_category
                 from job_applicator.documents.resume import ResumeLoader
+                from job_applicator.embeddings.matching import JobMatcher
                 from job_applicator.models import CoverLetterResult
 
                 loader = ResumeLoader()
@@ -1230,7 +1231,17 @@ def apply(
                 user_profile = _load_user_profile(settings, resume_name=resume_data.name)
 
                 runtime = _make_runtime(settings)
-                generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=runtime)
+                matcher = JobMatcher(
+                    settings.embedding,
+                    settings.llm,
+                    runtime,
+                    reporter=reporter,
+                    grounding_mode=settings.skills.grounding_mode,
+                    matching=settings.matching,
+                )
+                generator = CoverLetterGenerator(
+                    settings.cover_letter_llm(), runtime=runtime, matcher=matcher
+                )
                 style = None
                 if settings.style_guide_path:
                     with err_console.status("Analyzing writing style..."):
@@ -1422,6 +1433,7 @@ def generate_cover_letter(
         from job_applicator.documents.cover_letter import CoverLetterGenerator
         from job_applicator.documents.job_category import detect_job_category
         from job_applicator.documents.resume import ResumeLoader
+        from job_applicator.embeddings.matching import JobMatcher
         from job_applicator.models import CoverLetterResult, JobBoard, JobListing
 
         if not settings.resume_path:
@@ -1458,7 +1470,17 @@ def generate_cover_letter(
         )
 
         runtime = _make_runtime(settings)
-        generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=runtime)
+        matcher = JobMatcher(
+            settings.embedding,
+            settings.llm,
+            runtime,
+            reporter=reporter,
+            grounding_mode=settings.skills.grounding_mode,
+            matching=settings.matching,
+        )
+        generator = CoverLetterGenerator(
+            settings.cover_letter_llm(), runtime=runtime, matcher=matcher
+        )
 
         # Load style guide if provided (supports comma-separated paths)
         style = None
@@ -2435,7 +2457,9 @@ def batch(
         if settings.style_guide_path or cover_letter:
             from job_applicator.documents.cover_letter import CoverLetterGenerator
 
-            cl_generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=runtime)
+            cl_generator = CoverLetterGenerator(
+                settings.cover_letter_llm(), runtime=runtime, matcher=matcher
+            )
             if settings.style_guide_path:
                 # Style analysis feeds RÉSUMÉ tailoring → keep it on [llm], not the [cover_letter]
                 # override (which is only for cover-letter prose).
@@ -3170,6 +3194,7 @@ def tailor(
             result,
             reporter,
             yes=yes,
+            matcher=matcher,
             output_format=effective_output_format,
             resume_template=resume_template,
             cover_letter_template=cover_letter_template,

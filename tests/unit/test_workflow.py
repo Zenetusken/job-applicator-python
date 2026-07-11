@@ -731,6 +731,7 @@ class TestCoverLetterFailureHandling:
             attempt: int = 1,
             *,
             runtime: object = None,
+            matcher: object = None,
         ) -> CoverLetterResult | None:
             nonlocal call_count
             call_count += 1
@@ -791,6 +792,7 @@ class TestCoverLetterFailureHandling:
             attempt: int = 1,
             *,
             runtime: object = None,
+            matcher: object = None,
         ) -> CoverLetterResult | None:
             session.add_attempt(success_result)
             return success_result
@@ -930,7 +932,7 @@ async def test_workflow_threads_one_shared_runtime_across_attempts() -> None:
 
     captured: list[object] = []
 
-    def capture_gen(config: object, runtime: object = None) -> MagicMock:
+    def capture_gen(config: object, runtime: object = None, matcher: object = None) -> MagicMock:
         captured.append(runtime)
         gen = MagicMock()
         gen.generate_verified_with_overlay = AsyncMock(

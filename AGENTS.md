@@ -145,7 +145,7 @@ src/job_applicator/
   `chat_template_kwargs.enable_thinking=false` by default, and post-processing uses
   `strip_thinking_process()` in `utils/llm.py`.
 - **LLM calls need an `openai/` prefix for local vLLM.** Completion callers (style analysis,
-  skill extraction, and the standalone grounding diagnostic) build the model id via the single helper
+  skill extraction, target-criteria extraction, and the standalone grounding diagnostic) build the model id via the single helper
   `utils.llm.litellm_model(config)`, which adds the `openai/` prefix when `llm.api_base` is set.
   Embeddings use `sentence-transformers` directly and do not use this prefix.
 - **LLM sampler kwargs are centralized.** Completion callers should use
@@ -166,10 +166,11 @@ src/job_applicator/
   feedback/help banners and INFO logs off stdout/stderr.
 - **Résumé tailoring is a bounded source overlay, not whole-document rewriting.**
   `documents/resume_document.py` canonicalizes the base résumé and makes every non-summary section
-  immutable. Structured job requirements, or temperature-zero evidence-span extraction from a
-  bounded job description when requirements are absent, feed deterministic ranking of three
-  primary source facts. Local realization preserves each fact's wording and adds only terminal
-  punctuation.
+  immutable. A temperature-zero model pass sees only the bounded job text and returns four to six
+  exact evidence spans. `JobMatcher.rank_source_facts()` embeds those criteria and every substantive
+  source fact, applies the fixed `criterion-embedding-v1` scoring rule, and uses stable source-order
+  tie breaking to select exactly three facts. Local realization preserves each fact's wording and
+  adds only terminal punctuation.
   `ResumeTailor.verify_tailored()` fails closed unless the body digest, summary, citations, and
   deterministic realization match the overlay. There
   is no phrase replacement, tool
@@ -182,8 +183,8 @@ src/job_applicator/
   criteria path feeds deterministic ranking of exactly three relevant primary source facts. Local
   typed realization produces exactly three body statements, one fact ID per statement and each ID used once. The
   application opening, closing request, and sign-off are also assembled deterministically. The
-  artifact sidecar stores all statements, citations, source digest, language, and
-  architecture version.
+  artifact sidecar stores all statements, citations, source/job digests, exact criteria, ranked
+  scores, language, and architecture version. Résumé and cover-letter rankings must align.
 - **The standalone grounding verifier is a diagnostic, not a generation dependency.**
   `documents/grounding_verifier.py` can enumerate claims and audit source quotes for non-overlay
   documents. SOURCE is ALWAYS the BASE résumé (`resume.raw_text`) — never the JD or a generated
@@ -404,8 +405,11 @@ that generate cover letters. The default dry-run `apply` does not run the ATS pr
   `~/.job-applicator/document-quality-eval/sampler-cases.jsonl`, generates fresh packet manifests
   under `~/.job-applicator/document-quality-eval/sampler-runs/`, certifies each variant through
   document-quality, and reports how much each Qwen-shaped criteria-extraction/transport variant
-  improves/regresses against `baseline`. Applicant claim prose is deterministic. Start with
-  `--dry-run --json` to inspect commands and env overrides.
+  improves/regresses against `baseline`. With repetitions it also measures ranking completeness,
+  criteria/selection stability, résumé/cover alignment, cross-template TXT identity, PDF text
+  retention, and page counts. Applicant claim prose is deterministic. Start with `--dry-run --json`
+  to inspect commands and env overrides. Every sampler packet uses an isolated target-criteria
+  cache; résumé and cover share it, while repetitions and variants cannot reuse it.
 - Tests use fixtures from `tests/conftest.py`.
 - Embedding tests mock the model (CPU fallback).
 

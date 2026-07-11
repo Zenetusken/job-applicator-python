@@ -40,7 +40,7 @@ Run repeated end-to-end TXT+PDF trials with deterministic template rotation:
 ```bash
 .venv/bin/python scripts/eval_llm_sampler.py \
   --variant qwen-pp15 \
-  --repetitions 10 \
+  --repetitions 3 \
   --format both \
   --rotate-templates \
   --required --integrity-only --json
@@ -128,12 +128,19 @@ the harness writes `<output-root>/<run-id>/<variant>/packet-set.jsonl` with gene
 `resume_path`, `cover_letter_path`, and `source_resume_path` values, provenance, freshness
 timestamps, the source-fact generator version, and the case category/language metadata.
 It also records the adjacent résumé metadata/overlay when available, recomputed source-body digests,
-protected-span recall, PDF paths, and git HEAD/dirty/diff-hash provenance in the run summary.
+protected-span recall, the complete job description/requirements needed to verify ranking
+provenance, PDF paths, and git HEAD/dirty/diff-hash provenance in the run summary.
 
 For each case, the harness also copies the referenced `jobs_file` to
 `<output-root>/<run-id>/<variant>/<case-id>/input-jobs.json` and passes that copy to `batch`. This
 keeps batch recovery state isolated between sampler variants: `batch` auto-resumes incomplete runs
 by processing spec, and sampler env values are not part of that public batch spec.
+
+Each packet also receives its own `target-criteria-cache` directory. The résumé and cover letter
+share that packet-local extraction, but variants and repetitions cannot reuse criteria from an
+earlier packet. This makes `criteria_stability_rate` an independent-extraction measurement rather
+than a shared-cache artifact. Production cache keys remain reusable but include endpoint, model,
+request shape, extraction version, and job-source digest.
 
 ## Certification
 
@@ -152,14 +159,29 @@ Each variant's deterministic integrity layer is evaluated with:
 qualification: the summary still reports `prose_qualified=false` and `certified=false` until a
 separate manual review set passes the canonical `document-quality --required` command.
 
-Use `--repetitions` to measure selector and transport yield rather than relying on one run. Byte-
-identical repetitions of one source job do not count as independent prose-review coverage. Add
-distinct source jobs to the case set for manual qualification. `--format both`
-exercises deterministic TXT and PDF output; `--rotate-templates` cycles modern, classic, and
-minimal. Packet IDs include `-rNN` so replicate failures remain traceable.
+Use `--repetitions` to measure criteria extraction and evidence-selection stability rather than
+relying on one run. Byte-identical repetitions of one source job do not count as independent
+prose-review coverage. Add distinct source jobs to the case set for manual qualification.
+`--format both` exercises deterministic TXT and PDF output; `--rotate-templates` cycles modern,
+classic, and minimal. Packet IDs include `-rNN` so replicate failures remain traceable.
+
+## Held-Out Measurements
+
+Every non-dry run reports two deterministic measurement blocks:
+
+- `evidence_ranking`: ranking provenance completeness, selected-fact stability, exact-criteria
+  stability, and résumé/cover-letter alignment. Required runs demand `1.0` for every rate.
+- `template_coherence`: TXT identity across modern/classic/minimal, expected template coverage,
+  PDF text retention, and page counts. Required runs demand all three templates when rotation is
+  requested, at least `0.99` token retention, no résumé over three pages, and exactly one cover
+  page.
+
+These thresholds are structural and deterministic. They do not score whether the selected evidence
+is persuasive or whether the prose reads naturally; that remains the held-out manual review step.
 
 The JSON summary includes per-case command/log paths, generated packet counts, failed case ids,
-packet quality payloads, certification failures, and the packet manifest path for each variant.
+packet quality payloads, retention, ranking and template measurements, certification failures, and
+the packet manifest path for each variant.
 For non-dry runs, the same JSON is saved to
 `<output-root>/<run-id>/sampler-summary.json` so long live results are preserved even if terminal
 output is truncated.
@@ -184,6 +206,7 @@ For each non-baseline variant it reports:
   status, overall score, generation failures, and generated packet count.
 
 Treat an architecture/settings candidate as eligible for manual prose review only when repeated
-integrity yield meets the predeclared threshold, source-body retention is 100%, and it adds no
-honesty failures. Promote it only after the sampled review sidecar qualifies every category through
-the canonical packet gate.
+integrity yield meets the predeclared threshold, source-body retention is 100%, every held-out
+measurement passes, and it adds no honesty failures. Fix the cohort and selection rule before
+reading artifacts, then review all selected packets rather than cherry-picking heuristic winners.
+Promote only after the review sidecar qualifies every category through the canonical packet gate.

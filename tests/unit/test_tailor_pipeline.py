@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -15,8 +16,19 @@ from job_applicator.documents.source_facts import (
     build_source_fact_catalog,
     is_substantive_source_fact,
 )
+from job_applicator.embeddings.matching import SourceFactRankingResult
 from job_applicator.exceptions import LLMError
-from job_applicator.models import JobBoard, JobListing, ResumeData, SourceFactCatalog, UserProfile
+from job_applicator.models import (
+    JobBoard,
+    JobListing,
+    RankedSourceFact,
+    ResumeData,
+    SourceFactCatalog,
+    SourceFactRanking,
+    TargetCriteria,
+    TargetCriterion,
+    UserProfile,
+)
 
 
 def _audit(text: str, *, year: int = 2026):
@@ -100,7 +112,6 @@ def _resume() -> ResumeData:
 async def test_cover_targeting_returns_only_ranked_source_facts() -> None:
     resume = _resume()
     job = _job("SECRET_JOB_FACT Kubernetes ownership")
-    generator = CoverLetterGenerator(LLMConfig(language="en"))
     facts = SourceFactCatalog(
         facts=[
             fact
@@ -108,12 +119,33 @@ async def test_cover_targeting_returns_only_ranked_source_facts() -> None:
             if is_substantive_source_fact(fact)
         ]
     )
+    expected = SourceFactCatalog(facts=facts.facts[:3])
+    ranking = SourceFactRanking(
+        target_criteria=TargetCriteria(
+            job_source_sha256="a" * 64,
+            criteria=[TargetCriterion(name="Support", evidence="ownership")],
+        ),
+        ranked_facts=[
+            RankedSourceFact(
+                fact_id=fact.fact_id,
+                score=score,
+                strongest_similarity=score,
+                strongest_criterion_index=0,
+            )
+            for fact, score in zip(expected.facts, (0.9, 0.8, 0.7), strict=True)
+        ],
+    )
+    matcher = MagicMock()
+    matcher.rank_source_facts = AsyncMock(
+        return_value=SourceFactRankingResult(facts=expected, ranking=ranking)
+    )
+    generator = CoverLetterGenerator(LLMConfig(language="en"), matcher=matcher)
     selected = await generator._select_source_facts(job, facts)
 
-    assert len(selected.facts) == 3
-    assert all(fact in facts.facts for fact in selected.facts)
-    assert all("SECRET_JOB_FACT" not in fact.text for fact in selected.facts)
-    assert selected.facts[0].text == "Resolved Windows support tickets."
+    assert len(selected.facts.facts) == 3
+    assert all(fact in facts.facts for fact in selected.facts.facts)
+    assert all("SECRET_JOB_FACT" not in fact.text for fact in selected.facts.facts)
+    assert selected.facts.facts[0].text == "Resolved Windows support tickets."
 
 
 async def test_cover_generation_fails_closed_for_cross_language_source() -> None:

@@ -13,19 +13,25 @@ from job_applicator.documents.cover_letter import (
     CoverLetterDraft,
     CoverLetterGenerator,
     SourceBackedSentence,
+    _application_frame,
     _GeneratedCover,
 )
 from job_applicator.documents.resume import ResumeLoader
+from job_applicator.embeddings.matching import SourceFactRankingResult
 from job_applicator.exceptions import DocumentError, LLMError, ResumeNotFoundError
 from job_applicator.models import (
     CoverLetterOverlay,
     GroundingReport,
     JobBoard,
     JobListing,
+    RankedSourceFact,
     ResumeData,
     SourceFact,
     SourceFactCatalog,
+    SourceFactRanking,
     StyleGuide,
+    TargetCriteria,
+    TargetCriterion,
     UserProfile,
 )
 
@@ -50,6 +56,26 @@ def _source_facts() -> SourceFactCatalog:
 
 def _cover_source_facts() -> SourceFactCatalog:
     return SourceFactCatalog(facts=_source_facts().facts[:3])
+
+
+def _cover_ranking_result() -> SourceFactRankingResult:
+    facts = _cover_source_facts()
+    ranking = SourceFactRanking(
+        target_criteria=TargetCriteria(
+            job_source_sha256="a" * 64,
+            criteria=[TargetCriterion(name="Source evidence", evidence="Source fact")],
+        ),
+        ranked_facts=[
+            RankedSourceFact(
+                fact_id=fact.fact_id,
+                score=score,
+                strongest_similarity=score,
+                strongest_criterion_index=0,
+            )
+            for fact, score in zip(facts.facts, (0.9, 0.8, 0.7), strict=True)
+        ],
+    )
+    return SourceFactRankingResult(facts=facts, ranking=ranking)
 
 
 def _generated_cover(text: str, resume: ResumeData) -> _GeneratedCover:
@@ -519,6 +545,24 @@ def test_cover_letter_appends_french_sign_off() -> None:
     assert "Sincerely" not in out
 
 
+def test_french_application_frame_is_independent_of_title_and_evidence_inflection() -> None:
+    job = JobListing(
+        title="Analyste réseau principal(e)",
+        company="Intact",
+        url="https://example.test/job",
+        board=JobBoard.INDEED,
+    )
+
+    opening, closing = _application_frame(job, "French")
+
+    assert opening.startswith("Je vous présente ma candidature chez Intact")
+    assert "poste suivant : Analyste réseau principal(e)" in opening
+    assert "directement de mon parcours" in opening
+    assert "poste de Analyste" not in opening
+    assert "mon projets" not in opening
+    assert closing.startswith("Ensemble, ces exemples")
+
+
 def test_cover_letter_quality_accepts_three_french_body_paragraphs() -> None:
     from job_applicator.documents.quality_eval import assess_cover_letter
 
@@ -612,7 +656,7 @@ class TestCoverLetterWithTone:
             return_value=_source_facts()
         )
         generator._select_source_facts = AsyncMock(  # type: ignore[method-assign]
-            return_value=_cover_source_facts()
+            return_value=_cover_ranking_result()
         )
 
         job = JobListing(
@@ -644,7 +688,7 @@ class TestCoverLetterWithTone:
             return_value=_source_facts()
         )
         generator._select_source_facts = AsyncMock(  # type: ignore[method-assign]
-            return_value=_cover_source_facts()
+            return_value=_cover_ranking_result()
         )
 
         job = JobListing(
@@ -675,7 +719,7 @@ class TestCoverLetterWithTone:
             return_value=_source_facts()
         )
         generator._select_source_facts = AsyncMock(  # type: ignore[method-assign]
-            return_value=_cover_source_facts()
+            return_value=_cover_ranking_result()
         )
 
         job = JobListing(
@@ -772,17 +816,19 @@ def test_cover_letter_source_citations_reject_unknown_ids() -> None:
 
 
 async def test_cover_letter_fact_selection_is_deterministic_and_source_only() -> None:
-    generator = CoverLetterGenerator(LLMConfig())
+    matcher = MagicMock()
+    matcher.rank_source_facts = AsyncMock(return_value=_cover_ranking_result())
+    generator = CoverLetterGenerator(LLMConfig(), matcher=matcher)
     job, _user, _resume = _cl_inputs()
 
     selected = await generator._select_source_facts(job, _source_facts())
 
-    assert [fact.fact_id for fact in selected.facts] == [
+    assert [fact.fact_id for fact in selected.facts.facts] == [
         "SRC-001",
         "SRC-002",
         "SRC-003",
     ]
-    assert all(fact in _source_facts().facts for fact in selected.facts)
+    assert all(fact in _source_facts().facts for fact in selected.facts.facts)
 
 
 def test_cover_letter_source_citations_reject_non_deterministic_claim() -> None:
@@ -881,7 +927,7 @@ async def test_refine_appends_sign_off() -> None:
         return_value=_source_facts()
     )
     gen._select_source_facts = AsyncMock(  # type: ignore[method-assign]
-        return_value=_cover_source_facts()
+        return_value=_cover_ranking_result()
     )
 
     job, user, resume = _cl_inputs()

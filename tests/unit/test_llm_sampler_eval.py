@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,7 +17,7 @@ from job_applicator.documents.source_facts import (
     is_substantive_source_fact,
 )
 from job_applicator.documents.source_realization import (
-    realize_cover_statement,
+    realize_cover_statements,
     realize_resume_statement,
 )
 
@@ -197,6 +198,9 @@ def test_dry_run_plans_baseline_and_qwen_sampler_env(
         "runs/sample/baseline/acme-security-r01/input-jobs.json"
     )
     assert baseline_case["effective_jobs_file"] in baseline_case["command"]
+    assert baseline_case["target_criteria_cache_dir"].endswith(
+        "runs/sample/baseline/acme-security-r01/target-criteria-cache"
+    )
     assert variants["qwen-pp12"]["cases"][0]["sampler_env"] == {
         "JOB_APPLICATOR_LLM_TOP_P": "0.8",
         "JOB_APPLICATOR_LLM_TOP_K": "20",
@@ -233,7 +237,26 @@ def test_successful_fake_batch_writes_integrity_certified_packet_manifest(
             if is_substantive_source_fact(fact)
         ]
         summary_statements = [realize_resume_statement(fact) for fact in facts[:3]]
-        cover_statements = [realize_cover_statement(fact, language="English") for fact in facts[:4]]
+        cover_statements = realize_cover_statements(facts[:3], language="English")
+        job_description = "Python Linux SIEM incident response IAM support"
+        ranking = {
+            "target_criteria": {
+                "job_source_sha256": hashlib.sha256(job_description.encode("utf-8")).hexdigest(),
+                "criteria": [{"name": "Incident response", "evidence": "incident response"}],
+                "extraction_version": "target-criteria-v4",
+            },
+            "ranked_facts": [
+                {
+                    "fact_id": fact.fact_id,
+                    "score": score,
+                    "strongest_similarity": score,
+                    "strongest_criterion_index": 0,
+                }
+                for fact, score in zip(facts[:3], (0.9, 0.8, 0.7), strict=True)
+            ],
+            "selection_focus": None,
+            "algorithm_version": "criterion-embedding-v1",
+        }
         generated_resume = source_document.with_summary(
             " ".join(statement.text for statement in summary_statements),
             language="English",
@@ -256,7 +279,8 @@ def test_successful_fake_batch_writes_integrity_certified_packet_manifest(
                         ],
                         "source_body_sha256": source_document.non_summary_sha256(),
                         "source_language": "en",
-                        "architecture_version": "source-overlay-v1",
+                        "evidence_ranking": ranking,
+                        "architecture_version": "source-overlay-v6",
                     }
                 }
             ),
@@ -271,7 +295,8 @@ def test_successful_fake_batch_writes_integrity_certified_packet_manifest(
                         ],
                         "source_body_sha256": source_document.non_summary_sha256(),
                         "source_language": "en",
-                        "architecture_version": "source-overlay-v1",
+                        "evidence_ranking": ranking,
+                        "architecture_version": "source-overlay-v6",
                     }
                 }
             ),
@@ -337,7 +362,7 @@ def test_successful_fake_batch_writes_integrity_certified_packet_manifest(
     assert packet["id"] == "acme-security-r01"
     assert packet["source_retention"]["body_digest_matches"] is True
     assert packet["source_retention"]["protected_spans_retained"] == 2
-    assert packet["cover_letter_overlay"]["architecture_version"] == "source-overlay-v1"
+    assert packet["cover_letter_overlay"]["architecture_version"] == "source-overlay-v6"
     assert packet["cover_letter_meta_path"].endswith("cover.meta.json")
     assert packet["source_job_url"] == "https://example.test/jobs/1"
     assert Path(payload["summary_path"]).is_file()
@@ -346,6 +371,11 @@ def test_successful_fake_batch_writes_integrity_certified_packet_manifest(
     assert case_payload["effective_jobs_file"] in case_payload["command"]
     assert variant["retention"]["body_digest_match_rate"] == 1.0
     assert variant["retention"]["protected_span_recall"] == 1.0
+    assert variant["evidence_ranking"]["passed"] is True
+    assert variant["evidence_ranking"]["resume_cover_alignment_rate"] == 1.0
+    assert variant["template_coherence"]["passed"] is True
+    assert payload["measurements_passed"] is True
+    assert packet["job_description"] == "Python Linux SIEM incident response IAM support"
 
 
 def test_repetitions_rotate_templates_and_expand_required_count(

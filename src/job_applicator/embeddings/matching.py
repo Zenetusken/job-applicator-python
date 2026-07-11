@@ -14,7 +14,16 @@ from typing import ParamSpec, TypeVar
 from job_applicator.config import EmbeddingConfig, LLMConfig, MatchingConfig
 from job_applicator.embeddings.service import EmbeddingService, EmbeddingVector
 from job_applicator.embeddings.skill_extraction import LLMSkillExtractor
-from job_applicator.models import JobListing, ResumeData, coverage_measured
+from job_applicator.embeddings.target_criteria import TargetCriteriaExtractor
+from job_applicator.exceptions import LLMError
+from job_applicator.models import (
+    JobListing,
+    RankedSourceFact,
+    ResumeData,
+    SourceFactCatalog,
+    SourceFactRanking,
+    coverage_measured,
+)
 from job_applicator.utils.llm import LLMRuntime
 from job_applicator.utils.logging import get_logger
 from job_applicator.utils.verbose import VerboseReporter
@@ -23,6 +32,7 @@ logger = get_logger("embeddings.matching")
 SKILL_EXTRACTION_CONCURRENCY = 4
 P = ParamSpec("P")
 T = TypeVar("T")
+SOURCE_FACT_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
 
 @dataclass
@@ -51,6 +61,14 @@ class SkillMatch:
     skill: str
     similarity: float
     matched: bool
+
+
+@dataclass(frozen=True)
+class SourceFactRankingResult:
+    """Selected source facts plus serialized evidence for their deterministic order."""
+
+    facts: SourceFactCatalog
+    ranking: SourceFactRanking
 
 
 @dataclass
@@ -82,9 +100,11 @@ class JobMatcher:
     ) -> None:
         self._config = embedding_config
         self._service = EmbeddingService(embedding_config)
+        effective_llm_config = llm_config or LLMConfig()
         self._skill_extractor = LLMSkillExtractor(
-            llm_config or LLMConfig(), grounding_mode=grounding_mode
+            effective_llm_config, grounding_mode=grounding_mode
         )
+        self._target_criteria_extractor = TargetCriteriaExtractor(effective_llm_config)
         self._runtime = runtime
         self._reporter = reporter
         self._embedding_executor = ThreadPoolExecutor(
@@ -154,6 +174,84 @@ class JobMatcher:
             Embedding vector
         """
         return self._service.embed(prefix + text if prefix else text)
+
+    async def rank_source_facts(
+        self,
+        job: JobListing,
+        candidates: SourceFactCatalog,
+        *,
+        max_facts: int = 3,
+        selection_focus: str = "",
+    ) -> SourceFactRankingResult:
+        """Rank immutable résumé facts against exact job criteria.
+
+        The model sees only the job and returns exact evidence spans. Applicant facts are then
+        ordered by deterministic embedding similarities with stable source-order tie breaking.
+        """
+
+        if max_facts != 3:
+            raise ValueError("source-overlay generation requires exactly three ranked facts")
+        if len(candidates.facts) < max_facts:
+            raise LLMError("Source-backed generation requires at least three candidate facts")
+
+        target = await self._target_criteria_extractor.extract(
+            job,
+            runtime=self._runtime or LLMRuntime.defaults(name="target-criteria"),
+        )
+        queries = [
+            SOURCE_FACT_QUERY_PREFIX + f"{criterion.name}: {criterion.evidence}"
+            for criterion in target.criteria
+        ]
+        focus = selection_focus.strip()
+        if focus:
+            queries.append(SOURCE_FACT_QUERY_PREFIX + f"User selection focus: {focus}")
+        passages = [f"{fact.context}\n{fact.text}".strip() for fact in candidates.facts]
+        vectors = await self._run_embedding_work(
+            self._service.embed_batch,
+            [*queries, *passages],
+        )
+        query_vectors = vectors[: len(queries)]
+        passage_vectors = vectors[len(queries) :]
+
+        scored: list[tuple[float, int, int, float]] = []
+        for fact_index, passage_vector in enumerate(passage_vectors):
+            similarities = [
+                self._service.similarity(query_vector, passage_vector)
+                for query_vector in query_vectors
+            ]
+            ordered = sorted(
+                enumerate(similarities),
+                key=lambda item: (-item[1], item[0]),
+            )
+            strongest_query_index, strongest_similarity = ordered[0]
+            top_values = [value for _index, value in ordered[:3]]
+            aggregate = strongest_similarity + 0.15 * (sum(top_values) / len(top_values))
+            scored.append((aggregate, fact_index, strongest_query_index, strongest_similarity))
+
+        selected = sorted(scored, key=lambda item: (-item[0], item[1]))[:max_facts]
+        selected_facts = [
+            candidates.facts[fact_index] for _score, fact_index, _query, _sim in selected
+        ]
+        ranked_facts = [
+            RankedSourceFact(
+                fact_id=candidates.facts[fact_index].fact_id,
+                score=round(score, 6),
+                strongest_similarity=round(strongest_similarity, 6),
+                strongest_criterion_index=(
+                    query_index if query_index < len(target.criteria) else None
+                ),
+            )
+            for score, fact_index, query_index, strongest_similarity in selected
+        ]
+        ranking = SourceFactRanking(
+            target_criteria=target,
+            ranked_facts=ranked_facts,
+            selection_focus=focus or None,
+        )
+        return SourceFactRankingResult(
+            facts=SourceFactCatalog(facts=selected_facts),
+            ranking=ranking,
+        )
 
     @staticmethod
     def _is_pii_or_noise(line: str, name_lower: str) -> bool:

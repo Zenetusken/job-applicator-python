@@ -58,6 +58,7 @@ if TYPE_CHECKING:
     from job_applicator.config import AppSettings
     from job_applicator.documents.resume_tailor import ResumeTailor
     from job_applicator.documents.tone_detector import ToneProfile
+    from job_applicator.embeddings.matching import JobMatcher
     from job_applicator.models import (
         GroundingReport,
         JobListing,
@@ -223,6 +224,7 @@ async def _tailor_workflow(
     reporter: VerboseReporter | None,
     yes: bool = False,
     *,
+    matcher: JobMatcher,
     output_format: Format = Format.TXT,
     resume_template: str = "modern",
     cover_letter_template: str = "modern",
@@ -389,6 +391,7 @@ async def _tailor_workflow(
                     output_format=output_format,
                     template=cover_letter_template,
                     category=category,
+                    matcher=matcher,
                 )
 
             # Write resume meta.json (with or without cover_letter_path)
@@ -411,6 +414,7 @@ async def _tailor_workflow(
                     result,
                     "",
                     job,
+                    matcher=matcher,
                     tone_profile=tone_profile,
                     style_guide=style,
                 ),
@@ -439,6 +443,7 @@ async def _tailor_workflow(
                     result,
                     user_instructions,
                     job,
+                    matcher=matcher,
                     tone_profile=tone_profile,
                     style_guide=style,
                 ),

@@ -45,94 +45,50 @@ def skip(item: str, test: str, reason: str):
 # ── TIER 2 ITEM A9: Few-shot Examples in Prompts ────────────────────────────
 
 
-def test_a9_few_shot_examples():
-    """Test that system prompts contain few-shot examples."""
-    console.print(Panel("[bold]A9: Few-shot Examples in Prompts[/]", style="cyan"))
+def test_a9_source_overlay_architecture():
+    """Test that applicant prose is no longer produced by mutable completion prompts."""
+    console.print(Panel("[bold]A9: Source Overlay Architecture[/]", style="cyan"))
 
-    # Check tailor system prompt
-    from job_applicator.documents import resume_tailor as rt_mod
+    from job_applicator.documents.cover_letter import CoverLetterGenerator
+    from job_applicator.models import CoverLetterOverlay, ResumeOverlay
 
-    tailor_prompt = rt_mod.TAILOR_SYSTEM_PROMPT
-
+    generator = CoverLetterGenerator
     report(
         "A9",
-        "tailor prompt has BEFORE/AFTER summary example",
-        "BEFORE summary" in tailor_prompt and "AFTER summary" in tailor_prompt,
+        "cover generator has no applicant prose completion stage",
+        not hasattr(generator, "_structured_completion"),
     )
     report(
         "A9",
-        "tailor prompt has BEFORE/AFTER bullet example",
-        "BEFORE bullet" in tailor_prompt and "AFTER bullet" in tailor_prompt,
+        "resume overlay uses current architecture",
+        ResumeOverlay.model_fields["architecture_version"].default == "source-overlay-v6",
     )
     report(
         "A9",
-        "tailor prompt has EXAMPLES section",
-        "EXAMPLES" in tailor_prompt or "EXAMPLE" in tailor_prompt,
+        "cover overlay uses current architecture",
+        CoverLetterOverlay.model_fields["architecture_version"].default == "source-overlay-v6",
     )
-
-    # Check cover letter system prompt
-    from job_applicator.documents import cover_letter as cl_mod
-
-    cl_prompt = cl_mod.SYSTEM_PROMPT
-
-    report(
-        "A9",
-        "cover letter prompt has opening example",
-        "opening" in cl_prompt.lower() and "example" in cl_prompt.lower(),
-    )
-    report(
-        "A9",
-        "cover letter prompt has closing example",
-        "closing" in cl_prompt.lower() and "example" in cl_prompt.lower(),
-    )
-
-    console.print(f"    tailor prompt length: {len(tailor_prompt)} chars")
-    console.print(f"    cover letter prompt length: {len(cl_prompt)} chars")
 
 
 # ── TIER 2 ITEM A8: Per-task Temperature Tuning ─────────────────────────────
 
 
 def test_a8_temperature_tuning():
-    """Test that temperature varies by task."""
-    console.print(Panel("[bold]A8: Per-task Temperature Tuning[/]", style="cyan"))
+    """Test that the only generation-side extraction is pinned to temperature zero."""
+    console.print(Panel("[bold]A8: Grounded Criteria Sampling[/]", style="cyan"))
 
-    from job_applicator.documents import resume_tailor as rt_mod
-    from job_applicator.documents import style_analyzer as sa_mod
+    from job_applicator.embeddings import target_criteria as criteria_mod
 
-    # Check tailor temperature via source inspection
-    rt_source = inspect.getsource(rt_mod)
-    sa_source = inspect.getsource(sa_mod)
-
-    # Check for temperature values in resume_tailor
+    source = inspect.getsource(criteria_mod.TargetCriteriaExtractor)
     report(
-        "A9/temp",
-        "tailor uses temperature 0.4 (default param)",
-        "temperature: float = 0.4" in rt_source or "temperature=0.4" in rt_source,
+        "A8",
+        "target criteria config is pinned to temperature zero",
+        'model_copy(update={"temperature": 0.0})' in source,
     )
-    report("A9/temp", "refine uses temperature 0.3", "temperature=0.3" in rt_source)
-    report("A9/temp", "summarize uses temperature 0.2", "temperature=0.2" in rt_source)
-
-    # Check style analyzer temperature
     report(
-        "A9/temp",
-        "style analyzer uses temperature 0.1",
-        "temperature=0.1" in sa_source or "temperature = 0.1" in sa_source,
-    )
-
-    # Verify they're different (per-task tuning)
-    temps_found = set()
-    for val in ["0.1", "0.2", "0.3", "0.4"]:
-        if f"temperature={val}" in rt_source or f"temperature: float = {val}" in rt_source:
-            temps_found.add(val)
-        if f"temperature={val}" in sa_source or f"temperature: float = {val}" in sa_source:
-            temps_found.add(val)
-
-    report(
-        "A9/temp",
-        "multiple distinct temperatures used",
-        len(temps_found) >= 3,
-        f"found={sorted(temps_found)}",
+        "A8",
+        "target criteria call overrides temperature zero",
+        "temperature=0.0" in source,
     )
 
 
@@ -143,15 +99,21 @@ async def test_c2_parallel_cover_letters():
     """Test that cover letters can be generated in parallel."""
     console.print(Panel("[bold]C2: Parallel Cover Letter Generation[/]", style="cyan"))
 
-    from job_applicator.config import LLMConfig
+    from job_applicator.config import EmbeddingConfig, LLMConfig
     from job_applicator.documents.cover_letter import CoverLetterGenerator
+    from job_applicator.embeddings.matching import JobMatcher
     from job_applicator.models import JobBoard, JobListing, ResumeData, UserProfile
 
     config = LLMConfig()
-    generator = CoverLetterGenerator(config)
+    generator = CoverLetterGenerator(config, matcher=JobMatcher(EmbeddingConfig(), config))
 
     resume = ResumeData(
-        raw_text="John Doe\njohn@example.com\nSkills: Python, FastAPI",
+        raw_text=(
+            "John Doe\njohn@example.com\n\nSUMMARY\nPython developer.\n\n"
+            "EXPERIENCE\nDeveloper | Example Co | 2020-Present\n"
+            "- Built Python APIs.\n- Maintained FastAPI services.\n\n"
+            "PROJECTS\n- Automated service tests.\n\nSKILLS\nPython, FastAPI"
+        ),
         name="John Doe",
         email="john@example.com",
         skills=["Python", "FastAPI"],
@@ -464,9 +426,11 @@ async def test_live_pipeline_tier2():
 
     resume = ResumeData(
         raw_text=(
-            "Alice Smith\nalice@example.com\n"
-            "Skills: Python, React, AWS\n"
-            "Summary: Full-stack developer"
+            "Alice Smith\nalice@example.com\n\nSUMMARY\nFull-stack developer.\n\n"
+            "EXPERIENCE\nEngineer | Example Co | 2020-Present\n"
+            "- Built Python services.\n- Developed React interfaces.\n\n"
+            "PROJECTS\n- Deployed an AWS application.\n\n"
+            "SKILLS\nPython, React, AWS"
         ),
         name="Alice Smith",
         email="alice@example.com",
@@ -486,7 +450,7 @@ async def test_live_pipeline_tier2():
     )
 
     # E3: Pre-tailor match score
-    matcher = JobMatcher(embed_config)
+    matcher = JobMatcher(embed_config, llm_config)
     match = await matcher.match_resume_to_job(resume, job)
     report("LIVE", "E3: pre-tailor match score", match.score > 0, f"score={match.score:.3f}")
 
@@ -504,7 +468,7 @@ async def test_live_pipeline_tier2():
     report("LIVE", "A8: scores populated", result.semantic_score > 0 and result.skill_score > 0)
 
     # C2: Parallel cover letter generation
-    gen = CoverLetterGenerator(llm_config)
+    gen = CoverLetterGenerator(llm_config, matcher=matcher)
     jobs_batch = [
         JobListing(
             title=f"Engineer {i}",
@@ -565,7 +529,7 @@ async def main():
     console.print("Environment: vLLM at localhost:8000, GPU available, Python 3.12\n")
 
     # Non-LLM tests (fast)
-    test_a9_few_shot_examples()
+    test_a9_source_overlay_architecture()
     test_a8_temperature_tuning()
     test_e2_batch_mode()
     test_d2_ocr_fallback()

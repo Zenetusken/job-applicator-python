@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
@@ -13,15 +13,12 @@ from job_applicator.documents.resume import ResumeLoader
 from job_applicator.documents.resume_document import ResumeDocument
 from job_applicator.documents.source_facts import (
     build_source_fact_catalog,
-    format_job_target_context,
     is_substantive_source_fact,
-    select_relevant_source_facts,
 )
 from job_applicator.documents.source_integrity import assess_source_integrity
 from job_applicator.documents.source_realization import realize_cover_statements
 from job_applicator.documents.style_analyzer import StyleAnalyzer
-from job_applicator.embeddings.skill_extraction import LLMSkillExtractor
-from job_applicator.exceptions import LLMError
+from job_applicator.exceptions import ConfigError, LLMError
 from job_applicator.models import (
     CoverLetterOverlay,
     GroundingReport,
@@ -29,6 +26,7 @@ from job_applicator.models import (
     ResumeData,
     SourceBackedStatement,
     SourceFactCatalog,
+    SourceFactRanking,
     StyleGuide,
     UserProfile,
 )
@@ -40,6 +38,9 @@ from job_applicator.utils.llm import (
 from job_applicator.utils.logging import get_logger
 
 logger = get_logger("documents.cover_letter")
+
+if TYPE_CHECKING:
+    from job_applicator.embeddings.matching import JobMatcher, SourceFactRankingResult
 
 
 class CoverLetterOutput(BaseModel):
@@ -80,6 +81,7 @@ class _GeneratedCover:
     draft: CoverLetterDraft
     source_facts: SourceFactCatalog
     language: str
+    evidence_ranking: SourceFactRanking | None = None
 
 
 def _canonical_sign_off(language: str) -> str:
@@ -90,40 +92,22 @@ def _canonical_sign_off(language: str) -> str:
 def _application_frame(
     job: JobListing,
     language: str,
-    evidence_kinds: Sequence[str],
 ) -> tuple[str, str]:
     """Return non-factual opening and closing paragraphs for the target application."""
 
-    kind_labels = {
-        "experience": ("professional experience", "expérience professionnelle"),
-        "education": ("education", "formation"),
-        "projects": ("project work", "projets"),
-    }
-    language_index = 1 if language == "French" else 0
-    fallback = ("background", "parcours")[language_index]
-    labels = [
-        kind_labels.get(kind, (fallback, fallback))[language_index] for kind in evidence_kinds
-    ]
-    conjunction = "et" if language == "French" else "and"
-    if len(labels) == 1:
-        evidence_label = labels[0]
-    elif len(labels) == 2:
-        evidence_label = f"{labels[0]} {conjunction} {labels[1]}"
-    else:
-        serial_comma = "," if language != "French" else ""
-        evidence_label = f"{', '.join(labels[:-1])}{serial_comma} {conjunction} {labels[-1]}"
     if language == "French":
         return (
-            f"Je vous présente ma candidature au poste de {job.title} chez {job.company}. "
-            f"Les exemples ci-dessous mettent en valeur les éléments de mon {evidence_label} "
-            "les plus pertinents pour ce poste.",
+            f"Je vous présente ma candidature chez {job.company} pour le poste suivant : "
+            f"{job.title}. Les exemples ci-dessous sont tirés directement de mon parcours et "
+            "mettent en valeur les éléments les plus pertinents pour ce poste.",
             "Ensemble, ces exemples donnent un aperçu concis de mon parcours pertinent. "
             "Je serais disponible pour en discuter plus en détail et pour en apprendre davantage "
             "sur les priorités du poste et les besoins de votre équipe.",
         )
     return (
-        f"I am applying for the {job.title} position at {job.company}. The examples below "
-        f"highlight the parts of my {evidence_label} most relevant to this role.",
+        f"I am applying to {job.company} for the following position: {job.title}. The examples "
+        "below are drawn directly from my resume and highlight the parts of my background most "
+        "relevant to this role.",
         "Together, these examples provide a concise view of my relevant background. I would "
         "welcome the opportunity to discuss them in more detail and learn more about the role's "
         "priorities and your team's needs.",
@@ -137,10 +121,11 @@ class CoverLetterGenerator:
         self,
         config: LLMConfig,
         runtime: LLMRuntime | None = None,
+        matcher: JobMatcher | None = None,
     ) -> None:
         self._config = config
         self._runtime = runtime or LLMRuntime.defaults(name="cover-letter")
-        self._target_skill_extractor = LLMSkillExtractor(config)
+        self._matcher = matcher
 
     async def load_style_guide(self, style_guide_path: str, ocr_mode: str = "auto") -> StyleGuide:
         """Load and analyze one or more style-guide files into a single StyleGuide.
@@ -272,29 +257,21 @@ class CoverLetterGenerator:
         job: JobListing,
         candidates: SourceFactCatalog,
         selection_focus: str = "",
-    ) -> SourceFactCatalog:
-        """Rank source facts against a grounded target profile and take the top three."""
+    ) -> SourceFactRankingResult:
+        """Rank source facts against exact job criteria and take the top three."""
 
-        target_criteria = list(job.requirements)
-        if not target_criteria:
-            target_criteria = await self._target_skill_extractor.extract(
-                format_job_target_context(job, max_description_chars=1_200),
-                runtime=self._runtime,
+        if self._matcher is None:
+            raise ConfigError(
+                "Cover-letter generation requires a configured JobMatcher for deterministic "
+                "source-evidence ranking."
             )
-        criteria_text = ", ".join(target_criteria)
-        selection_text = " ".join(part for part in (criteria_text, selection_focus.strip()) if part)
-        selection_target = job.model_copy(
-            update={"description": selection_text, "requirements": target_criteria}
-        )
-        selected = select_relevant_source_facts(
+        selected = await self._matcher.rank_source_facts(
+            job,
             candidates,
-            selection_target,
-            max_chars=8_000,
             max_facts=3,
-            relevance_order=True,
-            include_identity=False,
+            selection_focus=selection_focus,
         )
-        if len(selected.facts) != 3:
+        if len(selected.facts.facts) != 3:
             raise LLMError("Source-backed cover letters require three ranked source facts.")
         return selected
 
@@ -319,29 +296,30 @@ class CoverLetterGenerator:
                 f"{source_language}, but the requested output is {language}. Provide a {language} "
                 "source resume so generation and grounding stay in one language."
             )
-        candidates = self._cover_evidence_candidates(resume, job)
-        source_facts = await self._select_source_facts(
+        candidates = self._cover_evidence_candidates(resume)
+        selection = await self._select_source_facts(
             job,
             candidates,
             selection_focus=selection_focus,
         )
+        source_facts = selection.facts
         draft = CoverLetterDraft(
             body_facts=realize_cover_statements(source_facts.facts, language=language)
         )
         self._validate_source_fact_citations(draft, source_facts, language=language)
         primary_body = " ".join(sentence.text.strip() for sentence in draft.body_facts[:2])
         supporting_body = draft.body_facts[2].text.strip()
-        evidence_kinds = list(dict.fromkeys(fact.kind for fact in source_facts.facts))
-        opening, closing = _application_frame(job, language, evidence_kinds)
+        opening, closing = _application_frame(job, language)
         return _GeneratedCover(
             text=f"{opening}\n\n{primary_body}\n\n{supporting_body}\n\n{closing}",
             draft=draft,
             source_facts=source_facts,
             language=language,
+            evidence_ranking=selection.ranking,
         )
 
     @staticmethod
-    def _cover_evidence_candidates(resume: ResumeData, job: JobListing) -> SourceFactCatalog:
+    def _cover_evidence_candidates(resume: ResumeData) -> SourceFactCatalog:
         """Bound the substantive source evidence before grounded-criteria ranking."""
 
         catalog = build_source_fact_catalog(resume)
@@ -350,14 +328,7 @@ class CoverLetterGenerator:
         )
         if len(evidence.facts) < 3:
             raise LLMError("Source-backed cover letters require at least three primary body facts.")
-        return select_relevant_source_facts(
-            evidence,
-            job,
-            max_chars=10_000,
-            max_facts=32,
-            relevance_order=False,
-            include_identity=False,
-        )
+        return evidence
 
     async def generate(
         self,
@@ -416,6 +387,7 @@ class CoverLetterGenerator:
             body_sentences=generated.draft.body_facts,
             source_body_sha256=ResumeDocument.parse(resume.raw_text).non_summary_sha256(),
             source_language="fr" if language == "French" else "en",
+            evidence_ranking=generated.evidence_ranking,
         )
 
         logger.info(

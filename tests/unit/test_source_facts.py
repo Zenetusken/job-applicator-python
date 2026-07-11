@@ -86,6 +86,23 @@ def test_substantive_fact_filter_excludes_prior_summary_prose() -> None:
     assert is_substantive_source_fact(project)
 
 
+def test_catalog_recognizes_french_projects_as_claim_evidence() -> None:
+    resume = ResumeData(
+        raw_text=(
+            "ALEX MORGAN\n\nCOMPÉTENCES\nSIEM · Wireshark\n\nPROJETS\n"
+            "• Construit un laboratoire de cybersécurité à domicile."
+        ),
+        skills=["SIEM", "Wireshark"],
+    )
+
+    project = next(
+        fact for fact in build_source_fact_catalog(resume).facts if "laboratoire" in fact.text
+    )
+
+    assert project.kind == "projects"
+    assert is_substantive_source_fact(project)
+
+
 def test_catalog_uses_parsed_summary_and_skills_instead_of_wrapped_fragments() -> None:
     resume = ResumeData(
         raw_text=(

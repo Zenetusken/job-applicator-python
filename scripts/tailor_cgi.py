@@ -45,11 +45,12 @@ async def _cover_letter_workflow(
     resume: object,
     tone_profile: object,
     tailored_resume_text: str,
+    matcher: object,
 ) -> Path | None:
     from job_applicator.documents.cover_letter import CoverLetterGenerator
     from job_applicator.models import CoverLetterResult, CoverLetterSession
 
-    generator = CoverLetterGenerator(config)
+    generator = CoverLetterGenerator(config, matcher=matcher)
     tone_section = ""
     if tone_profile:
         from job_applicator.documents.tone_detector import ToneDetector
@@ -310,10 +311,12 @@ async def main() -> bool:
         board=JobBoard.INDEED,
     )
 
-    from job_applicator.config import LLMConfig
+    from job_applicator.config import EmbeddingConfig, LLMConfig
     from job_applicator.documents.tone_detector import ToneDetector
+    from job_applicator.embeddings.matching import JobMatcher
 
     config = LLMConfig()
+    matcher = JobMatcher(EmbeddingConfig(), config)
     tailor_engine = ResumeTailor(config)
 
     tone_detector = ToneDetector()
@@ -389,7 +392,7 @@ async def main() -> bool:
 
     try:
         with console.status("Tailoring resume with LLM..."):
-            result = await tailor_engine.tailor(resume, job, user_instructions)
+            result = await tailor_engine.tailor(resume, job, user_instructions, matcher=matcher)
         session.add_attempt(result)
     except Exception as exc:
         console.print(f"[red]LLM error: {exc}[/red]")
@@ -487,6 +490,7 @@ async def main() -> bool:
                     resume,
                     tone_profile,
                     result.tailored_text,
+                    matcher,
                 )
 
             if cover_letter_path:
@@ -504,7 +508,7 @@ async def main() -> bool:
             user_instructions = ""
             try:
                 with console.status("Tailoring resume with LLM..."):
-                    result = await tailor_engine.refine(resume, result, "", job)
+                    result = await tailor_engine.refine(resume, result, "", job, matcher=matcher)
                 result.attempt = attempt
                 session.add_attempt(result)
             except Exception as exc:
@@ -521,7 +525,9 @@ async def main() -> bool:
             user_instructions = console.input("\n[bold]Instructions: [/bold]").strip()
             try:
                 with console.status("Tailoring resume with LLM..."):
-                    result = await tailor_engine.refine(resume, result, user_instructions, job)
+                    result = await tailor_engine.refine(
+                        resume, result, user_instructions, job, matcher=matcher
+                    )
                 result.attempt = attempt
                 session.add_attempt(result)
             except Exception as exc:
@@ -620,7 +626,9 @@ async def main() -> bool:
             )
             try:
                 with console.status("Refining section..."):
-                    result = await tailor_engine.refine(resume, result, user_instructions, job)
+                    result = await tailor_engine.refine(
+                        resume, result, user_instructions, job, matcher=matcher
+                    )
                 result.attempt = attempt
                 session.add_attempt(result)
             except Exception as exc:

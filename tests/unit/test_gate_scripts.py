@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import UTC, datetime, timedelta
@@ -21,7 +22,7 @@ from job_applicator.documents.source_facts import (
     is_substantive_source_fact,
 )
 from job_applicator.documents.source_realization import (
-    realize_cover_statement,
+    realize_cover_statements,
     realize_resume_statement,
 )
 
@@ -216,20 +217,31 @@ def _write_deterministic_generated_artifacts(
         fact for fact in build_source_fact_catalog(source).facts if is_substantive_source_fact(fact)
     ]
     assert len(facts) >= 4
-    summary = " ".join(realize_resume_statement(fact).text for fact in facts[:3])
+    selected_facts = [facts[0], facts[1], facts[-1]]
+    summary = " ".join(realize_resume_statement(fact).text for fact in selected_facts)
     resume = ResumeDocument.parse(source.raw_text).with_summary(summary, language=language)
     (directory / "resume.txt").write_text(resume.render(), encoding="utf-8")
 
-    body = " ".join(realize_cover_statement(fact, language=language).text for fact in facts[:4])
+    body = " ".join(
+        statement.text for statement in realize_cover_statements(selected_facts, language=language)
+    )
     if language == "French":
-        opening = f"Veuillez accepter ma candidature au poste de {job_title} chez {company}."
+        opening = (
+            f"Veuillez accepter ma candidature au poste de {job_title} chez {company}. "
+            "Les exemples ci-dessous présentent les éléments de mon parcours les plus "
+            "pertinents pour les responsabilités et les priorités concrètes de ce poste."
+        )
         closing = (
             "Je serais disponible pour discuter de ma candidature, de ces éléments de mon "
             "parcours et des besoins du poste avec votre équipe."
         )
         sign_off = "Cordialement"
     else:
-        opening = f"Please accept my application for the {job_title} position at {company}."
+        opening = (
+            f"Please accept my application for the {job_title} position at {company}. "
+            "The examples below present the parts of my background most relevant to the "
+            "role's concrete responsibilities and day-to-day priorities."
+        )
         closing = (
             "I would welcome the opportunity to discuss my application, these details from my "
             "background, and the needs of the role with your team."
@@ -328,6 +340,11 @@ def _quality_packet_record(
         "format": "txt",
         "model": "test-model",
         "generator_version": "test-version",
+        "job_description": (
+            "Effectuer le triage des incidents et surveiller les alertes SIEM."
+            if language == "fr"
+            else "Triage incidents and monitor SIEM alerts on Linux systems."
+        ),
     }
     if generated_at is not None:
         record["generated_at"] = generated_at
@@ -360,19 +377,58 @@ def _with_overlay_evidence(tmp_path: Path, record: dict[str, object]) -> dict[st
         if str(enriched.get("language", "en")).casefold() in {"fr", "french", "français"}
         else "English"
     )
-    enriched["resume_overlay"] = {
-        "summary_sentences": [realize_resume_statement(fact).model_dump() for fact in facts[:3]],
-        "source_body_sha256": source_document.non_summary_sha256(),
-        "source_language": "fr" if language == "French" else "en",
-        "architecture_version": "source-overlay-v1",
+    selected_facts = [facts[0], facts[1], facts[-1]]
+    job_description = str(enriched["job_description"])
+    criterion_evidence = (
+        "Effectuer le triage des incidents" if language == "French" else "Triage incidents"
+    )
+    job_source = "\n".join(
+        [
+            job_description,
+            *[str(item) for item in enriched.get("job_requirements", [])],
+        ]
+    )
+    ranking = {
+        "target_criteria": {
+            "job_source_sha256": hashlib.sha256(job_source.encode("utf-8")).hexdigest(),
+            "criteria": [
+                {
+                    "name": "Triage des incidents" if language == "French" else "Incident triage",
+                    "evidence": criterion_evidence,
+                }
+            ],
+            "extraction_version": "target-criteria-v4",
+        },
+        "ranked_facts": [
+            {
+                "fact_id": fact.fact_id,
+                "score": score,
+                "strongest_similarity": score,
+                "strongest_criterion_index": 0,
+            }
+            for fact, score in zip(selected_facts, (0.9, 0.8, 0.7), strict=True)
+        ],
+        "selection_focus": None,
+        "algorithm_version": "criterion-embedding-v1",
     }
-    enriched["cover_letter_overlay"] = {
-        "body_sentences": [
-            realize_cover_statement(fact, language=language).model_dump() for fact in facts[:4]
+    enriched["resume_overlay"] = {
+        "summary_sentences": [
+            realize_resume_statement(fact).model_dump() for fact in selected_facts
         ],
         "source_body_sha256": source_document.non_summary_sha256(),
         "source_language": "fr" if language == "French" else "en",
-        "architecture_version": "source-overlay-v1",
+        "evidence_ranking": ranking,
+        "architecture_version": "source-overlay-v6",
+    }
+    enriched["cover_letter_overlay"] = {
+        "body_sentences": [
+            statement.model_dump()
+            for statement in realize_cover_statements(selected_facts, language=language)
+        ],
+        "source_body_sha256": source_document.non_summary_sha256(),
+        "source_language": "fr" if language == "French" else "en",
+        "evidence_ranking": ranking,
+        "architecture_version": "source-overlay-v6",
     }
     return enriched
 
@@ -728,6 +784,27 @@ def test_document_quality_private_packet_set_json_output(
     assert payload["packets"][0]["category"] == "support"
     assert payload["packets"][0]["language"] == "en"
     assert payload["packets"][0]["provenance"]["run_id"] == "run-acme-security"
+
+
+def test_document_quality_rejects_evidence_ranking_that_disagrees_with_citations(
+    tmp_path: Path,
+) -> None:
+    _write_quality_artifacts(tmp_path)
+    packet_set = _write_packet_set(
+        tmp_path,
+        [_quality_packet_record(packet_id="ranking-drift")],
+    )
+    record = json.loads(packet_set.read_text(encoding="utf-8"))
+    record["cover_letter_overlay"]["evidence_ranking"]["ranked_facts"][0]["fact_id"] = "SRC-999"
+    packet_set.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    report = eval_document_quality.assess_packet_set(packet_set)[0]
+
+    assert report.integrity_passed is False
+    assert any(
+        "cited facts do not match its evidence ranking" in failure
+        for failure in report.integrity_failures or []
+    )
 
 
 def test_document_quality_required_packet_set_needs_three_passing_cases(
