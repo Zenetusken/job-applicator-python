@@ -211,7 +211,7 @@ class TestCoverLetterResult:
         data = result.model_dump()
         assert "cover_letter_text" in data
         assert "created_at" in data
-        assert data["overlay"]["architecture_version"] == "source-overlay-v4"
+        assert data["overlay"]["architecture_version"] == "source-overlay-v6"
         assert len(data["overlay"]["body_sentences"]) == 3
 
 

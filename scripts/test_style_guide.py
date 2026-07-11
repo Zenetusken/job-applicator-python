@@ -2,8 +2,9 @@
 """Test style guide feature - read an example and mimic its style."""
 
 import asyncio
+import os
+import tempfile
 from pathlib import Path
-
 
 # Example of a "professional but friendly" style resume/cover letter
 EXAMPLE_STYLE_DOCUMENT = """John Smith
@@ -39,15 +40,21 @@ async def test_style_guide():
     print("=" * 70)
 
     # Save example document
-    example_path = Path("/tmp/example_style.txt")
-    example_path.write_text(EXAMPLE_STYLE_DOCUMENT)
+    descriptor, temporary_path = tempfile.mkstemp(prefix="job-applicator-style-", suffix=".txt")
+    os.close(descriptor)
+    example_path = Path(temporary_path)
+    await asyncio.to_thread(
+        example_path.write_text,
+        EXAMPLE_STYLE_DOCUMENT,
+        encoding="utf-8",
+    )
 
     print("\n[1] Example document saved")
     print(f"    Path: {example_path}")
     print(f"    Length: {len(EXAMPLE_STYLE_DOCUMENT)} chars")
 
     # Load config
-    from job_applicator.config import LLMConfig
+    from job_applicator.config import EmbeddingConfig, LLMConfig
 
     config = LLMConfig()
     print(f"\n[2] LLM Config: {config.model}")
@@ -67,9 +74,11 @@ async def test_style_guide():
     # Generate cover letter with style
     print("\n[4] Generating cover letter with style guide...")
     from job_applicator.documents.cover_letter import CoverLetterGenerator
+    from job_applicator.embeddings.matching import JobMatcher
     from job_applicator.models import JobBoard, JobListing, ResumeData, UserProfile
 
-    generator = CoverLetterGenerator(config)
+    matcher = JobMatcher(EmbeddingConfig(), config)
+    generator = CoverLetterGenerator(config, matcher=matcher)
 
     job = JobListing(
         title="Backend Engineer",
@@ -88,7 +97,15 @@ async def test_style_guide():
     )
 
     resume = ResumeData(
-        raw_text="Jane Doe\nPython developer with 5 years experience",
+        raw_text=(
+            "Jane Doe\njane.doe@email.com\n\nSUMMARY\nBackend developer.\n\n"
+            "EXPERIENCE\nBackend Engineer | Example Co | 2020-Present\n"
+            "- Built Python APIs for internal services.\n"
+            "- Maintained PostgreSQL data pipelines.\n\n"
+            "PROJECTS\n- Containerized a FastAPI service.\n\n"
+            "SKILLS\nPython, FastAPI, PostgreSQL\n\n"
+            "EDUCATION\nComputer Science Certificate | Example College | 2020"
+        ),
         skills=["Python", "FastAPI", "PostgreSQL"],
     )
 
@@ -112,7 +129,7 @@ async def test_style_guide():
         print(f"  {'✓' if ok else '✗'} {name}")
 
     # Cleanup
-    example_path.unlink(missing_ok=True)
+    await asyncio.to_thread(example_path.unlink, missing_ok=True)
 
     return all(ok for _, ok in checks)
 

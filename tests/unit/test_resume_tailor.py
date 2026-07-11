@@ -165,7 +165,7 @@ async def test_tailor_applies_only_overlay_and_populates_scores(
     result = await tailor.tailor(sample_resume, sample_job, matcher=_matcher(sample_job))
 
     assert result.overlay == overlay
-    assert result.prompt_version == "source-overlay-v4"
+    assert result.prompt_version == "source-overlay-v6"
     assert result.match_score == pytest.approx(0.72)
     assert result.grounding_report is not None and result.grounding_report.clean
     assert ResumeDocument.parse(result.tailored_text).non_summary_sha256() == (
@@ -328,4 +328,4 @@ def test_tailored_resume_overlay_round_trip(sample_resume: ResumeData) -> None:
     restored = TailoredResume.model_validate_json(result.model_dump_json())
     assert restored.overlay == result.overlay
     assert restored.overlay is not None
-    assert restored.overlay.architecture_version == "source-overlay-v4"
+    assert restored.overlay.architecture_version == "source-overlay-v6"

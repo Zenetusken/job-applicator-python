@@ -30,6 +30,7 @@ _SECTION_ALIASES: dict[str, SourceFactKind] = {
     "competences": "skills",
     "core competencies": "skills",
     "projects": "projects",
+    "projets": "projects",
     "projects & home lab": "projects",
     "project experience": "projects",
     "professional experience": "experience",

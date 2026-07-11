@@ -380,6 +380,64 @@ class SourceFactCatalog(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class TargetCriterion(BaseModel):
+    """One role criterion grounded by an exact evidence span in the job source."""
+
+    name: str = Field(min_length=1)
+    evidence: str = Field(min_length=1)
+
+    model_config = {"extra": "forbid"}
+
+
+class TargetCriteria(BaseModel):
+    """Job-only retrieval criteria and the digest of the text that grounds them."""
+
+    job_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    criteria: list[TargetCriterion] = Field(min_length=1, max_length=6)
+    extraction_version: str = "target-criteria-v4"
+
+    model_config = {"extra": "forbid"}
+
+
+class RankedSourceFact(BaseModel):
+    """One selected source fact with deterministic criterion-similarity evidence."""
+
+    fact_id: str
+    score: float = Field(ge=-1.15, le=1.15)
+    strongest_similarity: float = Field(ge=-1.0, le=1.0)
+    strongest_criterion_index: int | None = Field(default=None, ge=0)
+
+    model_config = {"extra": "forbid"}
+
+
+class SourceFactRanking(BaseModel):
+    """Serializable evidence for deterministic source-fact selection."""
+
+    target_criteria: TargetCriteria
+    ranked_facts: list[RankedSourceFact] = Field(min_length=3, max_length=3)
+    selection_focus: str | None = None
+    algorithm_version: str = "criterion-embedding-v1"
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def validate_ranking(self) -> SourceFactRanking:
+        fact_ids = [item.fact_id for item in self.ranked_facts]
+        if len(set(fact_ids)) != len(fact_ids):
+            raise ValueError("ranked source facts must be distinct")
+        scores = [item.score for item in self.ranked_facts]
+        if scores != sorted(scores, reverse=True):
+            raise ValueError("ranked source facts must be ordered by descending score")
+        criterion_count = len(self.target_criteria.criteria)
+        if any(
+            item.strongest_criterion_index is not None
+            and item.strongest_criterion_index >= criterion_count
+            for item in self.ranked_facts
+        ):
+            raise ValueError("ranked source fact references an unknown target criterion")
+        return self
+
+
 class SourceBackedStatement(BaseModel):
     """One generated statement and the source fact IDs that entail it."""
 
@@ -395,7 +453,8 @@ class ResumeOverlay(BaseModel):
     summary_sentences: list[SourceBackedStatement] = Field(min_length=3, max_length=3)
     source_body_sha256: str
     source_language: Literal["en", "fr"]
-    architecture_version: str = "source-overlay-v4"
+    evidence_ranking: SourceFactRanking | None = None
+    architecture_version: str = "source-overlay-v6"
 
     model_config = {"extra": "forbid"}
 
@@ -415,7 +474,8 @@ class CoverLetterOverlay(BaseModel):
     body_sentences: list[SourceBackedStatement] = Field(min_length=3, max_length=4)
     source_body_sha256: str
     source_language: Literal["en", "fr"]
-    architecture_version: str = "source-overlay-v4"
+    evidence_ranking: SourceFactRanking | None = None
+    architecture_version: str = "source-overlay-v6"
 
     model_config = {"extra": "forbid"}
 
@@ -424,7 +484,12 @@ class CoverLetterOverlay(BaseModel):
         if any(len(sentence.fact_ids) != 1 for sentence in self.body_sentences):
             raise ValueError("each cover-letter sentence must cite exactly one source fact")
         cited = [sentence.fact_ids[0] for sentence in self.body_sentences]
-        expected = 3 if self.architecture_version == "source-overlay-v4" else 4
+        expected = (
+            3
+            if self.architecture_version
+            in {"source-overlay-v4", "source-overlay-v5", "source-overlay-v6"}
+            else 4
+        )
         if len(cited) != expected or len(set(cited)) != expected:
             raise ValueError(
                 f"{self.architecture_version} cover-letter sentences must cite "

@@ -2,7 +2,9 @@
 """End-to-end test of the job applicator pipeline."""
 
 import asyncio
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 # Add src to path
@@ -17,7 +19,7 @@ async def test_e2e():
 
     # Step 1: Load Configuration
     print("\n[1/6] Loading configuration...")
-    from job_applicator.config import AppSettings, LLMConfig
+    from job_applicator.config import EmbeddingConfig, LLMConfig
 
     config = LLMConfig()
     print(f"  Model: {config.model}")
@@ -27,7 +29,6 @@ async def test_e2e():
     # Step 2: Parse Resume
     print("\n[2/6] Parsing resume...")
     from job_applicator.documents.resume import ResumeLoader
-    from job_applicator.models import ResumeData
 
     # Create a test resume file
     resume_content = """John Doe
@@ -50,8 +51,10 @@ Python Developer | CodeBase Corp | 2019-2021
 - Implemented CI/CD pipelines
 """
 
-    resume_path = Path("/tmp/test_resume.txt")
-    resume_path.write_text(resume_content)
+    descriptor, temporary_path = tempfile.mkstemp(prefix="job-applicator-e2e-", suffix=".txt")
+    os.close(descriptor)
+    resume_path = Path(temporary_path)
+    await asyncio.to_thread(resume_path.write_text, resume_content, encoding="utf-8")
 
     loader = ResumeLoader()
     resume = loader.load(resume_path)
@@ -101,8 +104,10 @@ Python Developer | CodeBase Corp | 2019-2021
     # Step 4: Generate Cover Letter (LLM)
     print("\n[4/6] Generating cover letter with AI...")
     from job_applicator.documents.cover_letter import CoverLetterGenerator
+    from job_applicator.embeddings.matching import JobMatcher
 
-    generator = CoverLetterGenerator(config)
+    matcher = JobMatcher(EmbeddingConfig(), config)
+    generator = CoverLetterGenerator(config, matcher=matcher)
 
     try:
         cover_letter = await generator.generate(job, user, resume)
@@ -165,7 +170,7 @@ Python Developer | CodeBase Corp | 2019-2021
         print("\n✗ SOME TESTS FAILED")
 
     # Cleanup
-    resume_path.unlink(missing_ok=True)
+    await asyncio.to_thread(resume_path.unlink, missing_ok=True)
 
     return all_passed
 

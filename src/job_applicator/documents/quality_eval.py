@@ -8,6 +8,7 @@ local manifest that is not committed to the repo.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -171,6 +172,8 @@ class SourceRetentionQualityReport:
     missing_protected_spans: list[str]
     overlay_checked: bool
     cover_overlay_checked: bool
+    evidence_ranking_checked: bool
+    evidence_ranking_aligned: bool
     failures: list[str]
 
 
@@ -417,6 +420,7 @@ def _assess_source_retention(
     protected_spans: list[str],
     overlay_payload: dict[str, Any] | None,
     cover_overlay_payload: dict[str, Any] | None,
+    job_source_text: str,
     required: bool,
 ) -> SourceRetentionQualityReport:
     failures: list[str] = []
@@ -431,6 +435,8 @@ def _assess_source_retention(
             missing_protected_spans=protected_spans,
             overlay_checked=False,
             cover_overlay_checked=False,
+            evidence_ranking_checked=False,
+            evidence_ranking_aligned=False,
             failures=["missing source resume evidence"] if required else [],
         )
 
@@ -448,6 +454,8 @@ def _assess_source_retention(
             missing_protected_spans=protected_spans,
             overlay_checked=False,
             cover_overlay_checked=False,
+            evidence_ranking_checked=False,
+            evidence_ranking_aligned=False,
             failures=[f"cannot compare canonical résumé sections: {exc}"],
         )
 
@@ -531,6 +539,8 @@ def _assess_source_retention(
                 "source-overlay-v2",
                 "source-overlay-v3",
                 "source-overlay-v4",
+                "source-overlay-v5",
+                "source-overlay-v6",
             }:
                 expected = [
                     statement.text
@@ -553,6 +563,50 @@ def _assess_source_retention(
             if any(position < 0 for position in positions) or positions != sorted(positions):
                 failures.append("cover-letter text does not match overlay provenance")
 
+    ranking_checked = False
+    ranking_aligned = False
+    if overlay is not None and cover_overlay is not None:
+        current_architecture = (
+            overlay.architecture_version == "source-overlay-v6"
+            and cover_overlay.architecture_version == "source-overlay-v6"
+        )
+        if not current_architecture:
+            failures.append(
+                "required evidence uses a legacy overlay without deterministic ranking provenance"
+            )
+        elif overlay.evidence_ranking is None or cover_overlay.evidence_ranking is None:
+            failures.append("missing deterministic evidence-ranking provenance")
+        elif not job_source_text.strip():
+            failures.append("missing job source text for target-criteria verification")
+        else:
+            ranking_checked = True
+            expected_job_digest = hashlib.sha256(job_source_text.encode("utf-8")).hexdigest()
+            resume_ranking = overlay.evidence_ranking
+            cover_ranking = cover_overlay.evidence_ranking
+            rankings = (("résumé", resume_ranking), ("cover letter", cover_ranking))
+            for label, ranking in rankings:
+                if ranking.target_criteria.job_source_sha256 != expected_job_digest:
+                    failures.append(f"{label} target-criteria digest does not match the job source")
+                for criterion in ranking.target_criteria.criteria:
+                    normalized_evidence = re.sub(r"\s+", " ", criterion.evidence.casefold()).strip()
+                    normalized_source = re.sub(r"\s+", " ", job_source_text.casefold()).strip()
+                    if normalized_evidence not in normalized_source:
+                        failures.append(
+                            f"{label} target criterion is absent from the job source: "
+                            f"{criterion.evidence}"
+                        )
+                cited_ids = (
+                    [sentence.fact_ids[0] for sentence in overlay.summary_sentences]
+                    if label == "résumé"
+                    else [sentence.fact_ids[0] for sentence in cover_overlay.body_sentences]
+                )
+                ranked_ids = [item.fact_id for item in ranking.ranked_facts]
+                if ranked_ids != cited_ids:
+                    failures.append(f"{label} cited facts do not match its evidence ranking")
+            ranking_aligned = resume_ranking == cover_ranking
+            if not ranking_aligned:
+                failures.append("résumé and cover-letter evidence rankings are not aligned")
+
     return SourceRetentionQualityReport(
         source_checked=True,
         body_digest_matches=body_matches,
@@ -563,6 +617,8 @@ def _assess_source_retention(
         missing_protected_spans=missing_spans,
         overlay_checked=overlay is not None,
         cover_overlay_checked=cover_overlay is not None,
+        evidence_ranking_checked=ranking_checked,
+        evidence_ranking_aligned=ranking_aligned,
         failures=failures,
     )
 
@@ -1102,6 +1158,14 @@ def assess_packet_case(
         _case_value(case, "protected_spans"),
         field="protected_spans",
     )
+    keywords, job_description = _case_keywords(case, base_dir=base_dir)
+    job_requirements = _as_text_list(
+        _case_value(case, "job_requirements", "requirements"),
+        field="job_requirements",
+    )
+    job_source_text = "\n".join(
+        part for part in (job_description.strip(), *job_requirements) if part
+    )
     source_retention = _assess_source_retention(
         source=source_resume,
         generated_resume=resume_text,
@@ -1117,6 +1181,7 @@ def assess_packet_case(
             base_dir=base_dir,
             cover_path=cover_path,
         ),
+        job_source_text=job_source_text,
         required=require_source_evidence,
     )
     generated_at, generated_at_source = _case_generated_at(
@@ -1127,7 +1192,6 @@ def assess_packet_case(
     applicant_name = str(_case_value(case, "applicant_name", "profile_name") or "")
     job_title = str(_case_value(case, "job_title", "title") or "")
     company = str(_case_value(case, "company", "employer") or "")
-    keywords, _job_description = _case_keywords(case, base_dir=base_dir)
     coherence_terms = _case_coherence_terms(case, keywords=keywords)
     declared_language = _normalize_language_label(_case_value(case, "language"))
     case_min_dimension_score = float(

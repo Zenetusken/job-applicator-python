@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock
+
 from job_applicator.config import LLMConfig
 from job_applicator.documents.resume_document import ResumeDocument
 from job_applicator.documents.resume_overlay import (
     ResumeOverlayGenerator,
     _substantive_candidates,
 )
+from job_applicator.embeddings.matching import SourceFactRankingResult
 from job_applicator.models import (
     ExperienceEntry,
     JobBoard,
     JobListing,
+    RankedSourceFact,
     ResumeData,
+    SourceFactRanking,
+    TargetCriteria,
+    TargetCriterion,
 )
 from job_applicator.utils.llm import LLMRuntime
 
@@ -73,18 +80,44 @@ def _generator() -> ResumeOverlayGenerator:
     )
 
 
+def _matcher(candidates):
+    selected = type(candidates)(facts=candidates.facts[:3])
+    ranking = SourceFactRanking(
+        target_criteria=TargetCriteria(
+            job_source_sha256="a" * 64,
+            criteria=[TargetCriterion(name="Windows support", evidence="Windows users")],
+        ),
+        ranked_facts=[
+            RankedSourceFact(
+                fact_id=fact.fact_id,
+                score=score,
+                strongest_similarity=score,
+                strongest_criterion_index=0,
+            )
+            for fact, score in zip(selected.facts, (0.9, 0.8, 0.7), strict=True)
+        ],
+    )
+    matcher = MagicMock()
+    matcher.rank_source_facts = AsyncMock(
+        return_value=SourceFactRankingResult(facts=selected, ranking=ranking)
+    )
+    return matcher
+
+
 async def test_generate_changes_only_summary_and_records_provenance() -> None:
     resume = _resume()
     job = _job()
     generator = _generator()
-    candidates = _substantive_candidates(resume, job)
-    selected = (await generator._select(job, candidates)).facts
+    candidates = _substantive_candidates(resume)
+    matcher = _matcher(candidates)
+    selected = (await generator._select(job, candidates, matcher)).facts.facts
     tailored, overlay = await generator.generate(
         resume=resume,
         job=job,
         language="English",
         style_guide=None,
         user_instructions="Use a direct voice",
+        matcher=matcher,
     )
 
     source_document = ResumeDocument.parse(resume.raw_text)
@@ -101,14 +134,16 @@ async def test_selection_uses_grounded_criteria_but_realization_excludes_context
     resume = _resume()
     job = _job()
     generator = _generator()
-    candidates = _substantive_candidates(resume, job)
-    selected = (await generator._select(job, candidates)).facts
+    candidates = _substantive_candidates(resume)
+    matcher = _matcher(candidates)
+    selected = (await generator._select(job, candidates, matcher)).facts.facts
     _tailored, overlay = await generator.generate(
         resume=resume,
         job=job,
         language="English",
         style_guide=None,
         user_instructions="",
+        matcher=matcher,
     )
 
     assert [statement.text for statement in overlay.summary_sentences] == [
@@ -125,19 +160,18 @@ async def test_selection_returns_three_distinct_source_facts() -> None:
     resume = _resume()
     job = _job()
     generator = _generator()
-    candidates = _substantive_candidates(resume, job)
-    selected = await generator._select(job, candidates)
+    candidates = _substantive_candidates(resume)
+    selected = await generator._select(job, candidates, _matcher(candidates))
 
-    assert len(selected.facts) == 3
-    assert len({fact.fact_id for fact in selected.facts}) == 3
-    assert all(fact in candidates.facts for fact in selected.facts)
+    assert len(selected.facts.facts) == 3
+    assert len({fact.fact_id for fact in selected.facts.facts}) == 3
+    assert all(fact in candidates.facts for fact in selected.facts.facts)
 
 
 def test_summary_realization_preserves_selected_fact_text() -> None:
     resume = _resume()
-    job = _job()
     generator = _generator()
-    candidates = _substantive_candidates(resume, job)
+    candidates = _substantive_candidates(resume)
     selected = candidates.facts[:3]
     statements = generator._realize_summary(type(candidates)(facts=selected))
 

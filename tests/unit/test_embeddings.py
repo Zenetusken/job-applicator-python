@@ -14,7 +14,15 @@ from job_applicator.embeddings.matching import JobMatcher
 from job_applicator.embeddings.service import EmbeddingService
 from job_applicator.embeddings.skill_extraction import LLMSkillExtractor, _ExtractionResult
 from job_applicator.exceptions import ConfigError
-from job_applicator.models import ResumeData
+from job_applicator.models import (
+    JobBoard,
+    JobListing,
+    ResumeData,
+    SourceFact,
+    SourceFactCatalog,
+    TargetCriteria,
+    TargetCriterion,
+)
 
 
 class TestEmbeddingConfig:
@@ -426,6 +434,100 @@ class TestJobMatcher:
         assert result.score == 0.85
         assert result.matched_skills == ["Python"]
         assert result.summary == "Strong match"
+
+    async def test_source_fact_ranking_uses_grounded_criteria_and_stable_ties(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        matcher = JobMatcher(
+            EmbeddingConfig(device="cpu", memory_limit_gb=0.5),
+            LLMConfig(model="test"),
+        )
+        job = JobListing(
+            title="Support Analyst",
+            company="Target Corp",
+            url="https://example.test/job",
+            description="Triage incidents and troubleshoot Windows workstations.",
+            board=JobBoard.INDEED,
+        )
+        target = TargetCriteria(
+            job_source_sha256="a" * 64,
+            criteria=[
+                TargetCriterion(name="Incident triage", evidence="Triage incidents"),
+                TargetCriterion(
+                    name="Windows troubleshooting",
+                    evidence="troubleshoot Windows workstations",
+                ),
+            ],
+        )
+        matcher._target_criteria_extractor.extract = AsyncMock(return_value=target)
+        monkeypatch.setattr(
+            matcher._service,
+            "embed_batch",
+            lambda texts: list(texts),
+        )
+
+        def similarity(query: str, passage: str) -> float:
+            if "Incident triage" in query and "Triaged support incidents" in passage:
+                return 0.90
+            if "Windows troubleshooting" in query and "Resolved Windows issues" in passage:
+                return 0.88
+            if "Incident triage" in query and "Resolved Windows issues" in passage:
+                return 0.40
+            if "Windows troubleshooting" in query and "Triaged support incidents" in passage:
+                return 0.35
+            if "Sold software subscriptions" in passage:
+                return 0.10
+            return 0.20
+
+        monkeypatch.setattr(matcher._service, "similarity", similarity)
+        facts = SourceFactCatalog(
+            facts=[
+                SourceFact(
+                    fact_id="SRC-001",
+                    kind="experience",
+                    context="Support Analyst | Acme",
+                    text="Triaged support incidents.",
+                    claim_eligible=True,
+                ),
+                SourceFact(
+                    fact_id="SRC-002",
+                    kind="experience",
+                    context="Support Analyst | Acme",
+                    text="Resolved Windows issues.",
+                    claim_eligible=True,
+                ),
+                SourceFact(
+                    fact_id="SRC-003",
+                    kind="experience",
+                    context="Sales | Other",
+                    text="Sold software subscriptions.",
+                    claim_eligible=True,
+                ),
+                SourceFact(
+                    fact_id="SRC-004",
+                    kind="education",
+                    context="College",
+                    text="Completed technical coursework.",
+                    claim_eligible=True,
+                ),
+            ]
+        )
+
+        result = await matcher.rank_source_facts(job, facts, max_facts=3)
+
+        assert [fact.fact_id for fact in result.facts.facts] == [
+            "SRC-001",
+            "SRC-002",
+            "SRC-004",
+        ]
+        assert result.ranking.target_criteria == target
+        assert [item.fact_id for item in result.ranking.ranked_facts] == [
+            "SRC-001",
+            "SRC-002",
+            "SRC-004",
+        ]
+        assert result.ranking.ranked_facts[0].strongest_criterion_index == 0
+        assert result.ranking.ranked_facts[1].strongest_criterion_index == 1
 
     async def test_skill_matching_structure(self) -> None:
         """Test skill matching returns correct structure."""

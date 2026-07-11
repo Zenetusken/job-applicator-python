@@ -8,9 +8,10 @@
 `scripts/eval_document_quality.py` remains a compatibility wrapper for script-based gates and
 supports the same scoring logic.
 
-For criteria-extraction and transport sampler measurement, use `scripts/eval_llm_sampler.py` as the
-experiment harness. It generates fresh private packet manifests per sampler variant, then certifies
-them through this evaluator and reports baseline-relative score deltas. Applicant claim prose is
+For criteria-extraction, ranking-repeatability, and rendered-template measurement, use
+`scripts/eval_llm_sampler.py` as the experiment harness. It generates fresh private packet
+manifests per sampler variant, certifies them through this evaluator, and reports both
+baseline-relative score deltas and held-out deterministic measurements. Applicant claim prose is
 deterministic and is not sampler-tuned. See `docs/llm-sampler-eval.md`.
 
 The private packet set is local data and should not be committed. The default path is:
@@ -96,6 +97,8 @@ relative to the manifest file unless they are absolute.
       "applicant_name": "John Doe",
       "job_title": "Security Analyst",
       "company": "Acme",
+      "job_description": "Monitor security events and triage suspicious activity.",
+      "job_requirements": ["Use a SIEM to investigate alerts."],
       "keywords": ["Python", "Linux", "SIEM", "incident response", "IAM"],
       "coherence_terms": ["Python", "Linux", "SIEM", "incident response"],
       "category": "support",
@@ -106,7 +109,7 @@ relative to the manifest file unless they are absolute.
       "template": "modern",
       "format": "txt",
       "model": "Qwen/Qwen3-8B-AWQ",
-      "generator_version": "0.5.0"
+      "generator_version": "job-applicator-0.5.0+source-overlay-v6"
     }
   ]
 }
@@ -124,8 +127,11 @@ Required integrity certification also requires `source_resume_path` (aliases:
 Cover-letter metadata may be inline as `cover_letter_overlay`, supplied through
 `cover_letter_meta_path`, or read from its adjacent `.meta.json`.
 The evaluator independently recomputes the source and generated non-summary digests and checks the
-declared statements, citations, and deterministic realizations. It never trusts
-a manifest's precomputed retention boolean as the certification decision.
+declared statements, citations, and deterministic realizations. Current required evidence must use
+`source-overlay-v6`; the evaluator recomputes the job-source digest, verifies every criterion's
+exact evidence span, confirms that ranked fact IDs equal cited fact IDs, and requires the résumé and
+cover-letter rankings to align. It never trusts a manifest's precomputed retention boolean as the
+certification decision.
 
 Optional fields:
 
@@ -139,6 +145,7 @@ Optional fields:
 - `cover_letter_meta_path` / `cover_metadata_path`
 - `cover_letter_overlay` / `cover_overlay`
 - `protected_spans`
+- `job_requirements` / `requirements`
 - `coherence_terms` / `shared_terms`
 - `min_dimension_score` / `dimension_floor`
 - `min_overall_score` / `overall_floor`
@@ -163,6 +170,26 @@ honestly claim unless the case is explicitly testing that those terms stay absen
 Use `coherence_terms` when the packet should distinguish broad job specificity from the smaller
 set of narrative terms that must appear in both the CV and cover letter. If omitted, the coherence
 dimension uses `keywords`.
+
+## Evidence Ranking
+
+Target extraction and applicant evidence are intentionally separated:
+
+1. `TargetCriteriaExtractor` receives only the job description and requirements. At temperature
+   zero it returns four to six concrete responsibilities or tools with one exact, contiguous job
+   evidence span each. Company boilerplate, location, schedule, compensation, education, years of
+   experience, and generic traits are excluded.
+2. The result is bound to the SHA-256 digest of that job text and cached by endpoint, model,
+   extraction version, request shape, and digest. A span that is absent after whitespace
+   normalization is rejected.
+3. `JobMatcher.rank_source_facts()` embeds each criterion and every substantive immutable source
+   fact with mxbai. `criterion-embedding-v1` scores each fact from its strongest criterion plus a
+   small mean-of-top-three contribution, then resolves equal scores in source order.
+4. Exactly three facts are selected. The résumé and cover letter consume the same ranking contract,
+   and both sidecars serialize criteria, scores, strongest-criterion indexes, and fact IDs.
+
+This is retrieval, not prose generation. A weak applicant-role match may correctly produce a low
+manual usefulness or specificity score; it must not be hidden by inventing a closer claim.
 
 ## Scores
 
@@ -208,7 +235,9 @@ Default bars:
 - generated packets older than `14` days are stale
 
 The automated scores detect obvious regressions; the manual sidecar records the judgment needed to
-qualify prose. Neither layer is allowed to impersonate the other.
+qualify prose. Neither layer is allowed to impersonate the other. Consequently, JSON can report
+`passed=false` for lexical diagnostics while `certified=true` when deterministic integrity and the
+independent prose-review contract both pass; required-mode exit status follows certification.
 
 When updating a private packet, run the gate in required JSON mode and inspect both the score and
 the prose:
@@ -223,6 +252,12 @@ job-applicator document-quality --private-packet-set --required --min-cases 15 \
 ```
 
 The generated résumé and cover letter must both have valid deterministic source overlays.
+
+For promotion, fix the case cohort and packet-selection rule before opening artifacts. Generate
+fresh source-aware packets, require the sampler's held-out measurements to pass, review every
+selected packet, certify the candidate manifest, back up the current private manifest, and only
+then copy the candidate manifest and review sidecar into the default paths. Do not hand-edit a
+generated document or add output-specific repair rules to make a packet pass.
 
 ## Gold Standards
 

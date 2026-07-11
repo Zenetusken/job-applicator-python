@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -35,10 +36,11 @@ from job_applicator.config import AppSettings
 from job_applicator.documents.quality_eval import assess_packet_set, certify_packet_set
 from job_applicator.documents.resume import ResumeLoader
 from job_applicator.documents.resume_document import ResumeDocument, protected_span_recall
+from job_applicator.embeddings.target_criteria import TARGET_CRITERIA_CACHE_ENV
 
 DEFAULT_CASES_FILE = Path("~/.job-applicator/document-quality-eval/sampler-cases.jsonl")
 DEFAULT_OUTPUT_ROOT = Path("~/.job-applicator/document-quality-eval/sampler-runs")
-GENERATOR_VERSION = f"job-applicator-{__version__}+source-overlay-v4"
+GENERATOR_VERSION = f"job-applicator-{__version__}+source-overlay-v6"
 SAMPLER_ENV_KEYS = (
     "JOB_APPLICATOR_LLM_TEMPERATURE",
     "JOB_APPLICATOR_LLM_TOP_P",
@@ -49,6 +51,8 @@ SAMPLER_ENV_KEYS = (
 )
 DIMENSIONS = ("usefulness", "specificity", "coherence", "writing_quality", "formatting_polish")
 ROTATING_TEMPLATES = ("modern", "classic", "minimal")
+MIN_PDF_TEXT_RETENTION = 0.99
+MAX_RESUME_PAGES = 3
 
 
 @dataclass(frozen=True)
@@ -506,6 +510,7 @@ def _variant_env(variant: SamplerVariant, *, output_dir: Path) -> dict[str, str]
         env.pop(key, None)
     env.update(variant.env_overrides)
     env["JOB_APPLICATOR_OUTPUT_DIR"] = str(output_dir)
+    env[TARGET_CRITERIA_CACHE_ENV] = str(output_dir / "target-criteria-cache")
     env.setdefault("NO_COLOR", "1")
     env.setdefault("COLUMNS", "200")
     return env
@@ -556,8 +561,11 @@ def _packet_record(
     }
     if case.keywords:
         packet["keywords"] = case.keywords
-    elif job_description:
+    if job_description:
         packet["job_description"] = job_description
+    job_requirements = _as_text_list(job.get("requirements"), field="requirements")
+    if job_requirements:
+        packet["job_requirements"] = job_requirements
     if case.coherence_terms:
         packet["coherence_terms"] = case.coherence_terms
     if case.protected_spans:
@@ -654,6 +662,254 @@ def _retention_payload(packets: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _base_packet_id(packet_id: str) -> str:
+    return re.sub(r"-r\d{2}$", "", packet_id)
+
+
+def _file_sha256(path: str) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _ranking_signature(packet: dict[str, Any], overlay_key: str) -> tuple[Any, ...] | None:
+    overlay = packet.get(overlay_key)
+    if not isinstance(overlay, dict):
+        return None
+    ranking = overlay.get("evidence_ranking")
+    if not isinstance(ranking, dict):
+        return None
+    ranked_facts = ranking.get("ranked_facts")
+    target_criteria = ranking.get("target_criteria")
+    if not isinstance(ranked_facts, list) or not isinstance(target_criteria, dict):
+        return None
+    fact_ids = tuple(
+        str(item.get("fact_id"))
+        for item in ranked_facts
+        if isinstance(item, dict) and item.get("fact_id")
+    )
+    criteria = target_criteria.get("criteria")
+    if not isinstance(criteria, list):
+        return None
+    criteria_signature = tuple(
+        (str(item.get("name")), str(item.get("evidence")))
+        for item in criteria
+        if isinstance(item, dict)
+    )
+    return (
+        fact_ids,
+        str(target_criteria.get("job_source_sha256") or ""),
+        criteria_signature,
+        str(ranking.get("algorithm_version") or ""),
+    )
+
+
+def _pdf_page_count(path: str) -> int:
+    completed = subprocess.run(
+        ["/usr/bin/pdfinfo", path],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    match = re.search(r"^Pages:\s+(\d+)$", completed.stdout, re.MULTILINE)
+    if match is None:
+        raise ValueError(f"pdfinfo did not report a page count for {path}")
+    return int(match.group(1))
+
+
+def _pdf_text_retention(text_path: str, pdf_path: str) -> float:
+    completed = subprocess.run(
+        ["/usr/bin/pdftotext", "-layout", pdf_path, "-"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    expected = re.findall(
+        r"[A-Za-zÀ-ÿ0-9]+",
+        Path(text_path).read_text(encoding="utf-8").casefold(),
+    )
+    rendered = re.findall(r"[A-Za-zÀ-ÿ0-9]+", completed.stdout.casefold())
+    if not expected:
+        return 0.0
+    expected_counts = Counter(expected)
+    rendered_counts = Counter(rendered)
+    retained = sum(min(count, rendered_counts[token]) for token, count in expected_counts.items())
+    return retained / len(expected)
+
+
+def _heldout_measurements(
+    packets: list[dict[str, Any]],
+    *,
+    require_template_rotation: bool,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Measure ranking determinism and rendered-template coherence without judging prose."""
+
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for packet in packets:
+        groups[_base_packet_id(str(packet.get("id") or "packet"))].append(packet)
+
+    cases: list[dict[str, Any]] = []
+    layout_errors: list[str] = []
+    all_layouts: list[dict[str, Any]] = []
+    for case_id, group in sorted(groups.items()):
+        group.sort(key=lambda packet: str(packet.get("id") or ""))
+        resume_signatures = [_ranking_signature(packet, "resume_overlay") for packet in group]
+        cover_signatures = [_ranking_signature(packet, "cover_letter_overlay") for packet in group]
+        ranking_complete = all(signature is not None for signature in resume_signatures) and all(
+            signature is not None for signature in cover_signatures
+        )
+        selection_stable = (
+            ranking_complete
+            and len({signature[0] for signature in resume_signatures if signature is not None}) == 1
+        )
+        criteria_stable = (
+            ranking_complete
+            and len({signature[1:] for signature in resume_signatures if signature is not None})
+            == 1
+        )
+        resume_cover_aligned = ranking_complete and all(
+            resume == cover
+            for resume, cover in zip(resume_signatures, cover_signatures, strict=True)
+        )
+        resume_hashes = {
+            _file_sha256(str(packet["resume_path"]))
+            for packet in group
+            if packet.get("resume_path")
+        }
+        cover_hashes = {
+            _file_sha256(str(packet["cover_letter_path"]))
+            for packet in group
+            if packet.get("cover_letter_path")
+        }
+        text_stable = len(resume_hashes) == 1 and len(cover_hashes) == 1
+        layouts: list[dict[str, Any]] = []
+        for packet in group:
+            resume_pdf = packet.get("resume_pdf_path")
+            cover_pdf = packet.get("cover_letter_pdf_path")
+            if not isinstance(resume_pdf, str) or not isinstance(cover_pdf, str):
+                continue
+            try:
+                layout = {
+                    "packet_id": packet["id"],
+                    "template": packet.get("template"),
+                    "resume_pages": _pdf_page_count(resume_pdf),
+                    "cover_pages": _pdf_page_count(cover_pdf),
+                    "resume_pdf_text_retention": round(
+                        _pdf_text_retention(str(packet["resume_path"]), resume_pdf), 4
+                    ),
+                    "cover_pdf_text_retention": round(
+                        _pdf_text_retention(str(packet["cover_letter_path"]), cover_pdf), 4
+                    ),
+                }
+            except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+                layout_errors.append(f"{packet.get('id')}: {exc}")
+                continue
+            layouts.append(layout)
+            all_layouts.append(layout)
+        first = group[0]
+        cases.append(
+            {
+                "case_id": case_id,
+                "category": first.get("category"),
+                "language": first.get("language"),
+                "job_title": first.get("job_title"),
+                "company": first.get("company"),
+                "ranking_complete": ranking_complete,
+                "selection_stable": selection_stable,
+                "criteria_stable": criteria_stable,
+                "resume_cover_aligned": resume_cover_aligned,
+                "text_stable_across_templates": text_stable,
+                "templates": sorted(
+                    {str(packet["template"]) for packet in group if packet.get("template")}
+                ),
+                "selected_fact_ids": (
+                    list(resume_signatures[0][0]) if resume_signatures[0] is not None else []
+                ),
+                "layouts": layouts,
+            }
+        )
+
+    case_count = len(cases)
+
+    def rate(field: str) -> float:
+        return (
+            round(sum(bool(case[field]) for case in cases) / case_count, 4) if case_count else 0.0
+        )
+
+    evidence_ranking = {
+        "case_count": case_count,
+        "packet_count": len(packets),
+        "ranking_complete_rate": rate("ranking_complete"),
+        "selection_stability_rate": rate("selection_stable"),
+        "criteria_stability_rate": rate("criteria_stable"),
+        "resume_cover_alignment_rate": rate("resume_cover_aligned"),
+        "passed": bool(cases)
+        and all(
+            case[check]
+            for case in cases
+            for check in (
+                "ranking_complete",
+                "selection_stable",
+                "criteria_stable",
+                "resume_cover_aligned",
+            )
+        ),
+        "cases": cases,
+    }
+
+    templates_present = sorted(
+        {str(packet["template"]) for packet in packets if packet.get("template")}
+    )
+    required_templates = list(ROTATING_TEMPLATES) if require_template_rotation else []
+    missing_templates = [
+        template for template in required_templates if template not in templates_present
+    ]
+    pdf_expected = sum(
+        1 for packet in packets if str(packet.get("format") or "").casefold() in {"pdf", "both"}
+    )
+    resume_retentions = [float(layout["resume_pdf_text_retention"]) for layout in all_layouts]
+    cover_retentions = [float(layout["cover_pdf_text_retention"]) for layout in all_layouts]
+    resume_pages = [int(layout["resume_pages"]) for layout in all_layouts]
+    cover_pages = [int(layout["cover_pages"]) for layout in all_layouts]
+    pdf_passed = pdf_expected == 0 or (
+        len(all_layouts) == pdf_expected
+        and not layout_errors
+        and bool(resume_retentions)
+        and min(resume_retentions) >= MIN_PDF_TEXT_RETENTION
+        and min(cover_retentions) >= MIN_PDF_TEXT_RETENTION
+        and max(resume_pages) <= MAX_RESUME_PAGES
+        and set(cover_pages) == {1}
+    )
+    text_stability_rate = rate("text_stable_across_templates")
+    template_coherence = {
+        "case_count": case_count,
+        "packet_count": len(packets),
+        "text_stability_rate": text_stability_rate,
+        "templates_present": templates_present,
+        "required_templates": required_templates,
+        "missing_templates": missing_templates,
+        "pdf_packets_expected": pdf_expected,
+        "pdf_packets_checked": len(all_layouts),
+        "minimum_resume_pdf_text_retention": (
+            round(min(resume_retentions), 4) if resume_retentions else None
+        ),
+        "minimum_cover_pdf_text_retention": (
+            round(min(cover_retentions), 4) if cover_retentions else None
+        ),
+        "resume_page_counts": sorted(set(resume_pages)),
+        "cover_page_counts": sorted(set(cover_pages)),
+        "layout_errors": layout_errors,
+        "thresholds": {
+            "minimum_pdf_text_retention": MIN_PDF_TEXT_RETENTION,
+            "maximum_resume_pages": MAX_RESUME_PAGES,
+            "cover_pages": 1,
+        },
+        "passed": bool(cases)
+        and text_stability_rate == 1.0
+        and not missing_templates
+        and pdf_passed,
+    }
+    return evidence_ranking, template_coherence
+
+
 def _selected_variants(names: Sequence[str]) -> list[SamplerVariant]:
     return [VARIANTS[name] for name in names]
 
@@ -707,6 +963,7 @@ def _run_case(
         "stdout_log": str(log_stdout),
         "stderr_log": str(log_stderr),
         "sampler_env": variant.env_overrides,
+        "target_criteria_cache_dir": str(output_dir / "target-criteria-cache"),
         "format": output_format,
         "template": template,
         "dry_run": dry_run,
@@ -848,6 +1105,11 @@ def _run_variant(
         )
         quality = _quality_payload(packet_set, reports=reports, certification=certification)
 
+    evidence_ranking, template_coherence = _heldout_measurements(
+        packets,
+        require_template_rotation=bool(args.rotate_templates),
+    )
+
     return {
         "name": variant.name,
         "sampler": variant.sampler,
@@ -862,6 +1124,8 @@ def _run_variant(
         ],
         "cases": case_results,
         "retention": _retention_payload(packets),
+        "evidence_ranking": evidence_ranking,
+        "template_coherence": template_coherence,
         "quality": quality,
     }
 
@@ -1022,6 +1286,12 @@ def _emit(payload: dict[str, Any], *, json_output: bool) -> None:
         )
         if quality.get("overall") is not None:
             print(f"  overall={quality['overall']:.2f}/4")
+        print(
+            "  evidence ranking="
+            f"{'PASS' if variant['evidence_ranking']['passed'] else 'FAIL'}; "
+            "template coherence="
+            f"{'PASS' if variant['template_coherence']['passed'] else 'FAIL'}"
+        )
         for failure in quality.get("certification_failures", []):
             print(f"  certification failure: {failure}")
         for case_id in variant["failed_cases"]:
@@ -1137,13 +1407,26 @@ def _run(args: argparse.Namespace) -> int:
             or not variant["quality"].get(
                 "integrity_certified" if args.integrity_only else "certified"
             )
+            or not variant["evidence_ranking"].get("passed")
+            or not variant["template_coherence"].get("passed")
             for variant in variants
         )
-    all_integrity_certified = bool(variants) and all(
-        bool((variant.get("quality") or {}).get("integrity_certified")) for variant in variants
+    all_measurements_passed = bool(variants) and all(
+        bool(variant["evidence_ranking"].get("passed"))
+        and bool(variant["template_coherence"].get("passed"))
+        for variant in variants
     )
-    all_certified = bool(variants) and all(
-        bool((variant.get("quality") or {}).get("certified")) for variant in variants
+    all_integrity_certified = (
+        bool(variants)
+        and all_measurements_passed
+        and all(
+            bool((variant.get("quality") or {}).get("integrity_certified")) for variant in variants
+        )
+    )
+    all_certified = (
+        bool(variants)
+        and all_measurements_passed
+        and all(bool((variant.get("quality") or {}).get("certified")) for variant in variants)
     )
     payload = {
         "run_id": args.run_id,
@@ -1168,6 +1451,7 @@ def _run(args: argparse.Namespace) -> int:
         "passed": not failed,
         "integrity_certified": all_integrity_certified and not args.dry_run,
         "certified": all_certified and not args.dry_run,
+        "measurements_passed": all_measurements_passed and not args.dry_run,
         "variants": variants,
         "baseline_comparison": _baseline_comparison(variants),
     }

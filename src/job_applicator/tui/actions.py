@@ -179,6 +179,7 @@ async def cover_letter_job(
     style_guide_path: str = "",
     output_format: Format = Format.TXT,
     template: str | None = None,
+    matcher: JobMatcher | None = None,
 ) -> CoverLetterResult:
     """Generate a cover letter for ``job`` from the configured résumé and write the
     artifact; returns the ``CoverLetterResult`` with ``output_path`` set.
@@ -198,6 +199,7 @@ async def cover_letter_job(
     from job_applicator.documents.cover_letter import CoverLetterGenerator
     from job_applicator.documents.resume import ResumeLoader
     from job_applicator.documents.tone_detector import ToneDetector
+    from job_applicator.embeddings.matching import JobMatcher
     from job_applicator.factories import _make_runtime
     from job_applicator.models import CoverLetterResult
     from job_applicator.utils.profile import _detect_tone, _load_user_profile
@@ -211,10 +213,18 @@ async def cover_letter_job(
             logger.warning("cover letter: tailored résumé unreadable; using the original")
     tone_section = ToneDetector().format_for_prompt(_detect_tone(job))
     runtime = _make_runtime(settings)
+    if matcher is None:
+        matcher = JobMatcher(
+            settings.embedding,
+            settings.llm,
+            runtime,
+            grounding_mode=settings.skills.grounding_mode,
+            matching=settings.matching,
+        )
     style = await _load_style_guide(
         settings, style_guide_path, settings.cover_letter_llm(), runtime
     )
-    generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=runtime)
+    generator = CoverLetterGenerator(settings.cover_letter_llm(), runtime=runtime, matcher=matcher)
     letter, overlay = await generator.generate_verified_with_overlay(
         job,
         _load_user_profile(settings, resume_name=resume_data.name),

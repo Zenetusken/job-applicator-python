@@ -1113,6 +1113,7 @@ class JobApplicatorApp(App[None]):
                     tailored_resume_path=tailored_resume_path,
                     style_guide_path=self._settings.style_guide_path,
                     output_format=output_format,
+                    matcher=self._matcher,
                 ),
             )
         finally:

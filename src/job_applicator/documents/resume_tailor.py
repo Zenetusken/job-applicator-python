@@ -528,13 +528,13 @@ class ResumeTailor:
         target_language = resolve_output_language(self._config.language, job.description)
         self._require_matching_source_language(resume.raw_text, target_language)
 
+        if matcher is None:
+            raise ConfigError(
+                "Resume tailoring requires a configured JobMatcher for fit scoring and "
+                "deterministic source-evidence ranking."
+            )
+
         if match_result is None:
-            if matcher is None:
-                raise ConfigError(
-                    "Resume tailoring requires a configured JobMatcher or precomputed "
-                    "MatchResult. Pass the command/TUI/batch matcher so embeddings use the "
-                    "configured device instead of constructing a hidden fallback matcher."
-                )
             match_result = await matcher.match_resume_to_job(resume, job)
         elif match_result.job != job:
             logger.debug(
@@ -559,6 +559,7 @@ class ResumeTailor:
             language=target_language,
             style_guide=style_guide,
             user_instructions=user_instructions.strip(),
+            matcher=matcher,
         )
 
         return TailoredResume(
@@ -704,6 +705,12 @@ class ResumeTailor:
         target_language = resolve_output_language(self._config.language, job.description)
         self._require_matching_source_language(original_resume.raw_text, target_language)
 
+        if matcher is None:
+            raise ConfigError(
+                "Résumé refinement requires a configured JobMatcher for deterministic "
+                "source-evidence ranking."
+            )
+
         del tone_profile
         refined_text, overlay = await self._overlay_generator.generate(
             resume=original_resume,
@@ -711,14 +718,8 @@ class ResumeTailor:
             language=target_language,
             style_guide=style_guide,
             user_instructions=user_feedback.strip(),
+            matcher=matcher,
         )
-
-        if matcher is None:
-            raise ConfigError(
-                "Résumé refinement requires a configured JobMatcher. Pass the command/TUI/batch "
-                "matcher so embeddings use the configured device instead of constructing a "
-                "hidden fallback matcher."
-            )
 
         synthetic_resume = original_resume.model_copy(update={"raw_text": refined_text})
         new_match = await matcher.match_resume_to_job(synthetic_resume, job)

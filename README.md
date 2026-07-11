@@ -9,9 +9,9 @@ AI-powered job application tool using Playwright browser automation with modern 
 - **Region-Aware Browser**: Auto-detects the host's locale, IANA timezone, and Chrome version so geo-aware boards serve your real region
 - **LinkedIn Easy Apply**: Fill LinkedIn Easy Apply forms in a dry run by default; real submission requires `--submit`. LinkedIn external-apply jobs and Indeed applications are reported for manual follow-up rather than guessed through
 - **Selector Health Diagnostics**: Probe live LinkedIn/Indeed selectors on demand, or as an opt-in `search` / `apply` preflight, so board DOM drift is reported before a real run
-- **Source-Backed Cover Letters**: Structured job requirements, or a temperature-zero evidence-span extraction when requirements are absent, feed deterministic ranking of three primary source facts. Typed local realization preserves those facts in the body; the application frame and sign-off are deterministic. Dry runs generate the letter as a preview before you opt in with `--submit`
+- **Source-Backed Cover Letters**: A temperature-zero, job-only pass extracts exact responsibility spans without seeing applicant data. The local mxbai embedder then ranks immutable résumé facts with stable tie-breaking and selects exactly three. Typed local realization preserves those facts in the body; the application frame and sign-off are deterministic. Dry runs generate the letter as a preview before you opt in with `--submit`
 - **Output-Language Policy**: The generated CV and cover letter resolve the *same* language — `[llm] language = "auto"` mirrors the job posting, or force `"en"` / `"fr"`. The base résumé must already use that language; cross-language résumé generation fails closed rather than saving unverified machine translation.
-- **Grounding Verification (honesty layer)**: Résumé targeting changes only a three-statement summary; each statement is an exact deterministic realization of one selected source fact, while every non-summary source section is digest-protected. Cover-letter statements follow the same typed source contract. Both artifact sidecars retain citations, source digest, language, and architecture version.
+- **Grounding Verification (honesty layer)**: Résumé targeting changes only a three-statement summary; each statement is an exact deterministic realization of one selected source fact, while every non-summary source section is digest-protected. Cover-letter statements follow the same typed source contract. Both artifact sidecars retain citations, source/job digests, exact target criteria, ranked scores, language, and architecture version.
 - **Resume Parsing**: Load and parse PDF/text/image resumes with intelligent skill extraction; OCR fallback for scanned PDFs
 - **Semantic Job Matching**: Match resumes to jobs using mxbai-embed-large-v1 embeddings
 - **Resume Tailoring**: source-preserving summary overlay with immutable experience, education, skills, projects, dates, metrics, and contact content
@@ -416,9 +416,10 @@ The private packet-set gate is set-level certification, not just per-packet smok
 mode enforces a minimum number of passing cases, freshness, and requested category/language
 coverage. Missing required private evidence exits `2`; present-but-failing evidence exits `1`.
 The sampler harness keeps production defaults unchanged while measuring baseline vs Qwen-shaped
-criteria-extraction/transport variants. Applicant claim prose remains deterministic. Its JSON
-includes baseline-relative overall and per-dimension deltas for each
-variant. See `docs/llm-sampler-eval.md`.
+criteria-extraction/transport variants. Repeated held-out runs also report ranking completeness,
+criteria and selection stability, résumé/cover alignment, TXT identity across templates, PDF text
+retention, and page counts. Applicant claim prose remains deterministic; prose qualification stays
+in the separate manual-review sidecar. See `docs/llm-sampler-eval.md`.
 
 ## Architecture
 
